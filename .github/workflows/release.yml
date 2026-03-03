@@ -59,8 +59,6 @@ jobs:
             client/dist/*.AppImage
             client/dist/*.deb
             client/dist/*.dmg
-            client/dist/*.zip
             client/dist/*.exe
-            client/dist/*.blockmap
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
