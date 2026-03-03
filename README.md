@@ -21,6 +21,13 @@ Self-hostable, end-to-end encrypted messaging.
 
 ### Docker (recommended)
 
+Pre-built multi-arch images (`linux/amd64`, `linux/arm64`) are published to GHCR:
+
+| Image | Description |
+|-------|-------------|
+| `ghcr.io/alderban107/vesper-app` | Phoenix API server |
+| `ghcr.io/alderban107/vesper-web` | Web client (nginx) |
+
 1. Copy the example environment file:
    ```bash
    cp .env.example .env
@@ -32,13 +39,14 @@ Self-hostable, end-to-end encrypted messaging.
    - `TURN_PASSWORD` — password for the TURN server (voice relay)
    - `PHX_HOST` — your server's hostname (default: `localhost`)
    - `APP_PORT` — external port (default: `4000`)
+   - `API_URL` — full URL to the API server (for the web client, e.g. `https://vesper.yourdomain.com`)
 
 3. Start the stack:
    ```bash
-   docker compose up -d
+   docker compose pull && docker compose up -d
    ```
 
-This starts the Phoenix server, PostgreSQL, and a coturn TURN server for voice relay.
+This starts the Phoenix server, PostgreSQL, and a coturn TURN server for voice relay. No source checkout needed — images are pulled from GHCR.
 
 ### From source
 
