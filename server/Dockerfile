@@ -29,7 +29,7 @@ FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    libstdc++6 openssl libncurses6 locales ca-certificates && \
+    libstdc++6 openssl libncurses6 locales ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 
 # Set locale
@@ -47,5 +47,8 @@ COPY --from=build /app/_build/prod/rel/vesper ./
 ENV PHX_SERVER=true
 
 EXPOSE 4000
+
+HEALTHCHECK --interval=10s --timeout=5s --retries=3 --start-period=60s \
+  CMD curl -sf http://localhost:4000/health || exit 1
 
 CMD ["bin/vesper", "start"]

@@ -38,8 +38,12 @@ services:
       - "${APP_PORT:-4000}:4000"
     volumes:
       - uploads:/app/priv/uploads
-    command: >
-      sh -c "bin/vesper eval 'Vesper.Release.migrate()' && bin/vesper start"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
 
   web:
     image: ghcr.io/alderban107/vesper-web:main

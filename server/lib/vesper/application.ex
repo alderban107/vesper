@@ -10,6 +10,7 @@ defmodule Vesper.Application do
     children = [
       VesperWeb.Telemetry,
       Vesper.Repo,
+      Vesper.Migrator,
       {DNSCluster, query: Application.get_env(:vesper, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Vesper.PubSub},
       {Oban, Application.fetch_env!(:vesper, Oban)},

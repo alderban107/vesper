@@ -65,6 +65,53 @@ E2E tests use Playwright and require both the server and a test database to be r
 - UTC timestamps everywhere
 - Commit messages should explain the *why*, not just the *what*
 
+## Migration Safety
+
+Container images are published on every push to `main` and deployments can happen automatically. This means migrations must be backwards-compatible with the previous release — a bad migration can't be rolled back if it breaks the schema for the currently-running code.
+
+### Expand-and-contract pattern
+
+Never remove or rename a column/table in the same release that stops using it. Split the change across releases:
+
+1. **Release N** — Add the new column/table. Code handles both old and new.
+2. **Release N+1** — Migrate existing data, switch code to use only the new structure.
+3. **Release N+2** — Drop the old column/table.
+
+### Safe vs unsafe examples
+
+**Unsafe** (single release):
+```elixir
+# Migration: rename column
+rename table(:users), :name, to: :display_name
+
+# Code: only reads :display_name
+# Problem: if you rollback to the previous image, it still expects :name
+```
+
+**Safe** (two releases):
+```elixir
+# Release 1 migration: add new column, backfill
+alter table(:users) do
+  add :display_name, :string
+end
+execute "UPDATE users SET display_name = name"
+
+# Release 1 code: reads from :display_name, falls back to :name
+
+# Release 2 migration: drop old column
+alter table(:users) do
+  remove :name
+end
+```
+
+### Rules of thumb
+
+- Adding a column or table is always safe
+- Adding an index concurrently is always safe (use `CREATE INDEX CONCURRENTLY`)
+- Removing a column is safe only after the previous release stopped reading it
+- Renaming is never atomic — treat it as add + migrate + drop
+- Changing a column type requires the same expand-and-contract approach
+
 ## Security
 
 Vesper is an E2EE application. If you discover a security vulnerability, especially one that affects encryption, key management, or message confidentiality:

@@ -9,6 +9,11 @@ defmodule VesperWeb.Router do
     plug VesperWeb.Plugs.Auth
   end
 
+  # Health check — no auth, no pipeline
+  scope "/", VesperWeb do
+    get "/health", HealthController, :check
+  end
+
   # Public auth routes
   scope "/api/v1/auth", VesperWeb do
     pipe_through :api
