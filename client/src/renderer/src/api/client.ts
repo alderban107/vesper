@@ -1,4 +1,5 @@
-const DEFAULT_SERVER_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:4000'
+const DEFAULT_SERVER_URL =
+  (window as any).VESPER_API_URL || 'http://localhost:4000'
 
 function getServerUrl(): string {
   return localStorage.getItem('serverUrl') || DEFAULT_SERVER_URL

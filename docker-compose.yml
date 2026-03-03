@@ -15,6 +15,7 @@ services:
       retries: 5
 
   app:
+    image: ghcr.io/alderban107/vesper-app:main
     build:
       context: ./server
       dockerfile: Dockerfile
@@ -41,12 +42,13 @@ services:
       sh -c "bin/vesper eval 'Vesper.Release.migrate()' && bin/vesper start"
 
   web:
+    image: ghcr.io/alderban107/vesper-web:main
     build:
       context: ./client
       dockerfile: Dockerfile.web
-      args:
-        VITE_API_URL: ${VITE_API_URL:-http://localhost:4000}
     restart: unless-stopped
+    environment:
+      API_URL: ${API_URL:-}
     ports:
       - "${WEB_PORT:-8080}:80"
 
