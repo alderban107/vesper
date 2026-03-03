@@ -1,0 +1,59 @@
+{
+  "name": "vesper",
+  "version": "0.1.0",
+  "description": "Vesper — encrypted messaging",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit",
+    "dist": "electron-vite build && electron-builder --config electron-builder.yml",
+    "dist:linux": "electron-vite build && electron-builder --linux --config electron-builder.yml",
+    "dist:mac": "electron-vite build && electron-builder --mac --config electron-builder.yml",
+    "dist:win": "electron-vite build && electron-builder --win --config electron-builder.yml",
+    "test:e2e": "npx playwright test --config e2e/playwright.config.ts",
+    "test:e2e:ui": "npx playwright test --config e2e/playwright.config.ts --ui",
+    "test:e2e:headed": "npx playwright test --config e2e/playwright.config.ts --headed"
+  },
+  "keywords": ["messaging", "e2ee", "encryption", "electron", "webrtc"],
+  "author": "alderban107",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alderban107/vesper.git"
+  },
+  "homepage": "https://github.com/alderban107/vesper",
+  "devDependencies": {
+    "@electron-toolkit/preload": "^3.0.2",
+    "@electron-toolkit/utils": "^4.0.0",
+    "@playwright/test": "^1.58.2",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.4",
+    "electron": "^40.6.1",
+    "electron-builder": "^26.8.1",
+    "electron-vite": "^5.0.0",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@hpke/core": "^1.8.0",
+    "@noble/ciphers": "^2.1.1",
+    "@noble/curves": "^2.0.1",
+    "@noble/hashes": "^2.0.1",
+    "@tailwindcss/postcss": "^4.2.1",
+    "better-sqlite3": "^12.6.2",
+    "electron-updater": "^6.8.3",
+    "hash-wasm": "^4.12.0",
+    "lucide-react": "^0.576.0",
+    "phoenix": "^1.8.4",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "tailwindcss": "^4.2.1",
+    "ts-mls": "^1.6.1",
+    "zustand": "^5.0.11"
+  }
+}

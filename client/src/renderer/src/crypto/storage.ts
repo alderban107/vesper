@@ -1,0 +1,155 @@
+/**
+ * Renderer-side interface to the local encrypted database via IPC.
+ * All calls go through window.cryptoDb (exposed by preload).
+ */
+
+function db(): CryptoDbApi {
+  return window.cryptoDb
+}
+
+// --- Identity Keys ---
+
+export async function saveIdentity(
+  userId: string,
+  publicIdentityKey: Uint8Array,
+  publicKeyExchange: Uint8Array,
+  encryptedPrivateKeys: Uint8Array,
+  nonce: Uint8Array,
+  salt: Uint8Array
+): Promise<void> {
+  await db().setIdentityKeys(
+    userId,
+    publicIdentityKey,
+    publicKeyExchange,
+    encryptedPrivateKeys,
+    nonce,
+    salt
+  )
+}
+
+export async function loadIdentity(userId: string): Promise<{
+  publicIdentityKey: Uint8Array
+  publicKeyExchange: Uint8Array
+  encryptedPrivateKeys: Uint8Array
+  nonce: Uint8Array
+  salt: Uint8Array
+} | null> {
+  const result = await db().getIdentityKeys(userId)
+  if (!result) return null
+
+  // IPC returns ArrayBuffer — convert to Uint8Array
+  return {
+    publicIdentityKey: new Uint8Array(result.public_identity_key),
+    publicKeyExchange: new Uint8Array(result.public_key_exchange),
+    encryptedPrivateKeys: new Uint8Array(result.encrypted_private_keys),
+    nonce: new Uint8Array(result.nonce),
+    salt: new Uint8Array(result.salt)
+  }
+}
+
+export async function deleteIdentity(userId: string): Promise<void> {
+  await db().deleteIdentityKeys(userId)
+}
+
+// --- MLS Group State ---
+
+export async function saveGroupState(
+  groupId: string,
+  state: Uint8Array,
+  epoch: number
+): Promise<void> {
+  await db().setGroupState(groupId, state, epoch)
+}
+
+export async function loadGroupState(groupId: string): Promise<{
+  state: Uint8Array
+  epoch: number
+} | null> {
+  const result = await db().getGroupState(groupId)
+  if (!result) return null
+
+  return {
+    state: new Uint8Array(result.state),
+    epoch: result.epoch
+  }
+}
+
+export async function deleteGroupState(groupId: string): Promise<void> {
+  await db().deleteGroupState(groupId)
+}
+
+// --- Key Packages ---
+
+export async function saveKeyPackages(
+  packages: Array<{ publicData: Uint8Array; privateData: Uint8Array }>
+): Promise<void> {
+  await db().setLocalKeyPackages(packages)
+}
+
+export async function loadKeyPackages(): Promise<
+  Array<{
+    id: number
+    publicData: Uint8Array
+    privateData: Uint8Array
+  }>
+> {
+  const results = await db().getLocalKeyPackages()
+  return results.map((r) => ({
+    id: r.id,
+    publicData: new Uint8Array(r.key_package_public),
+    privateData: new Uint8Array(r.key_package_private)
+  }))
+}
+
+export async function consumeKeyPackage(id: number): Promise<void> {
+  await db().consumeLocalKeyPackage(id)
+}
+
+export async function countKeyPackages(): Promise<number> {
+  return db().countLocalKeyPackages()
+}
+
+// --- Message Cache ---
+
+export async function cacheMessage(msg: {
+  id: string
+  channelId: string
+  senderId: string | null
+  senderUsername: string | null
+  content: string | null
+  insertedAt: string
+}): Promise<void> {
+  await db().cacheMessage({
+    id: msg.id,
+    channel_id: msg.channelId,
+    sender_id: msg.senderId,
+    sender_username: msg.senderUsername,
+    content: msg.content,
+    inserted_at: msg.insertedAt
+  })
+}
+
+export async function loadCachedMessages(channelId: string): Promise<
+  Array<{
+    id: string
+    channelId: string
+    senderId: string | null
+    senderUsername: string | null
+    content: string | null
+    insertedAt: string
+  }>
+> {
+  const results = await db().getCachedMessages(channelId)
+  return results.map((r) => ({
+    id: r.id,
+    channelId: r.channel_id,
+    senderId: r.sender_id,
+    senderUsername: r.sender_username,
+    content: r.content,
+    insertedAt: r.inserted_at
+  }))
+}
+
+export async function clearCachedMessages(channelId: string): Promise<void> {
+  await db().clearMessageCache(channelId)
+}

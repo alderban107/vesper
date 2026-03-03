@@ -1,0 +1,12 @@
+_build/
+deps/
+cover/
+doc/
+.elixir_ls/
+.git/
+test/
+priv/uploads/*
+*.ez
+*.md
+.formatter.exs
+.credo.exs

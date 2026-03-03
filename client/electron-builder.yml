@@ -1,0 +1,32 @@
+appId: com.vesper
+productName: Vesper
+directories:
+  output: dist
+  buildResources: build
+files:
+  - out/**/*
+  - "!node_modules/**/*"
+  - node_modules/better-sqlite3/**/*
+  - node_modules/bindings/**/*
+  - node_modules/file-uri-to-path/**/*
+  - node_modules/prebuild-install/**/*
+asar: true
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Network
+  maintainer: vesper
+mac:
+  target:
+    - dmg
+    - zip
+  category: public.app-category.social-networking
+win:
+  target:
+    - nsis
+    - portable
+publish:
+  provider: github
+  owner: alderban107
+  repo: vesper

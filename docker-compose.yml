@@ -1,0 +1,54 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-vesper}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}
+      POSTGRES_DB: ${POSTGRES_DB:-vesper_prod}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vesper}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ecto://${POSTGRES_USER:-vesper}:${POSTGRES_PASSWORD}@db/${POSTGRES_DB:-vesper_prod}
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE:?SECRET_KEY_BASE required}
+      PHX_HOST: ${PHX_HOST:-localhost}
+      PORT: "4000"
+      JWT_SECRET: ${JWT_SECRET:-}
+      TURN_SERVER_URL: ${TURN_SERVER_URL:-turn:coturn:3478}
+      TURN_USERNAME: ${TURN_USERNAME:-vesper}
+      TURN_PASSWORD: ${TURN_PASSWORD:?TURN_PASSWORD required}
+      MAX_UPLOAD_SIZE: ${MAX_UPLOAD_SIZE:-26214400}
+      FILE_EXPIRY_DAYS: ${FILE_EXPIRY_DAYS:-30}
+    ports:
+      - "${APP_PORT:-4000}:4000"
+    volumes:
+      - uploads:/app/priv/uploads
+    command: >
+      sh -c "bin/vesper eval 'Vesper.Release.migrate()' && bin/vesper start"
+
+  coturn:
+    image: coturn/coturn:latest
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./turnserver.conf:/etc/turnserver.conf:ro
+    environment:
+      TURN_PASSWORD: ${TURN_PASSWORD:?TURN_PASSWORD required}
+
+volumes:
+  pgdata:
+  uploads:

@@ -1,0 +1,166 @@
+@import 'tailwindcss';
+
+@theme {
+  /* Backgrounds — deep blue-purple twilight */
+  --color-bg-base: #0d0f1a;
+  --color-bg-primary: #141625;
+  --color-bg-secondary: #1c1f33;
+  --color-bg-tertiary: #262a42;
+
+  /* Text — warm off-whites */
+  --color-text-primary: #e8e6f0;
+  --color-text-secondary: #b8b5c8;
+  --color-text-muted: #8a86a0;
+  --color-text-faint: #6b6780;
+  --color-text-faintest: #4e4a65;
+  --color-text-disabled: #3a3650;
+
+  /* Accent — warm amber/gold ("evening star") */
+  --color-accent: #c8a24e;
+  --color-accent-hover: #b8922e;
+  --color-accent-disabled: #5c4d2a;
+  --color-accent-text: #c8a24e;
+  --color-accent-text-hover: #ddb85e;
+  --color-accent-focus: #c8a24e;
+
+  /* Secondary accent — soft violet */
+  --color-violet: #8b7ec8;
+  --color-violet-hover: #7b6eb8;
+
+  /* Semantic */
+  --color-error: #f87171;
+  --color-error-bg: rgba(153, 27, 27, 0.3);
+  --color-success: #34d399;
+  --color-success-hover: #059669;
+
+  /* Borders — subtle, not harsh */
+  --color-border: rgba(255, 255, 255, 0.08);
+
+  /* Animations */
+  --animate-fade-in: fade-in 0.3s ease-out;
+  --animate-slide-up: slide-up 0.3s ease-out;
+  --animate-scale-in: scale-in 0.2s ease-out;
+  --animate-pulse-ring: pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Light theme — warm palette matching Vesper identity */
+[data-theme="light"] {
+  --color-bg-base: #f0eef5;
+  --color-bg-primary: #f8f7fc;
+  --color-bg-secondary: #eceaf4;
+  --color-bg-tertiary: #dfdce8;
+  --color-text-primary: #1c1a2e;
+  --color-text-secondary: #3e3a54;
+  --color-text-muted: #6e6a84;
+  --color-text-faint: #928ea6;
+  --color-text-faintest: #b4b0c6;
+  --color-text-disabled: #d2d0dd;
+  --color-accent: #a88530;
+  --color-accent-hover: #8d6f20;
+  --color-accent-disabled: #d4c8a0;
+  --color-accent-text: #8d6f20;
+  --color-accent-text-hover: #705818;
+  --color-accent-focus: #a88530;
+  --color-error: #dc2626;
+  --color-error-bg: rgba(254, 242, 242, 0.8);
+  --color-success: #059669;
+  --color-success-hover: #047857;
+  --color-border: rgba(0, 0, 0, 0.08);
+}
+
+/* Keyframes */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes scale-in {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes pulse-ring {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(200, 162, 78, 0.4); }
+  50% { box-shadow: 0 0 0 8px rgba(200, 162, 78, 0); }
+}
+
+/* Utility: Glass card */
+@utility glass-card {
+  background: rgba(28, 31, 51, 0.8);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="light"] .glass-card {
+  background: rgba(248, 247, 252, 0.85);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+}
+
+/* Utility: Glowing accent button */
+@utility glow-accent {
+  background: #c8a24e;
+  box-shadow: 0 0 20px rgba(200, 162, 78, 0.3);
+  transition: all 0.2s ease;
+}
+
+@utility glow-accent-hover {
+  box-shadow: 0 0 28px rgba(200, 162, 78, 0.45);
+}
+
+/* Utility: Text gradient */
+@utility text-gradient {
+  background: linear-gradient(135deg, #c8a24e, #8b7ec8);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Utility: Input focus ring */
+@utility input-focus {
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* Input focus styling */
+.input-focus:focus {
+  border-color: #c8a24e;
+  box-shadow: 0 0 0 2px rgba(200, 162, 78, 0.15);
+  outline: none;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+[data-theme="light"] ::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.12);
+}
+
+[data-theme="light"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.2);
+}
+
+/* Base selection color */
+::selection {
+  background: rgba(200, 162, 78, 0.3);
+  color: #e8e6f0;
+}

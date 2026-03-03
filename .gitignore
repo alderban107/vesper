@@ -1,0 +1,45 @@
+# Server (Elixir/Phoenix)
+server/_build/
+server/deps/
+server/cover/
+server/doc/
+server/.fetch
+server/erl_crash.dump
+server/*.ez
+server/tmp/
+server/*.tar
+server/test/
+
+# Client (Electron/Node)
+client/node_modules/
+client/out/
+client/dist/
+client/coverage/
+client/e2e/
+client/test-results/
+client/playwright-report/
+
+# Project docs (private)
+CLAUDE.md
+DESIGN.md
+TODO.md
+PROGRESS.md
+server/AGENTS.md
+server/README.md
+
+# Runtime data
+uploads/
+
+# Environment
+.env
+*.pem
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*~
