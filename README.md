@@ -58,6 +58,16 @@ Dev database defaults: `postgres:postgres@localhost/vesper_dev`
 
 Download from [Releases](https://github.com/alderban107/vesper/releases) — available for Linux (AppImage, deb), macOS (DMG), and Windows (installer, portable).
 
+### Web client (Docker)
+
+A browser-based client is available as a Docker image — no download required. Add the `web` service to your Docker Compose stack:
+
+```bash
+docker compose up -d web
+```
+
+This serves the web client on port `8080` (configurable via `WEB_PORT` in `.env`). Users can access it at `http://your-host:8080`. The web client has full feature parity with the desktop app, including E2EE messaging, voice calls, and file sharing — all running in the browser via IndexedDB and the Web Notification API.
+
 ### Build from source
 
 Prerequisites: Node 20+
@@ -65,7 +75,9 @@ Prerequisites: Node 20+
 ```bash
 cd client
 npm install
-npm run dev          # development with hot reload
+npm run dev          # Electron dev with hot reload
+npm run dev:web      # web client dev server
+npm run build:web    # production web build (outputs dist-web/)
 npm run dist:linux   # build AppImage + deb
 ```
 

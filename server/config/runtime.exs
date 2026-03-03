@@ -101,4 +101,12 @@ if config_env() == :prod do
   # File expiry (default 30 days)
   config :vesper, :file_expiry_days,
     String.to_integer(System.get_env("FILE_EXPIRY_DAYS") || "30")
+
+  # CORS — allow web client origin (default * for self-hosters)
+  cors_origin = System.get_env("CORS_ORIGIN") || "*"
+
+  config :cors_plug,
+    origin: [cors_origin],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    headers: ["authorization", "content-type"]
 end

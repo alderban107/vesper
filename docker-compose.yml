@@ -40,6 +40,14 @@ services:
     command: >
       sh -c "bin/vesper eval 'Vesper.Release.migrate()' && bin/vesper start"
 
+  web:
+    build:
+      context: ./client
+      dockerfile: Dockerfile.web
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8080}:80"
+
   coturn:
     image: coturn/coturn:latest
     restart: unless-stopped

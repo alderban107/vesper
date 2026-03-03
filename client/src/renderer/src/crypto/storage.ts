@@ -1,10 +1,17 @@
 /**
- * Renderer-side interface to the local encrypted database via IPC.
- * All calls go through window.cryptoDb (exposed by preload).
+ * Renderer-side interface to the local encrypted database.
+ * In Electron, calls go through window.cryptoDb (exposed by preload).
+ * In the web client, falls back to an IndexedDB adapter.
  */
+import { createIndexedDbAdapter } from './indexedDbStorage'
+
+let _db: CryptoDbApi | null = null
 
 function db(): CryptoDbApi {
-  return window.cryptoDb
+  if (!_db) {
+    _db = window.cryptoDb ?? createIndexedDbAdapter()
+  }
+  return _db
 }
 
 // --- Identity Keys ---

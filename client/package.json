@@ -12,6 +12,9 @@
     "dist:linux": "electron-vite build && electron-builder --linux --config electron-builder.yml",
     "dist:mac": "electron-vite build && electron-builder --mac --config electron-builder.yml",
     "dist:win": "electron-vite build && electron-builder --win --config electron-builder.yml",
+    "dev:web": "vite --config vite.web.config.ts",
+    "build:web": "vite build --config vite.web.config.ts",
+    "preview:web": "vite preview --config vite.web.config.ts",
     "test:e2e": "npx playwright test --config e2e/playwright.config.ts",
     "test:e2e:ui": "npx playwright test --config e2e/playwright.config.ts --ui",
     "test:e2e:headed": "npx playwright test --config e2e/playwright.config.ts --headed"
