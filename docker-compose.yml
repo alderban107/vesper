@@ -54,8 +54,10 @@ services:
     network_mode: host
     volumes:
       - ./turnserver.conf:/etc/turnserver.conf:ro
-    environment:
-      TURN_PASSWORD: ${TURN_PASSWORD:?TURN_PASSWORD required}
+    command: [
+      "-c", "/etc/turnserver.conf",
+      "--static-auth-secret=${TURN_PASSWORD:?TURN_PASSWORD required}"
+    ]
 
 volumes:
   pgdata:
