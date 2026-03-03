@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-const DEFAULT_SERVER_URL = 'http://localhost:4000'
+const DEFAULT_SERVER_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:4000'
 
 interface SettingsState {
   serverUrl: string
