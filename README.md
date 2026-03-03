@@ -56,7 +56,7 @@ Dev database defaults: `postgres:postgres@localhost/vesper_dev`
 
 ### Pre-built releases
 
-Download from [Releases](https://github.com/alderban107/vesper/releases) — available as AppImage and deb (Linux), and installer and portable exe (Windows). macOS builds coming soon.
+Download from [Releases](https://github.com/alderban107/vesper/releases) — available for Linux (AppImage, deb), macOS (DMG), and Windows (installer, portable).
 
 ### Build from source
 
