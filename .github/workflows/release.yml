@@ -9,9 +9,13 @@ on:
         description: 'Release tag to attach assets to (e.g. v0.1.0)'
         required: true
 
+permissions:
+  contents: write
+
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
