@@ -2,7 +2,6 @@ defmodule VesperWeb.DmChannel do
   use Phoenix.Channel
 
   alias Vesper.Chat
-  alias Vesper.Accounts
   alias Vesper.Encryption
   import VesperWeb.ChannelHelpers
 
@@ -11,13 +10,20 @@ defmodule VesperWeb.DmChannel do
     user_id = socket.assigns.user_id
 
     if Chat.user_is_participant?(user_id, conversation_id) do
-      # Cache participant IDs on join to avoid per-message DB lookups
+      # Cache participant IDs and sender info on join to avoid per-message DB lookups
       participant_ids = Chat.list_participant_ids(conversation_id)
+
+      sender_info = %{
+        id: user_id,
+        username: socket.assigns[:username],
+        display_name: socket.assigns[:display_name]
+      }
 
       socket =
         socket
         |> assign(:conversation_id, conversation_id)
         |> assign(:participant_ids, participant_ids)
+        |> assign(:sender_info, sender_info)
 
       {:ok, socket}
     else
@@ -56,9 +62,16 @@ defmodule VesperWeb.DmChannel do
             conversation_id = socket.assigns.conversation_id
             sender_id = socket.assigns.user_id
             participant_ids = socket.assigns.participant_ids
+            sender_info = socket.assigns.sender_info
 
             Task.Supervisor.start_child(Vesper.NotificationSupervisor, fn ->
-              notify_participants(conversation_id, sender_id, participant_ids, message)
+              notify_participants(
+                conversation_id,
+                sender_id,
+                participant_ids,
+                sender_info,
+                message
+              )
             end)
 
             {:reply, :ok, socket}
@@ -238,22 +251,12 @@ defmodule VesperWeb.DmChannel do
   def handle_in(_event, _payload, socket),
     do: {:reply, {:error, %{reason: "unrecognized event"}}, socket}
 
-  defp notify_participants(conversation_id, sender_id, participant_ids, message) do
-    sender = Accounts.get_user(sender_id)
-
+  defp notify_participants(conversation_id, sender_id, participant_ids, sender_info, message) do
     notification = %{
       conversation_id: conversation_id,
       message_id: message.id,
       sender_id: sender_id,
-      sender:
-        if(sender,
-          do: %{
-            id: sender.id,
-            username: sender.username,
-            display_name: sender.display_name
-          }
-        ),
-      preview: message.content && String.slice(message.content, 0, 100),
+      sender: sender_info,
       inserted_at: message.inserted_at
     }
 

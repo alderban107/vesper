@@ -22,6 +22,7 @@ defmodule VesperWeb.UserSocket do
           socket
           |> assign(:user_id, user_id)
           |> assign(:username, user && user.username)
+          |> assign(:display_name, user && user.display_name)
 
         {:ok, socket}
 

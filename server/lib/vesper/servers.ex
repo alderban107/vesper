@@ -155,10 +155,14 @@ defmodule Vesper.Servers do
     |> Repo.all()
   end
 
+  @doc """
+  Return all member user IDs for a server. No limit — used by MemberCache
+  which needs the full set for accurate notification fanout.
+  For paginated REST responses, use `list_members/2` instead.
+  """
   def list_member_ids(server_id) do
     from(m in Membership,
       where: m.server_id == ^server_id,
-      limit: ^@max_members_default,
       select: m.user_id
     )
     |> Repo.all()
@@ -238,6 +242,19 @@ defmodule Vesper.Servers do
     Repo.get(Channel, id)
   end
 
+  @doc """
+  Get a channel only if the user is a member of its server. Single query with join.
+  Returns the channel or nil.
+  """
+  def get_channel_if_member(channel_id, user_id) do
+    from(c in Channel,
+      join: m in Membership,
+      on: m.server_id == c.server_id and m.user_id == ^user_id,
+      where: c.id == ^channel_id
+    )
+    |> Repo.one()
+  end
+
   def get_channel!(id) do
     Repo.get!(Channel, id)
   end
@@ -268,36 +285,70 @@ defmodule Vesper.Servers do
   end
 
   def update_role(%Role{} = role, attrs) do
-    role
-    |> Role.changeset(attrs)
-    |> Repo.update()
+    result =
+      role
+      |> Role.changeset(attrs)
+      |> Repo.update()
+
+    if match?({:ok, _}, result), do: broadcast_permissions_changed(role.server_id)
+    result
   end
 
-  def delete_role(%Role{} = role), do: Repo.delete(role)
+  def delete_role(%Role{} = role) do
+    result = Repo.delete(role)
+    if match?({:ok, _}, result), do: broadcast_permissions_changed(role.server_id)
+    result
+  end
 
   def assign_role(membership_id, role_id) do
-    %MemberRole{}
-    |> MemberRole.changeset(%{membership_id: membership_id, role_id: role_id})
-    |> Repo.insert()
+    result =
+      %MemberRole{}
+      |> MemberRole.changeset(%{membership_id: membership_id, role_id: role_id})
+      |> Repo.insert()
+
+    if match?({:ok, _}, result) do
+      membership = Repo.get(Membership, membership_id)
+      if membership, do: broadcast_permissions_changed(membership.server_id)
+    end
+
+    result
   end
 
   def replace_member_roles(membership_id, role_ids) do
-    Repo.transaction(fn ->
-      from(mr in MemberRole, where: mr.membership_id == ^membership_id)
-      |> Repo.delete_all()
+    result =
+      Repo.transaction(fn ->
+        from(mr in MemberRole, where: mr.membership_id == ^membership_id)
+        |> Repo.delete_all()
 
-      for role_id <- role_ids do
-        %MemberRole{}
-        |> MemberRole.changeset(%{membership_id: membership_id, role_id: role_id})
-        |> Repo.insert!()
-      end
-    end)
+        for role_id <- role_ids do
+          %MemberRole{}
+          |> MemberRole.changeset(%{membership_id: membership_id, role_id: role_id})
+          |> Repo.insert!()
+        end
+      end)
+
+    if match?({:ok, _}, result) do
+      membership = Repo.get(Membership, membership_id)
+      if membership, do: broadcast_permissions_changed(membership.server_id)
+    end
+
+    result
   end
 
   def remove_role(membership_id, role_id) do
     case Repo.get_by(MemberRole, membership_id: membership_id, role_id: role_id) do
-      nil -> {:error, :not_found}
-      mr -> Repo.delete(mr)
+      nil ->
+        {:error, :not_found}
+
+      mr ->
+        result = Repo.delete(mr)
+
+        if match?({:ok, _}, result) do
+          membership = Repo.get(Membership, membership_id)
+          if membership, do: broadcast_permissions_changed(membership.server_id)
+        end
+
+        result
     end
   end
 
@@ -337,9 +388,20 @@ defmodule Vesper.Servers do
         {:error, :not_found}
 
       channel ->
-        channel
-        |> Channel.changeset(%{disappearing_ttl: ttl})
-        |> Repo.update()
+        result =
+          channel
+          |> Channel.changeset(%{disappearing_ttl: ttl})
+          |> Repo.update()
+
+        if match?({:ok, _}, result) do
+          Phoenix.PubSub.broadcast(
+            Vesper.PubSub,
+            "channel:settings:#{channel_id}",
+            {:ttl_changed, ttl}
+          )
+        end
+
+        result
     end
   end
 
@@ -444,6 +506,14 @@ defmodule Vesper.Servers do
       Vesper.PubSub,
       "server:members:#{server_id}",
       {event, server_id, user_id}
+    )
+  end
+
+  defp broadcast_permissions_changed(server_id) do
+    Phoenix.PubSub.broadcast(
+      Vesper.PubSub,
+      "server:permissions:#{server_id}",
+      {:permissions_changed, server_id}
     )
   end
 end

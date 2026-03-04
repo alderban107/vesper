@@ -12,19 +12,14 @@ defmodule VesperWeb.VoiceChannel do
 
   @impl true
   def join("voice:channel:" <> channel_id, _payload, socket) do
-    channel = Servers.get_channel(channel_id)
+    case Servers.get_channel_if_member(channel_id, socket.assigns.user_id) do
+      nil ->
+        {:error, %{reason: "channel not found or not a member"}}
 
-    cond do
-      is_nil(channel) ->
-        {:error, %{reason: "channel not found"}}
-
-      channel.type != "voice" ->
+      %{type: type} when type != "voice" ->
         {:error, %{reason: "not a voice channel"}}
 
-      not Servers.user_is_member?(socket.assigns.user_id, channel.server_id) ->
-        {:error, %{reason: "not a member"}}
-
-      true ->
+      _channel ->
         socket =
           socket
           |> assign(:room_id, channel_id)

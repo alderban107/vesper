@@ -5,6 +5,8 @@ defmodule Vesper.Servers.MemberCache do
   Uses a :public ETS table with read_concurrency so channel processes
   can do direct :ets.lookup without copying data through this GenServer.
   This GenServer only handles writes (cache population and invalidation).
+
+  Member IDs are stored as MapSets for O(1) membership checks and removal.
   """
 
   use GenServer
@@ -16,13 +18,12 @@ defmodule Vesper.Servers.MemberCache do
   # --- Public API (direct ETS reads — no GenServer call on hot path) ---
 
   @doc """
-  Get member IDs for a server. Reads directly from ETS (lock-free).
+  Get member IDs for a server as a MapSet. Reads directly from ETS (lock-free).
   On cache miss, populates from DB via the GenServer.
   """
   def get_member_ids(server_id) do
     case :ets.lookup(@table, server_id) do
       [{^server_id, member_ids}] ->
-        :telemetry.execute([:vesper, :member_cache, :hit], %{count: 1}, %{server_id: server_id})
         member_ids
 
       [] ->
@@ -46,16 +47,15 @@ defmodule Vesper.Servers.MemberCache do
 
   @impl true
   def init([]) do
-    table = :ets.new(@table, [:set, :public, :named_table, read_concurrency: true])
-    Phoenix.PubSub.subscribe(Vesper.PubSub, "server:members:*")
-    {:ok, %{table: table}}
+    :ets.new(@table, [:set, :public, :named_table, read_concurrency: true])
+    {:ok, %{}}
   end
 
   @impl true
   def handle_call({:populate, server_id}, _from, state) do
-    member_ids = fetch_and_cache(server_id)
-    # Subscribe to this specific server's membership topic
+    # Subscribe before fetching to avoid missing events between fetch and subscribe
     Phoenix.PubSub.subscribe(Vesper.PubSub, "server:members:#{server_id}")
+    member_ids = fetch_and_cache(server_id)
     {:reply, member_ids, state}
   end
 
@@ -63,9 +63,7 @@ defmodule Vesper.Servers.MemberCache do
   def handle_info({:member_joined, server_id, user_id}, state) do
     case :ets.lookup(@table, server_id) do
       [{^server_id, member_ids}] ->
-        unless user_id in member_ids do
-          :ets.insert(@table, {server_id, [user_id | member_ids]})
-        end
+        :ets.insert(@table, {server_id, MapSet.put(member_ids, user_id)})
 
       [] ->
         # Not cached yet — no action needed, will be populated on first read
@@ -75,10 +73,11 @@ defmodule Vesper.Servers.MemberCache do
     {:noreply, state}
   end
 
+  @impl true
   def handle_info({:member_left, server_id, user_id}, state) do
     case :ets.lookup(@table, server_id) do
       [{^server_id, member_ids}] ->
-        :ets.insert(@table, {server_id, List.delete(member_ids, user_id)})
+        :ets.insert(@table, {server_id, MapSet.delete(member_ids, user_id)})
 
       [] ->
         :ok
@@ -87,6 +86,7 @@ defmodule Vesper.Servers.MemberCache do
     {:noreply, state}
   end
 
+  @impl true
   def handle_info(_msg, state) do
     {:noreply, state}
   end
@@ -100,7 +100,7 @@ defmodule Vesper.Servers.MemberCache do
   # --- Private ---
 
   defp fetch_and_cache(server_id) do
-    member_ids = Vesper.Servers.list_member_ids(server_id)
+    member_ids = Vesper.Servers.list_member_ids(server_id) |> MapSet.new()
     :ets.insert(@table, {server_id, member_ids})
     member_ids
   end

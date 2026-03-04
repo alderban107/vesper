@@ -100,7 +100,6 @@ defmodule VesperWeb.Telemetry do
       ),
 
       # Member cache
-      counter("vesper.member_cache.hit.count"),
       counter("vesper.member_cache.miss.count")
     ]
   end
