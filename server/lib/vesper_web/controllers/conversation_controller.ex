@@ -1,6 +1,7 @@
 defmodule VesperWeb.ConversationController do
   use VesperWeb, :controller
   alias Vesper.Chat
+  import VesperWeb.ControllerHelpers, only: [parse_int: 2]
 
   def create(conn, %{"participant_ids" => participant_ids} = params) do
     user = conn.assigns.current_user
@@ -10,6 +11,7 @@ defmodule VesperWeb.ConversationController do
       {:ok, conversation} ->
         # Notify other participants of the new conversation
         conv_payload = conversation_json(conversation)
+
         for p <- conversation.participants, p.user_id != user.id do
           VesperWeb.Endpoint.broadcast("user:#{p.user_id}", "new_conversation", %{
             conversation: conv_payload
@@ -68,7 +70,7 @@ defmodule VesperWeb.ConversationController do
         conn |> put_status(:forbidden) |> json(%{error: "not a participant"})
 
       true ->
-        opts = [limit: min(String.to_integer(params["limit"] || "50"), 100)]
+        opts = [limit: min(parse_int(params["limit"], 50), 100)]
 
         opts =
           case params["before"] do

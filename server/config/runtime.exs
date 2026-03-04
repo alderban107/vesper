@@ -93,7 +93,10 @@ if config_env() == :prod do
 
       turn_url ->
         turn_user = System.get_env("TURN_USERNAME") || "vesper"
-        turn_pass = System.get_env("TURN_PASSWORD") || raise("TURN_PASSWORD required when TURN_SERVER_URL is set")
+
+        turn_pass =
+          System.get_env("TURN_PASSWORD") ||
+            raise("TURN_PASSWORD required when TURN_SERVER_URL is set")
 
         [
           %{urls: "stun:stun.l.google.com:19302"},
@@ -104,15 +107,28 @@ if config_env() == :prod do
   config :vesper, :ice_servers, ice_servers
 
   # Max upload size (default 25MB)
-  config :vesper, :max_upload_size,
-    String.to_integer(System.get_env("MAX_UPLOAD_SIZE") || "26214400")
+  config :vesper,
+         :max_upload_size,
+         String.to_integer(System.get_env("MAX_UPLOAD_SIZE") || "26214400")
 
   # File expiry (default 30 days)
-  config :vesper, :file_expiry_days,
-    String.to_integer(System.get_env("FILE_EXPIRY_DAYS") || "30")
+  config :vesper, :file_expiry_days, String.to_integer(System.get_env("FILE_EXPIRY_DAYS") || "30")
 
-  # CORS — allow web client origin (default * for self-hosters)
+  # CORS — restrict to the configured origin in production.
+  # Set CORS_ORIGIN to your frontend URL (e.g. "https://app.example.com").
+  # WARNING: leaving CORS_ORIGIN unset allows all origins ("*"), which is
+  # acceptable for self-hosted deployments but SHOULD be set explicitly in
+  # any multi-tenant or public-facing production environment.
   cors_origin = System.get_env("CORS_ORIGIN") || "*"
+
+  if cors_origin == "*" do
+    require Logger
+
+    Logger.warning(
+      "CORS_ORIGIN is not set — allowing all origins (*). " <>
+        "Set CORS_ORIGIN to restrict cross-origin access in production."
+    )
+  end
 
   config :cors_plug,
     origin: [cors_origin],

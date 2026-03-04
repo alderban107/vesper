@@ -6,16 +6,27 @@ defmodule VesperWeb.KeyPackageController do
   def create(conn, %{"key_packages" => packages}) when is_list(packages) do
     user_id = conn.assigns.current_user.id
 
-    decoded =
-      Enum.map(packages, fn b64 ->
-        Base.decode64!(b64)
+    result =
+      Enum.reduce_while(packages, {:ok, []}, fn b64, {:ok, acc} ->
+        case Base.decode64(b64) do
+          {:ok, decoded} -> {:cont, {:ok, [decoded | acc]}}
+          :error -> {:halt, :error}
+        end
       end)
 
-    {count, _} = Encryption.upload_key_packages(user_id, decoded)
+    case result do
+      {:ok, decoded} ->
+        {count, _} = Encryption.upload_key_packages(user_id, Enum.reverse(decoded))
 
-    conn
-    |> put_status(:created)
-    |> json(%{uploaded: count})
+        conn
+        |> put_status(:created)
+        |> json(%{uploaded: count})
+
+      :error ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{error: "invalid base64 in key_packages"})
+    end
   end
 
   def create(conn, _params) do

@@ -2,8 +2,10 @@ defmodule VesperWeb.VoiceChannel do
   use Phoenix.Channel
 
   alias Vesper.Servers
+  alias Vesper.Chat
   alias Vesper.Voice
   alias Vesper.Encryption
+  import VesperWeb.ChannelHelpers, only: [safe_decode64: 1]
 
   @impl true
   def join("voice:channel:" <> channel_id, _payload, socket) do
@@ -33,13 +35,7 @@ defmodule VesperWeb.VoiceChannel do
   def join("voice:dm:" <> conversation_id, _payload, socket) do
     user_id = socket.assigns.user_id
 
-    participant =
-      Vesper.Repo.get_by(Vesper.Chat.DmParticipant,
-        conversation_id: conversation_id,
-        user_id: user_id
-      )
-
-    if participant do
+    if Chat.user_is_participant?(user_id, conversation_id) do
       socket =
         socket
         |> assign(:room_id, conversation_id)
@@ -53,19 +49,19 @@ defmodule VesperWeb.VoiceChannel do
   end
 
   @impl true
-  def handle_in("answer", %{"sdp" => sdp}, socket) do
+  def handle_in("answer", %{"sdp" => sdp}, socket) when is_binary(sdp) do
     case Voice.sdp_answer(socket.assigns.room_id, socket.assigns.user_id, sdp) do
       :ok -> {:noreply, socket}
       {:error, _reason} -> {:reply, {:error, %{reason: "invalid answer"}}, socket}
     end
   end
 
-  def handle_in("ice_candidate", %{"candidate" => candidate}, socket) do
+  def handle_in("ice_candidate", %{"candidate" => candidate}, socket) when is_map(candidate) do
     Voice.ice_candidate(socket.assigns.room_id, socket.assigns.user_id, candidate)
     {:noreply, socket}
   end
 
-  def handle_in("mute", %{"muted" => muted}, socket) do
+  def handle_in("mute", %{"muted" => muted}, socket) when is_boolean(muted) do
     Voice.set_muted(socket.assigns.room_id, socket.assigns.user_id, muted)
 
     broadcast!(socket, "voice_state_update", %{
@@ -124,7 +120,8 @@ defmodule VesperWeb.VoiceChannel do
     {:noreply, socket}
   end
 
-  def handle_in("mls_commit", %{"commit_data" => commit_data}, socket) do
+  def handle_in("mls_commit", %{"commit_data" => commit_data}, socket)
+      when is_binary(commit_data) do
     broadcast!(socket, "mls_commit", %{
       commit_data: commit_data,
       sender_id: socket.assigns.user_id
@@ -137,26 +134,35 @@ defmodule VesperWeb.VoiceChannel do
         "mls_welcome",
         %{"recipient_id" => recipient_id, "welcome_data" => welcome_data},
         socket
-      ) do
-    room_id = socket.assigns.room_id
-    sender_id = socket.assigns.user_id
+      )
+      when is_binary(recipient_id) and is_binary(welcome_data) do
+    case safe_decode64(welcome_data) do
+      {:ok, decoded} ->
+        room_id = socket.assigns.room_id
+        sender_id = socket.assigns.user_id
 
-    broadcast!(socket, "mls_welcome", %{
-      recipient_id: recipient_id,
-      welcome_data: welcome_data,
-      sender_id: sender_id
-    })
+        broadcast!(socket, "mls_welcome", %{
+          recipient_id: recipient_id,
+          welcome_data: welcome_data,
+          sender_id: sender_id
+        })
 
-    # Store for offline delivery
-    Encryption.store_pending_welcome(%{
-      recipient_id: recipient_id,
-      channel_id: room_id,
-      welcome_data: Base.decode64!(welcome_data),
-      sender_id: sender_id
-    })
+        Encryption.store_pending_welcome(%{
+          recipient_id: recipient_id,
+          channel_id: room_id,
+          welcome_data: decoded,
+          sender_id: sender_id
+        })
 
-    {:noreply, socket}
+        {:noreply, socket}
+
+      {:error, _} ->
+        {:reply, {:error, %{reason: "invalid encoding"}}, socket}
+    end
   end
+
+  def handle_in(_event, _payload, socket),
+    do: {:reply, {:error, %{reason: "unrecognized event"}}, socket}
 
   @impl true
   def handle_info(:after_join, socket) do

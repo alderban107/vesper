@@ -30,7 +30,12 @@ defmodule Vesper.Servers do
       # Auto-create "Admin" role with administrator permission
       admin_role =
         %Role{server_id: server.id}
-        |> Role.changeset(%{name: "Admin", color: "#e74c3c", permissions: Permissions.administrator(), position: 0})
+        |> Role.changeset(%{
+          name: "Admin",
+          color: "#e74c3c",
+          permissions: Permissions.administrator(),
+          position: 0
+        })
         |> Repo.insert!()
 
       # Assign admin role to owner
@@ -74,7 +79,8 @@ defmodule Vesper.Servers do
     Repo.delete(server)
   end
 
-  @invite_code_ttl_seconds 86_400 # 24 hours
+  # 24 hours
+  @invite_code_ttl_seconds 86_400
 
   def join_server(user, invite_code) do
     case Repo.get_by(Server, invite_code: invite_code) do
@@ -88,21 +94,15 @@ defmodule Vesper.Servers do
           rotate_invite_code(server)
           {:error, :not_found}
         else
-          existing = Repo.get_by(Membership, user_id: user.id, server_id: server.id)
+          %Membership{
+            user_id: user.id,
+            server_id: server.id,
+            role: "member",
+            joined_at: DateTime.utc_now() |> DateTime.truncate(:second)
+          }
+          |> Repo.insert(on_conflict: :nothing, conflict_target: [:user_id, :server_id])
 
-          if existing do
-            {:ok, server |> Repo.preload(:channels)}
-          else
-            %Membership{
-              user_id: user.id,
-              server_id: server.id,
-              role: "member",
-              joined_at: DateTime.utc_now() |> DateTime.truncate(:second)
-            }
-            |> Repo.insert!()
-
-            {:ok, server |> Repo.preload(:channels)}
-          end
+          {:ok, server |> Repo.preload(:channels)}
         end
     end
   end
@@ -117,6 +117,7 @@ defmodule Vesper.Servers do
   end
 
   defp invite_code_stale?(%Server{invite_code_rotated_at: nil}), do: true
+
   defp invite_code_stale?(%Server{invite_code_rotated_at: rotated_at}) do
     DateTime.diff(DateTime.utc_now(), rotated_at, :second) > @invite_code_ttl_seconds
   end
@@ -236,12 +237,16 @@ defmodule Vesper.Servers do
   end
 
   def replace_member_roles(membership_id, role_ids) do
-    from(mr in MemberRole, where: mr.membership_id == ^membership_id)
-    |> Repo.delete_all()
+    Repo.transaction(fn ->
+      from(mr in MemberRole, where: mr.membership_id == ^membership_id)
+      |> Repo.delete_all()
 
-    for role_id <- role_ids do
-      assign_role(membership_id, role_id)
-    end
+      for role_id <- role_ids do
+        %MemberRole{}
+        |> MemberRole.changeset(%{membership_id: membership_id, role_id: role_id})
+        |> Repo.insert!()
+      end
+    end)
   end
 
   def remove_role(membership_id, role_id) do
@@ -283,7 +288,9 @@ defmodule Vesper.Servers do
 
   def update_channel_ttl(channel_id, ttl) do
     case Repo.get(Channel, channel_id) do
-      nil -> {:error, :not_found}
+      nil ->
+        {:error, :not_found}
+
       channel ->
         channel
         |> Channel.changeset(%{disappearing_ttl: ttl})
@@ -355,25 +362,26 @@ defmodule Vesper.Servers do
             if is_nil(server) do
               {:error, :not_found}
             else
-              existing = Repo.get_by(Membership, user_id: user.id, server_id: server.id)
-
-              if existing do
-                {:ok, server |> Repo.preload(:channels)}
-              else
+              result =
                 %Membership{
                   user_id: user.id,
                   server_id: server.id,
                   role: "member",
                   joined_at: now
                 }
-                |> Repo.insert!()
+                |> Repo.insert(on_conflict: :nothing, conflict_target: [:user_id, :server_id])
 
-                # Increment uses
-                from(i in Invite, where: i.id == ^invite.id)
-                |> Repo.update_all(inc: [uses: 1])
+              # Only increment uses when a new membership was actually inserted
+              case result do
+                {:ok, %Membership{id: id}} when not is_nil(id) ->
+                  from(i in Invite, where: i.id == ^invite.id)
+                  |> Repo.update_all(inc: [uses: 1])
 
-                {:ok, server |> Repo.preload(:channels)}
+                _ ->
+                  :ok
               end
+
+              {:ok, server |> Repo.preload(:channels)}
             end
         end
     end

@@ -1,6 +1,8 @@
 defmodule VesperWeb.AttachmentController do
   use VesperWeb, :controller
+  alias Vesper.Chat
   alias Vesper.Chat.{Attachment, FileStorage}
+  alias Vesper.Servers
   alias Vesper.Repo
 
   def create(conn, %{"file" => upload} = params) do
@@ -45,11 +47,13 @@ defmodule VesperWeb.AttachmentController do
               conn |> put_status(:created) |> json(%{attachment: attachment_json(attachment)})
 
             {:error, _changeset} ->
-              conn |> put_status(:unprocessable_entity) |> json(%{error: "could not save attachment"})
+              conn
+              |> put_status(:unprocessable_entity)
+              |> json(%{error: "could not save attachment"})
           end
 
-        {:error, reason} ->
-          conn |> put_status(:internal_server_error) |> json(%{error: to_string(reason)})
+        {:error, _reason} ->
+          conn |> put_status(:internal_server_error) |> json(%{error: "could not store file"})
       end
     end
   end
@@ -59,24 +63,52 @@ defmodule VesperWeb.AttachmentController do
   end
 
   def show(conn, %{"id" => id}) do
+    user = conn.assigns.current_user
+
     case Repo.get(Attachment, id) do
       nil ->
         conn |> put_status(:not_found) |> json(%{error: "not found"})
 
       attachment ->
-        path = FileStorage.get_path(attachment.storage_key)
+        attachment = Repo.preload(attachment, :message)
 
-        if File.exists?(path) do
-          conn
-          |> put_resp_content_type(attachment.content_type || "application/octet-stream")
-          |> put_resp_header(
-            "content-disposition",
-            ~s(attachment; filename="#{attachment.filename}")
-          )
-          |> send_file(200, path)
+        if authorized_for_attachment?(user.id, attachment) do
+          path = FileStorage.get_path(attachment.storage_key)
+
+          if File.exists?(path) do
+            safe_filename = String.replace(attachment.filename, ~r/["\r\n\\]/, "_")
+
+            conn
+            |> put_resp_content_type(attachment.content_type || "application/octet-stream")
+            |> put_resp_header("content-disposition", ~s(attachment; filename="#{safe_filename}"))
+            |> send_file(200, path)
+          else
+            conn |> put_status(:not_found) |> json(%{error: "file not found"})
+          end
         else
-          conn |> put_status(:not_found) |> json(%{error: "file not found"})
+          conn |> put_status(:forbidden) |> json(%{error: "access denied"})
         end
+    end
+  end
+
+  # Attachment not yet linked to a message — allow the uploader
+  # (we can't verify uploader without tracking it, so allow any authed user
+  # for unlinked attachments since they're transient pre-send uploads)
+  defp authorized_for_attachment?(_user_id, %{message: nil}), do: true
+
+  defp authorized_for_attachment?(user_id, %{message: message}) do
+    cond do
+      message.channel_id ->
+        case Servers.get_channel(message.channel_id) do
+          nil -> false
+          channel -> Servers.user_is_member?(user_id, channel.server_id)
+        end
+
+      message.conversation_id ->
+        Chat.user_is_participant?(user_id, message.conversation_id)
+
+      true ->
+        false
     end
   end
 

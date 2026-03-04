@@ -7,7 +7,7 @@ defmodule Vesper.Workers.ExpireAttachmentBlobs do
   2. Deletes orphaned attachments (null message_id, older than 1 hour)
   3. Removes disk blobs with no remaining attachment references
   """
-  use Oban.Worker, queue: :default, max_attempts: 3
+  use Oban.Worker, queue: :default, max_attempts: 3, unique: [period: 300]
   import Ecto.Query
   require Logger
 
@@ -50,24 +50,31 @@ defmodule Vesper.Workers.ExpireAttachmentBlobs do
       )
       |> Repo.delete_all()
 
-    # Clean disk blobs where no attachment record references them anymore
-    blob_count =
-      Enum.reduce(all_keys, 0, fn key, acc ->
-        remaining =
-          from(a in Attachment, where: a.storage_key == ^key)
-          |> Repo.aggregate(:count, :id)
+    # Count remaining references for each key in a single grouped query
+    referenced_keys =
+      from(a in Attachment,
+        where: a.storage_key in ^all_keys,
+        group_by: a.storage_key,
+        select: a.storage_key
+      )
+      |> Repo.all()
+      |> MapSet.new()
 
-        if remaining == 0 do
-          FileStorage.delete(key)
-          acc + 1
-        else
-          acc
-        end
+    # Delete blobs for keys with zero remaining attachment references
+    blob_count =
+      all_keys
+      |> Enum.reject(&MapSet.member?(referenced_keys, &1))
+      |> Enum.reduce(0, fn key, acc ->
+        FileStorage.delete(key)
+        acc + 1
       end)
 
     total = expired_count + orphan_count
+
     if total > 0 or blob_count > 0 do
-      Logger.info("Attachment cleanup: #{expired_count} expired, #{orphan_count} orphaned records; #{blob_count} blobs removed")
+      Logger.info(
+        "Attachment cleanup: #{expired_count} expired, #{orphan_count} orphaned records; #{blob_count} blobs removed"
+      )
     end
 
     :ok

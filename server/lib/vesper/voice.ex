@@ -4,12 +4,10 @@ defmodule Vesper.Voice do
   alias Vesper.Voice.{Room, RoomSupervisor}
 
   def ensure_room(room_id, opts \\ []) do
-    case Registry.lookup(Vesper.Voice.Registry, room_id) do
-      [{_pid, _}] -> :ok
-      [] -> {:ok, _pid} = RoomSupervisor.start_room(room_id, opts)
+    case RoomSupervisor.start_room(room_id, opts) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
     end
-
-    :ok
   end
 
   def join_room(room_id, user_id, channel_pid) do

@@ -1,6 +1,7 @@
 defmodule VesperWeb.ChannelController do
   use VesperWeb, :controller
   alias Vesper.Servers
+  import VesperWeb.ControllerHelpers, only: [format_errors: 1]
 
   def index(conn, %{"server_id" => server_id}) do
     user = conn.assigns.current_user
@@ -54,14 +55,18 @@ defmodule VesperWeb.ChannelController do
     if role in ~w(owner admin) do
       channel = Servers.get_channel(id)
 
-      case Servers.update_channel(channel, params) do
-        {:ok, updated} ->
-          json(conn, %{channel: channel_json(updated)})
+      if is_nil(channel) or channel.server_id != server_id do
+        conn |> put_status(:not_found) |> json(%{error: "not found"})
+      else
+        case Servers.update_channel(channel, params) do
+          {:ok, updated} ->
+            json(conn, %{channel: channel_json(updated)})
 
-        {:error, changeset} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{errors: format_errors(changeset)})
+          {:error, changeset} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{errors: format_errors(changeset)})
+        end
       end
     else
       conn |> put_status(:forbidden) |> json(%{error: "insufficient permissions"})
@@ -75,11 +80,11 @@ defmodule VesperWeb.ChannelController do
     if role in ~w(owner admin) do
       channel = Servers.get_channel(id)
 
-      if channel do
+      if is_nil(channel) or channel.server_id != server_id do
+        conn |> put_status(:not_found) |> json(%{error: "not found"})
+      else
         Servers.delete_channel(channel)
         json(conn, %{ok: true})
-      else
-        conn |> put_status(:not_found) |> json(%{error: "not found"})
       end
     else
       conn |> put_status(:forbidden) |> json(%{error: "insufficient permissions"})
@@ -98,13 +103,5 @@ defmodule VesperWeb.ChannelController do
       inserted_at: channel.inserted_at,
       updated_at: channel.updated_at
     }
-  end
-
-  defp format_errors(changeset) do
-    Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
-      Regex.replace(~r"%{(\w+)}", msg, fn _, key ->
-        opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
-      end)
-    end)
   end
 end

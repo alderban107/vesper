@@ -112,7 +112,14 @@ defmodule Vesper.Voice.Room do
             # Apply any pending ICE candidates
             new_participant =
               Enum.reduce(participant.pending_candidates, participant, fn candidate, p ->
-                PeerConnection.add_ice_candidate(p.pc, candidate)
+                case PeerConnection.add_ice_candidate(p.pc, candidate) do
+                  :ok ->
+                    :ok
+
+                  {:error, reason} ->
+                    Logger.warning("Failed to add ICE candidate: #{inspect(reason)}")
+                end
+
                 p
               end)
 
@@ -165,14 +172,32 @@ defmodule Vesper.Voice.Room do
         {:noreply, state}
 
       participant ->
-        candidate = ICECandidate.from_json(candidate_json)
+        try do
+          candidate = ICECandidate.from_json(candidate_json)
 
-        if PeerConnection.get_remote_description(participant.pc) do
-          PeerConnection.add_ice_candidate(participant.pc, candidate)
-          {:noreply, state}
-        else
-          updated = %{participant | pending_candidates: participant.pending_candidates ++ [candidate]}
-          {:noreply, put_in(state.participants[user_id], updated)}
+          if PeerConnection.get_remote_description(participant.pc) do
+            case PeerConnection.add_ice_candidate(participant.pc, candidate) do
+              :ok ->
+                :ok
+
+              {:error, reason} ->
+                Logger.warning("Failed to add ICE candidate: #{inspect(reason)}")
+            end
+
+            {:noreply, state}
+          else
+            updated = %{
+              participant
+              | pending_candidates: participant.pending_candidates ++ [candidate]
+            }
+
+            {:noreply, put_in(state.participants[user_id], updated)}
+          end
+        rescue
+          e ->
+            Logger.warning("Malformed ICE candidate from user #{user_id}: #{inspect(e)}")
+
+            {:noreply, state}
         end
     end
   end
@@ -444,7 +469,13 @@ defmodule Vesper.Voice.Room do
             end
           end)
 
-        updated = %{participant | negotiating: true, renegotiate_pending: false, track_map: track_map}
+        updated = %{
+          participant
+          | negotiating: true,
+            renegotiate_pending: false,
+            track_map: track_map
+        }
+
         state = put_in(state.participants[user_id], updated)
 
         send(participant.channel_pid, {:renegotiate, offer.sdp, track_map})

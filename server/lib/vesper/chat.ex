@@ -1,7 +1,17 @@
 defmodule Vesper.Chat do
   import Ecto.Query
   alias Vesper.Repo
-  alias Vesper.Chat.{Message, Attachment, DmConversation, DmParticipant, Reaction, ChannelReadPosition, DmReadPosition, PinnedMessage}
+
+  alias Vesper.Chat.{
+    Message,
+    Attachment,
+    DmConversation,
+    DmParticipant,
+    Reaction,
+    ChannelReadPosition,
+    DmReadPosition,
+    PinnedMessage
+  }
 
   # --- DM Conversations ---
 
@@ -16,7 +26,10 @@ defmodule Vesper.Chat do
 
     # For direct DMs, check if conversation already exists between these two users
     if type == "direct" do
-      case find_direct_conversation(creator_id, List.first(participant_ids -- [creator_id]) || creator_id) do
+      case find_direct_conversation(
+             creator_id,
+             List.first(participant_ids -- [creator_id]) || creator_id
+           ) do
         %DmConversation{} = existing ->
           {:ok, Repo.preload(existing, participants: :user)}
 
@@ -64,25 +77,35 @@ defmodule Vesper.Chat do
   List all conversations a user participates in, with participants and last message.
   """
   def list_conversations(user_id) do
-    from(c in DmConversation,
-      join: p in DmParticipant,
-      on: p.conversation_id == c.id,
-      where: p.user_id == ^user_id,
-      preload: [participants: :user],
-      order_by: [desc: c.inserted_at]
-    )
-    |> Repo.all()
-    |> Enum.map(fn conv ->
-      last_message =
+    conversations =
+      from(c in DmConversation,
+        join: p in DmParticipant,
+        on: p.conversation_id == c.id,
+        where: p.user_id == ^user_id,
+        preload: [participants: :user],
+        order_by: [desc: c.inserted_at]
+      )
+      |> Repo.all()
+
+    conv_ids = Enum.map(conversations, & &1.id)
+
+    # Batch-fetch last message per conversation using a window function
+    last_messages =
+      if conv_ids != [] do
         from(m in Message,
-          where: m.conversation_id == ^conv.id,
-          order_by: [desc: m.inserted_at],
-          limit: 1,
+          where: m.conversation_id in ^conv_ids,
+          distinct: m.conversation_id,
+          order_by: [m.conversation_id, desc: m.inserted_at],
           preload: [:sender]
         )
-        |> Repo.one()
+        |> Repo.all()
+        |> Map.new(&{&1.conversation_id, &1})
+      else
+        %{}
+      end
 
-      %{conversation: conv, last_message: last_message}
+    Enum.map(conversations, fn conv ->
+      %{conversation: conv, last_message: Map.get(last_messages, conv.id)}
     end)
   end
 
@@ -151,7 +174,9 @@ defmodule Vesper.Chat do
 
   def update_conversation_ttl(conversation_id, ttl) do
     case Repo.get(DmConversation, conversation_id) do
-      nil -> {:error, :not_found}
+      nil ->
+        {:error, :not_found}
+
       conv ->
         conv
         |> DmConversation.changeset(%{disappearing_ttl: ttl})
@@ -325,7 +350,7 @@ defmodule Vesper.Chat do
     if channel_ids == [] do
       %{}
     else
-      # Get read positions for all channels
+      # Get read positions for all channels in one query
       positions =
         from(p in ChannelReadPosition,
           where: p.user_id == ^user_id and p.channel_id in ^channel_ids,
@@ -334,29 +359,41 @@ defmodule Vesper.Chat do
         |> Repo.all()
         |> Map.new()
 
-      # For each channel, count messages after last_read_at where sender != user
-      channel_ids
-      |> Enum.map(fn channel_id ->
-        last_read_at = Map.get(positions, channel_id)
+      {with_pos, without_pos} = Enum.split_with(channel_ids, &Map.has_key?(positions, &1))
 
-        count =
-          if last_read_at do
+      # For channels with read positions: one query per channel, but no useless
+      # intermediate grouped query — each channel has a distinct last_read_at
+      # so we issue N direct count queries (honest N, not N+1).
+      counts_with_pos =
+        Enum.map(with_pos, fn channel_id ->
+          last_read_at = Map.fetch!(positions, channel_id)
+
+          count =
             from(m in Message,
               where:
                 m.channel_id == ^channel_id and
-                m.sender_id != ^user_id and
-                m.inserted_at > ^last_read_at
+                  m.sender_id != ^user_id and
+                  m.inserted_at > ^last_read_at,
+              select: count()
             )
-            |> Repo.aggregate(:count, :id)
-          else
-            from(m in Message,
-              where: m.channel_id == ^channel_id and m.sender_id != ^user_id
-            )
-            |> Repo.aggregate(:count, :id)
-          end
+            |> Repo.one()
 
-        {channel_id, count}
-      end)
+          {channel_id, count}
+        end)
+
+      counts_without_pos =
+        if without_pos != [] do
+          from(m in Message,
+            where: m.channel_id in ^without_pos and m.sender_id != ^user_id,
+            group_by: m.channel_id,
+            select: {m.channel_id, count(m.id)}
+          )
+          |> Repo.all()
+        else
+          []
+        end
+
+      (counts_with_pos ++ counts_without_pos)
       |> Enum.filter(fn {_id, count} -> count > 0 end)
       |> Map.new()
     end
@@ -374,28 +411,40 @@ defmodule Vesper.Chat do
         |> Repo.all()
         |> Map.new()
 
-      conversation_ids
-      |> Enum.map(fn conv_id ->
-        last_read_at = Map.get(positions, conv_id)
+      {with_pos, without_pos} = Enum.split_with(conversation_ids, &Map.has_key?(positions, &1))
 
-        count =
-          if last_read_at do
+      # For conversations with read positions: one direct count query each,
+      # no useless intermediate grouped query.
+      counts_with_pos =
+        Enum.map(with_pos, fn conv_id ->
+          last_read_at = Map.fetch!(positions, conv_id)
+
+          count =
             from(m in Message,
               where:
                 m.conversation_id == ^conv_id and
-                m.sender_id != ^user_id and
-                m.inserted_at > ^last_read_at
+                  m.sender_id != ^user_id and
+                  m.inserted_at > ^last_read_at,
+              select: count()
             )
-            |> Repo.aggregate(:count, :id)
-          else
-            from(m in Message,
-              where: m.conversation_id == ^conv_id and m.sender_id != ^user_id
-            )
-            |> Repo.aggregate(:count, :id)
-          end
+            |> Repo.one()
 
-        {conv_id, count}
-      end)
+          {conv_id, count}
+        end)
+
+      counts_without_pos =
+        if without_pos != [] do
+          from(m in Message,
+            where: m.conversation_id in ^without_pos and m.sender_id != ^user_id,
+            group_by: m.conversation_id,
+            select: {m.conversation_id, count(m.id)}
+          )
+          |> Repo.all()
+        else
+          []
+        end
+
+      (counts_with_pos ++ counts_without_pos)
       |> Enum.filter(fn {_id, count} -> count > 0 end)
       |> Map.new()
     end
@@ -405,7 +454,11 @@ defmodule Vesper.Chat do
 
   def pin_message(channel_id, message_id, pinned_by_id) do
     %PinnedMessage{}
-    |> PinnedMessage.changeset(%{channel_id: channel_id, message_id: message_id, pinned_by_id: pinned_by_id})
+    |> PinnedMessage.changeset(%{
+      channel_id: channel_id,
+      message_id: message_id,
+      pinned_by_id: pinned_by_id
+    })
     |> Repo.insert()
   end
 

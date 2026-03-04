@@ -8,19 +8,30 @@ defmodule Vesper.Chat.LinkPreviewFetcher do
   alias Vesper.Repo
   alias Vesper.Chat.LinkPreview
 
-  @cache_ttl_seconds 86_400  # 24 hours
-  @request_timeout 5_000     # 5 seconds
-  @max_body_size 524_288     # 512KB
+  # 24 hours
+  @cache_ttl_seconds 86_400
+  # 5 seconds
+  @request_timeout 5_000
+  # 512KB
+  @max_body_size 524_288
 
-  # Private/reserved IP ranges for SSRF protection
+  # Private/reserved IPv4 ranges for SSRF protection
   @blocked_ranges [
-    {10, 0, 0, 0, 8},        # 10.0.0.0/8
-    {172, 16, 0, 0, 12},     # 172.16.0.0/12
-    {192, 168, 0, 0, 16},    # 192.168.0.0/16
-    {127, 0, 0, 0, 8},       # 127.0.0.0/8
-    {169, 254, 0, 0, 16},    # 169.254.0.0/16
-    {0, 0, 0, 0, 8}          # 0.0.0.0/8
+    # 10.0.0.0/8
+    {10, 0, 0, 0, 8},
+    # 172.16.0.0/12
+    {172, 16, 0, 0, 12},
+    # 192.168.0.0/16
+    {192, 168, 0, 0, 16},
+    # 127.0.0.0/8
+    {127, 0, 0, 0, 8},
+    # 169.254.0.0/16
+    {169, 254, 0, 0, 16},
+    # 0.0.0.0/8
+    {0, 0, 0, 0, 8}
   ]
+
+  @max_redirects 3
 
   def fetch_preview(url) do
     url_hash = :crypto.hash(:sha256, url) |> Base.encode16(case: :lower)
@@ -82,18 +93,36 @@ defmodule Vesper.Chat.LinkPreviewFetcher do
     )
   end
 
-  defp do_fetch(url) do
+  defp do_fetch(url), do: do_fetch(url, @max_redirects)
+
+  defp do_fetch(_url, remaining) when remaining < 0, do: {:error, :too_many_redirects}
+
+  defp do_fetch(url, remaining) do
     case Req.get(url,
-      connect_options: [timeout: @request_timeout],
-      receive_timeout: @request_timeout,
-      max_retries: 0,
-      redirect: true,
-      max_redirects: 3
-    ) do
+           connect_options: [timeout: @request_timeout],
+           receive_timeout: @request_timeout,
+           max_retries: 0,
+           redirect: false
+         ) do
       {:ok, %{status: status, body: body}} when status in 200..299 ->
         # Truncate body to max size for parsing
-        body_str = if is_binary(body), do: binary_part(body, 0, min(byte_size(body), @max_body_size)), else: ""
+        body_str =
+          if is_binary(body),
+            do: binary_part(body, 0, min(byte_size(body), @max_body_size)),
+            else: ""
+
         {:ok, parse_og_tags(body_str)}
+
+      {:ok, %{status: status, headers: headers}} when status in 301..308 ->
+        case get_location_header(headers) do
+          nil ->
+            {:error, :bad_redirect}
+
+          location ->
+            if blocked_url?(location),
+              do: {:error, :blocked},
+              else: do_fetch(location, remaining - 1)
+        end
 
       {:ok, _} ->
         {:error, :bad_status}
@@ -101,6 +130,13 @@ defmodule Vesper.Chat.LinkPreviewFetcher do
       {:error, _} ->
         {:error, :fetch_failed}
     end
+  end
+
+  defp get_location_header(headers) do
+    Enum.find_value(headers, fn
+      {"location", value} -> value
+      _ -> nil
+    end)
   end
 
   defp parse_og_tags(html) do
@@ -113,11 +149,19 @@ defmodule Vesper.Chat.LinkPreviewFetcher do
   end
 
   defp extract_meta(html, property) do
-    case Regex.run(~r/<meta[^>]+property=["']#{Regex.escape(property)}["'][^>]+content=["']([^"']+)["']/is, html) do
-      [_, value] -> String.trim(value)
+    case Regex.run(
+           ~r/<meta[^>]+property=["']#{Regex.escape(property)}["'][^>]+content=["']([^"']+)["']/is,
+           html
+         ) do
+      [_, value] ->
+        String.trim(value)
+
       nil ->
         # Try reverse order (content before property)
-        case Regex.run(~r/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']#{Regex.escape(property)}["']/is, html) do
+        case Regex.run(
+               ~r/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']#{Regex.escape(property)}["']/is,
+               html
+             ) do
           [_, value] -> String.trim(value)
           nil -> nil
         end
@@ -125,10 +169,18 @@ defmodule Vesper.Chat.LinkPreviewFetcher do
   end
 
   defp extract_meta_name(html, name) do
-    case Regex.run(~r/<meta[^>]+name=["']#{Regex.escape(name)}["'][^>]+content=["']([^"']+)["']/is, html) do
-      [_, value] -> String.trim(value)
+    case Regex.run(
+           ~r/<meta[^>]+name=["']#{Regex.escape(name)}["'][^>]+content=["']([^"']+)["']/is,
+           html
+         ) do
+      [_, value] ->
+        String.trim(value)
+
       nil ->
-        case Regex.run(~r/<meta[^>]+content=["']([^"']+)["'][^>]+name=["']#{Regex.escape(name)}["']/is, html) do
+        case Regex.run(
+               ~r/<meta[^>]+content=["']([^"']+)["'][^>]+name=["']#{Regex.escape(name)}["']/is,
+               html
+             ) do
           [_, value] -> String.trim(value)
           nil -> nil
         end
@@ -145,14 +197,29 @@ defmodule Vesper.Chat.LinkPreviewFetcher do
   defp blocked_url?(url) do
     case URI.parse(url) do
       %URI{host: host} when is_binary(host) ->
-        case :inet.parse_address(String.to_charlist(host)) do
-          {:ok, ip} -> ip_blocked?(ip)
+        # Strip brackets from IPv6 literals like [::1]
+        clean_host = String.trim(host, "[]")
+        host_charlist = String.to_charlist(clean_host)
+
+        case :inet.parse_address(host_charlist) do
+          {:ok, ip} ->
+            ip_blocked?(ip)
+
           {:error, _} ->
-            # Could be a hostname — resolve it
-            case :inet.getaddr(String.to_charlist(host), :inet) do
-              {:ok, ip} -> ip_blocked?(ip)
-              {:error, _} -> false
-            end
+            # Hostname — resolve both IPv4 and IPv6 and check all results
+            ipv4_blocked =
+              case :inet.getaddr(host_charlist, :inet) do
+                {:ok, ip} -> ip_blocked?(ip)
+                {:error, _} -> false
+              end
+
+            ipv6_blocked =
+              case :inet.getaddr(host_charlist, :inet6) do
+                {:ok, ip} -> ip_blocked?(ip)
+                {:error, _} -> false
+              end
+
+            ipv4_blocked or ipv6_blocked
         end
 
       _ ->
@@ -160,6 +227,7 @@ defmodule Vesper.Chat.LinkPreviewFetcher do
     end
   end
 
+  # IPv4 blocking
   defp ip_blocked?({a, b, c, d}) do
     Enum.any?(@blocked_ranges, fn {ra, rb, rc, rd, bits} ->
       mask = bsl(0xFFFFFFFF, 32 - bits) |> band(0xFFFFFFFF)
@@ -168,6 +236,28 @@ defmodule Vesper.Chat.LinkPreviewFetcher do
       band(ip_int, mask) == band(range_int, mask)
     end)
   end
+
+  # IPv6: loopback (::1)
+  defp ip_blocked?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
+
+  # IPv6: IPv4-mapped (::ffff:x.x.x.x) — stored as {0,0,0,0,0,0xFFFF,high,low}
+  defp ip_blocked?({0, 0, 0, 0, 0, 0xFFFF, high, low}) do
+    ip_blocked?({Bitwise.bsr(high, 8), Bitwise.band(high, 0xFF), Bitwise.bsr(low, 8), Bitwise.band(low, 0xFF)})
+  end
+
+  # IPv6: IPv4-compatible (::x.x.x.x) — deprecated but still resolves
+  defp ip_blocked?({0, 0, 0, 0, 0, 0, high, low}) when high != 0 or low > 1 do
+    ip_blocked?({Bitwise.bsr(high, 8), Bitwise.band(high, 0xFF), Bitwise.bsr(low, 8), Bitwise.band(low, 0xFF)})
+  end
+
+  # IPv6: link-local (fe80::/10)
+  defp ip_blocked?({a, _, _, _, _, _, _, _}) when a >= 0xFE80 and a <= 0xFEBF, do: true
+
+  # IPv6: unique local (fc00::/7)
+  defp ip_blocked?({a, _, _, _, _, _, _, _}) when a >= 0xFC00 and a <= 0xFDFF, do: true
+
+  # IPv6: unspecified (::)
+  defp ip_blocked?({0, 0, 0, 0, 0, 0, 0, 0}), do: true
 
   defp ip_blocked?(_), do: false
 

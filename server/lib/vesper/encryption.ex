@@ -121,6 +121,13 @@ defmodule Vesper.Encryption do
   end
 
   @doc """
+  Get a single pending Welcome by id.
+  """
+  def get_pending_welcome(id) do
+    Repo.get(PendingWelcome, id)
+  end
+
+  @doc """
   Delete a pending Welcome after it's been processed.
   """
   def delete_pending_welcome(id) do
