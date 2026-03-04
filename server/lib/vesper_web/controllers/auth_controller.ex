@@ -132,10 +132,13 @@ defmodule VesperWeb.AuthController do
     end
   end
 
-  def change_password(conn, %{
-        "old_password" => old_password,
-        "new_password" => new_password
-      } = params) do
+  def change_password(
+        conn,
+        %{
+          "old_password" => old_password,
+          "new_password" => new_password
+        } = params
+      ) do
     user = conn.assigns.current_user
 
     bundle_attrs =
@@ -183,10 +186,13 @@ defmodule VesperWeb.AuthController do
     end
   end
 
-  def recover_reset(conn, %{
-        "recovery_key_hash" => recovery_key_hash,
-        "new_password" => new_password
-      } = params) do
+  def recover_reset(
+        conn,
+        %{
+          "recovery_key_hash" => recovery_key_hash,
+          "new_password" => new_password
+        } = params
+      ) do
     bundle_attrs = extract_crypto_attrs(params)
 
     case Accounts.reset_password_with_recovery(recovery_key_hash, new_password, bundle_attrs) do
@@ -235,8 +241,14 @@ defmodule VesperWeb.AuthController do
 
   defp maybe_decode_binary(acc, params, key, field) do
     case params[key] do
-      nil -> acc
-      value -> Map.put(acc, field, Base.decode64!(value))
+      nil ->
+        acc
+
+      value ->
+        case Base.decode64(value) do
+          {:ok, decoded} -> Map.put(acc, field, decoded)
+          :error -> acc
+        end
     end
   end
 

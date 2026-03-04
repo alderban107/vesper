@@ -10,6 +10,7 @@ defmodule VesperWeb.ConversationController do
       {:ok, conversation} ->
         # Notify other participants of the new conversation
         conv_payload = conversation_json(conversation)
+
         for p <- conversation.participants, p.user_id != user.id do
           VesperWeb.Endpoint.broadcast("user:#{p.user_id}", "new_conversation", %{
             conversation: conv_payload
@@ -68,7 +69,7 @@ defmodule VesperWeb.ConversationController do
         conn |> put_status(:forbidden) |> json(%{error: "not a participant"})
 
       true ->
-        opts = [limit: min(String.to_integer(params["limit"] || "50"), 100)]
+        opts = [limit: min(parse_int(params["limit"], 50), 100)]
 
         opts =
           case params["before"] do
@@ -164,6 +165,18 @@ defmodule VesperWeb.ConversationController do
       avatar_url: sender.avatar_url
     }
   end
+
+  defp parse_int(nil, default), do: default
+
+  defp parse_int(value, default) when is_binary(value) do
+    case Integer.parse(value) do
+      {n, _} -> n
+      :error -> default
+    end
+  end
+
+  defp parse_int(value, _default) when is_integer(value), do: value
+  defp parse_int(_, default), do: default
 
   defp user_json(%Ecto.Association.NotLoaded{}), do: nil
 

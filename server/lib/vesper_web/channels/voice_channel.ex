@@ -2,8 +2,10 @@ defmodule VesperWeb.VoiceChannel do
   use Phoenix.Channel
 
   alias Vesper.Servers
+  alias Vesper.Chat
   alias Vesper.Voice
   alias Vesper.Encryption
+  import VesperWeb.ChannelHelpers, only: [safe_decode64: 1]
 
   @impl true
   def join("voice:channel:" <> channel_id, _payload, socket) do
@@ -33,13 +35,7 @@ defmodule VesperWeb.VoiceChannel do
   def join("voice:dm:" <> conversation_id, _payload, socket) do
     user_id = socket.assigns.user_id
 
-    participant =
-      Vesper.Repo.get_by(Vesper.Chat.DmParticipant,
-        conversation_id: conversation_id,
-        user_id: user_id
-      )
-
-    if participant do
+    if Chat.user_is_participant?(user_id, conversation_id) do
       socket =
         socket
         |> assign(:room_id, conversation_id)
@@ -148,12 +144,18 @@ defmodule VesperWeb.VoiceChannel do
     })
 
     # Store for offline delivery
-    Encryption.store_pending_welcome(%{
-      recipient_id: recipient_id,
-      channel_id: room_id,
-      welcome_data: Base.decode64!(welcome_data),
-      sender_id: sender_id
-    })
+    case safe_decode64(welcome_data) do
+      {:ok, decoded} ->
+        Encryption.store_pending_welcome(%{
+          recipient_id: recipient_id,
+          channel_id: room_id,
+          welcome_data: decoded,
+          sender_id: sender_id
+        })
+
+      {:error, _} ->
+        :ok
+    end
 
     {:noreply, socket}
   end
