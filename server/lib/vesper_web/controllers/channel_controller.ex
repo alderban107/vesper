@@ -55,14 +55,18 @@ defmodule VesperWeb.ChannelController do
     if role in ~w(owner admin) do
       channel = Servers.get_channel(id)
 
-      case Servers.update_channel(channel, params) do
-        {:ok, updated} ->
-          json(conn, %{channel: channel_json(updated)})
+      if is_nil(channel) or channel.server_id != server_id do
+        conn |> put_status(:not_found) |> json(%{error: "not found"})
+      else
+        case Servers.update_channel(channel, params) do
+          {:ok, updated} ->
+            json(conn, %{channel: channel_json(updated)})
 
-        {:error, changeset} ->
-          conn
-          |> put_status(:unprocessable_entity)
-          |> json(%{errors: format_errors(changeset)})
+          {:error, changeset} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{errors: format_errors(changeset)})
+        end
       end
     else
       conn |> put_status(:forbidden) |> json(%{error: "insufficient permissions"})
@@ -76,11 +80,11 @@ defmodule VesperWeb.ChannelController do
     if role in ~w(owner admin) do
       channel = Servers.get_channel(id)
 
-      if channel do
+      if is_nil(channel) or channel.server_id != server_id do
+        conn |> put_status(:not_found) |> json(%{error: "not found"})
+      else
         Servers.delete_channel(channel)
         json(conn, %{ok: true})
-      else
-        conn |> put_status(:not_found) |> json(%{error: "not found"})
       end
     else
       conn |> put_status(:forbidden) |> json(%{error: "insufficient permissions"})

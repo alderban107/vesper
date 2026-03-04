@@ -52,8 +52,8 @@ defmodule VesperWeb.AttachmentController do
               |> json(%{error: "could not save attachment"})
           end
 
-        {:error, reason} ->
-          conn |> put_status(:internal_server_error) |> json(%{error: to_string(reason)})
+        {:error, _reason} ->
+          conn |> put_status(:internal_server_error) |> json(%{error: "could not store file"})
       end
     end
   end

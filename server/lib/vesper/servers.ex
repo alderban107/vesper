@@ -94,21 +94,15 @@ defmodule Vesper.Servers do
           rotate_invite_code(server)
           {:error, :not_found}
         else
-          existing = Repo.get_by(Membership, user_id: user.id, server_id: server.id)
+          %Membership{
+            user_id: user.id,
+            server_id: server.id,
+            role: "member",
+            joined_at: DateTime.utc_now() |> DateTime.truncate(:second)
+          }
+          |> Repo.insert(on_conflict: :nothing, conflict_target: [:user_id, :server_id])
 
-          if existing do
-            {:ok, server |> Repo.preload(:channels)}
-          else
-            %Membership{
-              user_id: user.id,
-              server_id: server.id,
-              role: "member",
-              joined_at: DateTime.utc_now() |> DateTime.truncate(:second)
-            }
-            |> Repo.insert!()
-
-            {:ok, server |> Repo.preload(:channels)}
-          end
+          {:ok, server |> Repo.preload(:channels)}
         end
     end
   end
@@ -368,25 +362,26 @@ defmodule Vesper.Servers do
             if is_nil(server) do
               {:error, :not_found}
             else
-              existing = Repo.get_by(Membership, user_id: user.id, server_id: server.id)
-
-              if existing do
-                {:ok, server |> Repo.preload(:channels)}
-              else
+              result =
                 %Membership{
                   user_id: user.id,
                   server_id: server.id,
                   role: "member",
                   joined_at: now
                 }
-                |> Repo.insert!()
+                |> Repo.insert(on_conflict: :nothing, conflict_target: [:user_id, :server_id])
 
-                # Increment uses
-                from(i in Invite, where: i.id == ^invite.id)
-                |> Repo.update_all(inc: [uses: 1])
+              # Only increment uses when a new membership was actually inserted
+              case result do
+                {:ok, %Membership{id: id}} when not is_nil(id) ->
+                  from(i in Invite, where: i.id == ^invite.id)
+                  |> Repo.update_all(inc: [uses: 1])
 
-                {:ok, server |> Repo.preload(:channels)}
+                _ ->
+                  :ok
               end
+
+              {:ok, server |> Repo.preload(:channels)}
             end
         end
     end

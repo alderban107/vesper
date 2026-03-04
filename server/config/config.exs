@@ -56,7 +56,8 @@ config :vesper, Oban,
        {"* * * * *", Vesper.Workers.ExpireMessages},
        {"0 3 * * *", Vesper.Workers.PurgeKeyPackages},
        {"0 3 * * *", Vesper.Workers.PurgeWelcomes},
-       {"0 3 * * *", Vesper.Workers.ExpireAttachmentBlobs}
+       {"0 3 * * *", Vesper.Workers.ExpireAttachmentBlobs},
+       {"0 3 * * *", Vesper.Workers.PurgeExpiredTokens}
      ]}
   ]
 

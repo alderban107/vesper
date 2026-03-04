@@ -24,4 +24,8 @@ defmodule VesperWeb.ServerPresenceChannel do
     push(socket, "presence_state", Presence.list(socket))
     {:noreply, socket}
   end
+
+  @impl true
+  def handle_in(_event, _payload, socket),
+    do: {:reply, {:error, %{reason: "unrecognized event"}}, socket}
 end

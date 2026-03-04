@@ -3,7 +3,8 @@ defmodule VesperWeb.UserChannel do
 
   alias VesperWeb.Presence
 
-  @heartbeat_timeout_ms 300_000  # 5 minutes
+  # 5 minutes
+  @heartbeat_timeout_ms 300_000
 
   @impl true
   def join("user:" <> user_id, _payload, socket) do
@@ -71,4 +72,7 @@ defmodule VesperWeb.UserChannel do
   def handle_in("set_status", _payload, socket) do
     {:reply, {:error, %{reason: "invalid status"}}, socket}
   end
+
+  def handle_in(_event, _payload, socket),
+    do: {:reply, {:error, %{reason: "unrecognized event"}}, socket}
 end

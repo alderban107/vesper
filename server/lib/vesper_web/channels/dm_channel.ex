@@ -165,7 +165,8 @@ defmodule VesperWeb.DmChannel do
     {:noreply, socket}
   end
 
-  def handle_in("mls_commit", %{"commit_data" => commit_data}, socket) do
+  def handle_in("mls_commit", %{"commit_data" => commit_data}, socket)
+      when is_binary(commit_data) do
     broadcast!(socket, "mls_commit", %{
       commit_data: commit_data,
       sender_id: socket.assigns.user_id
@@ -178,7 +179,8 @@ defmodule VesperWeb.DmChannel do
         "mls_remove",
         %{"removed_user_id" => removed_user_id, "commit_data" => commit_data},
         socket
-      ) do
+      )
+      when is_binary(removed_user_id) and is_binary(commit_data) do
     broadcast!(socket, "mls_remove", %{
       removed_user_id: removed_user_id,
       commit_data: commit_data,
@@ -192,7 +194,8 @@ defmodule VesperWeb.DmChannel do
         "mls_welcome",
         %{"recipient_id" => recipient_id, "welcome_data" => welcome_data},
         socket
-      ) do
+      )
+      when is_binary(recipient_id) and is_binary(welcome_data) do
     case safe_decode64(welcome_data) do
       {:ok, decoded} ->
         conversation_id = socket.assigns.conversation_id
@@ -217,6 +220,9 @@ defmodule VesperWeb.DmChannel do
         {:reply, {:error, %{reason: "invalid encoding"}}, socket}
     end
   end
+
+  def handle_in(_event, _payload, socket),
+    do: {:reply, {:error, %{reason: "unrecognized event"}}, socket}
 
   defp notify_participants(conversation_id, sender_id, message) do
     participant_ids =

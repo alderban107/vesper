@@ -63,8 +63,22 @@ defmodule VesperWeb.MessageController do
   def mark_read(conn, %{"id" => channel_id} = params) do
     user = conn.assigns.current_user
     message_id = params["message_id"]
-    Chat.mark_channel_read(user.id, channel_id, message_id)
-    json(conn, %{ok: true})
+    channel = Servers.get_channel(channel_id)
+
+    cond do
+      is_nil(message_id) ->
+        conn |> put_status(:bad_request) |> json(%{error: "message_id is required"})
+
+      is_nil(channel) ->
+        conn |> put_status(:not_found) |> json(%{error: "channel not found"})
+
+      not Servers.user_is_member?(user.id, channel.server_id) ->
+        conn |> put_status(:forbidden) |> json(%{error: "not a member"})
+
+      true ->
+        Chat.mark_channel_read(user.id, channel_id, message_id)
+        json(conn, %{ok: true})
+    end
   end
 
   defp message_json(message) do

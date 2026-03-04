@@ -3,7 +3,7 @@ defmodule Vesper.Workers.PurgeWelcomes do
   Oban worker that deletes pending welcomes older than 24 hours.
   Runs daily via crontab.
   """
-  use Oban.Worker, queue: :default, max_attempts: 3
+  use Oban.Worker, queue: :default, max_attempts: 3, unique: [period: 300]
   require Logger
 
   alias Vesper.Encryption

@@ -3,7 +3,7 @@ defmodule Vesper.Workers.ExpireMessages do
   Oban worker that deletes messages past their expires_at timestamp.
   Runs every minute via crontab.
   """
-  use Oban.Worker, queue: :default, max_attempts: 3
+  use Oban.Worker, queue: :default, max_attempts: 3, unique: [period: 300]
   require Logger
 
   alias Vesper.Chat
