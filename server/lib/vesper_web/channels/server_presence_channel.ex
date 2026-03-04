@@ -21,6 +21,14 @@ defmodule VesperWeb.ServerPresenceChannel do
       joined_at: System.system_time(:second)
     })
 
+    # Defer presence_state push so the track has propagated before we list.
+    # Without this, Presence.list can return stale data and the client gets
+    # an empty presence_state, causing everyone to show as offline.
+    send(self(), :send_presence_state)
+    {:noreply, socket}
+  end
+
+  def handle_info(:send_presence_state, socket) do
     push(socket, "presence_state", Presence.list(socket))
     {:noreply, socket}
   end

@@ -85,7 +85,8 @@ export default function MemberListPanel(): React.JSX.Element {
   const offline: Member[] = []
 
   for (const member of members) {
-    const status = statuses[member.user_id] ?? 'offline'
+    // Current user is always online — it's nonsensical to show yourself as offline
+    const status = member.user_id === myId ? 'online' : (statuses[member.user_id] ?? 'offline')
     if (status === 'offline') {
       offline.push(member)
     } else {
