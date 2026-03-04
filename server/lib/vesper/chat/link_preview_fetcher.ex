@@ -242,12 +242,18 @@ defmodule Vesper.Chat.LinkPreviewFetcher do
 
   # IPv6: IPv4-mapped (::ffff:x.x.x.x) — stored as {0,0,0,0,0,0xFFFF,high,low}
   defp ip_blocked?({0, 0, 0, 0, 0, 0xFFFF, high, low}) do
-    ip_blocked?({Bitwise.bsr(high, 8), Bitwise.band(high, 0xFF), Bitwise.bsr(low, 8), Bitwise.band(low, 0xFF)})
+    ip_blocked?(
+      {Bitwise.bsr(high, 8), Bitwise.band(high, 0xFF), Bitwise.bsr(low, 8),
+       Bitwise.band(low, 0xFF)}
+    )
   end
 
   # IPv6: IPv4-compatible (::x.x.x.x) — deprecated but still resolves
   defp ip_blocked?({0, 0, 0, 0, 0, 0, high, low}) when high != 0 or low > 1 do
-    ip_blocked?({Bitwise.bsr(high, 8), Bitwise.band(high, 0xFF), Bitwise.bsr(low, 8), Bitwise.band(low, 0xFF)})
+    ip_blocked?(
+      {Bitwise.bsr(high, 8), Bitwise.band(high, 0xFF), Bitwise.bsr(low, 8),
+       Bitwise.band(low, 0xFF)}
+    )
   end
 
   # IPv6: link-local (fe80::/10)
