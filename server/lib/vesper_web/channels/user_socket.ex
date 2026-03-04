@@ -14,7 +14,16 @@ defmodule VesperWeb.UserSocket do
   def connect(%{"token" => token}, socket, _connect_info) do
     case Token.verify_access_token(token) do
       {:ok, claims} ->
-        {:ok, assign(socket, :user_id, claims["sub"])}
+        user_id = claims["sub"]
+        # Pre-load username for typing indicators so channels don't need per-event DB lookups
+        user = Vesper.Accounts.get_user(user_id)
+
+        socket =
+          socket
+          |> assign(:user_id, user_id)
+          |> assign(:username, user && user.username)
+
+        {:ok, socket}
 
       {:error, _} ->
         :error

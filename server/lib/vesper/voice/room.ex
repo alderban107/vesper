@@ -6,13 +6,22 @@ defmodule Vesper.Voice.Room do
   alias ExWebRTC.{PeerConnection, SessionDescription, ICECandidate, MediaStreamTrack}
 
   @max_participants 25
+  # Shut down empty rooms after 5 minutes of inactivity
+  @idle_timeout :timer.minutes(5)
+  # Max ICE candidates to buffer before remote description is set
+  @max_pending_candidates 50
 
   defstruct [
     :room_id,
     :room_type,
     :caller_id,
     :ring_timer_ref,
+    :idle_timer_ref,
     participants: %{},
+    # Reverse map: pc pid -> user_id for O(1) RTP routing
+    pc_to_user: %{},
+    # Reverse map: channel pid -> user_id for O(1) DOWN handling
+    channel_to_user: %{},
     call_state: nil
   ]
 
@@ -71,7 +80,9 @@ defmodule Vesper.Voice.Room do
       room_type: room_type
     }
 
-    {:ok, state}
+    # Schedule idle timeout — room shuts down if nobody joins
+    idle_ref = Process.send_after(self(), :idle_timeout, @idle_timeout)
+    {:ok, %{state | idle_timer_ref: idle_ref}}
   end
 
   @impl true
@@ -79,8 +90,12 @@ defmodule Vesper.Voice.Room do
     if map_size(state.participants) >= @max_participants do
       {:reply, {:error, :room_full}, state}
     else
+      # Cancel idle timer when someone joins
+      if state.idle_timer_ref, do: Process.cancel_timer(state.idle_timer_ref)
+
       case add_participant(state, user_id, channel_pid) do
         {:ok, offer_sdp, track_map, new_state} ->
+          new_state = %{new_state | idle_timer_ref: nil}
           {:reply, {:ok, offer_sdp, track_map}, new_state}
 
         {:error, reason} ->
@@ -93,7 +108,9 @@ defmodule Vesper.Voice.Room do
     new_state = remove_participant(state, user_id)
 
     if map_size(new_state.participants) == 0 do
-      {:stop, :normal, :ok, new_state}
+      # Schedule idle timeout instead of immediate stop to allow reconnects
+      idle_ref = Process.send_after(self(), :idle_timeout, @idle_timeout)
+      {:reply, :ok, %{new_state | idle_timer_ref: idle_ref}}
     else
       {:reply, :ok, new_state}
     end
@@ -186,12 +203,17 @@ defmodule Vesper.Voice.Room do
 
             {:noreply, state}
           else
-            updated = %{
-              participant
-              | pending_candidates: participant.pending_candidates ++ [candidate]
-            }
+            if length(participant.pending_candidates) >= @max_pending_candidates do
+              Logger.warning("Dropping ICE candidate for user #{user_id}: pending buffer full")
+              {:noreply, state}
+            else
+              updated = %{
+                participant
+                | pending_candidates: participant.pending_candidates ++ [candidate]
+              }
 
-            {:noreply, put_in(state.participants[user_id], updated)}
+              {:noreply, put_in(state.participants[user_id], updated)}
+            end
           end
         rescue
           e ->
@@ -215,8 +237,8 @@ defmodule Vesper.Voice.Room do
 
   @impl true
   def handle_info({:ex_webrtc, pc, {:rtp, _track_id, _rid, packet}}, state) do
-    # Find the sender by their PeerConnection
-    sender_id = find_user_by_pc(state, pc)
+    # O(1) lookup via reverse map instead of O(N) scan
+    sender_id = Map.get(state.pc_to_user, pc)
 
     if sender_id do
       # Forward to all other participants
@@ -234,7 +256,7 @@ defmodule Vesper.Voice.Room do
   end
 
   def handle_info({:ex_webrtc, pc, {:ice_candidate, candidate}}, state) do
-    user_id = find_user_by_pc(state, pc)
+    user_id = Map.get(state.pc_to_user, pc)
 
     if user_id do
       participant = state.participants[user_id]
@@ -245,7 +267,7 @@ defmodule Vesper.Voice.Room do
   end
 
   def handle_info({:ex_webrtc, pc, {:track, track}}, state) do
-    user_id = find_user_by_pc(state, pc)
+    user_id = Map.get(state.pc_to_user, pc)
 
     if user_id do
       updated = %{state.participants[user_id] | audio_track_id: track.id}
@@ -256,17 +278,11 @@ defmodule Vesper.Voice.Room do
   end
 
   def handle_info({:ex_webrtc, pc, {:connection_state_change, :failed}}, state) do
-    user_id = find_user_by_pc(state, pc)
+    user_id = Map.get(state.pc_to_user, pc)
 
     if user_id do
       Logger.warning("PeerConnection failed for user #{user_id} in room #{state.room_id}")
-      new_state = remove_participant(state, user_id)
-
-      if map_size(new_state.participants) == 0 do
-        {:stop, :normal, new_state}
-      else
-        {:noreply, new_state}
-      end
+      {:noreply, maybe_idle_after_remove(remove_participant(state, user_id))}
     else
       {:noreply, state}
     end
@@ -279,16 +295,10 @@ defmodule Vesper.Voice.Room do
 
   def handle_info({:EXIT, pid, _reason}, state) do
     # Linked PeerConnection crashed — clean up that participant
-    user_id = find_user_by_pc(state, pid)
+    user_id = Map.get(state.pc_to_user, pid)
 
     if user_id do
-      new_state = remove_participant(state, user_id)
-
-      if map_size(new_state.participants) == 0 do
-        {:stop, :normal, new_state}
-      else
-        {:noreply, new_state}
-      end
+      {:noreply, maybe_idle_after_remove(remove_participant(state, user_id))}
     else
       {:noreply, state}
     end
@@ -296,16 +306,19 @@ defmodule Vesper.Voice.Room do
 
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
     # Channel process died — clean up that participant
-    user_id = find_user_by_channel_pid(state, pid)
+    user_id = Map.get(state.channel_to_user, pid)
 
     if user_id do
-      new_state = remove_participant(state, user_id)
+      {:noreply, maybe_idle_after_remove(remove_participant(state, user_id))}
+    else
+      {:noreply, state}
+    end
+  end
 
-      if map_size(new_state.participants) == 0 do
-        {:stop, :normal, new_state}
-      else
-        {:noreply, new_state}
-      end
+  def handle_info(:idle_timeout, state) do
+    if map_size(state.participants) == 0 do
+      Logger.info("Voice room #{state.room_id} idle — shutting down")
+      {:stop, :normal, state}
     else
       {:noreply, state}
     end
@@ -325,10 +338,35 @@ defmodule Vesper.Voice.Room do
     {:noreply, state}
   end
 
+  @impl true
+  def terminate(_reason, state) do
+    # Clean up all PeerConnections on shutdown
+    Enum.each(state.participants, fn {_uid, p} ->
+      spawn(fn ->
+        try do
+          PeerConnection.close(p.pc)
+        catch
+          _, _ -> :ok
+        end
+      end)
+    end)
+
+    :ok
+  end
+
   # --- Private Helpers ---
 
   defp via(room_id) do
     {:via, Registry, {Vesper.Voice.Registry, room_id}}
+  end
+
+  defp maybe_idle_after_remove(state) do
+    if map_size(state.participants) == 0 do
+      idle_ref = Process.send_after(self(), :idle_timeout, @idle_timeout)
+      %{state | idle_timer_ref: idle_ref}
+    else
+      state
+    end
   end
 
   defp ice_servers do
@@ -400,7 +438,11 @@ defmodule Vesper.Voice.Room do
           track_map: track_map
         }
 
-        new_state = put_in(state.participants[user_id], new_participant)
+        new_state =
+          state
+          |> put_in([Access.key(:participants), user_id], new_participant)
+          |> Map.update!(:pc_to_user, &Map.put(&1, pc, user_id))
+          |> Map.update!(:channel_to_user, &Map.put(&1, channel_pid, user_id))
 
         # For each existing participant: add an outgoing track for the new user's audio
         new_state =
@@ -504,7 +546,13 @@ defmodule Vesper.Voice.Room do
           end
         end)
 
-        state = %{state | participants: remaining}
+        # Clean up reverse maps
+        state = %{
+          state
+          | participants: remaining,
+            pc_to_user: Map.delete(state.pc_to_user, participant.pc),
+            channel_to_user: Map.delete(state.channel_to_user, participant.channel_pid)
+        }
 
         # Remove outgoing tracks for this user from all remaining participants
         # and renegotiate
@@ -521,17 +569,5 @@ defmodule Vesper.Voice.Room do
           end
         end)
     end
-  end
-
-  defp find_user_by_pc(state, pc) do
-    Enum.find_value(state.participants, fn {user_id, p} ->
-      if p.pc == pc, do: user_id
-    end)
-  end
-
-  defp find_user_by_channel_pid(state, pid) do
-    Enum.find_value(state.participants, fn {user_id, p} ->
-      if p.channel_pid == pid, do: user_id
-    end)
   end
 end

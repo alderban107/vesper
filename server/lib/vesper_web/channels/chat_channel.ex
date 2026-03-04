@@ -18,7 +18,15 @@ defmodule VesperWeb.ChatChannel do
         {:error, %{reason: "not a member"}}
 
       true ->
-        socket = assign(socket, :channel_id, channel_id)
+        # Cache server_id and member IDs on join to avoid per-message DB lookups
+        member_ids = Servers.list_member_ids(channel.server_id)
+
+        socket =
+          socket
+          |> assign(:channel_id, channel_id)
+          |> assign(:server_id, channel.server_id)
+          |> assign(:member_ids, member_ids)
+
         {:ok, socket}
     end
   end
@@ -44,13 +52,18 @@ defmodule VesperWeb.ChatChannel do
           {:ok, message} ->
             message = maybe_link_attachments(message, params)
             broadcast!(socket, "new_message", encrypted_message_payload(message, :channel_id))
-            notify_unread(socket.assigns.channel_id, message.id, socket.assigns.user_id)
 
-            notify_mentions(
-              params["mentioned_user_ids"],
-              socket.assigns.channel_id,
-              socket.assigns.user_id
-            )
+            # Run notifications async to avoid blocking the channel process
+            channel_id = socket.assigns.channel_id
+            sender_id = socket.assigns.user_id
+            member_ids = socket.assigns.member_ids
+            server_id = socket.assigns.server_id
+            mentioned = params["mentioned_user_ids"]
+
+            Task.start(fn ->
+              notify_unread(channel_id, message.id, sender_id, member_ids)
+              notify_mentions(mentioned, channel_id, sender_id, server_id, member_ids)
+            end)
 
             {:reply, :ok, socket}
 
@@ -139,97 +152,84 @@ defmodule VesperWeb.ChatChannel do
 
   def handle_in("pin_message", %{"message_id" => message_id}, socket) do
     channel_id = socket.assigns.channel_id
-    channel = Servers.get_channel(channel_id)
+    server_id = socket.assigns.server_id
 
-    if is_nil(channel) do
-      {:reply, {:error, %{reason: "channel not found"}}, socket}
-    else
-      if Servers.user_can?(
-           socket.assigns.user_id,
-           channel.server_id,
-           Vesper.Servers.Permissions.manage_messages()
-         ) do
-        case Chat.pin_message(channel_id, message_id, socket.assigns.user_id) do
-          {:ok, _pin} ->
-            broadcast!(socket, "message_pinned", %{
-              channel_id: channel_id,
-              message_id: message_id,
-              pinned_by: socket.assigns.user_id
-            })
+    if Servers.user_can?(
+         socket.assigns.user_id,
+         server_id,
+         Vesper.Servers.Permissions.manage_messages()
+       ) do
+      case Chat.pin_message(channel_id, message_id, socket.assigns.user_id) do
+        {:ok, _pin} ->
+          broadcast!(socket, "message_pinned", %{
+            channel_id: channel_id,
+            message_id: message_id,
+            pinned_by: socket.assigns.user_id
+          })
 
-            {:reply, :ok, socket}
+          {:reply, :ok, socket}
 
-          {:error, _} ->
-            {:reply, {:error, %{reason: "could not pin message"}}, socket}
-        end
-      else
-        {:reply, {:error, %{reason: "insufficient permissions"}}, socket}
+        {:error, _} ->
+          {:reply, {:error, %{reason: "could not pin message"}}, socket}
       end
+    else
+      {:reply, {:error, %{reason: "insufficient permissions"}}, socket}
     end
   end
 
   def handle_in("unpin_message", %{"message_id" => message_id}, socket) do
     channel_id = socket.assigns.channel_id
-    channel = Servers.get_channel(channel_id)
+    server_id = socket.assigns.server_id
 
-    if is_nil(channel) do
-      {:reply, {:error, %{reason: "channel not found"}}, socket}
-    else
-      if Servers.user_can?(
-           socket.assigns.user_id,
-           channel.server_id,
-           Vesper.Servers.Permissions.manage_messages()
-         ) do
-        case Chat.unpin_message(channel_id, message_id) do
-          {:ok, _} ->
-            broadcast!(socket, "message_unpinned", %{
-              channel_id: channel_id,
-              message_id: message_id
-            })
+    if Servers.user_can?(
+         socket.assigns.user_id,
+         server_id,
+         Vesper.Servers.Permissions.manage_messages()
+       ) do
+      case Chat.unpin_message(channel_id, message_id) do
+        {:ok, _} ->
+          broadcast!(socket, "message_unpinned", %{
+            channel_id: channel_id,
+            message_id: message_id
+          })
 
-            {:reply, :ok, socket}
+          {:reply, :ok, socket}
 
-          {:error, _} ->
-            {:reply, {:error, %{reason: "could not unpin message"}}, socket}
-        end
-      else
-        {:reply, {:error, %{reason: "insufficient permissions"}}, socket}
+        {:error, _} ->
+          {:reply, {:error, %{reason: "could not unpin message"}}, socket}
       end
+    else
+      {:reply, {:error, %{reason: "insufficient permissions"}}, socket}
     end
   end
 
   def handle_in("set_disappearing", %{"ttl" => ttl}, socket) do
     channel_id = socket.assigns.channel_id
-    channel = Servers.get_channel(channel_id)
+    server_id = socket.assigns.server_id
+    role = Servers.user_role(socket.assigns.user_id, server_id)
 
-    if is_nil(channel) do
-      {:reply, {:error, %{reason: "channel not found"}}, socket}
-    else
-      role = Servers.user_role(socket.assigns.user_id, channel.server_id)
+    if role in ~w(owner admin) do
+      parsed_ttl = if is_integer(ttl) and ttl > 0, do: ttl, else: nil
 
-      if role in ~w(owner admin) do
-        parsed_ttl = if is_integer(ttl) and ttl > 0, do: ttl, else: nil
+      case Servers.update_channel_ttl(channel_id, parsed_ttl) do
+        {:ok, _} ->
+          broadcast!(socket, "disappearing_ttl_updated", %{
+            channel_id: channel_id,
+            disappearing_ttl: parsed_ttl
+          })
 
-        case Servers.update_channel_ttl(channel_id, parsed_ttl) do
-          {:ok, _} ->
-            broadcast!(socket, "disappearing_ttl_updated", %{
-              channel_id: channel_id,
-              disappearing_ttl: parsed_ttl
-            })
+          {:reply, :ok, socket}
 
-            {:reply, :ok, socket}
-
-          {:error, _} ->
-            {:reply, {:error, %{reason: "could not update TTL"}}, socket}
-        end
-      else
-        {:reply, {:error, %{reason: "insufficient permissions"}}, socket}
+        {:error, _} ->
+          {:reply, {:error, %{reason: "could not update TTL"}}, socket}
       end
+    else
+      {:reply, {:error, %{reason: "insufficient permissions"}}, socket}
     end
   end
 
   def handle_in("typing_start", _payload, socket) do
-    broadcast_from!(socket, "typing_start", typing_start_payload(socket.assigns.user_id))
+    broadcast_from!(socket, "typing_start", typing_start_payload(socket))
     {:noreply, socket}
   end
 
@@ -302,60 +302,48 @@ defmodule VesperWeb.ChatChannel do
   def handle_in(_event, _payload, socket),
     do: {:reply, {:error, %{reason: "unrecognized event"}}, socket}
 
-  defp notify_mentions(nil, _channel_id, _sender_id), do: :ok
-  defp notify_mentions([], _channel_id, _sender_id), do: :ok
+  defp notify_mentions(nil, _channel_id, _sender_id, _server_id, _member_ids), do: :ok
+  defp notify_mentions([], _channel_id, _sender_id, _server_id, _member_ids), do: :ok
 
-  defp notify_mentions(mentioned_user_ids, channel_id, sender_id)
+  defp notify_mentions(mentioned_user_ids, channel_id, sender_id, server_id, member_ids)
        when is_list(mentioned_user_ids) do
-    channel = Servers.get_channel(channel_id)
+    has_everyone = "everyone" in mentioned_user_ids
 
-    if channel do
-      has_everyone = "everyone" in mentioned_user_ids
+    user_ids =
+      mentioned_user_ids |> Enum.reject(&(&1 in [sender_id, "everyone"])) |> Enum.uniq()
 
-      user_ids =
-        mentioned_user_ids |> Enum.reject(&(&1 in [sender_id, "everyone"])) |> Enum.uniq()
+    for user_id <- user_ids do
+      VesperWeb.Endpoint.broadcast("user:#{user_id}", "mention", %{
+        channel_id: channel_id,
+        sender_id: sender_id
+      })
+    end
 
-      for user_id <- user_ids do
-        VesperWeb.Endpoint.broadcast("user:#{user_id}", "mention", %{
-          channel_id: channel_id,
-          sender_id: sender_id
-        })
-      end
-
-      if has_everyone do
-        if Servers.user_can?(
-             sender_id,
-             channel.server_id,
-             Vesper.Servers.Permissions.mention_everyone()
-           ) do
-          members = Servers.list_members(channel.server_id)
-
-          for member <- members, member.user_id != sender_id do
-            VesperWeb.Endpoint.broadcast("user:#{member.user_id}", "mention", %{
-              channel_id: channel_id,
-              sender_id: sender_id
-            })
-          end
+    if has_everyone do
+      if Servers.user_can?(
+           sender_id,
+           server_id,
+           Vesper.Servers.Permissions.mention_everyone()
+         ) do
+        for uid <- member_ids, uid != sender_id do
+          VesperWeb.Endpoint.broadcast("user:#{uid}", "mention", %{
+            channel_id: channel_id,
+            sender_id: sender_id
+          })
         end
       end
     end
   end
 
   # Guard against clients sending a non-list value (e.g. a bare string) for mentioned_user_ids.
-  defp notify_mentions(_non_list, _channel_id, _sender_id), do: :ok
+  defp notify_mentions(_non_list, _channel_id, _sender_id, _server_id, _member_ids), do: :ok
 
-  defp notify_unread(channel_id, message_id, sender_id) do
-    channel = Servers.get_channel(channel_id)
-
-    if channel do
-      members = Servers.list_members(channel.server_id)
-
-      for member <- members, member.user_id != sender_id do
-        VesperWeb.Endpoint.broadcast("user:#{member.user_id}", "unread_update", %{
-          channel_id: channel_id,
-          message_id: message_id
-        })
-      end
+  defp notify_unread(channel_id, message_id, sender_id, member_ids) do
+    for uid <- member_ids, uid != sender_id do
+      VesperWeb.Endpoint.broadcast("user:#{uid}", "unread_update", %{
+        channel_id: channel_id,
+        message_id: message_id
+      })
     end
   end
 end

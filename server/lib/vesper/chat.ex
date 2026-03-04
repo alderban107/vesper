@@ -76,14 +76,17 @@ defmodule Vesper.Chat do
   @doc """
   List all conversations a user participates in, with participants and last message.
   """
-  def list_conversations(user_id) do
+  def list_conversations(user_id, opts \\ []) do
+    limit = Keyword.get(opts, :limit, 100)
+
     conversations =
       from(c in DmConversation,
         join: p in DmParticipant,
         on: p.conversation_id == c.id,
         where: p.user_id == ^user_id,
         preload: [participants: :user],
-        order_by: [desc: c.inserted_at]
+        order_by: [desc: c.inserted_at],
+        limit: ^limit
       )
       |> Repo.all()
 
@@ -119,6 +122,17 @@ defmodule Vesper.Chat do
       nil -> nil
       conv -> Repo.preload(conv, participants: :user)
     end
+  end
+
+  @doc """
+  Return all participant user IDs for a conversation.
+  """
+  def list_participant_ids(conversation_id) do
+    from(p in DmParticipant,
+      where: p.conversation_id == ^conversation_id,
+      select: p.user_id
+    )
+    |> Repo.all()
   end
 
   @doc """
@@ -304,9 +318,12 @@ defmodule Vesper.Chat do
     end
   end
 
-  def list_reactions(message_id) do
+  def list_reactions(message_id, opts \\ []) do
+    limit = Keyword.get(opts, :limit, 200)
+
     from(r in Reaction,
       where: r.message_id == ^message_id,
+      limit: ^limit,
       preload: [:sender]
     )
     |> Repo.all()
@@ -469,10 +486,13 @@ defmodule Vesper.Chat do
     end
   end
 
-  def list_pinned_messages(channel_id) do
+  def list_pinned_messages(channel_id, opts \\ []) do
+    limit = Keyword.get(opts, :limit, 50)
+
     from(p in PinnedMessage,
       where: p.channel_id == ^channel_id,
       order_by: [desc: p.inserted_at],
+      limit: ^limit,
       preload: [message: :sender]
     )
     |> Repo.all()

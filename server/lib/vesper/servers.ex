@@ -133,10 +133,23 @@ defmodule Vesper.Servers do
     |> Repo.update()
   end
 
-  def list_members(server_id) do
+  @max_members_default 1000
+
+  def list_members(server_id, opts \\ []) do
+    limit = Keyword.get(opts, :limit, @max_members_default)
+
     from(m in Membership,
       where: m.server_id == ^server_id,
+      limit: ^limit,
       preload: [:user]
+    )
+    |> Repo.all()
+  end
+
+  def list_member_ids(server_id) do
+    from(m in Membership,
+      where: m.server_id == ^server_id,
+      select: m.user_id
     )
     |> Repo.all()
   end
@@ -325,10 +338,13 @@ defmodule Vesper.Servers do
     |> Repo.insert()
   end
 
-  def list_invites(server_id) do
+  def list_invites(server_id, opts \\ []) do
+    limit = Keyword.get(opts, :limit, 100)
+
     from(i in Invite,
       where: i.server_id == ^server_id,
       order_by: [desc: i.inserted_at],
+      limit: ^limit,
       preload: [:creator]
     )
     |> Repo.all()

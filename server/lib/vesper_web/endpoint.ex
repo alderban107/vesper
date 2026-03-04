@@ -12,7 +12,11 @@ defmodule VesperWeb.Endpoint do
   ]
 
   socket "/socket", VesperWeb.UserSocket,
-    websocket: [timeout: 45_000],
+    websocket: [
+      timeout: 45_000,
+      compress: true,
+      max_frame_size: 1_048_576
+    ],
     longpoll: false
 
   socket "/live", Phoenix.LiveView.Socket,

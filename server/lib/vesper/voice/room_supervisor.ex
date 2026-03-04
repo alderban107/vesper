@@ -5,9 +5,12 @@ defmodule Vesper.Voice.RoomSupervisor do
     DynamicSupervisor.start_link(__MODULE__, :ok, name: __MODULE__)
   end
 
+  # Limit concurrent voice rooms to prevent unbounded resource consumption
+  @max_rooms 500
+
   @impl true
   def init(:ok) do
-    DynamicSupervisor.init(strategy: :one_for_one)
+    DynamicSupervisor.init(strategy: :one_for_one, max_children: @max_rooms)
   end
 
   def start_room(room_id, opts) do

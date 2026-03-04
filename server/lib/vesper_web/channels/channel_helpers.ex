@@ -4,7 +4,6 @@ defmodule VesperWeb.ChannelHelpers do
   """
 
   alias Vesper.Chat
-  alias Vesper.Accounts
 
   @doc """
   Safely decode a base64 string, returning {:ok, binary} or {:error, reason}.
@@ -153,12 +152,15 @@ defmodule VesperWeb.ChannelHelpers do
     end
   end
 
-  def typing_start_payload(user_id) do
-    user = Accounts.get_user(user_id)
+  @doc """
+  Build typing indicator payload. Accepts a socket to use cached username,
+  avoiding a DB lookup on every keystroke.
+  """
+  def typing_start_payload(%{assigns: %{user_id: user_id, username: username}}) do
+    %{user_id: user_id, username: username}
+  end
 
-    %{
-      user_id: user_id,
-      username: user && user.username
-    }
+  def typing_start_payload(%{assigns: %{user_id: user_id}}) do
+    %{user_id: user_id, username: nil}
   end
 end
