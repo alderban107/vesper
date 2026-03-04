@@ -59,13 +59,22 @@ if config_env() == :prod do
 
   port = String.to_integer(System.get_env("PORT") || "4000")
 
+  # Trust WebSocket connections from the web client origin (defaults to same-host only)
+  check_origin =
+    case System.get_env("CORS_ORIGIN") do
+      nil -> true
+      "*" -> false
+      origins -> String.split(origins, ",") |> Enum.map(&String.trim/1)
+    end
+
   config :vesper, VesperWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
     http: [
       ip: {0, 0, 0, 0, 0, 0, 0, 0},
       port: port
     ],
-    secret_key_base: secret_key_base
+    secret_key_base: secret_key_base,
+    check_origin: check_origin
 
   # JWT signing key — defaults to secret_key_base if not set
   jwt_secret = System.get_env("JWT_SECRET") || secret_key_base
