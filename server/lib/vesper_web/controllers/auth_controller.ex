@@ -1,35 +1,43 @@
 defmodule VesperWeb.AuthController do
   use VesperWeb, :controller
   alias Vesper.Accounts
+  import VesperWeb.ControllerHelpers, only: [format_errors: 1]
 
   def register(conn, %{"username" => _, "password" => _} = params) do
-    case Accounts.register_user(params) do
-      {:ok, user} ->
-        # If crypto fields are provided, store them
-        user =
-          if params["encrypted_key_bundle"] do
-            crypto_attrs = extract_crypto_attrs(params)
-            {:ok, updated} = Accounts.update_key_bundle(user, crypto_attrs)
-            updated
-          else
-            user
-          end
+    with :ok <- validate_crypto_params(params) do
+      case Accounts.register_user(params) do
+        {:ok, user} ->
+          # If crypto fields are provided, store them
+          user =
+            if params["encrypted_key_bundle"] do
+              {:ok, crypto_attrs} = extract_crypto_attrs(params)
+              {:ok, updated} = Accounts.update_key_bundle(user, crypto_attrs)
+              updated
+            else
+              user
+            end
 
-        {:ok, tokens} = Accounts.create_tokens(user)
+          {:ok, tokens} = Accounts.create_tokens(user)
 
+          conn
+          |> put_status(:created)
+          |> json(%{
+            user: user_json(user),
+            access_token: tokens.access_token,
+            refresh_token: tokens.refresh_token,
+            expires_in: tokens.expires_in
+          })
+
+        {:error, changeset} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{errors: format_errors(changeset)})
+      end
+    else
+      {:error, :invalid_base64} ->
         conn
-        |> put_status(:created)
-        |> json(%{
-          user: user_json(user),
-          access_token: tokens.access_token,
-          refresh_token: tokens.refresh_token,
-          expires_in: tokens.expires_in
-        })
-
-      {:error, changeset} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{errors: format_errors(changeset)})
+        |> put_status(:bad_request)
+        |> json(%{error: "invalid base64 encoding in crypto fields"})
     end
   end
 
@@ -141,26 +149,32 @@ defmodule VesperWeb.AuthController do
       ) do
     user = conn.assigns.current_user
 
-    bundle_attrs =
-      if params["encrypted_key_bundle"] do
-        extract_crypto_attrs(params)
-      else
-        %{}
+    with :ok <- validate_crypto_params(params),
+         {:ok, bundle_attrs} <-
+           (if params["encrypted_key_bundle"] do
+              extract_crypto_attrs(params)
+            else
+              {:ok, %{}}
+            end) do
+      case Accounts.change_password(user, old_password, new_password, bundle_attrs) do
+        {:ok, _user} ->
+          json(conn, %{ok: true})
+
+        {:error, :invalid_password} ->
+          conn
+          |> put_status(:unauthorized)
+          |> json(%{error: "invalid current password"})
+
+        {:error, changeset} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{errors: format_errors(changeset)})
       end
-
-    case Accounts.change_password(user, old_password, new_password, bundle_attrs) do
-      {:ok, _user} ->
-        json(conn, %{ok: true})
-
-      {:error, :invalid_password} ->
+    else
+      {:error, :invalid_base64} ->
         conn
-        |> put_status(:unauthorized)
-        |> json(%{error: "invalid current password"})
-
-      {:error, changeset} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{errors: format_errors(changeset)})
+        |> put_status(:bad_request)
+        |> json(%{error: "invalid base64 encoding in crypto fields"})
     end
   end
 
@@ -193,28 +207,34 @@ defmodule VesperWeb.AuthController do
           "new_password" => new_password
         } = params
       ) do
-    bundle_attrs = extract_crypto_attrs(params)
+    with :ok <- validate_crypto_params(params),
+         {:ok, bundle_attrs} <- extract_crypto_attrs(params) do
+      case Accounts.reset_password_with_recovery(recovery_key_hash, new_password, bundle_attrs) do
+        {:ok, user} ->
+          {:ok, tokens} = Accounts.create_tokens(user)
 
-    case Accounts.reset_password_with_recovery(recovery_key_hash, new_password, bundle_attrs) do
-      {:ok, user} ->
-        {:ok, tokens} = Accounts.create_tokens(user)
+          json(conn, %{
+            user: user_json(user),
+            access_token: tokens.access_token,
+            refresh_token: tokens.refresh_token,
+            expires_in: tokens.expires_in
+          })
 
-        json(conn, %{
-          user: user_json(user),
-          access_token: tokens.access_token,
-          refresh_token: tokens.refresh_token,
-          expires_in: tokens.expires_in
-        })
+        {:error, :not_found} ->
+          conn
+          |> put_status(:not_found)
+          |> json(%{error: "invalid recovery key"})
 
-      {:error, :not_found} ->
+        {:error, changeset} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{errors: format_errors(changeset)})
+      end
+    else
+      {:error, :invalid_base64} ->
         conn
-        |> put_status(:not_found)
-        |> json(%{error: "invalid recovery key"})
-
-      {:error, changeset} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{errors: format_errors(changeset)})
+        |> put_status(:bad_request)
+        |> json(%{error: "invalid base64 encoding in crypto fields"})
     end
   end
 
@@ -228,27 +248,48 @@ defmodule VesperWeb.AuthController do
     }
   end
 
-  defp extract_crypto_attrs(params) do
-    %{}
-    |> maybe_decode_binary(params, "encrypted_key_bundle", :encrypted_key_bundle)
-    |> maybe_decode_binary(params, "key_bundle_salt", :key_bundle_salt)
-    |> maybe_decode_binary(params, "key_bundle_nonce", :key_bundle_nonce)
-    |> maybe_decode_binary(params, "public_identity_key", :public_identity_key)
-    |> maybe_decode_binary(params, "public_key_exchange", :public_key_exchange)
-    |> maybe_put(params, "recovery_key_hash", :recovery_key_hash)
-    |> maybe_decode_binary(params, "encrypted_recovery_bundle", :encrypted_recovery_bundle)
+  @binary_crypto_fields [
+    {"encrypted_key_bundle", :encrypted_key_bundle},
+    {"key_bundle_salt", :key_bundle_salt},
+    {"key_bundle_nonce", :key_bundle_nonce},
+    {"public_identity_key", :public_identity_key},
+    {"public_key_exchange", :public_key_exchange},
+    {"encrypted_recovery_bundle", :encrypted_recovery_bundle}
+  ]
+
+  defp validate_crypto_params(params) do
+    Enum.reduce_while(@binary_crypto_fields, :ok, fn {key, _field}, :ok ->
+      case params[key] do
+        nil ->
+          {:cont, :ok}
+
+        value ->
+          case Base.decode64(value) do
+            {:ok, _} -> {:cont, :ok}
+            :error -> {:halt, {:error, :invalid_base64}}
+          end
+      end
+    end)
   end
 
-  defp maybe_decode_binary(acc, params, key, field) do
-    case params[key] do
-      nil ->
-        acc
+  defp extract_crypto_attrs(params) do
+    result =
+      Enum.reduce_while(@binary_crypto_fields, {:ok, %{}}, fn {key, field}, {:ok, acc} ->
+        case params[key] do
+          nil ->
+            {:cont, {:ok, acc}}
 
-      value ->
-        case Base.decode64(value) do
-          {:ok, decoded} -> Map.put(acc, field, decoded)
-          :error -> acc
+          value ->
+            case Base.decode64(value) do
+              {:ok, decoded} -> {:cont, {:ok, Map.put(acc, field, decoded)}}
+              :error -> {:halt, {:error, :invalid_base64}}
+            end
         end
+      end)
+
+    case result do
+      {:ok, attrs} -> {:ok, maybe_put(attrs, params, "recovery_key_hash", :recovery_key_hash)}
+      error -> error
     end
   end
 
@@ -257,13 +298,5 @@ defmodule VesperWeb.AuthController do
       nil -> acc
       value -> Map.put(acc, field, value)
     end
-  end
-
-  defp format_errors(changeset) do
-    Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
-      Regex.replace(~r"%{(\w+)}", msg, fn _, key ->
-        opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
-      end)
-    end)
   end
 end

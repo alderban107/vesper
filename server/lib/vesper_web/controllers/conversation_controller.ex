@@ -1,6 +1,7 @@
 defmodule VesperWeb.ConversationController do
   use VesperWeb, :controller
   alias Vesper.Chat
+  import VesperWeb.ControllerHelpers, only: [parse_int: 2]
 
   def create(conn, %{"participant_ids" => participant_ids} = params) do
     user = conn.assigns.current_user
@@ -165,18 +166,6 @@ defmodule VesperWeb.ConversationController do
       avatar_url: sender.avatar_url
     }
   end
-
-  defp parse_int(nil, default), do: default
-
-  defp parse_int(value, default) when is_binary(value) do
-    case Integer.parse(value) do
-      {n, _} -> n
-      :error -> default
-    end
-  end
-
-  defp parse_int(value, _default) when is_integer(value), do: value
-  defp parse_int(_, default), do: default
 
   defp user_json(%Ecto.Association.NotLoaded{}), do: nil
 

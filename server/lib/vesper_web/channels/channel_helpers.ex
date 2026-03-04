@@ -93,7 +93,7 @@ defmodule VesperWeb.ChannelHelpers do
           {:error, "could not edit message"}
       end
     else
-      {:error, :invalid_base64} -> {:error, "invalid encoding"}
+      {:error, _} -> {:error, "invalid encoding"}
       nil -> {:error, "message not found"}
       false -> {:error, "not the message author"}
     end
@@ -130,7 +130,7 @@ defmodule VesperWeb.ChannelHelpers do
 
       message ->
         if Map.get(message, expected_scope_field) != expected_scope_value do
-          {:error, "message not in this #{expected_scope_field}"}
+          {:error, "message does not belong to this conversation"}
         else
           case action do
             :add ->

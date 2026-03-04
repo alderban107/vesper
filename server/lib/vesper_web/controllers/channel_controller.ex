@@ -1,6 +1,7 @@
 defmodule VesperWeb.ChannelController do
   use VesperWeb, :controller
   alias Vesper.Servers
+  import VesperWeb.ControllerHelpers, only: [format_errors: 1]
 
   def index(conn, %{"server_id" => server_id}) do
     user = conn.assigns.current_user
@@ -98,13 +99,5 @@ defmodule VesperWeb.ChannelController do
       inserted_at: channel.inserted_at,
       updated_at: channel.updated_at
     }
-  end
-
-  defp format_errors(changeset) do
-    Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
-      Regex.replace(~r"%{(\w+)}", msg, fn _, key ->
-        opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
-      end)
-    end)
   end
 end

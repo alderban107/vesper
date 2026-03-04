@@ -289,7 +289,6 @@ defmodule VesperWeb.ChatChannel do
   defp notify_mentions(mentioned_user_ids, channel_id, sender_id)
        when is_list(mentioned_user_ids) do
     channel = Servers.get_channel(channel_id)
-    if is_nil(channel), do: :ok
 
     if channel do
       has_everyone = "everyone" in mentioned_user_ids
@@ -323,7 +322,8 @@ defmodule VesperWeb.ChatChannel do
     end
   end
 
-  defp notify_mentions(_invalid, _channel_id, _sender_id), do: :ok
+  # Guard against clients sending a non-list value (e.g. a bare string) for mentioned_user_ids.
+  defp notify_mentions(_non_list, _channel_id, _sender_id), do: :ok
 
   defp notify_unread(channel_id, message_id, sender_id) do
     channel = Servers.get_channel(channel_id)

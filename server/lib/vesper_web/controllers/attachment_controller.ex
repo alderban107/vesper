@@ -65,11 +65,13 @@ defmodule VesperWeb.AttachmentController do
   def show(conn, %{"id" => id}) do
     user = conn.assigns.current_user
 
-    case Repo.get(Attachment, id) |> Repo.preload(:message) do
+    case Repo.get(Attachment, id) do
       nil ->
         conn |> put_status(:not_found) |> json(%{error: "not found"})
 
       attachment ->
+        attachment = Repo.preload(attachment, :message)
+
         if authorized_for_attachment?(user.id, attachment) do
           path = FileStorage.get_path(attachment.storage_key)
 

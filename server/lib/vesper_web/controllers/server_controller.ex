@@ -1,6 +1,7 @@
 defmodule VesperWeb.ServerController do
   use VesperWeb, :controller
   alias Vesper.Servers
+  import VesperWeb.ControllerHelpers, only: [format_errors: 1]
 
   def index(conn, _params) do
     servers = Servers.list_user_servers(conn.assigns.current_user)
@@ -113,7 +114,9 @@ defmodule VesperWeb.ServerController do
         conn |> put_status(:not_found) |> json(%{error: "not a member"})
 
       {:error, :owner_cannot_leave} ->
-        conn |> put_status(:bad_request) |> json(%{error: "Owner cannot leave — transfer ownership or delete the server"})
+        conn
+        |> put_status(:bad_request)
+        |> json(%{error: "Owner cannot leave — transfer ownership or delete the server"})
     end
   end
 
@@ -160,8 +163,11 @@ defmodule VesperWeb.ServerController do
 
       true ->
         case Servers.kick_member(server_id, user_id) do
-          {:ok, _} -> json(conn, %{ok: true})
-          {:error, :not_found} -> conn |> put_status(:not_found) |> json(%{error: "member not found"})
+          {:ok, _} ->
+            json(conn, %{ok: true})
+
+          {:error, :not_found} ->
+            conn |> put_status(:not_found) |> json(%{error: "member not found"})
         end
     end
   end
@@ -171,7 +177,7 @@ defmodule VesperWeb.ServerController do
   def list_invites(conn, %{"server_id" => server_id}) do
     user = conn.assigns.current_user
 
-    if Servers.user_is_member?(user.id, server_id) do
+    if Servers.user_can?(user.id, server_id, Vesper.Servers.Permissions.invite_members()) do
       invites = Servers.list_invites(server_id)
 
       json(conn, %{
@@ -183,17 +189,20 @@ defmodule VesperWeb.ServerController do
               max_uses: inv.max_uses,
               uses: inv.uses,
               expires_at: inv.expires_at,
-              creator: if(inv.creator, do: %{
-                id: inv.creator.id,
-                username: inv.creator.username,
-                display_name: inv.creator.display_name
-              }, else: nil),
+              creator:
+                if inv.creator do
+                  %{
+                    id: inv.creator.id,
+                    username: inv.creator.username,
+                    display_name: inv.creator.display_name
+                  }
+                end,
               inserted_at: inv.inserted_at
             }
           end)
       })
     else
-      conn |> put_status(:forbidden) |> json(%{error: "not a member"})
+      conn |> put_status(:forbidden) |> json(%{error: "insufficient permissions"})
     end
   end
 
@@ -229,8 +238,11 @@ defmodule VesperWeb.ServerController do
 
     if Servers.user_can?(user.id, server_id, Vesper.Servers.Permissions.invite_members()) do
       case Servers.revoke_invite(invite_id) do
-        {:ok, _} -> json(conn, %{ok: true})
-        {:error, :not_found} -> conn |> put_status(:not_found) |> json(%{error: "invite not found"})
+        {:ok, _} ->
+          json(conn, %{ok: true})
+
+        {:error, :not_found} ->
+          conn |> put_status(:not_found) |> json(%{error: "invite not found"})
       end
     else
       conn |> put_status(:forbidden) |> json(%{error: "insufficient permissions"})
@@ -309,8 +321,13 @@ defmodule VesperWeb.ServerController do
 
         role ->
           case Servers.update_role(role, params) do
-            {:ok, updated} -> json(conn, %{role: role_json(updated)})
-            {:error, changeset} -> conn |> put_status(:unprocessable_entity) |> json(%{errors: format_errors(changeset)})
+            {:ok, updated} ->
+              json(conn, %{role: role_json(updated)})
+
+            {:error, changeset} ->
+              conn
+              |> put_status(:unprocessable_entity)
+              |> json(%{errors: format_errors(changeset)})
           end
       end
     else
@@ -323,7 +340,9 @@ defmodule VesperWeb.ServerController do
 
     if Servers.user_can?(user.id, server_id, Vesper.Servers.Permissions.manage_roles()) do
       case Servers.get_role(role_id) do
-        nil -> conn |> put_status(:not_found) |> json(%{error: "role not found"})
+        nil ->
+          conn |> put_status(:not_found) |> json(%{error: "role not found"})
+
         role ->
           Servers.delete_role(role)
           json(conn, %{ok: true})
@@ -371,13 +390,5 @@ defmodule VesperWeb.ServerController do
       position: channel.position,
       disappearing_ttl: channel.disappearing_ttl
     }
-  end
-
-  defp format_errors(changeset) do
-    Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
-      Regex.replace(~r"%{(\w+)}", msg, fn _, key ->
-        opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
-      end)
-    end)
   end
 end
