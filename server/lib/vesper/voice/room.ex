@@ -72,6 +72,15 @@ defmodule Vesper.Voice.Room do
     # Trap exits so PeerConnection crashes don't take down the room
     Process.flag(:trap_exit, true)
 
+    # Tune GC for processes handling RTP binary packets.
+    # Larger binary vheap reduces GC frequency for many small binary refs.
+    Process.flag(:min_bin_vheap_size, 233_681)
+    # Full sweep more often to reclaim old binaries faster (default is 65535).
+    Process.flag(:fullsweep_after, 20)
+    # Safety limit to prevent runaway memory — configurable, defaults to ~400MB.
+    max_heap = Application.get_env(:vesper, :voice_room_max_heap_size, 50_000_000)
+    Process.flag(:max_heap_size, %{size: max_heap, kill: true, error_logger: true})
+
     room_id = Keyword.fetch!(opts, :room_id)
     room_type = Keyword.get(opts, :room_type, :channel)
 
@@ -92,9 +101,16 @@ defmodule Vesper.Voice.Room do
     else
       # Cancel idle timer when someone joins
       if state.idle_timer_ref, do: Process.cancel_timer(state.idle_timer_ref)
+      start_time = System.monotonic_time()
 
       case add_participant(state, user_id, channel_pid) do
         {:ok, offer_sdp, track_map, new_state} ->
+          :telemetry.execute(
+            [:vesper, :voice, :room, :join],
+            %{duration: System.monotonic_time() - start_time},
+            %{room_id: state.room_id, participant_count: map_size(new_state.participants)}
+          )
+
           new_state = %{new_state | idle_timer_ref: nil}
           {:reply, {:ok, offer_sdp, track_map}, new_state}
 
@@ -106,6 +122,12 @@ defmodule Vesper.Voice.Room do
 
   def handle_call({:leave, user_id}, _from, state) do
     new_state = remove_participant(state, user_id)
+
+    :telemetry.execute(
+      [:vesper, :voice, :room, :leave],
+      %{count: 1},
+      %{room_id: state.room_id, participant_count: map_size(new_state.participants)}
+    )
 
     if map_size(new_state.participants) == 0 do
       # Schedule idle timeout instead of immediate stop to allow reconnects
@@ -128,7 +150,8 @@ defmodule Vesper.Voice.Room do
           :ok ->
             # Apply any pending ICE candidates
             new_participant =
-              Enum.reduce(participant.pending_candidates, participant, fn candidate, p ->
+              Enum.reduce(Enum.reverse(participant.pending_candidates), participant, fn candidate,
+                                                                                        p ->
                 case PeerConnection.add_ice_candidate(p.pc, candidate) do
                   :ok ->
                     :ok
@@ -209,7 +232,7 @@ defmodule Vesper.Voice.Room do
             else
               updated = %{
                 participant
-                | pending_candidates: participant.pending_candidates ++ [candidate]
+                | pending_candidates: [candidate | participant.pending_candidates]
               }
 
               {:noreply, put_in(state.participants[user_id], updated)}
@@ -342,7 +365,7 @@ defmodule Vesper.Voice.Room do
   def terminate(_reason, state) do
     # Clean up all PeerConnections on shutdown
     Enum.each(state.participants, fn {_uid, p} ->
-      spawn(fn ->
+      Task.Supervisor.start_child(Vesper.Voice.CleanupSupervisor, fn ->
         try do
           PeerConnection.close(p.pc)
         catch

@@ -6,17 +6,17 @@ defmodule Vesper.Servers.Permissions do
   import Bitwise
 
   # Permission bits
-  @send_messages     1
-  @manage_messages   2
-  @manage_channels   4
-  @manage_server     8
-  @kick_members      16
-  @ban_members       32
-  @invite_members    64
-  @manage_roles      128
-  @manage_voice      256
-  @mention_everyone  512
-  @administrator     16384
+  @send_messages 1
+  @manage_messages 2
+  @manage_channels 4
+  @manage_server 8
+  @kick_members 16
+  @ban_members 32
+  @invite_members 64
+  @manage_roles 128
+  @manage_voice 256
+  @mention_everyone 512
+  @administrator 16384
 
   @all_permissions %{
     send_messages: @send_messages,

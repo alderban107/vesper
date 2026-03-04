@@ -7,21 +7,19 @@ defmodule VesperWeb.VoiceChannel do
   alias Vesper.Encryption
   import VesperWeb.ChannelHelpers, only: [safe_decode64: 1]
 
+  # Max concurrent Voice.Room operations per room before rejecting with backpressure
+  @max_concurrent_voice_ops 10
+
   @impl true
   def join("voice:channel:" <> channel_id, _payload, socket) do
-    channel = Servers.get_channel(channel_id)
+    case Servers.get_channel_if_member(channel_id, socket.assigns.user_id) do
+      nil ->
+        {:error, %{reason: "channel not found or not a member"}}
 
-    cond do
-      is_nil(channel) ->
-        {:error, %{reason: "channel not found"}}
-
-      channel.type != "voice" ->
+      %{type: type} when type != "voice" ->
         {:error, %{reason: "not a voice channel"}}
 
-      not Servers.user_is_member?(socket.assigns.user_id, channel.server_id) ->
-        {:error, %{reason: "not a member"}}
-
-      true ->
+      _channel ->
         socket =
           socket
           |> assign(:room_id, channel_id)
@@ -172,7 +170,10 @@ defmodule VesperWeb.VoiceChannel do
 
     Voice.ensure_room(room_id, room_type: room_type)
 
-    case Voice.join_room(room_id, user_id, self()) do
+    # Semaphore.call returns the function's result directly, or {:error, :max}
+    case Semaphore.call({:voice_room, room_id}, @max_concurrent_voice_ops, fn ->
+           Voice.join_room(room_id, user_id, self())
+         end) do
       {:ok, offer_sdp, track_map} ->
         push(socket, "offer", %{sdp: offer_sdp, track_map: track_map})
 
@@ -182,6 +183,9 @@ defmodule VesperWeb.VoiceChannel do
 
       {:error, :room_full} ->
         push(socket, "error", %{reason: "room is full"})
+
+      {:error, :max} ->
+        push(socket, "error", %{reason: "server busy, try again"})
 
       {:error, reason} ->
         push(socket, "error", %{reason: inspect(reason)})

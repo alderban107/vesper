@@ -367,50 +367,19 @@ defmodule Vesper.Chat do
     if channel_ids == [] do
       %{}
     else
-      # Get read positions for all channels in one query
-      positions =
-        from(p in ChannelReadPosition,
-          where: p.user_id == ^user_id and p.channel_id in ^channel_ids,
-          select: {p.channel_id, p.last_read_at}
-        )
-        |> Repo.all()
-        |> Map.new()
-
-      {with_pos, without_pos} = Enum.split_with(channel_ids, &Map.has_key?(positions, &1))
-
-      # For channels with read positions: one query per channel, but no useless
-      # intermediate grouped query — each channel has a distinct last_read_at
-      # so we issue N direct count queries (honest N, not N+1).
-      counts_with_pos =
-        Enum.map(with_pos, fn channel_id ->
-          last_read_at = Map.fetch!(positions, channel_id)
-
-          count =
-            from(m in Message,
-              where:
-                m.channel_id == ^channel_id and
-                  m.sender_id != ^user_id and
-                  m.inserted_at > ^last_read_at,
-              select: count()
-            )
-            |> Repo.one()
-
-          {channel_id, count}
-        end)
-
-      counts_without_pos =
-        if without_pos != [] do
-          from(m in Message,
-            where: m.channel_id in ^without_pos and m.sender_id != ^user_id,
-            group_by: m.channel_id,
-            select: {m.channel_id, count(m.id)}
-          )
-          |> Repo.all()
-        else
-          []
-        end
-
-      (counts_with_pos ++ counts_without_pos)
+      # Single query: LEFT JOIN read positions, count messages newer than last_read_at
+      # (or all messages if no read position exists)
+      from(m in Message,
+        left_join: p in ChannelReadPosition,
+        on: p.channel_id == m.channel_id and p.user_id == ^user_id,
+        where:
+          m.channel_id in ^channel_ids and
+            m.sender_id != ^user_id and
+            (is_nil(p.last_read_at) or m.inserted_at > p.last_read_at),
+        group_by: m.channel_id,
+        select: {m.channel_id, count(m.id)}
+      )
+      |> Repo.all()
       |> Enum.filter(fn {_id, count} -> count > 0 end)
       |> Map.new()
     end
@@ -420,48 +389,18 @@ defmodule Vesper.Chat do
     if conversation_ids == [] do
       %{}
     else
-      positions =
-        from(p in DmReadPosition,
-          where: p.user_id == ^user_id and p.conversation_id in ^conversation_ids,
-          select: {p.conversation_id, p.last_read_at}
-        )
-        |> Repo.all()
-        |> Map.new()
-
-      {with_pos, without_pos} = Enum.split_with(conversation_ids, &Map.has_key?(positions, &1))
-
-      # For conversations with read positions: one direct count query each,
-      # no useless intermediate grouped query.
-      counts_with_pos =
-        Enum.map(with_pos, fn conv_id ->
-          last_read_at = Map.fetch!(positions, conv_id)
-
-          count =
-            from(m in Message,
-              where:
-                m.conversation_id == ^conv_id and
-                  m.sender_id != ^user_id and
-                  m.inserted_at > ^last_read_at,
-              select: count()
-            )
-            |> Repo.one()
-
-          {conv_id, count}
-        end)
-
-      counts_without_pos =
-        if without_pos != [] do
-          from(m in Message,
-            where: m.conversation_id in ^without_pos and m.sender_id != ^user_id,
-            group_by: m.conversation_id,
-            select: {m.conversation_id, count(m.id)}
-          )
-          |> Repo.all()
-        else
-          []
-        end
-
-      (counts_with_pos ++ counts_without_pos)
+      # Single query: LEFT JOIN read positions, count messages newer than last_read_at
+      from(m in Message,
+        left_join: p in DmReadPosition,
+        on: p.conversation_id == m.conversation_id and p.user_id == ^user_id,
+        where:
+          m.conversation_id in ^conversation_ids and
+            m.sender_id != ^user_id and
+            (is_nil(p.last_read_at) or m.inserted_at > p.last_read_at),
+        group_by: m.conversation_id,
+        select: {m.conversation_id, count(m.id)}
+      )
+      |> Repo.all()
       |> Enum.filter(fn {_id, count} -> count > 0 end)
       |> Map.new()
     end
@@ -504,6 +443,8 @@ defmodule Vesper.Chat do
     )
     |> Repo.exists?()
   end
+
+  defp maybe_set_expires_at(%{expires_at: %DateTime{}} = attrs), do: attrs
 
   defp maybe_set_expires_at(attrs) do
     channel_id = attrs[:channel_id] || attrs["channel_id"]

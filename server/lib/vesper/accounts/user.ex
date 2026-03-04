@@ -41,7 +41,9 @@ defmodule Vesper.Accounts.User do
     changeset
     |> validate_required([:username])
     |> validate_length(:username, min: 2, max: 32)
-    |> validate_format(:username, ~r/^[a-zA-Z0-9_]+$/, message: "must be alphanumeric with underscores")
+    |> validate_format(:username, ~r/^[a-zA-Z0-9_]+$/,
+      message: "must be alphanumeric with underscores"
+    )
     |> unsafe_validate_unique(:username, Vesper.Repo)
     |> unique_constraint(:username)
   end

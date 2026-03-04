@@ -8,12 +8,14 @@ defmodule Vesper.Repo.Migrations.AddPerformanceIndexes do
     # Composite index for channel unread count queries:
     # WHERE channel_id = ? AND sender_id != ? AND inserted_at > ?
     create_if_not_exists index(:messages, [:channel_id, :sender_id, :inserted_at],
-                           concurrently: true)
+                           concurrently: true
+                         )
 
     # Composite index for DM unread count queries:
     # WHERE conversation_id = ? AND sender_id != ? AND inserted_at > ?
     create_if_not_exists index(:messages, [:conversation_id, :sender_id, :inserted_at],
-                           concurrently: true)
+                           concurrently: true
+                         )
 
     # Index for messages.sender_id — used in unread WHERE clauses and sender preloads
     create_if_not_exists index(:messages, [:sender_id], concurrently: true)

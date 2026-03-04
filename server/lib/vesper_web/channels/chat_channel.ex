@@ -2,33 +2,26 @@ defmodule VesperWeb.ChatChannel do
   use Phoenix.Channel
 
   alias Vesper.Servers
+  alias Vesper.Servers.{MemberCache, Permissions, PermissionsCache}
   alias Vesper.Chat
   alias Vesper.Encryption
   import VesperWeb.ChannelHelpers
 
   @impl true
   def join("chat:channel:" <> channel_id, _payload, socket) do
-    channel = Servers.get_channel(channel_id)
+    case Servers.get_channel_if_member(channel_id, socket.assigns.user_id) do
+      nil ->
+        {:error, %{reason: "channel not found or not a member"}}
 
-    cond do
-      is_nil(channel) ->
-        {:error, %{reason: "channel not found"}}
-
-      not Servers.user_is_member?(socket.assigns.user_id, channel.server_id) ->
-        {:error, %{reason: "not a member"}}
-
-      true ->
-        # Cache server_id and member IDs on join to avoid per-message DB lookups
-        member_ids = Servers.list_member_ids(channel.server_id)
-
-        # Subscribe to membership changes so we can invalidate the cache
-        Phoenix.PubSub.subscribe(Vesper.PubSub, "server_members:#{channel.server_id}")
+      channel ->
+        # Subscribe to TTL changes so cached value stays in sync
+        Phoenix.PubSub.subscribe(Vesper.PubSub, "channel:settings:#{channel_id}")
 
         socket =
           socket
           |> assign(:channel_id, channel_id)
           |> assign(:server_id, channel.server_id)
-          |> assign(:member_ids, member_ids)
+          |> assign(:disappearing_ttl, channel.disappearing_ttl)
 
         {:ok, socket}
     end
@@ -40,6 +33,8 @@ defmodule VesperWeb.ChatChannel do
         %{"ciphertext" => ciphertext, "mls_epoch" => epoch} = params,
         socket
       ) do
+    start_time = System.monotonic_time()
+
     case safe_decode64(ciphertext) do
       {:ok, decoded} ->
         attrs =
@@ -50,20 +45,27 @@ defmodule VesperWeb.ChatChannel do
             sender_id: socket.assigns.user_id
           }
           |> maybe_add_parent(params)
+          |> maybe_add_expires_at(socket.assigns.disappearing_ttl)
 
         case Chat.create_message(attrs) do
           {:ok, message} ->
             message = maybe_link_attachments(message, params)
             broadcast!(socket, "new_message", encrypted_message_payload(message, :channel_id))
 
-            # Run notifications async to avoid blocking the channel process
+            :telemetry.execute(
+              [:vesper, :chat, :message, :send],
+              %{duration: System.monotonic_time() - start_time},
+              %{channel_id: socket.assigns.channel_id}
+            )
+
+            # Run notifications async under supervision
             channel_id = socket.assigns.channel_id
             sender_id = socket.assigns.user_id
-            member_ids = socket.assigns.member_ids
             server_id = socket.assigns.server_id
+            member_ids = MemberCache.get_member_ids(server_id)
             mentioned = params["mentioned_user_ids"]
 
-            Task.start(fn ->
+            Task.Supervisor.start_child(Vesper.NotificationSupervisor, fn ->
               notify_unread(channel_id, message.id, sender_id, member_ids)
               notify_mentions(mentioned, channel_id, sender_id, server_id, member_ids)
             end)
@@ -155,19 +157,16 @@ defmodule VesperWeb.ChatChannel do
 
   def handle_in("pin_message", %{"message_id" => message_id}, socket) do
     channel_id = socket.assigns.channel_id
+    user_id = socket.assigns.user_id
     server_id = socket.assigns.server_id
 
-    if Servers.user_can?(
-         socket.assigns.user_id,
-         server_id,
-         Vesper.Servers.Permissions.manage_messages()
-       ) do
-      case Chat.pin_message(channel_id, message_id, socket.assigns.user_id) do
+    if PermissionsCache.has_permission?(user_id, server_id, Permissions.manage_messages()) do
+      case Chat.pin_message(channel_id, message_id, user_id) do
         {:ok, _pin} ->
           broadcast!(socket, "message_pinned", %{
             channel_id: channel_id,
             message_id: message_id,
-            pinned_by: socket.assigns.user_id
+            pinned_by: user_id
           })
 
           {:reply, :ok, socket}
@@ -182,13 +181,10 @@ defmodule VesperWeb.ChatChannel do
 
   def handle_in("unpin_message", %{"message_id" => message_id}, socket) do
     channel_id = socket.assigns.channel_id
+    user_id = socket.assigns.user_id
     server_id = socket.assigns.server_id
 
-    if Servers.user_can?(
-         socket.assigns.user_id,
-         server_id,
-         Vesper.Servers.Permissions.manage_messages()
-       ) do
+    if PermissionsCache.has_permission?(user_id, server_id, Permissions.manage_messages()) do
       case Chat.unpin_message(channel_id, message_id) do
         {:ok, _} ->
           broadcast!(socket, "message_unpinned", %{
@@ -208,8 +204,9 @@ defmodule VesperWeb.ChatChannel do
 
   def handle_in("set_disappearing", %{"ttl" => ttl}, socket) do
     channel_id = socket.assigns.channel_id
+    user_id = socket.assigns.user_id
     server_id = socket.assigns.server_id
-    role = Servers.user_role(socket.assigns.user_id, server_id)
+    role = Servers.user_role(user_id, server_id)
 
     if role in ~w(owner admin) do
       parsed_ttl = if is_integer(ttl) and ttl > 0, do: ttl, else: nil
@@ -221,7 +218,7 @@ defmodule VesperWeb.ChatChannel do
             disappearing_ttl: parsed_ttl
           })
 
-          {:reply, :ok, socket}
+          {:reply, :ok, assign(socket, :disappearing_ttl, parsed_ttl)}
 
         {:error, _} ->
           {:reply, {:error, %{reason: "could not update TTL"}}, socket}
@@ -306,10 +303,13 @@ defmodule VesperWeb.ChatChannel do
     do: {:reply, {:error, %{reason: "unrecognized event"}}, socket}
 
   @impl true
-  def handle_info(:members_changed, socket) do
-    member_ids = Servers.list_member_ids(socket.assigns.server_id)
-    {:noreply, assign(socket, :member_ids, member_ids)}
+  def handle_info({:ttl_changed, ttl}, socket) do
+    {:noreply, assign(socket, :disappearing_ttl, ttl)}
   end
+
+  def handle_info(_msg, socket), do: {:noreply, socket}
+
+  # --- Private ---
 
   defp notify_mentions(nil, _channel_id, _sender_id, _server_id, _member_ids), do: :ok
   defp notify_mentions([], _channel_id, _sender_id, _server_id, _member_ids), do: :ok
@@ -329,11 +329,7 @@ defmodule VesperWeb.ChatChannel do
     end
 
     if has_everyone do
-      if Servers.user_can?(
-           sender_id,
-           server_id,
-           Vesper.Servers.Permissions.mention_everyone()
-         ) do
+      if PermissionsCache.has_permission?(sender_id, server_id, Permissions.mention_everyone()) do
         for uid <- member_ids, uid != sender_id do
           VesperWeb.Endpoint.broadcast("user:#{uid}", "mention", %{
             channel_id: channel_id,
@@ -348,11 +344,30 @@ defmodule VesperWeb.ChatChannel do
   defp notify_mentions(_non_list, _channel_id, _sender_id, _server_id, _member_ids), do: :ok
 
   defp notify_unread(channel_id, message_id, sender_id, member_ids) do
-    for uid <- member_ids, uid != sender_id do
+    recipients = MapSet.delete(member_ids, sender_id)
+
+    :telemetry.execute(
+      [:vesper, :chat, :notification, :fanout],
+      %{count: MapSet.size(recipients)},
+      %{channel_id: channel_id, type: :unread}
+    )
+
+    for uid <- recipients do
       VesperWeb.Endpoint.broadcast("user:#{uid}", "unread_update", %{
         channel_id: channel_id,
         message_id: message_id
       })
     end
   end
+
+  defp maybe_add_expires_at(attrs, ttl) when is_integer(ttl) and ttl > 0 do
+    expires_at =
+      DateTime.utc_now()
+      |> DateTime.add(ttl, :second)
+      |> DateTime.truncate(:second)
+
+    Map.put(attrs, :expires_at, expires_at)
+  end
+
+  defp maybe_add_expires_at(attrs, _ttl), do: attrs
 end

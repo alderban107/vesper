@@ -79,7 +79,28 @@ defmodule VesperWeb.Telemetry do
       summary("vm.memory.total", unit: {:byte, :kilobyte}),
       summary("vm.total_run_queue_lengths.total"),
       summary("vm.total_run_queue_lengths.cpu"),
-      summary("vm.total_run_queue_lengths.io")
+      summary("vm.total_run_queue_lengths.io"),
+
+      # Vesper Custom Metrics
+
+      # Chat message send
+      counter("vesper.chat.message.send.count"),
+      distribution("vesper.chat.message.send.duration",
+        unit: {:native, :millisecond}
+      ),
+
+      # Notification fanout
+      counter("vesper.chat.notification.fanout.count"),
+
+      # Voice room operations
+      counter("vesper.voice.room.join.count"),
+      counter("vesper.voice.room.leave.count"),
+      distribution("vesper.voice.room.join.duration",
+        unit: {:native, :millisecond}
+      ),
+
+      # Member cache
+      counter("vesper.member_cache.miss.count")
     ]
   end
 

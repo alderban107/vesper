@@ -12,7 +12,10 @@ defmodule Vesper.Repo.Migrations.AddThreadsAndReactions do
     # Reactions table
     create table(:reactions, primary_key: false) do
       add :id, :binary_id, primary_key: true
-      add :message_id, references(:messages, type: :binary_id, on_delete: :delete_all), null: false
+
+      add :message_id, references(:messages, type: :binary_id, on_delete: :delete_all),
+        null: false
+
       add :sender_id, references(:users, type: :binary_id, on_delete: :delete_all), null: false
       add :emoji, :string, size: 32, null: false
       add :ciphertext, :binary

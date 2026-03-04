@@ -3,7 +3,8 @@ defmodule VesperWeb.AvatarController do
   alias Vesper.Chat.FileStorage
   alias Vesper.Accounts
 
-  @max_avatar_size 5 * 1024 * 1024  # 5MB
+  # 5MB
+  @max_avatar_size 5 * 1024 * 1024
   @allowed_types ~w(image/jpeg image/png image/gif image/webp)
   @ext_map %{
     "image/jpeg" => "jpg",
@@ -25,10 +26,14 @@ defmodule VesperWeb.AvatarController do
 
     cond do
       file_size > @max_avatar_size ->
-        conn |> put_status(:request_entity_too_large) |> json(%{error: "avatar too large (max 5MB)"})
+        conn
+        |> put_status(:request_entity_too_large)
+        |> json(%{error: "avatar too large (max 5MB)"})
 
       content_type not in @allowed_types ->
-        conn |> put_status(:unprocessable_entity) |> json(%{error: "only JPEG, PNG, GIF, and WebP images are allowed"})
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "only JPEG, PNG, GIF, and WebP images are allowed"})
 
       true ->
         ext = Map.get(@ext_map, content_type, "bin")
@@ -50,7 +55,9 @@ defmodule VesperWeb.AvatarController do
             conn |> json(%{user: user_json(updated_user)})
 
           {:error, _} ->
-            conn |> put_status(:internal_server_error) |> json(%{error: "could not update avatar"})
+            conn
+            |> put_status(:internal_server_error)
+            |> json(%{error: "could not update avatar"})
         end
     end
   end

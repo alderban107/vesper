@@ -25,7 +25,16 @@ defmodule Vesper.Chat.Message do
 
   def changeset(message, attrs) do
     message
-    |> cast(attrs, [:ciphertext, :mls_epoch, :channel_id, :conversation_id, :sender_id, :expires_at, :parent_message_id, :edited_at])
+    |> cast(attrs, [
+      :ciphertext,
+      :mls_epoch,
+      :channel_id,
+      :conversation_id,
+      :sender_id,
+      :expires_at,
+      :parent_message_id,
+      :edited_at
+    ])
     |> validate_required([:ciphertext, :mls_epoch, :sender_id])
     |> validate_target()
   end
@@ -33,7 +42,16 @@ defmodule Vesper.Chat.Message do
   @doc false
   def encrypted_changeset(message, attrs) do
     message
-    |> cast(attrs, [:ciphertext, :mls_epoch, :channel_id, :conversation_id, :sender_id, :expires_at, :parent_message_id, :edited_at])
+    |> cast(attrs, [
+      :ciphertext,
+      :mls_epoch,
+      :channel_id,
+      :conversation_id,
+      :sender_id,
+      :expires_at,
+      :parent_message_id,
+      :edited_at
+    ])
     |> validate_required([:ciphertext, :mls_epoch, :sender_id])
     |> validate_target()
   end
@@ -43,10 +61,17 @@ defmodule Vesper.Chat.Message do
     conversation_id = get_field(changeset, :conversation_id)
 
     case {channel_id, conversation_id} do
-      {nil, nil} -> add_error(changeset, :channel_id, "must belong to a channel or conversation")
-      {_, nil} -> changeset
-      {nil, _} -> changeset
-      {_, _} -> add_error(changeset, :channel_id, "cannot belong to both a channel and conversation")
+      {nil, nil} ->
+        add_error(changeset, :channel_id, "must belong to a channel or conversation")
+
+      {_, nil} ->
+        changeset
+
+      {nil, _} ->
+        changeset
+
+      {_, _} ->
+        add_error(changeset, :channel_id, "cannot belong to both a channel and conversation")
     end
   end
 end

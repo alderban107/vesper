@@ -20,7 +20,15 @@ defmodule Vesper.Chat.Attachment do
 
   def changeset(attachment, attrs) do
     attachment
-    |> cast(attrs, [:filename, :content_type, :size_bytes, :storage_key, :message_id, :expires_at, :encrypted])
+    |> cast(attrs, [
+      :filename,
+      :content_type,
+      :size_bytes,
+      :storage_key,
+      :message_id,
+      :expires_at,
+      :encrypted
+    ])
     |> validate_required([:filename, :storage_key])
   end
 end
