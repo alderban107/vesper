@@ -136,18 +136,17 @@ defmodule VesperWeb.VoiceChannel do
         socket
       )
       when is_binary(recipient_id) and is_binary(welcome_data) do
-    room_id = socket.assigns.room_id
-    sender_id = socket.assigns.user_id
-
-    broadcast!(socket, "mls_welcome", %{
-      recipient_id: recipient_id,
-      welcome_data: welcome_data,
-      sender_id: sender_id
-    })
-
-    # Store for offline delivery
     case safe_decode64(welcome_data) do
       {:ok, decoded} ->
+        room_id = socket.assigns.room_id
+        sender_id = socket.assigns.user_id
+
+        broadcast!(socket, "mls_welcome", %{
+          recipient_id: recipient_id,
+          welcome_data: welcome_data,
+          sender_id: sender_id
+        })
+
         Encryption.store_pending_welcome(%{
           recipient_id: recipient_id,
           channel_id: room_id,
@@ -155,11 +154,11 @@ defmodule VesperWeb.VoiceChannel do
           sender_id: sender_id
         })
 
-      {:error, _} ->
-        :ok
-    end
+        {:noreply, socket}
 
-    {:noreply, socket}
+      {:error, _} ->
+        {:reply, {:error, %{reason: "invalid encoding"}}, socket}
+    end
   end
 
   def handle_in(_event, _payload, socket),

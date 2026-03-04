@@ -18,7 +18,7 @@ defmodule Vesper.Workers.PurgeExpiredTokens do
       from(t in UserToken, where: t.inserted_at < ^cutoff)
       |> Repo.delete_all()
 
-    if count > 0, do: Logger.info("Purged %s expired user tokens", count)
+    if count > 0, do: Logger.info("Purged #{count} expired user tokens")
     :ok
   end
 end
