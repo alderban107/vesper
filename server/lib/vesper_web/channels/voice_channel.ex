@@ -7,6 +7,9 @@ defmodule VesperWeb.VoiceChannel do
   alias Vesper.Encryption
   import VesperWeb.ChannelHelpers, only: [safe_decode64: 1]
 
+  # Max concurrent Voice.Room operations per room before rejecting with backpressure
+  @max_concurrent_voice_ops 10
+
   @impl true
   def join("voice:channel:" <> channel_id, _payload, socket) do
     channel = Servers.get_channel(channel_id)
@@ -172,19 +175,24 @@ defmodule VesperWeb.VoiceChannel do
 
     Voice.ensure_room(room_id, room_type: room_type)
 
-    case Voice.join_room(room_id, user_id, self()) do
-      {:ok, offer_sdp, track_map} ->
+    case Semaphore.call({:voice_room, room_id}, @max_concurrent_voice_ops, fn ->
+           Voice.join_room(room_id, user_id, self())
+         end) do
+      {:ok, {:ok, offer_sdp, track_map}} ->
         push(socket, "offer", %{sdp: offer_sdp, track_map: track_map})
 
         broadcast!(socket, "voice_state_update", %{
           participants: Voice.get_participants(room_id)
         })
 
-      {:error, :room_full} ->
+      {:ok, {:error, :room_full}} ->
         push(socket, "error", %{reason: "room is full"})
 
-      {:error, reason} ->
+      {:ok, {:error, reason}} ->
         push(socket, "error", %{reason: inspect(reason)})
+
+      {:error, :max} ->
+        push(socket, "error", %{reason: "server busy, try again"})
     end
 
     {:noreply, socket}

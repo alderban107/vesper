@@ -103,8 +103,12 @@ defmodule Vesper.Servers do
             }
             |> Repo.insert(on_conflict: :nothing, conflict_target: [:user_id, :server_id])
 
-          if match?({:ok, %Membership{id: id}} when not is_nil(id), result) do
-            broadcast_membership_change(server.id)
+          case result do
+            {:ok, %Membership{id: id}} when not is_nil(id) ->
+              broadcast_membership_change(server.id, user.id, :member_joined)
+
+            _ ->
+              :ok
           end
 
           {:ok, server |> Repo.preload(:channels)}
@@ -166,21 +170,37 @@ defmodule Vesper.Servers do
 
   def leave_server(user_id, server_id) do
     case Repo.get_by(Membership, user_id: user_id, server_id: server_id) do
-      nil -> {:error, :not_found}
-      %{role: "owner"} -> {:error, :owner_cannot_leave}
+      nil ->
+        {:error, :not_found}
+
+      %{role: "owner"} ->
+        {:error, :owner_cannot_leave}
+
       membership ->
         result = Repo.delete(membership)
-        if match?({:ok, _}, result), do: broadcast_membership_change(server_id)
+
+        case result do
+          {:ok, _} -> broadcast_membership_change(server_id, user_id, :member_left)
+          _ -> :ok
+        end
+
         result
     end
   end
 
   def kick_member(server_id, user_id) do
     case Repo.get_by(Membership, user_id: user_id, server_id: server_id) do
-      nil -> {:error, :not_found}
+      nil ->
+        {:error, :not_found}
+
       membership ->
         result = Repo.delete(membership)
-        if match?({:ok, _}, result), do: broadcast_membership_change(server_id)
+
+        case result do
+          {:ok, _} -> broadcast_membership_change(server_id, user_id, :member_left)
+          _ -> :ok
+        end
+
         result
     end
   end
@@ -399,13 +419,13 @@ defmodule Vesper.Servers do
                 }
                 |> Repo.insert(on_conflict: :nothing, conflict_target: [:user_id, :server_id])
 
-              # Only increment uses and notify when a new membership was actually inserted
+              # Only increment uses and broadcast when a new membership was actually inserted
               case result do
                 {:ok, %Membership{id: id}} when not is_nil(id) ->
                   from(i in Invite, where: i.id == ^invite.id)
                   |> Repo.update_all(inc: [uses: 1])
 
-                  broadcast_membership_change(server.id)
+                  broadcast_membership_change(server.id, user.id, :member_joined)
 
                 _ ->
                   :ok
@@ -417,10 +437,13 @@ defmodule Vesper.Servers do
     end
   end
 
-  @doc """
-  Broadcast a membership change so channels can invalidate cached member lists.
-  """
-  def broadcast_membership_change(server_id) do
-    Phoenix.PubSub.broadcast(Vesper.PubSub, "server_members:#{server_id}", :members_changed)
+  # --- Private Helpers ---
+
+  defp broadcast_membership_change(server_id, user_id, event) do
+    Phoenix.PubSub.broadcast(
+      Vesper.PubSub,
+      "server:members:#{server_id}",
+      {event, server_id, user_id}
+    )
   end
 end

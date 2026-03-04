@@ -59,7 +59,8 @@ defmodule Vesper.MixProject do
       {:argon2_elixir, "~> 4.0"},
       {:cors_plug, "~> 3.0"},
       {:oban, "~> 2.18"},
-      {:ex_webrtc, "~> 0.15.0"}
+      {:ex_webrtc, "~> 0.15.0"},
+      {:semaphore, "~> 1.3"}
     ]
   end
 

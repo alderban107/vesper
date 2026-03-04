@@ -2,6 +2,7 @@ defmodule VesperWeb.ChatChannel do
   use Phoenix.Channel
 
   alias Vesper.Servers
+  alias Vesper.Servers.MemberCache
   alias Vesper.Chat
   alias Vesper.Encryption
   import VesperWeb.ChannelHelpers
@@ -18,17 +19,10 @@ defmodule VesperWeb.ChatChannel do
         {:error, %{reason: "not a member"}}
 
       true ->
-        # Cache server_id and member IDs on join to avoid per-message DB lookups
-        member_ids = Servers.list_member_ids(channel.server_id)
-
-        # Subscribe to membership changes so we can invalidate the cache
-        Phoenix.PubSub.subscribe(Vesper.PubSub, "server_members:#{channel.server_id}")
-
         socket =
           socket
           |> assign(:channel_id, channel_id)
           |> assign(:server_id, channel.server_id)
-          |> assign(:member_ids, member_ids)
 
         {:ok, socket}
     end
@@ -40,6 +34,8 @@ defmodule VesperWeb.ChatChannel do
         %{"ciphertext" => ciphertext, "mls_epoch" => epoch} = params,
         socket
       ) do
+    start_time = System.monotonic_time()
+
     case safe_decode64(ciphertext) do
       {:ok, decoded} ->
         attrs =
@@ -56,14 +52,20 @@ defmodule VesperWeb.ChatChannel do
             message = maybe_link_attachments(message, params)
             broadcast!(socket, "new_message", encrypted_message_payload(message, :channel_id))
 
-            # Run notifications async to avoid blocking the channel process
+            :telemetry.execute(
+              [:vesper, :chat, :message, :send],
+              %{duration: System.monotonic_time() - start_time},
+              %{channel_id: socket.assigns.channel_id}
+            )
+
+            # Run notifications async under supervision
             channel_id = socket.assigns.channel_id
             sender_id = socket.assigns.user_id
-            member_ids = socket.assigns.member_ids
             server_id = socket.assigns.server_id
+            member_ids = MemberCache.get_member_ids(server_id)
             mentioned = params["mentioned_user_ids"]
 
-            Task.start(fn ->
+            Task.Supervisor.start_child(Vesper.NotificationSupervisor, fn ->
               notify_unread(channel_id, message.id, sender_id, member_ids)
               notify_mentions(mentioned, channel_id, sender_id, server_id, member_ids)
             end)
@@ -305,12 +307,6 @@ defmodule VesperWeb.ChatChannel do
   def handle_in(_event, _payload, socket),
     do: {:reply, {:error, %{reason: "unrecognized event"}}, socket}
 
-  @impl true
-  def handle_info(:members_changed, socket) do
-    member_ids = Servers.list_member_ids(socket.assigns.server_id)
-    {:noreply, assign(socket, :member_ids, member_ids)}
-  end
-
   defp notify_mentions(nil, _channel_id, _sender_id, _server_id, _member_ids), do: :ok
   defp notify_mentions([], _channel_id, _sender_id, _server_id, _member_ids), do: :ok
 
@@ -348,7 +344,15 @@ defmodule VesperWeb.ChatChannel do
   defp notify_mentions(_non_list, _channel_id, _sender_id, _server_id, _member_ids), do: :ok
 
   defp notify_unread(channel_id, message_id, sender_id, member_ids) do
-    for uid <- member_ids, uid != sender_id do
+    recipients = Enum.reject(member_ids, &(&1 == sender_id))
+
+    :telemetry.execute(
+      [:vesper, :chat, :notification, :fanout],
+      %{count: length(recipients)},
+      %{channel_id: channel_id, type: :unread}
+    )
+
+    for uid <- recipients do
       VesperWeb.Endpoint.broadcast("user:#{uid}", "unread_update", %{
         channel_id: channel_id,
         message_id: message_id

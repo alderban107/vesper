@@ -57,7 +57,7 @@ defmodule VesperWeb.DmChannel do
             sender_id = socket.assigns.user_id
             participant_ids = socket.assigns.participant_ids
 
-            Task.start(fn ->
+            Task.Supervisor.start_child(Vesper.NotificationSupervisor, fn ->
               notify_participants(conversation_id, sender_id, participant_ids, message)
             end)
 

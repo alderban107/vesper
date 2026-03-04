@@ -14,6 +14,8 @@ defmodule Vesper.Application do
       {DNSCluster, query: Application.get_env(:vesper, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Vesper.PubSub, pool_size: System.schedulers_online()},
       {Oban, Application.fetch_env!(:vesper, Oban)},
+      {Task.Supervisor, name: Vesper.NotificationSupervisor},
+      Vesper.Servers.MemberCache,
       {Registry, keys: :unique, name: Vesper.Voice.Registry},
       {Vesper.Voice.RoomSupervisor, []},
       VesperWeb.Presence,
