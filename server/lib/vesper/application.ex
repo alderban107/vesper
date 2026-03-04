@@ -12,7 +12,7 @@ defmodule Vesper.Application do
       Vesper.Repo,
       Vesper.Migrator,
       {DNSCluster, query: Application.get_env(:vesper, :dns_cluster_query) || :ignore},
-      {Phoenix.PubSub, name: Vesper.PubSub},
+      {Phoenix.PubSub, name: Vesper.PubSub, pool_size: System.schedulers_online()},
       {Oban, Application.fetch_env!(:vesper, Oban)},
       {Registry, keys: :unique, name: Vesper.Voice.Registry},
       {Vesper.Voice.RoomSupervisor, []},

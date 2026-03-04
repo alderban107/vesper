@@ -1,6 +1,5 @@
 defmodule VesperWeb.DmChannel do
   use Phoenix.Channel
-  import Ecto.Query
 
   alias Vesper.Chat
   alias Vesper.Accounts
@@ -12,7 +11,14 @@ defmodule VesperWeb.DmChannel do
     user_id = socket.assigns.user_id
 
     if Chat.user_is_participant?(user_id, conversation_id) do
-      socket = assign(socket, :conversation_id, conversation_id)
+      # Cache participant IDs on join to avoid per-message DB lookups
+      participant_ids = Chat.list_participant_ids(conversation_id)
+
+      socket =
+        socket
+        |> assign(:conversation_id, conversation_id)
+        |> assign(:participant_ids, participant_ids)
+
       {:ok, socket}
     else
       {:error, %{reason: "not a participant"}}
@@ -46,7 +52,15 @@ defmodule VesperWeb.DmChannel do
               encrypted_message_payload(message, :conversation_id)
             )
 
-            notify_participants(socket.assigns.conversation_id, socket.assigns.user_id, message)
+            # Run notifications async to avoid blocking the channel process
+            conversation_id = socket.assigns.conversation_id
+            sender_id = socket.assigns.user_id
+            participant_ids = socket.assigns.participant_ids
+
+            Task.start(fn ->
+              notify_participants(conversation_id, sender_id, participant_ids, message)
+            end)
+
             {:reply, :ok, socket}
 
           {:error, _changeset} ->
@@ -151,7 +165,7 @@ defmodule VesperWeb.DmChannel do
   end
 
   def handle_in("typing_start", _payload, socket) do
-    broadcast_from!(socket, "typing_start", typing_start_payload(socket.assigns.user_id))
+    broadcast_from!(socket, "typing_start", typing_start_payload(socket))
     {:noreply, socket}
   end
 
@@ -224,15 +238,7 @@ defmodule VesperWeb.DmChannel do
   def handle_in(_event, _payload, socket),
     do: {:reply, {:error, %{reason: "unrecognized event"}}, socket}
 
-  defp notify_participants(conversation_id, sender_id, message) do
-    participant_ids =
-      Vesper.Repo.all(
-        from(p in Vesper.Chat.DmParticipant,
-          where: p.conversation_id == ^conversation_id,
-          select: p.user_id
-        )
-      )
-
+  defp notify_participants(conversation_id, sender_id, participant_ids, message) do
     sender = Accounts.get_user(sender_id)
 
     notification = %{

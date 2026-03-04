@@ -94,13 +94,18 @@ defmodule Vesper.Servers do
           rotate_invite_code(server)
           {:error, :not_found}
         else
-          %Membership{
-            user_id: user.id,
-            server_id: server.id,
-            role: "member",
-            joined_at: DateTime.utc_now() |> DateTime.truncate(:second)
-          }
-          |> Repo.insert(on_conflict: :nothing, conflict_target: [:user_id, :server_id])
+          result =
+            %Membership{
+              user_id: user.id,
+              server_id: server.id,
+              role: "member",
+              joined_at: DateTime.utc_now() |> DateTime.truncate(:second)
+            }
+            |> Repo.insert(on_conflict: :nothing, conflict_target: [:user_id, :server_id])
+
+          if match?({:ok, %Membership{id: id}} when not is_nil(id), result) do
+            broadcast_membership_change(server.id)
+          end
 
           {:ok, server |> Repo.preload(:channels)}
         end
@@ -133,10 +138,24 @@ defmodule Vesper.Servers do
     |> Repo.update()
   end
 
-  def list_members(server_id) do
+  @max_members_default 1000
+
+  def list_members(server_id, opts \\ []) do
+    limit = Keyword.get(opts, :limit, @max_members_default)
+
     from(m in Membership,
       where: m.server_id == ^server_id,
+      limit: ^limit,
       preload: [:user]
+    )
+    |> Repo.all()
+  end
+
+  def list_member_ids(server_id) do
+    from(m in Membership,
+      where: m.server_id == ^server_id,
+      limit: ^@max_members_default,
+      select: m.user_id
     )
     |> Repo.all()
   end
@@ -149,14 +168,20 @@ defmodule Vesper.Servers do
     case Repo.get_by(Membership, user_id: user_id, server_id: server_id) do
       nil -> {:error, :not_found}
       %{role: "owner"} -> {:error, :owner_cannot_leave}
-      membership -> Repo.delete(membership)
+      membership ->
+        result = Repo.delete(membership)
+        if match?({:ok, _}, result), do: broadcast_membership_change(server_id)
+        result
     end
   end
 
   def kick_member(server_id, user_id) do
     case Repo.get_by(Membership, user_id: user_id, server_id: server_id) do
       nil -> {:error, :not_found}
-      membership -> Repo.delete(membership)
+      membership ->
+        result = Repo.delete(membership)
+        if match?({:ok, _}, result), do: broadcast_membership_change(server_id)
+        result
     end
   end
 
@@ -325,10 +350,13 @@ defmodule Vesper.Servers do
     |> Repo.insert()
   end
 
-  def list_invites(server_id) do
+  def list_invites(server_id, opts \\ []) do
+    limit = Keyword.get(opts, :limit, 100)
+
     from(i in Invite,
       where: i.server_id == ^server_id,
       order_by: [desc: i.inserted_at],
+      limit: ^limit,
       preload: [:creator]
     )
     |> Repo.all()
@@ -371,11 +399,13 @@ defmodule Vesper.Servers do
                 }
                 |> Repo.insert(on_conflict: :nothing, conflict_target: [:user_id, :server_id])
 
-              # Only increment uses when a new membership was actually inserted
+              # Only increment uses and notify when a new membership was actually inserted
               case result do
                 {:ok, %Membership{id: id}} when not is_nil(id) ->
                   from(i in Invite, where: i.id == ^invite.id)
                   |> Repo.update_all(inc: [uses: 1])
+
+                  broadcast_membership_change(server.id)
 
                 _ ->
                   :ok
@@ -385,5 +415,12 @@ defmodule Vesper.Servers do
             end
         end
     end
+  end
+
+  @doc """
+  Broadcast a membership change so channels can invalidate cached member lists.
+  """
+  def broadcast_membership_change(server_id) do
+    Phoenix.PubSub.broadcast(Vesper.PubSub, "server_members:#{server_id}", :members_changed)
   end
 end
