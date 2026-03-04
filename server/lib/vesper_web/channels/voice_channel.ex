@@ -170,24 +170,25 @@ defmodule VesperWeb.VoiceChannel do
 
     Voice.ensure_room(room_id, room_type: room_type)
 
+    # Semaphore.call returns the function's result directly, or {:error, :max}
     case Semaphore.call({:voice_room, room_id}, @max_concurrent_voice_ops, fn ->
            Voice.join_room(room_id, user_id, self())
          end) do
-      {:ok, {:ok, offer_sdp, track_map}} ->
+      {:ok, offer_sdp, track_map} ->
         push(socket, "offer", %{sdp: offer_sdp, track_map: track_map})
 
         broadcast!(socket, "voice_state_update", %{
           participants: Voice.get_participants(room_id)
         })
 
-      {:ok, {:error, :room_full}} ->
+      {:error, :room_full} ->
         push(socket, "error", %{reason: "room is full"})
-
-      {:ok, {:error, reason}} ->
-        push(socket, "error", %{reason: inspect(reason)})
 
       {:error, :max} ->
         push(socket, "error", %{reason: "server busy, try again"})
+
+      {:error, reason} ->
+        push(socket, "error", %{reason: inspect(reason)})
     end
 
     {:noreply, socket}

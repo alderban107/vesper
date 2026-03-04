@@ -72,12 +72,6 @@ defmodule Vesper.Servers.PermissionsCache do
   end
 
   @impl true
-  def handle_info(:permissions_changed, state) do
-    # This message doesn't carry server_id, handled via specific topic handler below
-    {:noreply, state}
-  end
-
-  @impl true
   def handle_info({:permissions_changed, server_id}, state) do
     :ets.match_delete(@table, {{:_, server_id}, :_})
     {:noreply, state}
