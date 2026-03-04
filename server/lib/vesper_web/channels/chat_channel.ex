@@ -21,6 +21,9 @@ defmodule VesperWeb.ChatChannel do
         # Cache server_id and member IDs on join to avoid per-message DB lookups
         member_ids = Servers.list_member_ids(channel.server_id)
 
+        # Subscribe to membership changes so we can invalidate the cache
+        Phoenix.PubSub.subscribe(Vesper.PubSub, "server_members:#{channel.server_id}")
+
         socket =
           socket
           |> assign(:channel_id, channel_id)
@@ -301,6 +304,12 @@ defmodule VesperWeb.ChatChannel do
 
   def handle_in(_event, _payload, socket),
     do: {:reply, {:error, %{reason: "unrecognized event"}}, socket}
+
+  @impl true
+  def handle_info(:members_changed, socket) do
+    member_ids = Servers.list_member_ids(socket.assigns.server_id)
+    {:noreply, assign(socket, :member_ids, member_ids)}
+  end
 
   defp notify_mentions(nil, _channel_id, _sender_id, _server_id, _member_ids), do: :ok
   defp notify_mentions([], _channel_id, _sender_id, _server_id, _member_ids), do: :ok
