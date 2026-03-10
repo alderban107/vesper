@@ -22,7 +22,6 @@ client/playwright-report/
 
 # Project docs (private)
 CLAUDE.md
-DESIGN.md
 TODO.md
 PROGRESS.md
 server/AGENTS.md
