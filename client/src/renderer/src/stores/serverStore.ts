@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { apiFetch } from '../api/client'
+import type { CustomEmoji } from '../utils/emoji'
 
 export interface Channel {
   id: string
@@ -17,6 +18,7 @@ export interface Server {
   icon_url: string | null
   owner_id: string
   channels: Channel[]
+  emojis?: CustomEmoji[]
 }
 
 export interface Member {

@@ -9,6 +9,9 @@ interface UIState {
   showRoleManager: boolean
   showServerSettingsModal: boolean
   showPins: boolean
+  showMemberList: boolean
+  channelSidebarWidth: number
+  memberListWidth: number
 
   openCreateServerModal: () => void
   closeCreateServerModal: () => void
@@ -26,6 +29,10 @@ interface UIState {
   closeServerSettingsModal: () => void
   togglePins: () => void
   closePins: () => void
+  toggleMemberList: () => void
+  setMemberListVisible: (visible: boolean) => void
+  setChannelSidebarWidth: (width: number) => void
+  setMemberListWidth: (width: number) => void
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -37,6 +44,9 @@ export const useUIStore = create<UIState>((set) => ({
   showRoleManager: false,
   showServerSettingsModal: false,
   showPins: false,
+  showMemberList: true,
+  channelSidebarWidth: 248,
+  memberListWidth: 264,
 
   openCreateServerModal: () => set({ showCreateServerModal: true }),
   closeCreateServerModal: () => set({ showCreateServerModal: false }),
@@ -53,5 +63,9 @@ export const useUIStore = create<UIState>((set) => ({
   openServerSettingsModal: () => set({ showServerSettingsModal: true }),
   closeServerSettingsModal: () => set({ showServerSettingsModal: false }),
   togglePins: () => set((s) => ({ showPins: !s.showPins })),
-  closePins: () => set({ showPins: false })
+  closePins: () => set({ showPins: false }),
+  toggleMemberList: () => set((s) => ({ showMemberList: !s.showMemberList })),
+  setMemberListVisible: (visible) => set({ showMemberList: visible }),
+  setChannelSidebarWidth: (width) => set({ channelSidebarWidth: Math.max(220, Math.min(360, width)) }),
+  setMemberListWidth: (width) => set({ memberListWidth: Math.max(220, Math.min(420, width)) })
 }))

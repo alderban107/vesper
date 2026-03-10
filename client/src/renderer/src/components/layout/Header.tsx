@@ -1,4 +1,4 @@
-import { Hash, AtSign, Phone, Pin } from 'lucide-react'
+import { Hash, AtSign, Phone, Pin, PanelRightClose, PanelRightOpen } from 'lucide-react'
 import { useServerStore } from '../../stores/serverStore'
 import { useDmStore } from '../../stores/dmStore'
 import { useAuthStore } from '../../stores/authStore'
@@ -9,7 +9,9 @@ import SearchBar from '../chat/SearchBar'
 
 export default function Header(): React.JSX.Element {
   const showPins = useUIStore((s) => s.showPins)
+  const showMemberList = useUIStore((s) => s.showMemberList)
   const togglePins = useUIStore((s) => s.togglePins)
+  const toggleMemberList = useUIStore((s) => s.toggleMemberList)
   const activeServer = useServerStore((s) => s.servers.find((srv) => srv.id === s.activeServerId))
   const activeChannel = useServerStore((s) => {
     const server = s.servers.find((srv) => srv.id === s.activeServerId)
@@ -32,9 +34,9 @@ export default function Header(): React.JSX.Element {
   }
 
   return (
-    <div className="h-12 bg-bg-secondary/80 backdrop-blur-sm border-b border-border flex items-center px-4 shrink-0">
+    <div className="vesper-chat-header">
       {activeConversation ? (
-        <div className="flex items-center gap-2 flex-1">
+        <div className="flex items-center gap-2 flex-1 min-w-0">
           <AtSign className="w-4 h-4 text-text-faint" />
           <span className="text-text-primary font-semibold">{getDmDisplayName()}</span>
           <div className="flex-1" />
@@ -53,7 +55,7 @@ export default function Header(): React.JSX.Element {
           </button>
         </div>
       ) : activeChannel ? (
-        <div className="flex items-center gap-2 flex-1">
+        <div className="flex items-center gap-2 flex-1 min-w-0">
           <Hash className="w-4 h-4 text-text-faint" />
           <span className="text-text-primary font-semibold">{activeChannel.name}</span>
           {activeChannel.topic && (
@@ -71,6 +73,13 @@ export default function Header(): React.JSX.Element {
           >
             <Pin className="w-4 h-4" />
           </button>
+          <button
+            onClick={toggleMemberList}
+            className={`text-text-muted hover:text-text-primary transition-colors p-1.5 rounded hover:bg-bg-tertiary/50 ${showMemberList ? 'text-accent' : ''}`}
+            title={showMemberList ? 'Hide Member List' : 'Show Member List'}
+          >
+            {showMemberList ? <PanelRightClose className="w-4 h-4" /> : <PanelRightOpen className="w-4 h-4" />}
+          </button>
           <DisappearingSettings
             currentTtl={activeChannel.disappearing_ttl ?? null}
             topic={`chat:channel:${activeChannel.id}`}
@@ -79,7 +88,6 @@ export default function Header(): React.JSX.Element {
       ) : activeServer ? (
         <span className="text-text-faint">{activeServer.name}</span>
       ) : null}
-
     </div>
   )
 }

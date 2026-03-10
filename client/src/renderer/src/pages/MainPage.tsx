@@ -38,6 +38,7 @@ export default function MainPage(): React.JSX.Element {
   const showRoleManager = useUIStore((s) => s.showRoleManager)
   const showServerSettingsModal = useUIStore((s) => s.showServerSettingsModal)
   const showPins = useUIStore((s) => s.showPins)
+  const showMemberList = useUIStore((s) => s.showMemberList)
   const closePins = useUIStore((s) => s.closePins)
   const incomingCall = useVoiceStore((s) => s.incomingCall)
   const servers = useServerStore((s) => s.servers)
@@ -94,7 +95,7 @@ export default function MainPage(): React.JSX.Element {
               </div>
             )}
           </div>
-          {isChannelView && <MemberListPanel />}
+          {isChannelView && showMemberList && <MemberListPanel />}
           {isChannelView && showPins && activeChannelId && (
             <PinsPanel
               channelId={activeChannelId}

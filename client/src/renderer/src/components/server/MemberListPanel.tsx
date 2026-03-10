@@ -1,11 +1,13 @@
-import { Crown, Shield, MessageCircle, UserMinus, Copy } from 'lucide-react'
+import { Crown, MessageCircle, Copy, MoonStar, Shield, UserMinus } from 'lucide-react'
 import { useServerStore, type Member } from '../../stores/serverStore'
 import { usePresenceStore, type PresenceStatus } from '../../stores/presenceStore'
 import { useAuthStore } from '../../stores/authStore'
 import { useDmStore } from '../../stores/dmStore'
+import { useUIStore } from '../../stores/uiStore'
 import Avatar from '../ui/Avatar'
 import ContextMenu, { type ContextMenuItem } from '../ui/ContextMenu'
 import { useContextMenu } from '../../hooks/useContextMenu'
+import ResizeHandle from '../layout/ResizeHandle'
 
 const STATUS_COLORS: Record<PresenceStatus, string> = {
   online: 'bg-emerald-500',
@@ -14,27 +16,84 @@ const STATUS_COLORS: Record<PresenceStatus, string> = {
   offline: 'bg-gray-500'
 }
 
+const STATUS_LABELS: Record<PresenceStatus, string> = {
+  online: 'Online',
+  idle: 'Idle',
+  dnd: 'Do Not Disturb',
+  offline: 'Offline'
+}
+
+interface MemberGroup {
+  id: string
+  label: string
+  members: Member[]
+}
+
+function sortMembers(left: Member, right: Member): number {
+  const leftName = (left.user.display_name || left.user.username).toLowerCase()
+  const rightName = (right.user.display_name || right.user.username).toLowerCase()
+  return leftName.localeCompare(rightName)
+}
+
+function getMemberGroups(members: Member[], statuses: Record<string, PresenceStatus>, currentUserId?: string, ownerId?: string): MemberGroup[] {
+  const owners: Member[] = []
+  const admins: Member[] = []
+  const online: Member[] = []
+  const idle: Member[] = []
+  const offline: Member[] = []
+
+  for (const member of members) {
+    const status = member.user_id === currentUserId ? 'online' : (statuses[member.user_id] ?? 'offline')
+
+    if (member.user_id === ownerId) {
+      owners.push(member)
+      continue
+    }
+
+    if (member.role === 'admin') {
+      admins.push(member)
+      continue
+    }
+
+    if (status === 'online' || status === 'dnd') {
+      online.push(member)
+    } else if (status === 'idle') {
+      idle.push(member)
+    } else {
+      offline.push(member)
+    }
+  }
+
+  return [
+    owners.length > 0 ? { id: 'owner', label: 'Owner', members: owners.sort(sortMembers) } : null,
+    admins.length > 0 ? { id: 'admins', label: 'Admins', members: admins.sort(sortMembers) } : null,
+    online.length > 0 ? { id: 'online', label: 'Online', members: online.sort(sortMembers) } : null,
+    idle.length > 0 ? { id: 'idle', label: 'Idle', members: idle.sort(sortMembers) } : null,
+    offline.length > 0 ? { id: 'offline', label: 'Offline', members: offline.sort(sortMembers) } : null
+  ].filter((group): group is MemberGroup => Boolean(group))
+}
+
 function MemberRow({
   member,
-  isOnline,
+  status,
   onContextMenu
 }: {
   member: Member
-  isOnline: boolean
+  status: PresenceStatus
   onContextMenu: (e: React.MouseEvent, data: Member) => void
 }): React.JSX.Element {
   const myId = useAuthStore((s) => s.user?.id)
   const createConversation = useDmStore((s) => s.createConversation)
   const setActiveServer = useServerStore((s) => s.setActiveServer)
-  const status = usePresenceStore((s) => s.statuses[member.user_id] ?? 'offline') as PresenceStatus
   const displayName = member.user?.display_name || member.user?.username || 'Unknown'
-  const initials = displayName.slice(0, 2).toUpperCase()
   const activeServer = useServerStore((s) => s.servers.find((srv) => srv.id === s.activeServerId))
   const isOwner = activeServer?.owner_id === member.user_id
   const isAdmin = member.role === 'admin'
+  const isSelf = member.user_id === myId
+  const roleLabel = isOwner ? 'Owner' : isAdmin ? 'Admin' : STATUS_LABELS[status]
 
   const handleClick = async (): Promise<void> => {
-    if (member.user_id === myId) return
+    if (isSelf) return
     await createConversation([member.user_id])
     setActiveServer(null)
   }
@@ -43,14 +102,10 @@ function MemberRow({
     <button
       onClick={handleClick}
       onContextMenu={(e) => onContextMenu(e, member)}
-      disabled={member.user_id === myId}
-      className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg transition-colors ${
-        member.user_id === myId
-          ? 'cursor-default'
-          : 'hover:bg-bg-secondary/50 cursor-pointer'
-      } ${!isOnline ? 'opacity-50' : ''}`}
+      disabled={isSelf}
+      className={`vesper-member-row ${status === 'offline' ? 'vesper-member-row-offline' : ''} ${isSelf ? 'vesper-member-row-self' : ''}`}
     >
-      <div className="relative w-8 h-8 shrink-0">
+      <div className="vesper-member-avatar-wrap">
         <Avatar
           userId={member.user_id}
           avatarUrl={member.user?.avatar_url}
@@ -58,14 +113,24 @@ function MemberRow({
           size="sm"
         />
         <div
-          className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-bg-primary ${STATUS_COLORS[status]}`}
+          className={`vesper-member-status-dot ${STATUS_COLORS[status]}`}
         />
       </div>
 
-      <span className="text-sm text-text-secondary truncate flex-1 text-left">{displayName}</span>
+      <div className="vesper-member-copy">
+        <div className="vesper-member-name-row">
+          <span className="vesper-member-name">{displayName}</span>
+          {isOwner && <Crown className="vesper-member-role-icon vesper-member-role-icon-owner" />}
+          {isAdmin && !isOwner && <Shield className="vesper-member-role-icon vesper-member-role-icon-admin" />}
+          {status === 'idle' && !isOwner && !isAdmin && <MoonStar className="vesper-member-role-icon" />}
+        </div>
+        <div className="vesper-member-subcopy">
+          <span>{roleLabel}</span>
+          {isSelf && <span>You</span>}
+        </div>
+      </div>
 
-      {isOwner && <Crown className="w-3.5 h-3.5 text-amber-400 shrink-0" />}
-      {isAdmin && !isOwner && <Shield className="w-3.5 h-3.5 text-accent-text shrink-0" />}
+      {!isSelf && <MessageCircle className="vesper-member-action-hint" />}
     </button>
   )
 }
@@ -75,24 +140,15 @@ export default function MemberListPanel(): React.JSX.Element {
   const statuses = usePresenceStore((s) => s.statuses)
   const myId = useAuthStore((s) => s.user?.id)
   const activeServer = useServerStore((s) => s.servers.find((srv) => srv.id === s.activeServerId))
+  const memberListWidth = useUIStore((s) => s.memberListWidth)
+  const setMemberListWidth = useUIStore((s) => s.setMemberListWidth)
   const kickMember = useServerStore((s) => s.kickMember)
   const createConversation = useDmStore((s) => s.createConversation)
   const setActiveServer = useServerStore((s) => s.setActiveServer)
 
   const memberMenu = useContextMenu<Member>()
 
-  const online: Member[] = []
-  const offline: Member[] = []
-
-  for (const member of members) {
-    // Current user is always online — it's nonsensical to show yourself as offline
-    const status = member.user_id === myId ? 'online' : (statuses[member.user_id] ?? 'offline')
-    if (status === 'offline') {
-      offline.push(member)
-    } else {
-      online.push(member)
-    }
-  }
+  const groups = getMemberGroups(members, statuses, myId, activeServer?.owner_id)
 
   const getMemberItems = (member: Member): ContextMenuItem[] => {
     const isOwner = activeServer?.owner_id === myId
@@ -133,32 +189,34 @@ export default function MemberListPanel(): React.JSX.Element {
   }
 
   return (
-    <div className="w-56 bg-bg-primary border-l border-border flex flex-col overflow-y-auto shrink-0">
-      <div className="px-3 py-3 text-xs font-semibold text-text-faint uppercase tracking-wider">
-        Members — {members.length}
+    <div className="vesper-member-list-panel" style={{ width: `${memberListWidth}px` }}>
+      <ResizeHandle
+        side="left"
+        onResizeDelta={(delta) => setMemberListWidth(memberListWidth + delta)}
+      />
+      <div className="vesper-member-list-header">
+        <span className="vesper-member-list-title">Members</span>
+        <span className="vesper-member-list-count">{members.length}</span>
       </div>
 
-      {online.length > 0 && (
-        <div className="px-1.5 pb-2">
-          <div className="px-2 py-1 text-[11px] font-semibold text-text-faintest uppercase tracking-wider">
-            Online — {online.length}
+      <div className="vesper-member-list-scroller">
+        {groups.map((group) => (
+          <div key={group.id} className="vesper-member-group">
+            <div className="vesper-member-group-header">
+              <span className="vesper-member-group-name">{group.label}</span>
+              <span>{group.members.length}</span>
+            </div>
+            {group.members.map((member) => (
+              <MemberRow
+                key={member.id}
+                member={member}
+                status={member.user_id === myId ? 'online' : (statuses[member.user_id] ?? 'offline')}
+                onContextMenu={memberMenu.onContextMenu}
+              />
+            ))}
           </div>
-          {online.map((m) => (
-            <MemberRow key={m.id} member={m} isOnline onContextMenu={memberMenu.onContextMenu} />
-          ))}
-        </div>
-      )}
-
-      {offline.length > 0 && (
-        <div className="px-1.5 pb-2">
-          <div className="px-2 py-1 text-[11px] font-semibold text-text-faintest uppercase tracking-wider">
-            Offline — {offline.length}
-          </div>
-          {offline.map((m) => (
-            <MemberRow key={m.id} member={m} isOnline={false} onContextMenu={memberMenu.onContextMenu} />
-          ))}
-        </div>
-      )}
+        ))}
+      </div>
 
       {memberMenu.menu && (
         <ContextMenu

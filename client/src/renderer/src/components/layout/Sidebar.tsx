@@ -1,7 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
 import {
   MessageCircle, Plus, ArrowRightToLine, Hash, Volume2, Settings, LogOut,
-  Copy, Pencil, Trash2
+  Copy, Trash2
 } from 'lucide-react'
 import { useServerStore } from '../../stores/serverStore'
 import { useAuthStore } from '../../stores/authStore'
@@ -15,6 +14,7 @@ import VoiceControls from '../voice/VoiceControls'
 import VoiceParticipants from '../voice/VoiceParticipants'
 import ContextMenu, { type ContextMenuItem } from '../ui/ContextMenu'
 import { useContextMenu } from '../../hooks/useContextMenu'
+import ResizeHandle from './ResizeHandle'
 
 const STATUS_COLORS: Record<PresenceStatus, string> = {
   online: 'bg-emerald-500',
@@ -44,6 +44,8 @@ export default function Sidebar(): React.JSX.Element {
   const openCreateChannelModal = useUIStore((s) => s.openCreateChannelModal)
   const openSettingsModal = useUIStore((s) => s.openSettingsModal)
   const openServerSettingsModal = useUIStore((s) => s.openServerSettingsModal)
+  const channelSidebarWidth = useUIStore((s) => s.channelSidebarWidth)
+  const setChannelSidebarWidth = useUIStore((s) => s.setChannelSidebarWidth)
   const logout = useAuthStore((s) => s.logout)
   const user = useAuthStore((s) => s.user)
 
@@ -209,106 +211,110 @@ export default function Sidebar(): React.JSX.Element {
       </div>
 
       {/* Channel / DM list */}
-      {currentView === 'dm' ? (
-        <DmSidebarContent />
-      ) : (
-        <div className="w-56 min-w-0 bg-bg-secondary flex flex-col">
-          {activeServer ? (
-            <>
-              <div className="px-4 py-3 border-b border-border">
-                <h2 className="text-text-primary font-semibold truncate">
-                  {activeServer.name}
-                </h2>
-              </div>
-
-              <div className="flex-1 overflow-y-auto py-2">
-                <div className="flex items-center px-3 mb-1">
-                  <span className="text-text-faint text-xs font-semibold uppercase tracking-wide flex-1">
-                    Text Channels
-                  </span>
-                  <button
-                    onClick={openCreateChannelModal}
-                    className="text-text-faint hover:text-text-secondary transition-colors"
-                    title="Create Channel"
-                  >
-                    <Plus className="w-4 h-4" />
-                  </button>
+      <div className="vesper-channel-sidebar-shell" style={{ width: `${channelSidebarWidth}px` }}>
+        {currentView === 'dm' ? (
+          <DmSidebarContent />
+        ) : (
+          <div className="vesper-channel-sidebar">
+            {activeServer ? (
+              <>
+                <div className="vesper-channel-sidebar-header">
+                  <div className="vesper-channel-sidebar-header-copy">
+                    <span className="vesper-channel-sidebar-kicker">Server</span>
+                    <h2 className="vesper-channel-sidebar-title">
+                      {activeServer.name}
+                    </h2>
+                  </div>
                 </div>
 
-                {activeServer.channels
-                  .filter((c) => c.type === 'text')
-                  .map((channel) => {
-                    const unread = channelUnreads[channel.id] || 0
-                    return (
+                <div className="vesper-channel-sidebar-scroller">
+                  <div className="vesper-channel-group">
+                    <div className="vesper-channel-group-header">
+                      <span className="vesper-channel-group-label">Text Channels</span>
                       <button
-                        key={channel.id}
-                        onClick={() => setActiveChannel(channel.id)}
-                        onContextMenu={(e) =>
-                          channelMenu.onContextMenu(e, {
-                            channelId: channel.id,
-                            serverId: activeServer.id
-                          })
-                        }
-                        className={`w-full text-left px-3 py-1.5 text-sm flex items-center gap-1.5 transition-colors ${
-                          channel.id === activeChannelId
-                            ? 'bg-bg-tertiary/80 text-text-primary'
-                            : 'text-text-muted hover:text-text-primary hover:bg-bg-tertiary/30'
-                        }`}
+                        onClick={openCreateChannelModal}
+                        className="vesper-channel-group-action"
+                        title="Create Channel"
                       >
-                        <Hash className="w-4 h-4 text-text-faint shrink-0" />
-                        <span
-                          className={`truncate flex-1 ${
-                            unread > 0 && channel.id !== activeChannelId
-                              ? 'font-semibold text-text-primary'
-                              : ''
-                          }`}
-                        >
-                          {channel.name}
-                        </span>
-                        {unread > 0 && channel.id !== activeChannelId && (
-                          <span className="min-w-[18px] h-[18px] bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center px-1 shrink-0">
-                            {unread > 99 ? '99+' : unread}
-                          </span>
-                        )}
+                        <Plus className="w-4 h-4" />
                       </button>
-                    )
-                  })}
-
-                {activeServer.channels.some((c) => c.type === 'voice') && (
-                  <>
-                    <div className="px-3 mt-3 mb-1">
-                      <span className="text-text-faint text-xs font-semibold uppercase tracking-wide">
-                        Voice Channels
-                      </span>
                     </div>
-                    {activeServer.channels
-                      .filter((c) => c.type === 'voice')
-                      .map((channel) => (
-                        <div key={channel.id}>
-                          <button
-                            onClick={() => useVoiceStore.getState().joinVoiceChannel(channel.id)}
-                            className="w-full text-left px-3 py-1.5 text-sm text-text-muted hover:text-text-primary hover:bg-bg-tertiary/30 flex items-center gap-1.5 transition-colors"
-                          >
-                            <Volume2 className="w-4 h-4 text-text-faint shrink-0" />
-                            <span className="truncate">{channel.name}</span>
-                          </button>
-                          <VoiceParticipants channelId={channel.id} />
-                        </div>
-                      ))}
-                  </>
-                )}
-              </div>
-            </>
-          ) : (
-            <div className="flex-1 flex items-center justify-center text-text-faintest text-sm px-4 text-center">
-              Select or create a server
-            </div>
-          )}
 
-          <VoiceControls />
-          <UserBar user={user} logout={logout} openSettingsModal={openSettingsModal} />
-        </div>
-      )}
+                    <div className="vesper-channel-group-list">
+                      {activeServer.channels
+                        .filter((c) => c.type === 'text')
+                        .map((channel) => {
+                          const unread = channelUnreads[channel.id] || 0
+                          const isActive = channel.id === activeChannelId
+                          return (
+                            <button
+                              key={channel.id}
+                              onClick={() => setActiveChannel(channel.id)}
+                              onContextMenu={(e) =>
+                                channelMenu.onContextMenu(e, {
+                                  channelId: channel.id,
+                                  serverId: activeServer.id
+                                })
+                              }
+                              className={`vesper-channel-row${isActive ? ' vesper-channel-row-active' : ''}${unread > 0 && !isActive ? ' vesper-channel-row-unread' : ''}`}
+                            >
+                              <span className="vesper-channel-row-icon">
+                                <Hash className="w-4 h-4 shrink-0" />
+                              </span>
+                              <span className="vesper-channel-row-label">{channel.name}</span>
+                              {unread > 0 && !isActive && (
+                                <span className="vesper-channel-unread-badge">
+                                  {unread > 99 ? '99+' : unread}
+                                </span>
+                              )}
+                            </button>
+                          )
+                        })}
+                    </div>
+                  </div>
+
+                  {activeServer.channels.some((c) => c.type === 'voice') && (
+                    <div className="vesper-channel-group">
+                      <div className="vesper-channel-group-header">
+                        <span className="vesper-channel-group-label">Voice Channels</span>
+                      </div>
+                      <div className="vesper-channel-group-list">
+                        {activeServer.channels
+                          .filter((c) => c.type === 'voice')
+                          .map((channel) => (
+                            <div key={channel.id} className="vesper-channel-voice-block">
+                              <button
+                                onClick={() => useVoiceStore.getState().joinVoiceChannel(channel.id)}
+                                className="vesper-channel-row vesper-channel-row-voice"
+                              >
+                                <span className="vesper-channel-row-icon">
+                                  <Volume2 className="w-4 h-4 shrink-0" />
+                                </span>
+                                <span className="vesper-channel-row-label">{channel.name}</span>
+                              </button>
+                              <VoiceParticipants channelId={channel.id} />
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="flex-1 flex items-center justify-center text-text-faintest text-sm px-4 text-center">
+                Select or create a server
+              </div>
+            )}
+
+            <VoiceControls />
+            <UserBar user={user} logout={logout} openSettingsModal={openSettingsModal} />
+          </div>
+        )}
+        <ResizeHandle
+          side="right"
+          onResizeDelta={(delta) => setChannelSidebarWidth(channelSidebarWidth + delta)}
+        />
+      </div>
 
       {/* Context menus */}
       {serverMenu.menu && (
@@ -337,7 +343,7 @@ function DmSidebarContent(): React.JSX.Element {
   const openSettingsModal = useUIStore((s) => s.openSettingsModal)
 
   return (
-    <div className="w-56 min-w-0 bg-bg-secondary flex flex-col">
+    <div className="vesper-channel-sidebar">
       <DmSidebar />
       <UserBar user={user} logout={logout} openSettingsModal={openSettingsModal} />
     </div>
