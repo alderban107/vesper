@@ -2,6 +2,7 @@ defmodule Vesper.Servers do
   import Bitwise
   import Ecto.Query
   alias Vesper.Repo
+
   alias Vesper.Servers.{
     Server,
     Channel,
@@ -250,7 +251,8 @@ defmodule Vesper.Servers do
             broadcast_membership_change(server_id, user_id, :member_left)
             maybe_log_admin_action(server_id, actor_id, "member_kicked", target_user_id: user_id)
 
-          _ -> :ok
+          _ ->
+            :ok
         end
 
         result
@@ -519,7 +521,8 @@ defmodule Vesper.Servers do
     }
   end
 
-  def validate_channel_permission_overrides(%Channel{} = channel, overrides) when is_map(overrides) do
+  def validate_channel_permission_overrides(%Channel{} = channel, overrides)
+      when is_map(overrides) do
     case parse_and_validate_channel_overrides(channel, overrides) do
       {:ok, _parsed} -> :ok
       {:error, _reason} = error -> error
@@ -614,10 +617,21 @@ defmodule Vesper.Servers do
           {role_allow, role_deny} = channel_role_permission_masks(channel.id, role_ids)
 
           user_override =
-            Repo.get_by(ChannelUserPermission, channel_id: channel.id, user_id: membership.user_id)
+            Repo.get_by(ChannelUserPermission,
+              channel_id: channel.id,
+              user_id: membership.user_id
+            )
 
-          base_allowed = true
-          role_adjusted = apply_permission_override(base_allowed, role_allow, role_deny, permission_bit)
+          base_allowed =
+            if permission_bit == @channel_override_view_channel do
+              true
+            else
+              Permissions.has_permission?(server_permissions, permission_bit)
+            end
+
+          role_adjusted =
+            apply_permission_override(base_allowed, role_allow, role_deny, permission_bit)
+
           user_allow = if user_override, do: user_override.allow, else: 0
           user_deny = if user_override, do: user_override.deny, else: 0
           apply_permission_override(role_adjusted, user_allow, user_deny, permission_bit)
@@ -715,8 +729,9 @@ defmodule Vesper.Servers do
         Map.get(entry, "id") ||
         Map.get(entry, :id)
 
-    with true <- is_binary(id) && id != "" || {:error, "#{id_key} is required"},
-         {:ok, allow} <- normalize_override_mask(Map.get(entry, "allow") || Map.get(entry, :allow)),
+    with true <- (is_binary(id) && id != "") || {:error, "#{id_key} is required"},
+         {:ok, allow} <-
+           normalize_override_mask(Map.get(entry, "allow") || Map.get(entry, :allow)),
          {:ok, deny} <- normalize_override_mask(Map.get(entry, "deny") || Map.get(entry, :deny)),
          false <- (allow &&& deny) != 0 || {:error, "allow and deny cannot overlap"} do
       if allow == 0 and deny == 0 do
@@ -775,7 +790,8 @@ defmodule Vesper.Servers do
     end
   end
 
-  defp normalize_override_item(_item, _permission_map), do: {:error, "permissions must be strings"}
+  defp normalize_override_item(_item, _permission_map),
+    do: {:error, "permissions must be strings"}
 
   defp validate_override_roles(_server_id, []), do: :ok
 
@@ -996,6 +1012,7 @@ defmodule Vesper.Servers do
 
     if match?({:ok, _}, result) do
       broadcast_permissions_changed(role.server_id)
+
       maybe_log_admin_action(role.server_id, actor_id, "role_updated",
         target_id: role.id,
         metadata: role_update_metadata(attrs)
@@ -1251,7 +1268,8 @@ defmodule Vesper.Servers do
     actor_id = Keyword.get(opts, :actor_id)
 
     case Repo.get(Invite, invite_id) do
-      nil -> {:error, :not_found}
+      nil ->
+        {:error, :not_found}
 
       invite ->
         case Repo.delete(invite) do
@@ -1430,7 +1448,10 @@ defmodule Vesper.Servers do
 
       role_id when is_binary(role_id) ->
         with {:ok, role_uuid} <- Ecto.UUID.cast(role_id),
-             true <- Repo.exists?(from(r in Role, where: r.id == ^role_uuid and r.server_id == ^server_id)) do
+             true <-
+               Repo.exists?(
+                 from(r in Role, where: r.id == ^role_uuid and r.server_id == ^server_id)
+               ) do
           {:ok, role_uuid}
         else
           _ -> {:error, :invalid_role}

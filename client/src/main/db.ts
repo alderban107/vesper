@@ -46,11 +46,10 @@ export function initDb(): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_message_cache_channel ON message_cache(channel_id);
-    CREATE INDEX IF NOT EXISTS idx_message_cache_conversation ON message_cache(conversation_id);
-    CREATE INDEX IF NOT EXISTS idx_message_cache_inserted ON message_cache(inserted_at DESC);
   `)
 
   ensureMessageCacheColumns()
+  ensureMessageCacheIndexes()
 }
 
 export function closeDb(): void {
@@ -85,6 +84,11 @@ function ensureMessageCacheColumns(): void {
   ensureColumn('message_cache', 'conversation_id', 'TEXT')
   ensureColumn('message_cache', 'server_id', 'TEXT')
   ensureColumn('message_cache', 'attachment_filenames', 'TEXT')
+}
+
+function ensureMessageCacheIndexes(): void {
+  getDb().exec('CREATE INDEX IF NOT EXISTS idx_message_cache_conversation ON message_cache(conversation_id)')
+  getDb().exec('CREATE INDEX IF NOT EXISTS idx_message_cache_inserted ON message_cache(inserted_at DESC)')
 }
 
 // --- Identity Keys ---

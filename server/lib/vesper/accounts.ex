@@ -157,21 +157,52 @@ defmodule Vesper.Accounts do
           nonce: attrs["nonce"] || attrs[:nonce]
         })
         |> Repo.insert()
+        |> case do
+          {:ok, snapshot} ->
+            {:ok, snapshot}
+
+          {:error, %Ecto.Changeset{} = changeset} ->
+            if unique_user_snapshot_conflict?(changeset) do
+              case get_search_index_snapshot(user_id) do
+                nil -> {:error, changeset}
+                snapshot -> {:error, :conflict, snapshot}
+              end
+            else
+              {:error, changeset}
+            end
+        end
 
       %SearchIndexSnapshot{} = snapshot ->
+        version_to_match =
+          if is_integer(expected_version), do: expected_version, else: snapshot.version
+
         cond do
-          is_integer(expected_version) and expected_version != snapshot.version ->
+          version_to_match != snapshot.version ->
             {:error, :conflict, snapshot}
 
           true ->
-            snapshot
-            |> SearchIndexSnapshot.changeset(%{
-              device_id: attrs["device_id"] || attrs[:device_id],
-              version: snapshot.version + 1,
-              ciphertext: attrs["ciphertext"] || attrs[:ciphertext],
-              nonce: attrs["nonce"] || attrs[:nonce]
-            })
-            |> Repo.update()
+            {updated_count, _} =
+              from(s in SearchIndexSnapshot,
+                where: s.id == ^snapshot.id and s.version == ^version_to_match
+              )
+              |> Repo.update_all(
+                set: [
+                  device_id: attrs["device_id"] || attrs[:device_id],
+                  ciphertext: attrs["ciphertext"] || attrs[:ciphertext],
+                  nonce: attrs["nonce"] || attrs[:nonce],
+                  updated_at: DateTime.utc_now() |> DateTime.truncate(:second)
+                ],
+                inc: [version: 1]
+              )
+
+            if updated_count == 1 do
+              {:ok, get_search_index_snapshot(user_id)}
+            else
+              case get_search_index_snapshot(user_id) do
+                nil -> {:error, :conflict, snapshot}
+                latest -> {:error, :conflict, latest}
+              end
+            end
         end
     end
   end
@@ -181,5 +212,12 @@ defmodule Vesper.Accounts do
     |> Repo.delete_all()
 
     :ok
+  end
+
+  defp unique_user_snapshot_conflict?(%Ecto.Changeset{} = changeset) do
+    Enum.any?(changeset.errors, fn
+      {:user_id, {_message, meta}} -> meta[:constraint] == :unique
+      _ -> false
+    end)
   end
 end
