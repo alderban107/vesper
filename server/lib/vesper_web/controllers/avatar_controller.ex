@@ -5,6 +5,8 @@ defmodule VesperWeb.AvatarController do
 
   # 5MB
   @max_avatar_size 5 * 1024 * 1024
+  # 8MB
+  @max_banner_size 8 * 1024 * 1024
   @allowed_types ~w(image/jpeg image/png image/gif image/webp)
   @ext_map %{
     "image/jpeg" => "jpg",
@@ -70,7 +72,7 @@ defmodule VesperWeb.AvatarController do
     avatar_dir = FileStorage.avatar_dir()
 
     # Find the avatar file (any extension)
-    case find_avatar(avatar_dir, user_id) do
+    case find_image(avatar_dir, user_id) do
       nil ->
         conn |> put_status(:not_found) |> json(%{error: "no avatar"})
 
@@ -84,7 +86,74 @@ defmodule VesperWeb.AvatarController do
     end
   end
 
-  defp find_avatar(dir, user_id) do
+  def create_banner(conn, %{"file" => upload}) do
+    user = conn.assigns.current_user
+
+    file_size =
+      case File.stat(upload.path) do
+        {:ok, %{size: size}} -> size
+        _ -> 0
+      end
+
+    content_type = upload.content_type || "application/octet-stream"
+
+    cond do
+      file_size > @max_banner_size ->
+        conn
+        |> put_status(:request_entity_too_large)
+        |> json(%{error: "banner too large (max 8MB)"})
+
+      content_type not in @allowed_types ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "only JPEG, PNG, GIF, and WebP images are allowed"})
+
+      true ->
+        ext = Map.get(@ext_map, content_type, "bin")
+        banner_dir = FileStorage.banner_dir()
+        File.mkdir_p!(banner_dir)
+
+        FileStorage.delete_existing_banner(user.id)
+
+        dest = Path.join(banner_dir, "#{user.id}.#{ext}")
+        File.cp!(upload.path, dest)
+
+        banner_url = "/api/v1/banners/#{user.id}"
+
+        case Accounts.update_profile(user, %{banner_url: banner_url}) do
+          {:ok, updated_user} ->
+            conn |> json(%{user: user_json(updated_user)})
+
+          {:error, _} ->
+            conn
+            |> put_status(:internal_server_error)
+            |> json(%{error: "could not update banner"})
+        end
+    end
+  end
+
+  def create_banner(conn, _params) do
+    conn |> put_status(:bad_request) |> json(%{error: "file is required"})
+  end
+
+  def show_banner(conn, %{"user_id" => user_id}) do
+    banner_dir = FileStorage.banner_dir()
+
+    case find_image(banner_dir, user_id) do
+      nil ->
+        conn |> put_status(:not_found) |> json(%{error: "no banner"})
+
+      path ->
+        content_type = content_type_from_ext(Path.extname(path))
+
+        conn
+        |> put_resp_content_type(content_type)
+        |> put_resp_header("cache-control", "public, max-age=86400")
+        |> send_file(200, path)
+    end
+  end
+
+  defp find_image(dir, user_id) do
     ~w(.jpg .png .gif .webp)
     |> Enum.find_value(fn ext ->
       path = Path.join(dir, "#{user_id}#{ext}")
@@ -104,6 +173,7 @@ defmodule VesperWeb.AvatarController do
       username: user.username,
       display_name: user.display_name,
       avatar_url: user.avatar_url,
+      banner_url: user.banner_url,
       status: user.status
     }
   end

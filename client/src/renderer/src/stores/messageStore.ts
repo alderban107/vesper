@@ -7,6 +7,78 @@ import { useVoiceStore } from './voiceStore'
 import { useServerStore } from './serverStore'
 import { useDmStore } from './dmStore'
 import { usePresenceStore } from './presenceStore'
+import {
+  cacheMessage,
+  deleteCachedMessage,
+  loadAllCachedMessages,
+  loadCachedMessages,
+  pruneMessageCache
+} from '../crypto/storage'
+import { scheduleSearchIndexSync } from '../crypto/searchIndexSync'
+
+/**
+ * Own-message plaintext resolution.
+ *
+ * MLS senders cannot decrypt their own ciphertext (the ratchet advances on
+ * encrypt). We solve this with a three-tier lookup that covers every scenario:
+ *
+ *   1. In-memory Map   — fastest, covers the live send→broadcast loop
+ *   2. localStorage     — synchronous, survives page crashes, shared across tabs
+ *   3. IndexedDB cache  — survives localStorage clears, used for history reloads
+ *
+ * Plaintext is written to tiers 1+2 at send time (before the channel push),
+ * and to tier 3 after the broadcast is processed with the server-assigned ID.
+ */
+const SENT_PREFIX = 'vsp:sent:'
+const MEMORY_CACHE_MAX = 500
+const LOCAL_MESSAGE_CACHE_MAX = 5000
+const sentPlaintextCache = new Map<string, string>()
+
+function ctKey(ciphertext: string): string {
+  return ciphertext.slice(0, 48)
+}
+
+export function cacheSentPlaintext(ciphertext: string, plaintext: string): void {
+  const key = ctKey(ciphertext)
+
+  // Tier 1 — in-memory (bounded FIFO)
+  if (sentPlaintextCache.size >= MEMORY_CACHE_MAX) {
+    const oldest = sentPlaintextCache.keys().next().value
+    if (oldest !== undefined) sentPlaintextCache.delete(oldest)
+  }
+  sentPlaintextCache.set(key, plaintext)
+
+  // Tier 2 — localStorage (survives crashes, shared across tabs)
+  try {
+    localStorage.setItem(SENT_PREFIX + key, plaintext)
+  } catch {
+    // Storage full — non-fatal
+  }
+}
+
+function lookupSentPlaintext(ciphertext: string): string | null {
+  const key = ctKey(ciphertext)
+  // Tier 1
+  const mem = sentPlaintextCache.get(key)
+  if (mem !== undefined) return mem
+  // Tier 2
+  try {
+    const stored = localStorage.getItem(SENT_PREFIX + key)
+    if (stored !== null) {
+      sentPlaintextCache.set(key, stored) // promote to memory
+      return stored
+    }
+  } catch {
+    // Private browsing or quota — non-fatal
+  }
+  return null
+}
+
+function cleanupSentEntry(ciphertext: string): void {
+  const key = ctKey(ciphertext)
+  sentPlaintextCache.delete(key)
+  try { localStorage.removeItem(SENT_PREFIX + key) } catch { /* */ }
+}
 
 export interface MessageSender {
   id: string
@@ -79,16 +151,34 @@ export interface Message {
   content: string
   channel_id: string | null
   conversation_id: string | null
+  server_id?: string | null
   sender_id: string | null
   sender: MessageSender | null
   inserted_at: string
   expires_at: string | null
   parent_message_id: string | null
   attachments?: Attachment[]
+  attachment_filenames?: string[]
   reactions?: ReactionGroup[]
   encrypted?: boolean
   decryptionFailed?: boolean
   edited_at?: string
+}
+
+export interface PendingMessageJumpTarget {
+  requestId: number
+  messageId: string
+  targetId: string
+  channelId: string | null
+  conversationId: string | null
+  serverId: string | null
+}
+
+export interface PinnedMessageEntry {
+  id: string
+  message: Message
+  pinned_by_id: string
+  inserted_at: string
 }
 
 interface TypingUser {
@@ -103,12 +193,20 @@ interface MessageState {
   replyingTo: Message | null
   editingMessage: Message | null
   encryptionError: string | null
+  activeThreadParentId: string | null
+  activeThreadParent: Message | null
+  threadRepliesByParent: Record<string, Message[]>
+  threadLoading: boolean
+  threadError: string | null
+  pendingJumpTarget: PendingMessageJumpTarget | null
+  focusedMessageId: string | null
+  pinnedByChannel: Record<string, PinnedMessageEntry[]>
 
   joinChannelChat: (channelId: string) => void
   leaveChannelChat: (channelId: string) => void
   fetchMessages: (channelId: string) => Promise<void>
   fetchOlderMessages: (channelId: string) => Promise<void>
-  sendMessage: (channelId: string, content: string) => void
+  sendMessage: (channelId: string, content: string, parentMessageId?: string) => Promise<void>
   sendTypingStart: (channelId: string) => void
   sendTypingStop: (channelId: string) => void
 
@@ -117,12 +215,16 @@ interface MessageState {
   leaveDmChat: (conversationId: string) => void
   fetchDmMessages: (conversationId: string) => Promise<void>
   fetchOlderDmMessages: (conversationId: string) => Promise<void>
-  sendDmMessage: (conversationId: string, content: string) => void
+  sendDmMessage: (conversationId: string, content: string, parentMessageId?: string) => Promise<void>
   sendDmTypingStart: (conversationId: string) => void
   sendDmTypingStop: (conversationId: string) => void
 
   // Threads
   setReplyingTo: (message: Message | null) => void
+  openThread: (message: Message) => Promise<void>
+  closeThread: () => void
+  fetchThreadReplies: (parentMessageId: string) => Promise<void>
+  sendThreadReply: (content: string) => Promise<void>
 
   // Edit / Delete
   setEditingMessage: (message: Message | null) => void
@@ -136,10 +238,19 @@ interface MessageState {
   // Pinning
   pinMessage: (topic: string, messageId: string) => void
   unpinMessage: (topic: string, messageId: string) => void
+  fetchPinnedMessages: (channelId: string) => Promise<PinnedMessageEntry[]>
+  jumpToMessage: (channelId: string, messageId: string, insertedAt?: string) => Promise<boolean>
+  focusMessage: (messageId: string) => void
 
   // Search
   searchMessages: (query: string) => Promise<Message[]>
+  setPendingJumpTarget: (
+    target: Omit<PendingMessageJumpTarget, 'requestId'> | null
+  ) => void
+  clearPendingJumpTarget: () => void
 }
+
+let jumpRequestCounter = 0
 
 export const useMessageStore = create<MessageState>((set, get) => ({
   messagesByChannel: {},
@@ -148,6 +259,14 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   replyingTo: null,
   editingMessage: null,
   encryptionError: null,
+  activeThreadParentId: null,
+  activeThreadParent: null,
+  threadRepliesByParent: {},
+  threadLoading: false,
+  threadError: null,
+  pendingJumpTarget: null,
+  focusedMessageId: null,
+  pinnedByChannel: {},
 
   // --- Channel messaging (existing) ---
 
@@ -211,6 +330,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         }
       } else if (event === 'reaction_update') {
         handleReactionUpdate(channelId, msg, set)
+      } else if (event === 'message_pinned') {
+        handlePinBroadcast(channelId, msg, set, 'pin')
+      } else if (event === 'message_unpinned') {
+        handlePinBroadcast(channelId, msg, set, 'unpin')
       } else if (event === 'message_edited') {
         handleMessageEdited(channelId, msg, set)
       } else if (event === 'message_deleted') {
@@ -294,38 +417,32 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     }
   },
 
-  sendMessage: async (channelId, content) => {
+  sendMessage: async (channelId, content, parentMessageId) => {
     const crypto = useCryptoStore.getState()
     const replyingTo = get().replyingTo
-    const parentId = replyingTo?.id || undefined
+    const parentId = parentMessageId ?? replyingTo?.id ?? undefined
+    const shouldClearInlineReply = !parentMessageId
     const mentionedUserIds = extractMentionedUserIds(content)
+
+    if (!crypto.hasGroup(channelId)) {
+      await crypto.createGroup(channelId)
+    }
 
     if (crypto.hasGroup(channelId)) {
       const encrypted = await crypto.encryptForChannel(channelId, content)
       if (encrypted) {
+        cacheSentPlaintext(encrypted.ciphertext, content)
         pushToChannel(`chat:channel:${channelId}`, 'new_message', {
           ciphertext: encrypted.ciphertext,
           mls_epoch: encrypted.epoch,
           ...(parentId && { parent_message_id: parentId }),
           ...(mentionedUserIds.length > 0 && { mentioned_user_ids: mentionedUserIds })
         })
-        set({ replyingTo: null, encryptionError: null })
+        set({
+          ...(shouldClearInlineReply ? { replyingTo: null } : {}),
+          encryptionError: null
+        })
         return
-      }
-    } else {
-      await crypto.createGroup(channelId)
-      if (crypto.hasGroup(channelId)) {
-        const encrypted = await crypto.encryptForChannel(channelId, content)
-        if (encrypted) {
-          pushToChannel(`chat:channel:${channelId}`, 'new_message', {
-            ciphertext: encrypted.ciphertext,
-            mls_epoch: encrypted.epoch,
-            ...(parentId && { parent_message_id: parentId }),
-            ...(mentionedUserIds.length > 0 && { mentioned_user_ids: mentionedUserIds })
-          })
-          set({ replyingTo: null, encryptionError: null })
-          return
-        }
       }
     }
 
@@ -410,6 +527,8 @@ export const useMessageStore = create<MessageState>((set, get) => ({
             conversationId: msg.conversation_id as string
           })
         }
+      } else if (event === 'call_rejected') {
+        useVoiceStore.getState().handleDmCallRejected(msg.conversation_id as string)
       } else if (event === 'message_edited') {
         handleMessageEdited(conversationId, msg, set)
       } else if (event === 'message_deleted') {
@@ -495,11 +614,12 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     }
   },
 
-  sendDmMessage: async (conversationId, content) => {
+  sendDmMessage: async (conversationId, content, parentMessageId) => {
     const crypto = useCryptoStore.getState()
     const topic = `dm:${conversationId}`
     const replyingTo = get().replyingTo
-    const parentId = replyingTo?.id || undefined
+    const parentId = parentMessageId ?? replyingTo?.id ?? undefined
+    const shouldClearInlineReply = !parentMessageId
 
     // Try encrypting with existing group, or create a new one
     const encrypted = crypto.hasGroup(conversationId)
@@ -507,12 +627,15 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       : null
 
     if (encrypted) {
+      cacheSentPlaintext(encrypted.ciphertext, content)
       pushToChannel(topic, 'new_message', {
         ciphertext: encrypted.ciphertext,
         mls_epoch: encrypted.epoch,
         ...(parentId && { parent_message_id: parentId })
       })
-      set({ replyingTo: null })
+      if (shouldClearInlineReply) {
+        set({ replyingTo: null })
+      }
       return
     }
 
@@ -553,12 +676,15 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
       const freshEncrypted = await crypto.encryptForChannel(conversationId, content)
       if (freshEncrypted) {
+        cacheSentPlaintext(freshEncrypted.ciphertext, content)
         pushToChannel(topic, 'new_message', {
           ciphertext: freshEncrypted.ciphertext,
           mls_epoch: freshEncrypted.epoch,
           ...(parentId && { parent_message_id: parentId })
         })
-        set({ replyingTo: null })
+        if (shouldClearInlineReply) {
+          set({ replyingTo: null })
+        }
         return
       }
     }
@@ -576,6 +702,101 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
   // Threads
   setReplyingTo: (message) => set({ replyingTo: message }),
+  openThread: async (message) => {
+    const parentId = message.parent_message_id ?? message.id
+    set({
+      activeThreadParentId: parentId,
+      activeThreadParent: message.parent_message_id ? null : message,
+      threadError: null
+    })
+    await get().fetchThreadReplies(parentId)
+  },
+  closeThread: () =>
+    set({
+      activeThreadParentId: null,
+      activeThreadParent: null,
+      threadError: null,
+      threadLoading: false
+    }),
+  fetchThreadReplies: async (parentMessageId) => {
+    set({ threadLoading: true, threadError: null })
+    try {
+      const res = await apiFetch(`/api/v1/messages/${parentMessageId}/thread?limit=200`)
+      if (!res.ok) {
+        if (get().activeThreadParentId === parentMessageId) {
+          set({ threadLoading: false, threadError: 'Thread could not be loaded.' })
+        }
+        return
+      }
+
+      const data = (await res.json()) as {
+        parent?: Record<string, unknown>
+        messages?: Record<string, unknown>[]
+      }
+
+      const parentPayload = data.parent
+      if (!parentPayload) {
+        if (get().activeThreadParentId === parentMessageId) {
+          set({ threadLoading: false, threadError: 'Thread could not be loaded.' })
+        }
+        return
+      }
+
+      const targetId = (parentPayload.channel_id || parentPayload.conversation_id) as string | undefined
+      if (!targetId) {
+        if (get().activeThreadParentId === parentMessageId) {
+          set({ threadLoading: false, threadError: 'Thread could not be loaded.' })
+        }
+        return
+      }
+
+      const parent = await processIncomingMessage(targetId, parentPayload)
+      const replyPayloads = data.messages ?? []
+      const replies = await Promise.all(
+        replyPayloads.map((entry) => processIncomingMessage(targetId, entry))
+      )
+
+      if (get().activeThreadParentId !== parentMessageId) {
+        set({ threadLoading: false })
+        return
+      }
+
+      set((s) => ({
+        activeThreadParentId: parent.id,
+        activeThreadParent: parent,
+        threadRepliesByParent: {
+          ...s.threadRepliesByParent,
+          [parent.id]: replies
+        },
+        threadLoading: false,
+        threadError: null
+      }))
+    } catch {
+      if (get().activeThreadParentId === parentMessageId) {
+        set({ threadLoading: false, threadError: 'Thread could not be loaded.' })
+      }
+    }
+  },
+  sendThreadReply: async (content) => {
+    const parent = get().activeThreadParent
+    if (!parent) {
+      return
+    }
+
+    const trimmed = content.trim()
+    if (!trimmed) {
+      return
+    }
+
+    if (parent.channel_id) {
+      await get().sendMessage(parent.channel_id, trimmed, parent.id)
+      return
+    }
+
+    if (parent.conversation_id) {
+      await get().sendDmMessage(parent.conversation_id, trimmed, parent.id)
+    }
+  },
 
   // Edit / Delete
   setEditingMessage: (message) => set({ editingMessage: message }),
@@ -586,6 +807,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     if (crypto.hasGroup(targetId)) {
       const encrypted = await crypto.encryptForChannel(targetId, newContent)
       if (encrypted) {
+        cacheSentPlaintext(encrypted.ciphertext, newContent)
         pushToChannel(topic, 'edit_message', {
           message_id: messageId,
           ciphertext: encrypted.ciphertext,
@@ -623,31 +845,233 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     pushToChannel(topic, 'unpin_message', { message_id: messageId })
   },
 
-  // Search (local SQLite)
+  fetchPinnedMessages: async (channelId) => {
+    try {
+      const res = await apiFetch(`/api/v1/channels/${channelId}/pins`)
+      if (!res.ok) {
+        return []
+      }
+
+      const data = (await res.json()) as {
+        pins?: Array<{
+          id: string
+          message: Record<string, unknown>
+          pinned_by_id: string
+          inserted_at: string
+        }>
+      }
+
+      const pinsRaw = data.pins ?? []
+      const pins = await Promise.all(
+        pinsRaw.map(async (pin) => ({
+          id: pin.id,
+          message: await processIncomingMessage(channelId, pin.message),
+          pinned_by_id: pin.pinned_by_id,
+          inserted_at: pin.inserted_at
+        }))
+      )
+
+      set((s) => ({
+        pinnedByChannel: {
+          ...s.pinnedByChannel,
+          [channelId]: pins
+        }
+      }))
+
+      return pins
+    } catch {
+      return []
+    }
+  },
+
+  jumpToMessage: async (channelId, messageId, insertedAt) => {
+    const hasMessage = (): boolean =>
+      (get().messagesByChannel[channelId] || []).some((message) => message.id === messageId)
+
+    if ((get().messagesByChannel[channelId] || []).length === 0) {
+      await get().fetchMessages(channelId)
+    }
+
+    if (hasMessage()) {
+      get().focusMessage(messageId)
+      return true
+    }
+
+    const targetMs = insertedAt ? Date.parse(insertedAt) : Number.NaN
+    let previousOldestId: string | null = null
+    let safetyCounter = 0
+
+    while ((get().hasMore[channelId] ?? true) && safetyCounter < 40) {
+      const current = get().messagesByChannel[channelId] || []
+      const oldest = current[0]
+      if (!oldest || oldest.id === previousOldestId) {
+        break
+      }
+      previousOldestId = oldest.id
+
+      try {
+        const res = await apiFetch(
+          `/api/v1/channels/${channelId}/messages?limit=50&before=${encodeURIComponent(oldest.inserted_at)}`
+        )
+
+        if (!res.ok) {
+          break
+        }
+
+        const data = await res.json()
+        const rawMessages = (data.messages as Record<string, unknown>[]).reverse()
+        const olderMessages = await Promise.all(
+          rawMessages.map((entry) => processIncomingMessage(channelId, entry))
+        )
+        scheduleExpiryTimers(channelId, olderMessages)
+
+        set((s) => {
+          const existing = s.messagesByChannel[channelId] || []
+          const merged = [...olderMessages, ...existing]
+          const deduped = merged.filter(
+            (message, index, arr) => arr.findIndex((entry) => entry.id === message.id) === index
+          )
+
+          return {
+            messagesByChannel: {
+              ...s.messagesByChannel,
+              [channelId]: deduped
+            },
+            hasMore: {
+              ...s.hasMore,
+              [channelId]: rawMessages.length === 50
+            }
+          }
+        })
+      } catch {
+        break
+      }
+
+      if (hasMessage()) {
+        get().focusMessage(messageId)
+        return true
+      }
+
+      const newestStateOldest = get().messagesByChannel[channelId]?.[0]
+      if (newestStateOldest && !Number.isNaN(targetMs)) {
+        const oldestMs = Date.parse(newestStateOldest.inserted_at)
+        if (!Number.isNaN(oldestMs) && oldestMs <= targetMs && !(get().hasMore[channelId] ?? false)) {
+          break
+        }
+      }
+
+      safetyCounter += 1
+    }
+
+    if (hasMessage()) {
+      get().focusMessage(messageId)
+      return true
+    }
+
+    return false
+  },
+
+  focusMessage: (messageId) => {
+    set({ focusedMessageId: messageId })
+
+    if (typeof window !== 'undefined') {
+      window.setTimeout(() => {
+        if (useMessageStore.getState().focusedMessageId === messageId) {
+          useMessageStore.setState({ focusedMessageId: null })
+        }
+      }, 3_500)
+    }
+  },
+
+  // Search (client-side only to preserve E2EE guarantees)
   searchMessages: async (query) => {
-    const db = (window as Record<string, unknown>).cryptoDb as {
-      searchMessages?: (q: string) => Promise<Array<{
-        id: string; channel_id: string; sender_id: string | null;
-        sender_username: string | null; content: string | null; inserted_at: string
-      }>>
-    } | undefined
+    const trimmed = query.trim()
+    if (trimmed.length < 2) return []
 
-    if (!db?.searchMessages) return []
+    const needle = trimmed.toLowerCase()
+    const seen = new Map<string, Message>()
 
-    const results = await db.searchMessages(query)
-    return results.map((r) => ({
-      id: r.id,
-      content: r.content || '',
-      channel_id: r.channel_id,
-      conversation_id: null,
-      sender_id: r.sender_id,
-      sender: r.sender_username
-        ? { id: r.sender_id || '', username: r.sender_username, display_name: null, avatar_url: null }
-        : null,
-      inserted_at: r.inserted_at,
-      expires_at: null,
-      parent_message_id: null
-    }))
+    for (const messages of Object.values(get().messagesByChannel)) {
+      for (const message of messages) {
+        if (!message || seen.has(message.id)) {
+          continue
+        }
+
+        const parsed = parseMessageContent(message.content || '')
+        const parsedText = parsed.type === 'text' ? parsed.text : (parsed.text || '')
+        const parsedFileName = parsed.type === 'file' ? parsed.file.name : ''
+        const attachmentNames = [
+          ...(message.attachment_filenames || []),
+          ...(message.attachments?.map((attachment) => attachment.filename).filter(Boolean) || [])
+        ]
+        const haystack = [parsedText, parsedFileName, ...attachmentNames]
+          .join(' ')
+          .toLowerCase()
+
+        if (!haystack.includes(needle)) {
+          continue
+        }
+
+        seen.set(message.id, {
+          ...message,
+          attachment_filenames: attachmentNames
+        })
+      }
+    }
+
+    const cachedRows = await loadAllCachedMessages()
+    for (const row of cachedRows) {
+      if (!row.content || seen.has(row.id)) {
+        continue
+      }
+
+      const haystack = [row.content, ...row.attachmentFilenames].join(' ').toLowerCase()
+      if (!haystack.includes(needle)) {
+        continue
+      }
+
+      seen.set(row.id, {
+        id: row.id,
+        content: row.content,
+        channel_id: row.channelId,
+        conversation_id: row.conversationId,
+        server_id: row.serverId,
+        sender_id: row.senderId,
+        sender: row.senderUsername
+          ? { id: row.senderId ?? '', username: row.senderUsername, display_name: null, avatar_url: null }
+          : null,
+        inserted_at: row.insertedAt,
+        expires_at: null,
+        parent_message_id: null,
+        attachment_filenames: row.attachmentFilenames
+      })
+    }
+
+    return [...seen.values()]
+      .sort(
+        (left, right) =>
+          new Date(right.inserted_at).getTime() - new Date(left.inserted_at).getTime()
+      )
+      .slice(0, 50)
+  },
+
+  setPendingJumpTarget: (target) => {
+    if (!target) {
+      set({ pendingJumpTarget: null })
+      return
+    }
+
+    jumpRequestCounter += 1
+    set({
+      pendingJumpTarget: {
+        ...target,
+        requestId: jumpRequestCounter
+      }
+    })
+  },
+
+  clearPendingJumpTarget: () => {
+    set({ pendingJumpTarget: null })
   }
 }))
 
@@ -678,6 +1102,8 @@ function scheduleMessageExpiry(
         [targetId]: (s.messagesByChannel[targetId] || []).filter((m) => m.id !== messageId)
       }
     }))
+    deleteCachedMessage(messageId).catch(() => {})
+    scheduleSearchIndexSync()
     return
   }
 
@@ -689,9 +1115,63 @@ function scheduleMessageExpiry(
       }
     }))
     expiryTimers.delete(messageId)
+    deleteCachedMessage(messageId).catch(() => {})
+    scheduleSearchIndexSync()
   }, delay)
 
   expiryTimers.set(messageId, timer)
+}
+
+function patchThreadStateForMessage(
+  state: MessageState,
+  messageId: string,
+  updateMessage: (message: Message) => Message | null
+): Partial<MessageState> {
+  let threadsChanged = false
+  const nextRepliesByParent: Record<string, Message[]> = {}
+
+  for (const [parentId, replies] of Object.entries(state.threadRepliesByParent)) {
+    let changed = false
+    const nextReplies: Message[] = []
+
+    for (const reply of replies) {
+      if (reply.id === messageId) {
+        const updated = updateMessage(reply)
+        changed = true
+        if (updated) {
+          nextReplies.push(updated)
+        }
+      } else {
+        nextReplies.push(reply)
+      }
+    }
+
+    nextRepliesByParent[parentId] = changed ? nextReplies : replies
+    if (changed) {
+      threadsChanged = true
+    }
+  }
+
+  let nextActiveThreadParent = state.activeThreadParent
+  let activeParentChanged = false
+
+  if (state.activeThreadParent?.id === messageId) {
+    nextActiveThreadParent = updateMessage(state.activeThreadParent)
+    activeParentChanged = true
+  }
+
+  const patch: Partial<MessageState> = {}
+  if (threadsChanged) {
+    patch.threadRepliesByParent = nextRepliesByParent
+  }
+  if (activeParentChanged) {
+    patch.activeThreadParent = nextActiveThreadParent
+    if (!nextActiveThreadParent && state.activeThreadParentId === messageId) {
+      patch.activeThreadParentId = null
+    }
+  }
+
+  return patch
 }
 
 /**
@@ -738,10 +1218,62 @@ function handleReactionUpdate(
       return { ...m, reactions }
     })
 
+    const threadPatch = patchThreadStateForMessage(s, messageId, (message) => {
+      const reactions = [...(message.reactions || [])]
+      if (action === 'add') {
+        const existing = reactions.find((r) => r.emoji === emoji)
+        if (existing) {
+          if (!existing.senderIds.includes(senderId)) {
+            existing.senderIds = [...existing.senderIds, senderId]
+          }
+        } else {
+          reactions.push({ emoji, senderIds: [senderId] })
+        }
+      } else if (action === 'remove') {
+        const idx = reactions.findIndex((r) => r.emoji === emoji)
+        if (idx !== -1) {
+          reactions[idx] = {
+            ...reactions[idx],
+            senderIds: reactions[idx].senderIds.filter((id) => id !== senderId)
+          }
+          if (reactions[idx].senderIds.length === 0) {
+            reactions.splice(idx, 1)
+          }
+        }
+      }
+      return { ...message, reactions }
+    })
+
     return {
-      messagesByChannel: { ...s.messagesByChannel, [targetId]: updated }
+      messagesByChannel: { ...s.messagesByChannel, [targetId]: updated },
+      ...threadPatch
     }
   })
+
+  if (newContent !== undefined) {
+    const updatedMessage = useMessageStore
+      .getState()
+      .messagesByChannel[targetId]
+      ?.find((message) => message.id === messageId)
+
+    if (updatedMessage && !updatedMessage.expires_at) {
+      cacheMessage({
+        id: updatedMessage.id,
+        channelId: targetId,
+        conversationId: updatedMessage.conversation_id,
+        serverId: updatedMessage.server_id ?? null,
+        senderId: updatedMessage.sender_id,
+        senderUsername: updatedMessage.sender?.username ?? null,
+        content: updatedMessage.content,
+        attachmentFilenames:
+          updatedMessage.attachment_filenames ??
+          updatedMessage.attachments?.map((attachment) => attachment.filename).filter(Boolean) ??
+          [],
+        insertedAt: updatedMessage.inserted_at
+      }).catch(() => {})
+      scheduleSearchIndexSync()
+    }
+  }
 }
 
 /**
@@ -803,16 +1335,63 @@ async function processIncomingMessage(
   msg: Record<string, unknown>
 ): Promise<Message> {
   if (msg.ciphertext) {
-    const plaintext = await useCryptoStore
-      .getState()
-      .decryptForChannel(targetId, msg.ciphertext as string)
+    const ct = msg.ciphertext as string
+    const msgId = msg.id as string
+    const senderId = (msg.sender_id as string) || null
+    const myId = useAuthStore.getState().user?.id
+    const isOwn = senderId !== null && senderId === myId
+
+    let plaintext: string | null = null
+
+    if (isOwn) {
+      // Own messages: never attempt MLS decrypt (ratchet has advanced).
+      // Resolve from sent-plaintext cache (memory → localStorage → IndexedDB).
+      plaintext = lookupSentPlaintext(ct)
+      if (!plaintext) {
+        const cached = await loadCachedMessages(targetId)
+        const hit = cached.find((m) => m.id === msgId)
+        if (hit?.content) plaintext = hit.content
+      }
+    } else {
+      // Other members' messages: MLS decrypt, fall back to IndexedDB cache.
+      plaintext = await useCryptoStore.getState().decryptForChannel(targetId, ct)
+      if (!plaintext) {
+        const cached = await loadCachedMessages(targetId)
+        const hit = cached.find((m) => m.id === msgId)
+        if (hit?.content) plaintext = hit.content
+      }
+    }
+
+    // Persist decrypted content to IndexedDB (tier 3) for history reloads,
+    // then clean up the ephemeral tiers 1+2.
+    if (plaintext && !msg.expires_at) {
+      const parsedContent = parseMessageContent(plaintext)
+      const attachmentFilenames = parsedContent.type === 'file'
+        ? [parsedContent.file.name]
+        : []
+
+      cacheMessage({
+        id: msgId,
+        channelId: targetId,
+        conversationId: (msg.conversation_id as string) || null,
+        serverId: (msg.server_id as string) || null,
+        senderId,
+        senderUsername: (msg.sender as MessageSender)?.username || null,
+        content: plaintext,
+        attachmentFilenames,
+        insertedAt: msg.inserted_at as string
+      }).catch(() => {})
+      pruneMessageCache(LOCAL_MESSAGE_CACHE_MAX).catch(() => {})
+      scheduleSearchIndexSync()
+      if (isOwn) cleanupSentEntry(ct)
+    }
 
     return {
-      id: msg.id as string,
+      id: msgId,
       content: plaintext || 'Message unavailable',
       channel_id: (msg.channel_id as string) || null,
       conversation_id: (msg.conversation_id as string) || null,
-      sender_id: (msg.sender_id as string) || null,
+      sender_id: senderId,
       sender: (msg.sender as MessageSender) || null,
       inserted_at: msg.inserted_at as string,
       expires_at: (msg.expires_at as string) || null,
@@ -823,7 +1402,7 @@ async function processIncomingMessage(
     }
   }
 
-  return {
+  const plaintextMessage: Message = {
     id: msg.id as string,
     content: msg.content as string,
     channel_id: (msg.channel_id as string) || null,
@@ -835,6 +1414,28 @@ async function processIncomingMessage(
     parent_message_id: (msg.parent_message_id as string) || null,
     edited_at: (msg.edited_at as string) || undefined
   }
+
+  if (!plaintextMessage.expires_at) {
+    const attachmentFilenames = ((msg.attachments as Array<{ filename?: string }> | undefined) ?? [])
+      .map((attachment) => attachment.filename)
+      .filter((filename): filename is string => typeof filename === 'string')
+
+    cacheMessage({
+      id: plaintextMessage.id,
+      channelId: targetId,
+      conversationId: plaintextMessage.conversation_id,
+      serverId: plaintextMessage.server_id ?? null,
+      senderId: plaintextMessage.sender_id,
+      senderUsername: plaintextMessage.sender?.username ?? null,
+      content: plaintextMessage.content,
+      attachmentFilenames,
+      insertedAt: plaintextMessage.inserted_at
+    }).catch(() => {})
+    pruneMessageCache(LOCAL_MESSAGE_CACHE_MAX).catch(() => {})
+    scheduleSearchIndexSync()
+  }
+
+  return plaintextMessage
 }
 
 /**
@@ -882,9 +1483,21 @@ async function handleMessageEdited(
 
   let newContent: string | undefined
   if (msg.ciphertext) {
-    const plaintext = await useCryptoStore
-      .getState()
-      .decryptForChannel(targetId, msg.ciphertext as string)
+    const ct = msg.ciphertext as string
+    const myId = useAuthStore.getState().user?.id
+
+    // Edit broadcast doesn't include sender_id — look up the original message
+    const existing = useMessageStore.getState().messagesByChannel[targetId]
+    const original = existing?.find((m) => m.id === messageId)
+    const isOwn = original?.sender_id === myId
+
+    let plaintext: string | null = null
+    if (isOwn) {
+      plaintext = lookupSentPlaintext(ct)
+    } else {
+      plaintext = await useCryptoStore.getState().decryptForChannel(targetId, ct)
+    }
+    if (plaintext && isOwn) cleanupSentEntry(ct)
     newContent = plaintext || 'Message unavailable'
   } else if (msg.content) {
     newContent = msg.content as string
@@ -900,8 +1513,14 @@ async function handleMessageEdited(
         edited_at: editedAt
       }
     })
+    const threadPatch = patchThreadStateForMessage(s, messageId, (message) => ({
+      ...message,
+      ...(newContent !== undefined ? { content: newContent } : {}),
+      edited_at: editedAt
+    }))
     return {
-      messagesByChannel: { ...s.messagesByChannel, [targetId]: updated }
+      messagesByChannel: { ...s.messagesByChannel, [targetId]: updated },
+      ...threadPatch
     }
   })
 }
@@ -920,6 +1539,42 @@ function handleMessageDeleted(
     messagesByChannel: {
       ...s.messagesByChannel,
       [targetId]: (s.messagesByChannel[targetId] || []).filter((m) => m.id !== messageId)
-    }
+    },
+    pinnedByChannel: {
+      ...s.pinnedByChannel,
+      [targetId]: (s.pinnedByChannel[targetId] || []).filter((pin) => pin.message.id !== messageId)
+    },
+    ...patchThreadStateForMessage(s, messageId, () => null)
   }))
+
+  deleteCachedMessage(messageId).catch(() => {})
+  scheduleSearchIndexSync()
+}
+
+function emitPinUpdate(channelId: string): void {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  window.dispatchEvent(new CustomEvent('pin-update', { detail: { channelId } }))
+}
+
+function handlePinBroadcast(
+  channelId: string,
+  msg: Record<string, unknown>,
+  set: (fn: (s: MessageState) => Partial<MessageState>) => void,
+  action: 'pin' | 'unpin'
+): void {
+  const messageId = msg.message_id as string | undefined
+
+  if (action === 'unpin' && messageId) {
+    set((s) => ({
+      pinnedByChannel: {
+        ...s.pinnedByChannel,
+        [channelId]: (s.pinnedByChannel[channelId] || []).filter((pin) => pin.message.id !== messageId)
+      }
+    }))
+  }
+
+  emitPinUpdate(channelId)
 }

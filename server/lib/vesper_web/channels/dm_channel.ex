@@ -3,6 +3,7 @@ defmodule VesperWeb.DmChannel do
 
   alias Vesper.Chat
   alias Vesper.Encryption
+  alias Vesper.Voice
   import VesperWeb.ChannelHelpers
 
   @impl true
@@ -184,6 +185,24 @@ defmodule VesperWeb.DmChannel do
 
   def handle_in("typing_stop", _payload, socket) do
     broadcast_from!(socket, "typing_stop", %{user_id: socket.assigns.user_id})
+    {:noreply, socket}
+  end
+
+  def handle_in("call_reject", _payload, socket) do
+    conversation_id = socket.assigns.conversation_id
+    user_id = socket.assigns.user_id
+
+    Voice.call_reject(conversation_id, user_id)
+
+    broadcast!(socket, "call_rejected", %{
+      conversation_id: conversation_id,
+      user_id: user_id
+    })
+    VesperWeb.Endpoint.broadcast("voice:dm:#{conversation_id}", "call_rejected", %{
+      conversation_id: conversation_id,
+      user_id: user_id
+    })
+
     {:noreply, socket}
   end
 

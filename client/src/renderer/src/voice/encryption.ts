@@ -15,7 +15,7 @@ export class VoiceEncryption {
     this.worker?.postMessage({ type: 'set_key', key })
   }
 
-  applySenderTransform(sender: RTCRtpSender): void {
+  applySenderTransform(sender: RTCRtpSender, mediaKind: 'audio' | 'video' = 'audio'): void {
     if (!this.worker) return
     if (!('RTCRtpScriptTransform' in window)) {
       console.warn('RTCRtpScriptTransform not supported — voice E2EE disabled')
@@ -24,17 +24,19 @@ export class VoiceEncryption {
 
     // @ts-expect-error RTCRtpScriptTransform is not yet in TypeScript's lib
     sender.transform = new RTCRtpScriptTransform(this.worker, {
-      operation: 'encrypt'
+      operation: 'encrypt',
+      mediaKind
     })
   }
 
-  applyReceiverTransform(receiver: RTCRtpReceiver): void {
+  applyReceiverTransform(receiver: RTCRtpReceiver, mediaKind: 'audio' | 'video' = 'audio'): void {
     if (!this.worker) return
     if (!('RTCRtpScriptTransform' in window)) return
 
     // @ts-expect-error RTCRtpScriptTransform is not yet in TypeScript's lib
     receiver.transform = new RTCRtpScriptTransform(this.worker, {
-      operation: 'decrypt'
+      operation: 'decrypt',
+      mediaKind
     })
   }
 

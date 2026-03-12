@@ -49,7 +49,9 @@ defmodule VesperWeb.ServerController do
       true ->
         case Servers.update_server(server, params) do
           {:ok, updated} ->
-            json(conn, %{server: server_json(updated |> Vesper.Repo.preload(:channels))})
+            json(conn, %{
+              server: server_json(updated |> Vesper.Repo.preload([:channels, :emojis]))
+            })
 
           {:error, _} ->
             conn |> put_status(:unprocessable_entity) |> json(%{error: "could not update server"})
@@ -82,10 +84,16 @@ defmodule VesperWeb.ServerController do
       {:ok, server} ->
         json(conn, %{server: server_json(server)})
 
+      {:error, :banned} ->
+        conn |> put_status(:forbidden) |> json(%{error: "you are banned from this server"})
+
       {:error, :not_found} ->
         case Servers.use_invite(invite_code, user) do
           {:ok, server} ->
             json(conn, %{server: server_json(server)})
+
+          {:error, :banned} ->
+            conn |> put_status(:forbidden) |> json(%{error: "you are banned from this server"})
 
           {:error, :expired} ->
             conn |> put_status(:gone) |> json(%{error: "invite has expired"})
@@ -152,23 +160,162 @@ defmodule VesperWeb.ServerController do
 
   def kick(conn, %{"server_id" => server_id, "user_id" => user_id}) do
     current_user = conn.assigns.current_user
-    role = Servers.user_role(current_user.id, server_id)
 
     cond do
-      role not in ~w(owner admin) ->
+      not Servers.user_can?(current_user.id, server_id, Vesper.Servers.Permissions.kick_members()) ->
         conn |> put_status(:forbidden) |> json(%{error: "insufficient permissions"})
 
       user_id == current_user.id ->
         conn |> put_status(:bad_request) |> json(%{error: "cannot kick yourself"})
 
       true ->
-        case Servers.kick_member(server_id, user_id) do
+        case Servers.kick_member(server_id, user_id, actor_id: current_user.id) do
           {:ok, _} ->
             json(conn, %{ok: true})
 
           {:error, :not_found} ->
             conn |> put_status(:not_found) |> json(%{error: "member not found"})
         end
+    end
+  end
+
+  def ban(conn, %{"server_id" => server_id, "user_id" => user_id} = params) do
+    current_user = conn.assigns.current_user
+
+    cond do
+      not Servers.user_can?(current_user.id, server_id, Vesper.Servers.Permissions.ban_members()) ->
+        conn |> put_status(:forbidden) |> json(%{error: "insufficient permissions"})
+
+      user_id == current_user.id ->
+        conn |> put_status(:bad_request) |> json(%{error: "cannot ban yourself"})
+
+      true ->
+        case Servers.ban_member(server_id, user_id, current_user.id, params["reason"]) do
+          {:ok, ban} ->
+            json(conn, %{
+              ban: %{
+                id: ban.id,
+                server_id: ban.server_id,
+                user_id: ban.user_id,
+                banned_by_id: ban.banned_by_id,
+                reason: ban.reason,
+                inserted_at: ban.inserted_at
+              }
+            })
+
+          {:error, :not_found} ->
+            conn |> put_status(:not_found) |> json(%{error: "server not found"})
+
+          {:error, :cannot_ban_owner} ->
+            conn |> put_status(:bad_request) |> json(%{error: "cannot ban the server owner"})
+
+          {:error, :already_banned} ->
+            conn |> put_status(:conflict) |> json(%{error: "user is already banned"})
+
+          {:error, _changeset} ->
+            conn |> put_status(:unprocessable_entity) |> json(%{error: "could not ban user"})
+        end
+    end
+  end
+
+  def unban(conn, %{"server_id" => server_id, "user_id" => user_id}) do
+    current_user = conn.assigns.current_user
+
+    if Servers.user_can?(current_user.id, server_id, Vesper.Servers.Permissions.ban_members()) do
+      case Servers.unban_member(server_id, user_id, current_user.id) do
+        {:ok, _} ->
+          json(conn, %{ok: true})
+
+        {:error, :not_found} ->
+          conn |> put_status(:not_found) |> json(%{error: "ban not found"})
+      end
+    else
+      conn |> put_status(:forbidden) |> json(%{error: "insufficient permissions"})
+    end
+  end
+
+  def bans(conn, %{"server_id" => server_id} = params) do
+    user = conn.assigns.current_user
+
+    if Servers.user_can?(user.id, server_id, Vesper.Servers.Permissions.ban_members()) do
+      limit = parse_limit_param(params["limit"], 100)
+      bans = Servers.list_bans(server_id, limit: limit)
+
+      json(conn, %{
+        bans:
+          Enum.map(bans, fn ban ->
+            %{
+              id: ban.id,
+              server_id: ban.server_id,
+              user_id: ban.user_id,
+              banned_by_id: ban.banned_by_id,
+              reason: ban.reason,
+              inserted_at: ban.inserted_at,
+              user:
+                if ban.user do
+                  %{
+                    id: ban.user.id,
+                    username: ban.user.username,
+                    display_name: ban.user.display_name,
+                    avatar_url: ban.user.avatar_url
+                  }
+                end,
+              banned_by:
+                if ban.banned_by do
+                  %{
+                    id: ban.banned_by.id,
+                    username: ban.banned_by.username,
+                    display_name: ban.banned_by.display_name
+                  }
+                end
+            }
+          end)
+      })
+    else
+      conn |> put_status(:forbidden) |> json(%{error: "insufficient permissions"})
+    end
+  end
+
+  def audit_logs(conn, %{"server_id" => server_id} = params) do
+    user = conn.assigns.current_user
+
+    if Servers.user_can?(user.id, server_id, Vesper.Servers.Permissions.manage_server()) do
+      limit = parse_limit_param(params["limit"], 100)
+      logs = Servers.list_audit_logs(server_id, limit: limit)
+
+      json(conn, %{
+        audit_logs:
+          Enum.map(logs, fn entry ->
+            %{
+              id: entry.id,
+              server_id: entry.server_id,
+              action: entry.action,
+              actor_id: entry.actor_id,
+              target_user_id: entry.target_user_id,
+              target_id: entry.target_id,
+              metadata: entry.metadata || %{},
+              inserted_at: entry.inserted_at,
+              actor:
+                if entry.actor do
+                  %{
+                    id: entry.actor.id,
+                    username: entry.actor.username,
+                    display_name: entry.actor.display_name
+                  }
+                end,
+              target_user:
+                if entry.target_user do
+                  %{
+                    id: entry.target_user.id,
+                    username: entry.target_user.username,
+                    display_name: entry.target_user.display_name
+                  }
+                end
+            }
+          end)
+      })
+    else
+      conn |> put_status(:forbidden) |> json(%{error: "insufficient permissions"})
     end
   end
 
@@ -186,6 +333,7 @@ defmodule VesperWeb.ServerController do
             %{
               id: inv.id,
               code: inv.code,
+              role_id: inv.role_id,
               max_uses: inv.max_uses,
               uses: inv.uses,
               expires_at: inv.expires_at,
@@ -218,12 +366,16 @@ defmodule VesperWeb.ServerController do
             invite: %{
               id: invite.id,
               code: invite.code,
+              role_id: invite.role_id,
               max_uses: invite.max_uses,
               uses: invite.uses,
               expires_at: invite.expires_at,
               inserted_at: invite.inserted_at
             }
           })
+
+        {:error, :invalid_role} ->
+          conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid role_id"})
 
         {:error, _} ->
           conn |> put_status(:unprocessable_entity) |> json(%{error: "could not create invite"})
@@ -237,7 +389,7 @@ defmodule VesperWeb.ServerController do
     user = conn.assigns.current_user
 
     if Servers.user_can?(user.id, server_id, Vesper.Servers.Permissions.invite_members()) do
-      case Servers.revoke_invite(invite_id) do
+      case Servers.revoke_invite(invite_id, actor_id: user.id) do
         {:ok, _} ->
           json(conn, %{ok: true})
 
@@ -276,6 +428,11 @@ defmodule VesperWeb.ServerController do
         case server.channels do
           %Ecto.Association.NotLoaded{} -> []
           channels -> Enum.map(channels, &channel_json/1)
+        end,
+      emojis:
+        case server.emojis do
+          %Ecto.Association.NotLoaded{} -> []
+          emojis -> Enum.map(emojis, &emoji_json/1)
         end,
       inserted_at: server.inserted_at,
       updated_at: server.updated_at
@@ -320,7 +477,7 @@ defmodule VesperWeb.ServerController do
           conn |> put_status(:not_found) |> json(%{error: "role not found"})
 
         role ->
-          case Servers.update_role(role, params) do
+          case Servers.update_role(role, params, actor_id: user.id) do
             {:ok, updated} ->
               json(conn, %{role: role_json(updated)})
 
@@ -344,7 +501,7 @@ defmodule VesperWeb.ServerController do
           conn |> put_status(:not_found) |> json(%{error: "role not found"})
 
         role ->
-          Servers.delete_role(role)
+          Servers.delete_role(role, actor_id: user.id)
           json(conn, %{ok: true})
       end
     else
@@ -359,9 +516,26 @@ defmodule VesperWeb.ServerController do
       membership = Servers.get_membership(target_user_id, server_id)
 
       if membership do
-        role_ids = params["role_ids"] || []
-        Servers.replace_member_roles(membership.id, role_ids)
-        json(conn, %{ok: true})
+        case params["role"] do
+          role when is_binary(role) ->
+            case Servers.update_membership_role(membership, role, actor_id: user.id) do
+              {:ok, _updated} ->
+                json(conn, %{ok: true})
+
+              {:error, :invalid_role} ->
+                conn |> put_status(:unprocessable_entity) |> json(%{error: "invalid role"})
+
+              {:error, changeset} ->
+                conn
+                |> put_status(:unprocessable_entity)
+                |> json(%{errors: format_errors(changeset)})
+            end
+
+          _ ->
+            role_ids = params["role_ids"] || []
+            Servers.replace_member_roles(membership.id, role_ids, actor_id: user.id)
+            json(conn, %{ok: true})
+        end
       else
         conn |> put_status(:not_found) |> json(%{error: "member not found"})
       end
@@ -391,4 +565,29 @@ defmodule VesperWeb.ServerController do
       disappearing_ttl: channel.disappearing_ttl
     }
   end
+
+  defp emoji_json(emoji) do
+    %{
+      id: emoji.id,
+      name: emoji.name,
+      url: emoji.url,
+      animated: emoji.animated,
+      server_id: emoji.server_id
+    }
+  end
+
+  defp parse_limit_param(nil, default), do: default
+
+  defp parse_limit_param(limit, default) when is_binary(limit) do
+    case Integer.parse(limit) do
+      {value, _} when value > 0 -> min(value, 200)
+      _ -> default
+    end
+  end
+
+  defp parse_limit_param(limit, _default) when is_integer(limit) and limit > 0 do
+    min(limit, 200)
+  end
+
+  defp parse_limit_param(_limit, default), do: default
 end

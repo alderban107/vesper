@@ -1,6 +1,8 @@
 const DEFAULT_SERVER_URL =
   (window as any).VESPER_API_URL || 'http://localhost:4000'
 
+let refreshRequest: Promise<string | null> | null = null
+
 function getServerUrl(): string {
   return localStorage.getItem('serverUrl') || DEFAULT_SERVER_URL
 }
@@ -24,28 +26,38 @@ function clearTokens(): void {
 }
 
 async function refreshAccessToken(): Promise<string | null> {
+  if (refreshRequest) {
+    return refreshRequest
+  }
+
   const refreshToken = getRefreshToken()
   if (!refreshToken) return null
 
-  try {
-    const res = await fetch(`${getServerUrl()}/api/v1/auth/refresh`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: refreshToken })
-    })
+  refreshRequest = (async () => {
+    try {
+      const res = await fetch(`${getServerUrl()}/api/v1/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refreshToken })
+      })
 
-    if (!res.ok) {
+      if (!res.ok) {
+        clearTokens()
+        return null
+      }
+
+      const data = await res.json()
+      setTokens(data.access_token, data.refresh_token)
+      return data.access_token
+    } catch {
       clearTokens()
       return null
+    } finally {
+      refreshRequest = null
     }
+  })()
 
-    const data = await res.json()
-    setTokens(data.access_token, data.refresh_token)
-    return data.access_token
-  } catch {
-    clearTokens()
-    return null
-  }
+  return refreshRequest
 }
 
 export async function apiFetch(

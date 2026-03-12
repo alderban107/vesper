@@ -4,7 +4,7 @@
  */
 
 const DB_NAME = 'vesper-crypto'
-const DB_VERSION = 1
+const DB_VERSION = 2
 
 const STORES = {
   identityKeys: 'identity_keys',
@@ -38,6 +38,12 @@ function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(STORES.messageCache)) {
         const msgStore = db.createObjectStore(STORES.messageCache, { keyPath: 'id' })
         msgStore.createIndex('channel_id', 'channel_id', { unique: false })
+        msgStore.createIndex('conversation_id', 'conversation_id', { unique: false })
+      } else if (req.transaction) {
+        const msgStore = req.transaction.objectStore(STORES.messageCache)
+        if (!msgStore.indexNames.contains('conversation_id')) {
+          msgStore.createIndex('conversation_id', 'conversation_id', { unique: false })
+        }
       }
     }
 
@@ -69,16 +75,8 @@ function txComplete(transaction: IDBTransaction): Promise<void> {
 }
 
 export function createIndexedDbAdapter(): CryptoDbApi & {
-  searchMessages: (query: string) => Promise<
-    Array<{
-      id: string
-      channel_id: string
-      sender_id: string | null
-      sender_username: string | null
-      content: string | null
-      inserted_at: string
-    }>
-  >
+  deleteCachedMessage: (messageId: string) => Promise<void>
+  pruneMessageCache: (maxRows: number) => Promise<void>
 } {
   let dbPromise: Promise<IDBDatabase> | null = null
 
@@ -209,10 +207,13 @@ export function createIndexedDbAdapter(): CryptoDbApi & {
 
     async cacheMessage(msg: {
       id: string
-      channel_id: string
+      channel_id: string | null
+      conversation_id: string | null
+      server_id: string | null
       sender_id: string | null
       sender_username: string | null
       content: string | null
+      attachment_filenames: string[]
       inserted_at: string
     }) {
       const db = await getDb()
@@ -228,6 +229,24 @@ export function createIndexedDbAdapter(): CryptoDbApi & {
         (a: { inserted_at: string }, b: { inserted_at: string }) =>
           a.inserted_at.localeCompare(b.inserted_at)
       )
+        .map((row: Record<string, unknown>) => ({
+          ...row,
+          attachment_filenames: normalizeAttachmentFilenames(row.attachment_filenames)
+        }))
+    },
+
+    async getAllCachedMessages() {
+      const db = await getDb()
+      const rows = await req(tx(db, STORES.messageCache, 'readonly').getAll())
+      return rows
+        .sort(
+          (a: { inserted_at: string }, b: { inserted_at: string }) =>
+            b.inserted_at.localeCompare(a.inserted_at)
+        )
+        .map((row: Record<string, unknown>) => ({
+          ...row,
+          attachment_filenames: normalizeAttachmentFilenames(row.attachment_filenames)
+        }))
     },
 
     async clearMessageCache(channelId: string) {
@@ -240,37 +259,40 @@ export function createIndexedDbAdapter(): CryptoDbApi & {
       }
     },
 
-    // --- Search ---
-
-    async searchMessages(query: string) {
+    async deleteCachedMessage(messageId: string) {
       const db = await getDb()
+      await req(tx(db, STORES.messageCache, 'readwrite').delete(messageId))
+    },
+
+    async pruneMessageCache(maxRows: number) {
+      const db = await getDb()
+      const safeMaxRows = Number.isFinite(maxRows) ? Math.max(100, Math.floor(maxRows)) : 5000
       const all = await req(tx(db, STORES.messageCache, 'readonly').getAll())
-      const lowerQuery = query.toLowerCase()
-      return all
-        .filter(
-          (msg: { content: string | null }) =>
-            msg.content && msg.content.toLowerCase().includes(lowerQuery)
-        )
+      const toDelete = all
         .sort(
           (a: { inserted_at: string }, b: { inserted_at: string }) =>
             b.inserted_at.localeCompare(a.inserted_at)
         )
-        .slice(0, 50)
-        .map((r: {
-          id: string
-          channel_id: string
-          sender_id: string | null
-          sender_username: string | null
-          content: string | null
-          inserted_at: string
-        }) => ({
-          id: r.id,
-          channel_id: r.channel_id,
-          sender_id: r.sender_id,
-          sender_username: r.sender_username,
-          content: r.content,
-          inserted_at: r.inserted_at
-        }))
+        .slice(safeMaxRows)
+
+      if (toDelete.length === 0) {
+        return
+      }
+
+      const transaction = db.transaction(STORES.messageCache, 'readwrite')
+      const store = transaction.objectStore(STORES.messageCache)
+      for (const row of toDelete as Array<{ id: string }>) {
+        store.delete(row.id)
+      }
+      await txComplete(transaction)
     }
   }
+}
+
+function normalizeAttachmentFilenames(raw: unknown): string[] {
+  if (!Array.isArray(raw)) {
+    return []
+  }
+
+  return raw.filter((item): item is string => typeof item === 'string')
 }

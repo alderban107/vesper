@@ -6,11 +6,17 @@ import { useServerStore } from '../../stores/serverStore'
 interface Invite {
   id: string
   code: string
+  role_id: string | null
   max_uses: number | null
   uses: number
   expires_at: string | null
   creator: { id: string; username: string; display_name: string | null } | null
   inserted_at: string
+}
+
+interface Role {
+  id: string
+  name: string
 }
 
 const EXPIRY_OPTIONS = [
@@ -39,6 +45,8 @@ export default function InviteManager(): React.JSX.Element {
   const [loading, setLoading] = useState(true)
   const [expirySeconds, setExpirySeconds] = useState(0)
   const [maxUses, setMaxUses] = useState(0)
+  const [roleId, setRoleId] = useState('')
+  const [roles, setRoles] = useState<Role[]>([])
   const [creating, setCreating] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)
   const [permanentCode, setPermanentCode] = useState<string | null>(null)
@@ -71,18 +79,36 @@ export default function InviteManager(): React.JSX.Element {
     }
   }
 
+  const fetchRoles = async (): Promise<void> => {
+    if (!activeServerId) return
+    try {
+      const res = await apiFetch(`/api/v1/servers/${activeServerId}/roles`)
+      if (res.ok) {
+        const data = await res.json()
+        setRoles((data.roles || []) as Role[])
+      } else {
+        setRoles([])
+      }
+    } catch {
+      setRoles([])
+    }
+  }
+
   useEffect(() => {
     fetchInvites()
     fetchInviteCode()
+    fetchRoles()
+    setRoleId('')
   }, [activeServerId])
 
   const createInvite = async (): Promise<void> => {
     if (!activeServerId) return
     setCreating(true)
     try {
-      const body: Record<string, number> = {}
+      const body: Record<string, number | string> = {}
       if (expirySeconds > 0) body.expires_in_seconds = expirySeconds
       if (maxUses > 0) body.max_uses = maxUses
+      if (roleId) body.role_id = roleId
 
       const res = await apiFetch(`/api/v1/servers/${activeServerId}/invites`, {
         method: 'POST',
@@ -129,6 +155,12 @@ export default function InviteManager(): React.JSX.Element {
     if (hours > 24) return `${Math.floor(hours / 24)}d ${hours % 24}h`
     if (hours > 0) return `${hours}h ${minutes}m`
     return `${minutes}m`
+  }
+
+  const roleLabel = (assignedRoleId: string | null): string => {
+    if (!assignedRoleId) return 'No role'
+    const role = roles.find((entry) => entry.id === assignedRoleId)
+    return role?.name || 'Deleted role'
   }
 
   return (
@@ -194,6 +226,21 @@ export default function InviteManager(): React.JSX.Element {
               ))}
             </select>
           </div>
+          <div>
+            <label className="block text-text-muted text-xs mb-1">Grant role on join</label>
+            <select
+              value={roleId}
+              onChange={(e) => setRoleId(e.target.value)}
+              className="bg-bg-base/50 text-text-secondary text-xs px-2 py-1.5 rounded-lg border border-border"
+            >
+              <option value="">No role</option>
+              {roles.map((role) => (
+                <option key={role.id} value={role.id}>
+                  {role.name}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
         <button
           onClick={createInvite}
@@ -241,6 +288,9 @@ export default function InviteManager(): React.JSX.Element {
                     </span>
                     <span>
                       {invite.uses}{invite.max_uses ? `/${invite.max_uses}` : ''} uses
+                    </span>
+                    <span>
+                      Role: {roleLabel(invite.role_id)}
                     </span>
                     <span>
                       Expires: {formatExpiry(invite.expires_at)}

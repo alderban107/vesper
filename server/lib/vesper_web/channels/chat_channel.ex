@@ -14,16 +14,20 @@ defmodule VesperWeb.ChatChannel do
         {:error, %{reason: "channel not found or not a member"}}
 
       channel ->
-        # Subscribe to TTL changes so cached value stays in sync
-        Phoenix.PubSub.subscribe(Vesper.PubSub, "channel:settings:#{channel_id}")
+        if Servers.user_can_view_channel?(socket.assigns.user_id, channel) do
+          # Subscribe to TTL changes so cached value stays in sync
+          Phoenix.PubSub.subscribe(Vesper.PubSub, "channel:settings:#{channel_id}")
 
-        socket =
-          socket
-          |> assign(:channel_id, channel_id)
-          |> assign(:server_id, channel.server_id)
-          |> assign(:disappearing_ttl, channel.disappearing_ttl)
+          socket =
+            socket
+            |> assign(:channel_id, channel_id)
+            |> assign(:server_id, channel.server_id)
+            |> assign(:disappearing_ttl, channel.disappearing_ttl)
 
-        {:ok, socket}
+          {:ok, socket}
+        else
+          {:error, %{reason: "insufficient permissions"}}
+        end
     end
   end
 
@@ -35,49 +39,53 @@ defmodule VesperWeb.ChatChannel do
       ) do
     start_time = System.monotonic_time()
 
-    case safe_decode64(ciphertext) do
-      {:ok, decoded} ->
-        attrs =
-          %{
-            ciphertext: decoded,
-            mls_epoch: epoch,
-            channel_id: socket.assigns.channel_id,
-            sender_id: socket.assigns.user_id
-          }
-          |> maybe_add_parent(params)
-          |> maybe_add_expires_at(socket.assigns.disappearing_ttl)
+    if Servers.user_can_send_messages_in_channel?(socket.assigns.user_id, socket.assigns.channel_id) do
+      case safe_decode64(ciphertext) do
+        {:ok, decoded} ->
+          attrs =
+            %{
+              ciphertext: decoded,
+              mls_epoch: epoch,
+              channel_id: socket.assigns.channel_id,
+              sender_id: socket.assigns.user_id
+            }
+            |> maybe_add_parent(params)
+            |> maybe_add_expires_at(socket.assigns.disappearing_ttl)
 
-        case Chat.create_message(attrs) do
-          {:ok, message} ->
-            message = maybe_link_attachments(message, params)
-            broadcast!(socket, "new_message", encrypted_message_payload(message, :channel_id))
+          case Chat.create_message(attrs) do
+            {:ok, message} ->
+              message = maybe_link_attachments(message, params)
+              broadcast!(socket, "new_message", encrypted_message_payload(message, :channel_id))
 
-            :telemetry.execute(
-              [:vesper, :chat, :message, :send],
-              %{duration: System.monotonic_time() - start_time},
-              %{channel_id: socket.assigns.channel_id}
-            )
+              :telemetry.execute(
+                [:vesper, :chat, :message, :send],
+                %{duration: System.monotonic_time() - start_time},
+                %{channel_id: socket.assigns.channel_id}
+              )
 
-            # Run notifications async under supervision
-            channel_id = socket.assigns.channel_id
-            sender_id = socket.assigns.user_id
-            server_id = socket.assigns.server_id
-            member_ids = MemberCache.get_member_ids(server_id)
-            mentioned = params["mentioned_user_ids"]
+              # Run notifications async under supervision
+              channel_id = socket.assigns.channel_id
+              sender_id = socket.assigns.user_id
+              server_id = socket.assigns.server_id
+              member_ids = MemberCache.get_member_ids(server_id)
+              mentioned = params["mentioned_user_ids"]
 
-            Task.Supervisor.start_child(Vesper.NotificationSupervisor, fn ->
-              notify_unread(channel_id, message.id, sender_id, member_ids)
-              notify_mentions(mentioned, channel_id, sender_id, server_id, member_ids)
-            end)
+              Task.Supervisor.start_child(Vesper.NotificationSupervisor, fn ->
+                notify_unread(channel_id, message.id, sender_id, member_ids)
+                notify_mentions(mentioned, channel_id, sender_id, server_id, member_ids)
+              end)
 
-            {:reply, :ok, socket}
+              {:reply, :ok, socket}
 
-          {:error, _changeset} ->
-            {:reply, {:error, %{reason: "could not send message"}}, socket}
-        end
+            {:error, _changeset} ->
+              {:reply, {:error, %{reason: "could not send message"}}, socket}
+          end
 
-      {:error, _} ->
-        {:reply, {:error, %{reason: "invalid encoding"}}, socket}
+        {:error, _} ->
+          {:reply, {:error, %{reason: "invalid encoding"}}, socket}
+      end
+    else
+      {:reply, {:error, %{reason: "insufficient permissions"}}, socket}
     end
   end
 

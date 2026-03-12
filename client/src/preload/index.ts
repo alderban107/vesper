@@ -47,20 +47,25 @@ const cryptoDbApi = {
   // Message cache
   cacheMessage: (msg: {
     id: string
-    channel_id: string
+    channel_id: string | null
+    conversation_id: string | null
+    server_id: string | null
     sender_id: string | null
     sender_username: string | null
     content: string | null
+    attachment_filenames: string[]
     inserted_at: string
   }) => ipcRenderer.invoke('cryptoDb:cacheMessage', msg),
   getCachedMessages: (channelId: string) =>
     ipcRenderer.invoke('cryptoDb:getCachedMessages', channelId),
+  getAllCachedMessages: () =>
+    ipcRenderer.invoke('cryptoDb:getAllCachedMessages'),
   clearMessageCache: (channelId: string) =>
     ipcRenderer.invoke('cryptoDb:clearMessageCache', channelId),
-
-  // Search
-  searchMessages: (query: string) =>
-    ipcRenderer.invoke('cryptoDb:searchMessages', query)
+  deleteCachedMessage: (messageId: string) =>
+    ipcRenderer.invoke('cryptoDb:deleteCachedMessage', messageId),
+  pruneMessageCache: (maxRows: number) =>
+    ipcRenderer.invoke('cryptoDb:pruneMessageCache', maxRows)
 }
 
 const notificationApi = {

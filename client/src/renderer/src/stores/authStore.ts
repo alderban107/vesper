@@ -11,12 +11,18 @@ import {
 import { initCipherSuite, createKeyPackageBatch, encodeKeyPackageBytes } from '../crypto/mls'
 import { saveIdentity, saveKeyPackages } from '../crypto/storage'
 import { uploadKeyPackages, getMyKeyPackageCount } from '../api/crypto'
+import {
+  clearSearchIndexSyncCredentials,
+  initializeSearchIndexSync,
+  resumeSearchIndexSync
+} from '../crypto/searchIndexSync'
 
 interface User {
   id: string
   username: string
   display_name: string | null
   avatar_url: string | null
+  banner_url: string | null
   status: string
 }
 
@@ -33,8 +39,9 @@ interface AuthState {
   checkAuth: () => Promise<void>
   clearRecoveryMnemonic: () => void
   replenishKeyPackages: () => Promise<void>
-  updateProfile: (attrs: { display_name?: string | null; avatar_url?: string; status?: string }) => Promise<boolean>
+  updateProfile: (attrs: { display_name?: string | null; avatar_url?: string; banner_url?: string; status?: string }) => Promise<boolean>
   uploadAvatar: (file: File) => Promise<boolean>
+  uploadBanner: (file: File) => Promise<boolean>
 }
 
 const KEY_PACKAGE_TARGET = 20
@@ -136,6 +143,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         error: null,
         recoveryMnemonic: recoveryData.mnemonic
       })
+      try {
+        await initializeSearchIndexSync(data.user.id, password)
+      } catch {
+        // Search index sync is optional and should not block auth.
+      }
       return true
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Could not connect to server'
@@ -219,6 +231,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
 
       set({ user: data.user, isAuthenticated: true, error: null })
+      try {
+        await initializeSearchIndexSync(data.user.id, password)
+      } catch {
+        // Search index sync is optional and should not block auth.
+      }
       return true
     } catch {
       set({ error: 'Could not connect to server' })
@@ -234,6 +251,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
     disconnectSocket()
     clearTokens()
+    clearSearchIndexSyncCredentials()
     set({ user: null, isAuthenticated: false, error: null, recoveryMnemonic: null })
   },
 
@@ -253,6 +271,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         // Initialize cipher suite for later use
         initCipherSuite().catch(() => {
           console.warn('Failed to initialize cipher suite')
+        })
+
+        // Token-only restore path: resume encrypted search sync without password prompt.
+        resumeSearchIndexSync(data.user.id).catch(() => {
+          // Search sync resume is optional.
         })
 
         set({ user: data.user, isAuthenticated: true, isLoading: false })
@@ -294,6 +317,24 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const formData = new FormData()
       formData.append('file', file)
       const res = await apiUpload('/api/v1/auth/avatar', formData)
+      if (res.ok) {
+        const data = await res.json()
+        set({ user: data.user })
+        const serverId = useServerStore.getState().activeServerId
+        if (serverId) useServerStore.getState().fetchMembers(serverId)
+        return true
+      }
+    } catch {
+      // ignore
+    }
+    return false
+  },
+
+  uploadBanner: async (file) => {
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const res = await apiUpload('/api/v1/auth/banner', formData)
       if (res.ok) {
         const data = await res.json()
         set({ user: data.user })

@@ -49,4 +49,12 @@ defmodule Vesper.Voice do
   def call_accept(room_id) do
     Room.call_accept(room_id)
   end
+
+  def call_reject(room_id, user_id) do
+    try do
+      Room.call_reject(room_id, user_id)
+    catch
+      :exit, _ -> :ok
+    end
+  end
 end

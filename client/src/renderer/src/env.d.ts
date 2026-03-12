@@ -44,23 +44,44 @@ interface CryptoDbApi {
   // Message cache
   cacheMessage(msg: {
     id: string
-    channel_id: string
+    channel_id: string | null
+    conversation_id: string | null
+    server_id: string | null
     sender_id: string | null
     sender_username: string | null
     content: string | null
+    attachment_filenames: string[]
     inserted_at: string
   }): Promise<void>
   getCachedMessages(channelId: string): Promise<
     Array<{
       id: string
-      channel_id: string
+      channel_id: string | null
+      conversation_id: string | null
+      server_id: string | null
       sender_id: string | null
       sender_username: string | null
       content: string | null
+      attachment_filenames: string[]
+      inserted_at: string
+    }>
+  >
+  getAllCachedMessages(): Promise<
+    Array<{
+      id: string
+      channel_id: string | null
+      conversation_id: string | null
+      server_id: string | null
+      sender_id: string | null
+      sender_username: string | null
+      content: string | null
+      attachment_filenames: string[]
       inserted_at: string
     }>
   >
   clearMessageCache(channelId: string): Promise<void>
+  deleteCachedMessage(messageId: string): Promise<void>
+  pruneMessageCache(maxRows: number): Promise<void>
 }
 
 interface Window {

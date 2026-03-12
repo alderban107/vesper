@@ -8,8 +8,11 @@ interface UIState {
   showSettingsModal: boolean
   showRoleManager: boolean
   showServerSettingsModal: boolean
+  showChannelSettingsModal: boolean
+  channelSettingsChannelId: string | null
   showPins: boolean
   showMemberList: boolean
+  showMobileNav: boolean
   channelSidebarWidth: number
   memberListWidth: number
 
@@ -27,10 +30,15 @@ interface UIState {
   closeRoleManager: () => void
   openServerSettingsModal: () => void
   closeServerSettingsModal: () => void
+  openChannelSettingsModal: (channelId: string) => void
+  closeChannelSettingsModal: () => void
   togglePins: () => void
   closePins: () => void
   toggleMemberList: () => void
   setMemberListVisible: (visible: boolean) => void
+  openMobileNav: () => void
+  closeMobileNav: () => void
+  toggleMobileNav: () => void
   setChannelSidebarWidth: (width: number) => void
   setMemberListWidth: (width: number) => void
 }
@@ -43,8 +51,11 @@ export const useUIStore = create<UIState>((set) => ({
   showSettingsModal: false,
   showRoleManager: false,
   showServerSettingsModal: false,
+  showChannelSettingsModal: false,
+  channelSettingsChannelId: null,
   showPins: false,
   showMemberList: true,
+  showMobileNav: false,
   channelSidebarWidth: 248,
   memberListWidth: 264,
 
@@ -62,10 +73,17 @@ export const useUIStore = create<UIState>((set) => ({
   closeRoleManager: () => set({ showRoleManager: false }),
   openServerSettingsModal: () => set({ showServerSettingsModal: true }),
   closeServerSettingsModal: () => set({ showServerSettingsModal: false }),
+  openChannelSettingsModal: (channelId) =>
+    set({ showChannelSettingsModal: true, channelSettingsChannelId: channelId }),
+  closeChannelSettingsModal: () =>
+    set({ showChannelSettingsModal: false, channelSettingsChannelId: null }),
   togglePins: () => set((s) => ({ showPins: !s.showPins })),
   closePins: () => set({ showPins: false }),
   toggleMemberList: () => set((s) => ({ showMemberList: !s.showMemberList })),
   setMemberListVisible: (visible) => set({ showMemberList: visible }),
+  openMobileNav: () => set({ showMobileNav: true }),
+  closeMobileNav: () => set({ showMobileNav: false }),
+  toggleMobileNav: () => set((s) => ({ showMobileNav: !s.showMobileNav })),
   setChannelSidebarWidth: (width) => set({ channelSidebarWidth: Math.max(220, Math.min(360, width)) }),
   setMemberListWidth: (width) => set({ memberListWidth: Math.max(220, Math.min(420, width)) })
 }))

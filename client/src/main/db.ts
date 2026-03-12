@@ -3,6 +3,7 @@ import { app } from 'electron'
 import { join } from 'path'
 
 let db: Database.Database | null = null
+const DEFAULT_MESSAGE_CACHE_MAX_ROWS = 5000
 
 export function initDb(): void {
   const dbPath = join(app.getPath('userData'), 'crypto.db')
@@ -34,15 +35,22 @@ export function initDb(): void {
 
     CREATE TABLE IF NOT EXISTS message_cache (
       id TEXT PRIMARY KEY,
-      channel_id TEXT NOT NULL,
+      channel_id TEXT,
+      conversation_id TEXT,
+      server_id TEXT,
       sender_id TEXT,
       sender_username TEXT,
       content TEXT,
+      attachment_filenames TEXT,
       inserted_at TEXT NOT NULL
     );
 
     CREATE INDEX IF NOT EXISTS idx_message_cache_channel ON message_cache(channel_id);
+    CREATE INDEX IF NOT EXISTS idx_message_cache_conversation ON message_cache(conversation_id);
+    CREATE INDEX IF NOT EXISTS idx_message_cache_inserted ON message_cache(inserted_at DESC);
   `)
+
+  ensureMessageCacheColumns()
 }
 
 export function closeDb(): void {
@@ -55,6 +63,28 @@ export function closeDb(): void {
 function getDb(): Database.Database {
   if (!db) throw new Error('Database not initialized')
   return db
+}
+
+function ensureColumn(
+  tableName: string,
+  columnName: string,
+  columnType: string
+): void {
+  const row = getDb()
+    .prepare(
+      `SELECT name FROM pragma_table_info('${tableName}') WHERE name = ?`
+    )
+    .get(columnName) as { name: string } | undefined
+
+  if (!row) {
+    getDb().exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnType}`)
+  }
+}
+
+function ensureMessageCacheColumns(): void {
+  ensureColumn('message_cache', 'conversation_id', 'TEXT')
+  ensureColumn('message_cache', 'server_id', 'TEXT')
+  ensureColumn('message_cache', 'attachment_filenames', 'TEXT')
 }
 
 // --- Identity Keys ---
@@ -163,51 +193,124 @@ export function countLocalKeyPackages(): number {
 
 export function cacheMessage(msg: {
   id: string
-  channel_id: string
+  channel_id: string | null
+  conversation_id: string | null
+  server_id: string | null
   sender_id: string | null
   sender_username: string | null
   content: string | null
+  attachment_filenames: string[]
   inserted_at: string
 }): void {
   getDb()
     .prepare(
-      'INSERT OR REPLACE INTO message_cache (id, channel_id, sender_id, sender_username, content, inserted_at) VALUES (?, ?, ?, ?, ?, ?)'
+      `
+      INSERT OR REPLACE INTO message_cache
+      (id, channel_id, conversation_id, server_id, sender_id, sender_username, content, attachment_filenames, inserted_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `
     )
-    .run(msg.id, msg.channel_id, msg.sender_id, msg.sender_username, msg.content, msg.inserted_at)
+    .run(
+      msg.id,
+      msg.channel_id,
+      msg.conversation_id,
+      msg.server_id,
+      msg.sender_id,
+      msg.sender_username,
+      msg.content,
+      JSON.stringify(msg.attachment_filenames || []),
+      msg.inserted_at
+    )
+
+  pruneMessageCache(DEFAULT_MESSAGE_CACHE_MAX_ROWS)
 }
 
 export function getCachedMessages(channelId: string): Array<{
   id: string
-  channel_id: string
+  channel_id: string | null
+  conversation_id: string | null
+  server_id: string | null
   sender_id: string | null
   sender_username: string | null
   content: string | null
+  attachment_filenames: string[]
   inserted_at: string
 }> {
-  return getDb()
+  const rows = getDb()
     .prepare(
       'SELECT * FROM message_cache WHERE channel_id = ? ORDER BY inserted_at ASC'
     )
     .all(channelId) as ReturnType<typeof getCachedMessages>
+
+  return rows.map((row) => ({
+    ...row,
+    attachment_filenames: parseAttachmentFilenames(row.attachment_filenames as unknown)
+  }))
+}
+
+export function getAllCachedMessages(): Array<{
+  id: string
+  channel_id: string | null
+  conversation_id: string | null
+  server_id: string | null
+  sender_id: string | null
+  sender_username: string | null
+  content: string | null
+  attachment_filenames: string[]
+  inserted_at: string
+}> {
+  const rows = getDb()
+    .prepare('SELECT * FROM message_cache ORDER BY inserted_at DESC')
+    .all() as ReturnType<typeof getAllCachedMessages>
+
+  return rows.map((row) => ({
+    ...row,
+    attachment_filenames: parseAttachmentFilenames(row.attachment_filenames as unknown)
+  }))
 }
 
 export function clearMessageCache(channelId: string): void {
   getDb().prepare('DELETE FROM message_cache WHERE channel_id = ?').run(channelId)
 }
 
-// --- Message Search ---
+export function deleteCachedMessage(messageId: string): void {
+  getDb().prepare('DELETE FROM message_cache WHERE id = ?').run(messageId)
+}
 
-export function searchMessages(query: string): Array<{
-  id: string
-  channel_id: string
-  sender_id: string | null
-  sender_username: string | null
-  content: string | null
-  inserted_at: string
-}> {
-  return getDb()
+export function pruneMessageCache(maxRows: number = DEFAULT_MESSAGE_CACHE_MAX_ROWS): void {
+  const safeMaxRows = Number.isFinite(maxRows) ? Math.max(100, Math.floor(maxRows)) : DEFAULT_MESSAGE_CACHE_MAX_ROWS
+
+  getDb()
     .prepare(
-      'SELECT * FROM message_cache WHERE content LIKE ? ORDER BY inserted_at DESC LIMIT 50'
+      `
+      DELETE FROM message_cache
+      WHERE id IN (
+        SELECT id
+        FROM message_cache
+        ORDER BY inserted_at DESC
+        LIMIT -1 OFFSET ?
+      )
+      `
     )
-    .all(`%${query}%`) as ReturnType<typeof searchMessages>
+    .run(safeMaxRows)
+}
+
+function parseAttachmentFilenames(raw: unknown): string[] {
+  if (Array.isArray(raw)) {
+    return raw.filter((item): item is string => typeof item === 'string')
+  }
+
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return []
+  }
+
+  try {
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) {
+      return []
+    }
+    return parsed.filter((item): item is string => typeof item === 'string')
+  } catch {
+    return []
+  }
 }

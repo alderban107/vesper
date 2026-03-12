@@ -1,8 +1,10 @@
-import { useState, useEffect } from 'react'
-import { Paperclip, Download, AlertCircle, Loader2 } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { AlertCircle, Download, FileText, Loader2, Paperclip } from 'lucide-react'
 import { apiFetch } from '../../api/client'
 import { decryptFile } from '../../crypto/fileEncryption'
 import type { FileMessageContent } from '../../stores/messageStore'
+import AudioPlayer from './AudioPlayer'
+import ImageLightbox from './ImageLightbox'
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -16,39 +18,54 @@ interface Props {
 
 export default function FilePreview({ file }: Props): React.JSX.Element {
   const isImage = file.content_type.startsWith('image/')
-  const [imageUrl, setImageUrl] = useState<string | null>(null)
+  const isAudio = file.content_type.startsWith('audio/')
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(false)
+  const [showLightbox, setShowLightbox] = useState(false)
 
   useEffect(() => {
-    if (!isImage) return
+    if (!isImage && !isAudio) {
+      return
+    }
 
     let cancelled = false
+    let objectUrl: string | null = null
     setLoading(true)
+    setError(false)
 
-    apiFetch(`/api/v1/attachments/${file.id}`)
+    void apiFetch(`/api/v1/attachments/${file.id}`)
       .then(async (res) => {
-        if (!res.ok) throw new Error('fetch failed')
+        if (!res.ok) {
+          throw new Error('fetch failed')
+        }
         const encryptedBlob = await res.arrayBuffer()
         const decrypted = await decryptFile(encryptedBlob, file.key, file.iv)
-        if (cancelled) return
+        if (cancelled) {
+          return
+        }
         const blob = new Blob([decrypted], { type: file.content_type })
-        setImageUrl(URL.createObjectURL(blob))
+        objectUrl = URL.createObjectURL(blob)
+        setPreviewUrl(objectUrl)
       })
       .catch(() => {
-        if (!cancelled) setError(true)
+        if (!cancelled) {
+          setError(true)
+        }
       })
       .finally(() => {
-        if (!cancelled) setLoading(false)
+        if (!cancelled) {
+          setLoading(false)
+        }
       })
 
     return (): void => {
       cancelled = true
-      if (imageUrl) URL.revokeObjectURL(imageUrl)
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl)
+      }
     }
-    // Only run on mount / file.id change
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [file.id])
+  }, [file.content_type, file.id, file.iv, file.key, isAudio, isImage])
 
   const handleDownload = async (): Promise<void> => {
     try {
@@ -88,15 +105,55 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
           <div className="w-48 h-32 rounded-lg bg-bg-tertiary/50 border border-border flex items-center justify-center">
             <Loader2 className="w-5 h-5 text-text-faint animate-spin" />
           </div>
-        ) : imageUrl ? (
-          <button onClick={handleDownload} className="block group">
-            <img
-              src={imageUrl}
-              alt={file.name}
-              className="max-w-sm max-h-80 rounded-lg border border-border object-contain cursor-pointer group-hover:brightness-90 transition-all"
-              onError={() => setError(true)}
+        ) : previewUrl ? (
+          <>
+            <button
+              type="button"
+              onClick={() => setShowLightbox(true)}
+              className="block group"
+            >
+              <img
+                src={previewUrl}
+                alt={file.name}
+                className="max-w-sm max-h-80 rounded-lg border border-border object-contain cursor-zoom-in group-hover:brightness-90 transition-all"
+                onError={() => setError(true)}
+              />
+            </button>
+
+            {showLightbox && (
+              <ImageLightbox
+                src={previewUrl}
+                name={file.name}
+                sizeLabel={formatSize(file.size)}
+                onClose={() => setShowLightbox(false)}
+                onDownload={handleDownload}
+              />
+            )}
+          </>
+        ) : null}
+      </div>
+    )
+  }
+
+  if (isAudio) {
+    return (
+      <div className="vesper-audio-preview">
+        {loading ? (
+          <div className="vesper-audio-preview-loading">
+            <Loader2 className="w-4 h-4 text-text-faint animate-spin" />
+            <span>Decrypting audio…</span>
+          </div>
+        ) : previewUrl ? (
+          <>
+            <AudioPlayer
+              src={previewUrl}
+              name={file.name}
+              sizeLabel={formatSize(file.size)}
+              onDownload={() => {
+                void handleDownload()
+              }}
             />
-          </button>
+          </>
         ) : null}
       </div>
     )
@@ -106,12 +163,18 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
   return (
     <button
       onClick={handleDownload}
-      className="flex items-center gap-2.5 px-3 py-2 bg-bg-tertiary/50 rounded-lg text-xs text-text-muted hover:text-text-primary hover:bg-bg-tertiary transition-colors border border-border mt-1.5 group"
+      className="vesper-file-card group"
     >
-      <Paperclip className="w-4 h-4 shrink-0" />
-      <span className="truncate max-w-[200px]">{file.name}</span>
-      <span className="text-text-faintest">{formatSize(file.size)}</span>
-      <Download className="w-3.5 h-3.5 ml-auto opacity-0 group-hover:opacity-100 transition-opacity" />
+      <span className="vesper-file-card-icon">
+        {file.content_type ? <FileText className="w-4 h-4" /> : <Paperclip className="w-4 h-4" />}
+      </span>
+      <span className="vesper-file-card-copy">
+        <span className="vesper-file-card-name">{file.name}</span>
+        <span className="vesper-file-card-meta">{formatSize(file.size)}</span>
+      </span>
+      <span className="vesper-file-card-download">
+        <Download className="w-4 h-4" />
+      </span>
     </button>
   )
 }

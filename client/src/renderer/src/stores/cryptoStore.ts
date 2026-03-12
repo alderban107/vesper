@@ -112,23 +112,30 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
       const localPackages = await loadKeyPackages()
       let publicPackage, privatePackage
 
-      if (localPackages.length === 0) {
+      if (localPackages.length > 0) {
+        // Try to use a stored key package
+        const pkg = localPackages[0]
+        try {
+          const decoded = decodeKeyPackageBytes(new Uint8Array(pkg.publicData))
+          await consumeKeyPackage(pkg.id)
+          publicPackage = decoded
+          const privateData = new Uint8Array(pkg.privateData)
+          privatePackage = {
+            initPrivateKey: privateData.slice(0, 32),
+            hpkePrivateKey: privateData.slice(32, 64),
+            signaturePrivateKey: privateData.slice(64)
+          }
+        } catch {
+          // Stored key package is corrupted — generate fresh
+          await consumeKeyPackage(pkg.id)
+        }
+      }
+
+      if (!publicPackage) {
         // Generate one on the fly
         const pairs = await createKeyPackageBatch(user.username, 1)
         publicPackage = pairs[0].publicPackage
         privatePackage = pairs[0].privatePackage
-      } else {
-        // Use first available local key package
-        const pkg = localPackages[0]
-        await consumeKeyPackage(pkg.id)
-
-        publicPackage = decodeKeyPackageBytes(new Uint8Array(pkg.publicData))
-        const privateData = new Uint8Array(pkg.privateData)
-        privatePackage = {
-          initPrivateKey: privateData.slice(0, 32),
-          hpkePrivateKey: privateData.slice(32, 64),
-          signaturePrivateKey: privateData.slice(64)
-        }
       }
 
       const state = await createMLSGroup(channelId, publicPackage, privatePackage)
@@ -200,15 +207,22 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
 
       if (localPackages.length > 0) {
         const pkg = localPackages[0]
-        await consumeKeyPackage(pkg.id)
-        publicPackage = decodeKeyPackageBytes(new Uint8Array(pkg.publicData))
-        const privateData = new Uint8Array(pkg.privateData)
-        privatePackage = {
-          initPrivateKey: privateData.slice(0, 32),
-          hpkePrivateKey: privateData.slice(32, 64),
-          signaturePrivateKey: privateData.slice(64)
+        try {
+          const decoded = decodeKeyPackageBytes(new Uint8Array(pkg.publicData))
+          await consumeKeyPackage(pkg.id)
+          publicPackage = decoded
+          const privateData = new Uint8Array(pkg.privateData)
+          privatePackage = {
+            initPrivateKey: privateData.slice(0, 32),
+            hpkePrivateKey: privateData.slice(32, 64),
+            signaturePrivateKey: privateData.slice(64)
+          }
+        } catch {
+          await consumeKeyPackage(pkg.id)
         }
-      } else {
+      }
+
+      if (!publicPackage) {
         const pairs = await createKeyPackageBatch(user.username, 1)
         publicPackage = pairs[0].publicPackage
         privatePackage = pairs[0].privatePackage

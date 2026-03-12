@@ -15,6 +15,9 @@ defmodule VesperWeb.MessageController do
       not Servers.user_is_member?(user.id, channel.server_id) ->
         conn |> put_status(:forbidden) |> json(%{error: "not a member"})
 
+      not Servers.user_can_view_channel?(user.id, channel) ->
+        conn |> put_status(:forbidden) |> json(%{error: "channel access denied"})
+
       true ->
         opts = [limit: min(parse_int(params["limit"], 50), 100)]
 
@@ -42,6 +45,9 @@ defmodule VesperWeb.MessageController do
 
       not Servers.user_is_member?(user.id, channel.server_id) ->
         conn |> put_status(:forbidden) |> json(%{error: "not a member"})
+
+      not Servers.user_can_view_channel?(user.id, channel) ->
+        conn |> put_status(:forbidden) |> json(%{error: "channel access denied"})
 
       true ->
         pins = Chat.list_pinned_messages(channel_id)
@@ -75,9 +81,75 @@ defmodule VesperWeb.MessageController do
       not Servers.user_is_member?(user.id, channel.server_id) ->
         conn |> put_status(:forbidden) |> json(%{error: "not a member"})
 
+      not Servers.user_can_view_channel?(user.id, channel) ->
+        conn |> put_status(:forbidden) |> json(%{error: "channel access denied"})
+
       true ->
         Chat.mark_channel_read(user.id, channel_id, message_id)
         json(conn, %{ok: true})
+    end
+  end
+
+  def thread(conn, %{"id" => message_id} = params) do
+    user = conn.assigns.current_user
+    limit = min(parse_int(params["limit"], 100), 200)
+
+    case resolve_thread_parent(message_id) do
+      nil ->
+        conn |> put_status(:not_found) |> json(%{error: "message not found"})
+
+      parent ->
+        cond do
+          parent.channel_id ->
+            channel = Servers.get_channel(parent.channel_id)
+
+            cond do
+              is_nil(channel) ->
+                conn |> put_status(:not_found) |> json(%{error: "channel not found"})
+
+              not Servers.user_is_member?(user.id, channel.server_id) ->
+                conn |> put_status(:forbidden) |> json(%{error: "not a member"})
+
+              not Servers.user_can_view_channel?(user.id, channel) ->
+                conn |> put_status(:forbidden) |> json(%{error: "channel access denied"})
+
+              true ->
+                thread_json(conn, parent, limit)
+            end
+
+          parent.conversation_id ->
+            if Chat.user_is_participant?(user.id, parent.conversation_id) do
+              thread_json(conn, parent, limit)
+            else
+              conn |> put_status(:forbidden) |> json(%{error: "not a participant"})
+            end
+
+          true ->
+            conn |> put_status(:unprocessable_entity) |> json(%{error: "message has no scope"})
+        end
+    end
+  end
+
+  defp thread_json(conn, parent, limit) do
+    replies = Chat.list_thread_messages(parent.id, limit: limit)
+
+    json(conn, %{
+      parent: message_json(parent),
+      messages: Enum.map(replies, &message_json/1),
+      reply_count: Chat.count_thread_replies(parent.id)
+    })
+  end
+
+  defp resolve_thread_parent(message_id) do
+    case Chat.get_message_with_details(message_id) do
+      nil ->
+        nil
+
+      %{parent_message_id: nil} = message ->
+        message
+
+      %{parent_message_id: parent_id} = message ->
+        Chat.get_message_with_details(parent_id) || message
     end
   end
 

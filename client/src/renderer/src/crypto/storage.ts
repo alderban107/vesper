@@ -120,18 +120,24 @@ export async function countKeyPackages(): Promise<number> {
 
 export async function cacheMessage(msg: {
   id: string
-  channelId: string
+  channelId: string | null
+  conversationId: string | null
+  serverId: string | null
   senderId: string | null
   senderUsername: string | null
   content: string | null
+  attachmentFilenames: string[]
   insertedAt: string
 }): Promise<void> {
   await db().cacheMessage({
     id: msg.id,
     channel_id: msg.channelId,
+    conversation_id: msg.conversationId,
+    server_id: msg.serverId,
     sender_id: msg.senderId,
     sender_username: msg.senderUsername,
     content: msg.content,
+    attachment_filenames: msg.attachmentFilenames,
     inserted_at: msg.insertedAt
   })
 }
@@ -139,10 +145,13 @@ export async function cacheMessage(msg: {
 export async function loadCachedMessages(channelId: string): Promise<
   Array<{
     id: string
-    channelId: string
+    channelId: string | null
+    conversationId: string | null
+    serverId: string | null
     senderId: string | null
     senderUsername: string | null
     content: string | null
+    attachmentFilenames: string[]
     insertedAt: string
   }>
 > {
@@ -150,13 +159,61 @@ export async function loadCachedMessages(channelId: string): Promise<
   return results.map((r) => ({
     id: r.id,
     channelId: r.channel_id,
+    conversationId: r.conversation_id,
+    serverId: r.server_id,
     senderId: r.sender_id,
     senderUsername: r.sender_username,
     content: r.content,
+    attachmentFilenames: r.attachment_filenames ?? [],
+    insertedAt: r.inserted_at
+  }))
+}
+
+export async function loadAllCachedMessages(): Promise<
+  Array<{
+    id: string
+    channelId: string | null
+    conversationId: string | null
+    serverId: string | null
+    senderId: string | null
+    senderUsername: string | null
+    content: string | null
+    attachmentFilenames: string[]
+    insertedAt: string
+  }>
+> {
+  if (typeof db().getAllCachedMessages !== 'function') {
+    return []
+  }
+
+  const results = await db().getAllCachedMessages()
+  return results.map((r) => ({
+    id: r.id,
+    channelId: r.channel_id,
+    conversationId: r.conversation_id,
+    serverId: r.server_id,
+    senderId: r.sender_id,
+    senderUsername: r.sender_username,
+    content: r.content,
+    attachmentFilenames: r.attachment_filenames ?? [],
     insertedAt: r.inserted_at
   }))
 }
 
 export async function clearCachedMessages(channelId: string): Promise<void> {
   await db().clearMessageCache(channelId)
+}
+
+export async function deleteCachedMessage(messageId: string): Promise<void> {
+  if (typeof db().deleteCachedMessage !== 'function') {
+    return
+  }
+  await db().deleteCachedMessage(messageId)
+}
+
+export async function pruneMessageCache(maxRows: number): Promise<void> {
+  if (typeof db().pruneMessageCache !== 'function') {
+    return
+  }
+  await db().pruneMessageCache(maxRows)
 }

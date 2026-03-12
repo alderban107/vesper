@@ -10,6 +10,7 @@ defmodule Vesper.Voice.Room do
   @idle_timeout :timer.minutes(5)
   # Max ICE candidates to buffer before remote description is set
   @max_pending_candidates 50
+  @media_kinds [:audio, :video]
 
   defstruct [
     :room_id,
@@ -63,6 +64,10 @@ defmodule Vesper.Voice.Room do
 
   def call_accept(room_id) do
     GenServer.call(via(room_id), :call_accept)
+  end
+
+  def call_reject(room_id, user_id) do
+    GenServer.call(via(room_id), {:call_reject, user_id})
   end
 
   # --- Callbacks ---
@@ -186,7 +191,7 @@ defmodule Vesper.Voice.Room do
   def handle_call(:get_participants, _from, state) do
     participants =
       Enum.map(state.participants, fn {user_id, p} ->
-        %{user_id: user_id, muted: p.muted}
+        %{user_id: user_id, muted: p.muted, video_track_id: p.video_track_id}
       end)
 
     {:reply, participants, state}
@@ -203,6 +208,25 @@ defmodule Vesper.Voice.Room do
     if state.ring_timer_ref, do: Process.cancel_timer(state.ring_timer_ref)
     new_state = %{state | call_state: :active, ring_timer_ref: nil}
     {:reply, :ok, new_state}
+  end
+
+  def handle_call({:call_reject, user_id}, _from, %{call_state: :ringing} = state) do
+    if state.ring_timer_ref, do: Process.cancel_timer(state.ring_timer_ref)
+
+    Logger.info("Voice call rejected in room #{state.room_id} by user #{user_id}")
+
+    new_state = %{
+      state
+      | call_state: :rejected,
+        caller_id: nil,
+        ring_timer_ref: nil
+    }
+
+    {:reply, :ok, new_state}
+  end
+
+  def handle_call({:call_reject, _user_id}, _from, state) do
+    {:reply, :ok, state}
   end
 
   @impl true
@@ -259,15 +283,30 @@ defmodule Vesper.Voice.Room do
   end
 
   @impl true
-  def handle_info({:ex_webrtc, pc, {:rtp, _track_id, _rid, packet}}, state) do
+  def handle_info({:ex_webrtc, pc, {:rtp, track_id, _rid, packet}}, state) do
     # O(1) lookup via reverse map instead of O(N) scan
     sender_id = Map.get(state.pc_to_user, pc)
 
     if sender_id do
+      sender_participant = Map.get(state.participants, sender_id)
+      media_kind =
+        if sender_participant do
+          sender_participant
+          |> Map.get(:incoming_track_kinds, %{})
+          |> Map.get(track_id, :audio)
+        else
+          :audio
+        end
+
       # Forward to all other participants
       Enum.each(state.participants, fn {uid, participant} ->
         if uid != sender_id do
-          case Map.get(participant.outgoing_tracks, sender_id) do
+          outgoing_track_id =
+            participant.outgoing_tracks
+            |> Map.get(sender_id, %{})
+            |> Map.get(media_kind)
+
+          case outgoing_track_id do
             nil -> :ok
             out_track_id -> PeerConnection.send_rtp(participant.pc, out_track_id, packet)
           end
@@ -293,7 +332,18 @@ defmodule Vesper.Voice.Room do
     user_id = Map.get(state.pc_to_user, pc)
 
     if user_id do
-      updated = %{state.participants[user_id] | audio_track_id: track.id}
+      participant = state.participants[user_id]
+      media_kind = normalize_media_kind(track.kind)
+      incoming_track_kinds =
+        participant
+        |> Map.get(:incoming_track_kinds, %{})
+        |> Map.put(track.id, media_kind)
+
+      updated =
+        participant
+        |> Map.put(:incoming_track_kinds, incoming_track_kinds)
+        |> Map.put(media_track_field(media_kind), track.id)
+
       {:noreply, put_in(state.participants[user_id], updated)}
     else
       {:noreply, state}
@@ -413,46 +463,29 @@ defmodule Vesper.Voice.Room do
         # and gets cleaned up when their channel process leaves.
         Process.unlink(pc)
 
-        # Add a recvonly transceiver for incoming audio from this user
-        {:ok, _recv_tr} = PeerConnection.add_transceiver(pc, :audio, direction: :recvonly)
+        # Reserve incoming slots for the user's audio + one video track (camera or screen share).
+        Enum.each(@media_kinds, fn media_kind ->
+          {:ok, _recv_tr} = PeerConnection.add_transceiver(pc, media_kind, direction: :recvonly)
+        end)
 
-        # Add sendonly transceivers for each existing participant's audio
+        # Add sendonly transceivers for each existing participant's media slots.
         outgoing_tracks =
           Enum.reduce(state.participants, %{}, fn {existing_uid, _existing_p}, acc ->
-            track = MediaStreamTrack.new(:audio)
-            {:ok, _sender} = PeerConnection.add_track(pc, track)
-            Map.put(acc, existing_uid, track.id)
+            Map.put(acc, existing_uid, create_outgoing_track_set(pc))
           end)
 
         # Create offer for this new participant
         {:ok, offer} = PeerConnection.create_offer(pc)
         :ok = PeerConnection.set_local_description(pc, offer)
 
-        # Build track_map: which outgoing track corresponds to which user
-        transceivers = PeerConnection.get_transceivers(pc)
-
-        track_map =
-          Enum.reduce(transceivers, %{}, fn tr, acc ->
-            case tr.direction do
-              :sendonly ->
-                # Find which user this track is for
-                matching =
-                  Enum.find(outgoing_tracks, fn {_uid, tid} -> tid == tr.sender.track.id end)
-
-                case matching do
-                  {uid, _} -> Map.put(acc, tr.mid, uid)
-                  nil -> acc
-                end
-
-              _ ->
-                acc
-            end
-          end)
+        track_map = build_track_map(pc, outgoing_tracks)
 
         new_participant = %{
           pc: pc,
           channel_pid: channel_pid,
           audio_track_id: nil,
+          video_track_id: nil,
+          incoming_track_kinds: %{},
           outgoing_tracks: outgoing_tracks,
           muted: false,
           pending_candidates: [],
@@ -467,7 +500,7 @@ defmodule Vesper.Voice.Room do
           |> Map.update!(:pc_to_user, &Map.put(&1, pc, user_id))
           |> Map.update!(:channel_to_user, &Map.put(&1, channel_pid, user_id))
 
-        # For each existing participant: add an outgoing track for the new user's audio
+        # For each existing participant: add outgoing tracks for the new user's media.
         new_state =
           Enum.reduce(state.participants, new_state, fn {existing_uid, _existing_p}, acc_state ->
             add_outgoing_track_and_renegotiate(acc_state, existing_uid, user_id)
@@ -483,11 +516,8 @@ defmodule Vesper.Voice.Room do
   defp add_outgoing_track_and_renegotiate(state, target_user_id, source_user_id) do
     target = state.participants[target_user_id]
 
-    # Add a new outgoing track for the source user's audio
-    track = MediaStreamTrack.new(:audio)
-    {:ok, _sender} = PeerConnection.add_track(target.pc, track)
-
-    outgoing = Map.put(target.outgoing_tracks, source_user_id, track.id)
+    # Add outgoing media tracks for the source user's audio/video slot.
+    outgoing = Map.put(target.outgoing_tracks, source_user_id, create_outgoing_track_set(target.pc))
     updated_target = %{target | outgoing_tracks: outgoing}
     state = put_in(state.participants[target_user_id], updated_target)
 
@@ -514,25 +544,7 @@ defmodule Vesper.Voice.Room do
       {:ok, offer} ->
         :ok = PeerConnection.set_local_description(participant.pc, offer)
 
-        # Build updated track_map
-        transceivers = PeerConnection.get_transceivers(participant.pc)
-
-        track_map =
-          Enum.reduce(transceivers, %{}, fn tr, acc ->
-            if tr.direction in [:sendonly, :sendrecv] and tr.sender.track do
-              matching =
-                Enum.find(participant.outgoing_tracks, fn {_uid, tid} ->
-                  tid == tr.sender.track.id
-                end)
-
-              case matching do
-                {uid, _} -> Map.put(acc, tr.mid, uid)
-                nil -> acc
-              end
-            else
-              acc
-            end
-          end)
+        track_map = build_track_map(participant.pc, participant.outgoing_tracks)
 
         updated = %{
           participant
@@ -580,12 +592,12 @@ defmodule Vesper.Voice.Room do
         # Remove outgoing tracks for this user from all remaining participants
         # and renegotiate
         Enum.reduce(remaining, state, fn {other_uid, other_p}, acc_state ->
-          {_removed, new_outgoing} = Map.pop(other_p.outgoing_tracks, user_id)
+          {removed_tracks, new_outgoing} = Map.pop(other_p.outgoing_tracks, user_id)
           updated = %{other_p | outgoing_tracks: new_outgoing}
           acc_state = put_in(acc_state.participants[other_uid], updated)
 
           # Only renegotiate if we actually had a track for the leaving user
-          if Map.has_key?(other_p.outgoing_tracks, user_id) do
+          if removed_tracks do
             trigger_renegotiation(acc_state, other_uid)
           else
             acc_state
@@ -593,4 +605,52 @@ defmodule Vesper.Voice.Room do
         end)
     end
   end
+
+  defp create_outgoing_track_set(pc) do
+    audio_track = MediaStreamTrack.new(:audio)
+    {:ok, _audio_sender} = PeerConnection.add_track(pc, audio_track)
+
+    video_track = MediaStreamTrack.new(:video)
+    {:ok, _video_sender} = PeerConnection.add_track(pc, video_track)
+
+    %{audio: audio_track.id, video: video_track.id}
+  end
+
+  defp build_track_map(pc, outgoing_tracks) do
+    pc
+    |> PeerConnection.get_transceivers()
+    |> Enum.reduce(%{}, fn transceiver, acc ->
+      if transceiver.direction in [:sendonly, :sendrecv] && transceiver.sender.track && transceiver.mid do
+        case find_track_owner_and_kind(outgoing_tracks, transceiver.sender.track.id) do
+          {source_user_id, media_kind} ->
+            Map.put(acc, transceiver.mid, %{
+              user_id: source_user_id,
+              kind: Atom.to_string(media_kind)
+            })
+
+          nil ->
+            acc
+        end
+      else
+        acc
+      end
+    end)
+  end
+
+  defp find_track_owner_and_kind(outgoing_tracks, track_id) do
+    Enum.find_value(outgoing_tracks, fn {source_user_id, tracks} ->
+      cond do
+        Map.get(tracks, :audio) == track_id -> {source_user_id, :audio}
+        Map.get(tracks, :video) == track_id -> {source_user_id, :video}
+        true -> nil
+      end
+    end)
+  end
+
+  defp normalize_media_kind("video"), do: :video
+  defp normalize_media_kind(:video), do: :video
+  defp normalize_media_kind(_kind), do: :audio
+
+  defp media_track_field(:video), do: :video_track_id
+  defp media_track_field(_kind), do: :audio_track_id
 end

@@ -16,9 +16,11 @@ import {
   consumeLocalKeyPackage,
   countLocalKeyPackages,
   cacheMessage,
+  getAllCachedMessages,
   getCachedMessages,
   clearMessageCache,
-  searchMessages
+  deleteCachedMessage,
+  pruneMessageCache
 } from './db'
 
 function createWindow(): void {
@@ -160,13 +162,19 @@ function registerIpcHandlers(): void {
       _,
       msg: {
         id: string
-        channel_id: string
+        channel_id: string | null
+        conversation_id: string | null
+        server_id: string | null
         sender_id: string | null
         sender_username: string | null
         content: string | null
+        attachment_filenames: string[]
         inserted_at: string
       }
     ) => cacheMessage(msg)
+  )
+  ipcMain.handle('cryptoDb:getAllCachedMessages', () =>
+    getAllCachedMessages()
   )
   ipcMain.handle('cryptoDb:getCachedMessages', (_, channelId: string) =>
     getCachedMessages(channelId)
@@ -174,10 +182,11 @@ function registerIpcHandlers(): void {
   ipcMain.handle('cryptoDb:clearMessageCache', (_, channelId: string) =>
     clearMessageCache(channelId)
   )
-
-  // Message search
-  ipcMain.handle('cryptoDb:searchMessages', (_, query: string) =>
-    searchMessages(query)
+  ipcMain.handle('cryptoDb:deleteCachedMessage', (_, messageId: string) =>
+    deleteCachedMessage(messageId)
+  )
+  ipcMain.handle('cryptoDb:pruneMessageCache', (_, maxRows: number) =>
+    pruneMessageCache(maxRows)
   )
 }
 

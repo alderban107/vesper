@@ -8,9 +8,9 @@ export class AudioManager {
   private speakingCallback: ((levels: Map<string, boolean>) => void) | null = null
   private animFrameId: number | null = null
   private deafened = false
-
-  // Threshold for "speaking" — RMS amplitude 0-1, tuned for voice
-  private static SPEAKING_THRESHOLD = 0.01
+  private outputVolume = 1
+  private speakingThreshold = 0.018
+  private perStreamVolume: Map<string, number> = new Map()
 
   addRemoteTrack(trackId: string, track: MediaStreamTrack): void {
     // Remove existing element for this track if any
@@ -21,12 +21,14 @@ export class AudioManager {
     audio.srcObject = stream
     audio.autoplay = true
     audio.muted = this.deafened
+    audio.volume = this.outputVolume
 
     audio.play().catch(() => {
       // Autoplay may be blocked — user interaction will unblock
     })
 
     this.audioElements.set(trackId, audio)
+    audio.volume = this.outputVolume * (this.perStreamVolume.get(trackId) ?? 1)
 
     // Set up analyser for speaking detection
     this.ensureAudioContext()
@@ -84,6 +86,28 @@ export class AudioManager {
           .catch(() => {})
       }
     }
+  }
+
+  setOutputVolume(volume: number): void {
+    this.outputVolume = Math.max(0, Math.min(2, volume / 100))
+
+    for (const [trackId, audio] of this.audioElements.entries()) {
+      audio.volume = this.outputVolume * (this.perStreamVolume.get(trackId) ?? 1)
+    }
+  }
+
+  setStreamVolume(trackId: string, volume: number): void {
+    const normalized = Math.max(0, Math.min(2, volume / 100))
+    this.perStreamVolume.set(trackId, normalized)
+    const audio = this.audioElements.get(trackId)
+    if (audio) {
+      audio.volume = this.outputVolume * normalized
+    }
+  }
+
+  setSpeakingSensitivity(value: number): void {
+    const normalized = Math.max(0, Math.min(100, value)) / 100
+    this.speakingThreshold = 0.002 + (1 - normalized) * 0.045
   }
 
   setDeafened(deafened: boolean): void {
@@ -169,6 +193,6 @@ export class AudioManager {
     }
     const rms = Math.sqrt(sum / data.length)
 
-    return rms > AudioManager.SPEAKING_THRESHOLD
+    return rms > this.speakingThreshold
   }
 }

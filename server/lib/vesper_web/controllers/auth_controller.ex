@@ -126,7 +126,7 @@ defmodule VesperWeb.AuthController do
 
     attrs =
       params
-      |> Map.take(["display_name", "avatar_url", "status"])
+      |> Map.take(["display_name", "avatar_url", "banner_url", "status"])
       |> Enum.reduce(%{}, fn {k, v}, acc -> Map.put(acc, String.to_existing_atom(k), v) end)
 
     case Accounts.update_profile(user, attrs) do
@@ -244,6 +244,7 @@ defmodule VesperWeb.AuthController do
       username: user.username,
       display_name: user.display_name,
       avatar_url: user.avatar_url,
+      banner_url: user.banner_url,
       status: user.status
     }
   end

@@ -2,32 +2,35 @@ import { useRef, useState } from 'react'
 
 interface Props {
   side: 'left' | 'right'
-  onResizeDelta: (delta: number) => void
+  width: number
+  onWidthChange: (nextWidth: number) => void
 }
 
-export default function ResizeHandle({ side, onResizeDelta }: Props): React.JSX.Element {
-  const lastXRef = useRef<number | null>(null)
+export default function ResizeHandle({ side, width, onWidthChange }: Props): React.JSX.Element {
+  const startXRef = useRef<number | null>(null)
+  const startWidthRef = useRef<number>(width)
   const [isDragging, setIsDragging] = useState(false)
 
   const handleMouseDown = (event: React.MouseEvent<HTMLDivElement>): void => {
     event.preventDefault()
-    lastXRef.current = event.clientX
+    startXRef.current = event.clientX
+    startWidthRef.current = width
     setIsDragging(true)
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
 
     const handleMouseMove = (moveEvent: MouseEvent): void => {
-      if (lastXRef.current === null) {
+      if (startXRef.current === null) {
         return
       }
 
-      const delta = moveEvent.clientX - lastXRef.current
-      lastXRef.current = moveEvent.clientX
-      onResizeDelta(side === 'right' ? delta : -delta)
+      const delta = moveEvent.clientX - startXRef.current
+      const signedDelta = side === 'right' ? delta : -delta
+      onWidthChange(startWidthRef.current + signedDelta)
     }
 
     const handleMouseUp = (): void => {
-      lastXRef.current = null
+      startXRef.current = null
       setIsDragging(false)
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
@@ -50,6 +53,7 @@ export default function ResizeHandle({ side, onResizeDelta }: Props): React.JSX.
       role="separator"
       aria-orientation="vertical"
       aria-label="Resize panel"
+      tabIndex={0}
     />
   )
 }

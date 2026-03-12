@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { Copy, Pencil, Pin, Reply, Trash2 } from 'lucide-react'
+import { Copy, MessageSquare, Pencil, Pin, Reply, Trash2 } from 'lucide-react'
 import type { Message } from '../../stores/messageStore'
 import { useMessageStore, parseMessageContent } from '../../stores/messageStore'
 import { useAuthStore } from '../../stores/authStore'
@@ -171,6 +171,9 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
     : (liveMember?.user?.avatar_url || message.sender?.avatar_url)
   const status = usePresenceStore((s) => s.getStatus(message.sender_id || ''))
   const setReplyingTo = useMessageStore((s) => s.setReplyingTo)
+  const openThread = useMessageStore((s) => s.openThread)
+  const activeThreadParentId = useMessageStore((s) => s.activeThreadParentId)
+  const focusedMessageId = useMessageStore((s) => s.focusedMessageId)
   const addReaction = useMessageStore((s) => s.addReaction)
   const removeReaction = useMessageStore((s) => s.removeReaction)
   const pinMessage = useMessageStore((s) => s.pinMessage)
@@ -228,9 +231,39 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
   const parentMessage = message.parent_message_id && messages
     ? messages.find((m) => m.id === message.parent_message_id)
     : null
+  const threadAnchorMessage = message.parent_message_id ? (parentMessage ?? message) : message
+  const threadAnchorId = threadAnchorMessage.id
+  const fetchedThreadReplyCount = useMessageStore(
+    (s) => s.threadRepliesByParent[threadAnchorId]?.length ?? 0
+  )
+  const inlineThreadReplyCount = messages
+    ? messages.reduce((count, entry) => {
+      return count + (entry.parent_message_id === threadAnchorId ? 1 : 0)
+    }, 0)
+    : 0
+  const threadReplyCount = Math.max(fetchedThreadReplyCount, inlineThreadReplyCount)
+  const isActiveThread = activeThreadParentId === threadAnchorId
+  const threadLinkLabel = message.parent_message_id
+    ? 'View thread'
+    : threadReplyCount > 0
+      ? `${threadReplyCount} ${threadReplyCount === 1 ? 'reply' : 'replies'}`
+      : 'Start thread'
+  const handleOpenThread = (): void => {
+    void openThread(threadAnchorMessage)
+  }
 
   const startsGroup = getMessageGroupState(message, previousMessage)
   const expiryLabel = useExpiryLabel(message.expires_at)
+  const isFocusedMessage = focusedMessageId === message.id
+
+  useEffect(() => {
+    if (!isFocusedMessage) {
+      return
+    }
+
+    const node = document.querySelector<HTMLElement>(`[data-message-id="${message.id}"]`)
+    node?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, [isFocusedMessage, message.id])
 
   const handleReaction = (emoji: string): void => {
     const existing = message.reactions?.find((r) => r.emoji === emoji)
@@ -248,6 +281,11 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
         label: 'Reply',
         icon: Reply,
         onClick: () => setReplyingTo(message)
+      },
+      {
+        label: 'Open Thread',
+        icon: MessageSquare,
+        onClick: handleOpenThread
       },
       ...(isMe
         ? [
@@ -307,10 +345,11 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
 
   return (
     <div
+      data-message-id={message.id}
       className={
-        startsGroup
+        `${startsGroup
           ? 'vesper-message-row vesper-message-row-start group'
-          : 'vesper-message-row vesper-message-row-grouped group'
+          : 'vesper-message-row vesper-message-row-grouped group'}${isActiveThread ? ' vesper-message-row-thread-active' : ''}${isFocusedMessage ? ' ring-1 ring-accent/60 bg-accent/5 rounded-xl' : ''}`
       }
       onContextMenu={(e) => msgMenu.onContextMenu(e, message)}
     >
@@ -332,7 +371,13 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
 
       <div className="vesper-message-body">
         <div className="vesper-message-toolbar-slot">
-          <div className="vesper-message-toolbar-anchor">
+          <div
+            className={
+              showEmojiPicker
+                ? 'vesper-message-toolbar-anchor vesper-message-toolbar-anchor-active'
+                : 'vesper-message-toolbar-anchor'
+            }
+          >
             <MessageActions
               canEdit={isMe}
               onReply={() => setReplyingTo(message)}
@@ -411,6 +456,16 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
           onToggleReaction={handleReaction}
           customEmojis={customEmojis}
         />
+
+        <div className="vesper-message-thread-meta">
+          <button
+            type="button"
+            onClick={handleOpenThread}
+            className={`vesper-message-thread-link${isActiveThread ? ' vesper-message-thread-link-active' : ''}`}
+          >
+            {threadLinkLabel}
+          </button>
+        </div>
       </div>
 
       {msgMenu.menu && (

@@ -59,6 +59,8 @@ export default function EmojiPicker({ onSelect, onClose }: Props): React.JSX.Ele
   const searchRef = useRef<HTMLInputElement>(null)
   const pickerRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const activeServerId = useServerStore((s) => s.activeServerId)
+  const fetchServerEmojis = useServerStore((s) => s.fetchServerEmojis)
   const activeServer = useServerStore((s) => s.servers.find((server) => server.id === s.activeServerId))
   const customEmojis = activeServer?.emojis ?? []
 
@@ -67,7 +69,13 @@ export default function EmojiPicker({ onSelect, onClose }: Props): React.JSX.Ele
   }, [])
 
   useEffect(() => {
-    const handleClickOutside = (event: MouseEvent): void => {
+    if (activeServerId) {
+      void fetchServerEmojis(activeServerId)
+    }
+  }, [activeServerId, fetchServerEmojis])
+
+  useEffect(() => {
+    const handlePointerOutside = (event: PointerEvent): void => {
       if (pickerRef.current && !pickerRef.current.contains(event.target as Node)) {
         onClose()
       }
@@ -79,11 +87,11 @@ export default function EmojiPicker({ onSelect, onClose }: Props): React.JSX.Ele
       }
     }
 
-    document.addEventListener('mousedown', handleClickOutside)
+    document.addEventListener('pointerdown', handlePointerOutside)
     document.addEventListener('keydown', handleEscape)
 
     return () => {
-      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('pointerdown', handlePointerOutside)
       document.removeEventListener('keydown', handleEscape)
     }
   }, [onClose])
@@ -256,7 +264,11 @@ export default function EmojiPicker({ onSelect, onClose }: Props): React.JSX.Ele
                       key={item.type === 'custom' ? item.id : item.value}
                       type="button"
                       className="vesper-emoji-picker-item"
-                      onClick={() => handleSelect(item)}
+                      onClick={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        handleSelect(item)
+                      }}
                       onMouseEnter={() => setHoveredEmoji(item)}
                       title={item.type === 'custom' ? `:${item.name}:` : item.name}
                     >

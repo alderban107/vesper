@@ -14,6 +14,7 @@ defmodule Vesper.Servers.Server do
     belongs_to :owner, Vesper.Accounts.User
     has_many :channels, Vesper.Servers.Channel
     has_many :memberships, Vesper.Servers.Membership
+    has_many :emojis, Vesper.Servers.Emoji
 
     timestamps(type: :utc_datetime)
   end

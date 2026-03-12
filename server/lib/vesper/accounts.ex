@@ -1,7 +1,7 @@
 defmodule Vesper.Accounts do
   import Ecto.Query
   alias Vesper.Repo
-  alias Vesper.Accounts.{User, UserToken, Token}
+  alias Vesper.Accounts.{SearchIndexSnapshot, User, UserToken, Token}
 
   def get_user(id), do: Repo.get(User, id)
 
@@ -137,5 +137,49 @@ defmodule Vesper.Accounts do
       error ->
         error
     end
+  end
+
+  def get_search_index_snapshot(user_id) do
+    Repo.get_by(SearchIndexSnapshot, user_id: user_id)
+  end
+
+  def upsert_search_index_snapshot(user_id, attrs) do
+    expected_version = attrs["expected_version"] || attrs[:expected_version]
+
+    case get_search_index_snapshot(user_id) do
+      nil ->
+        %SearchIndexSnapshot{}
+        |> SearchIndexSnapshot.changeset(%{
+          user_id: user_id,
+          device_id: attrs["device_id"] || attrs[:device_id],
+          version: 1,
+          ciphertext: attrs["ciphertext"] || attrs[:ciphertext],
+          nonce: attrs["nonce"] || attrs[:nonce]
+        })
+        |> Repo.insert()
+
+      %SearchIndexSnapshot{} = snapshot ->
+        cond do
+          is_integer(expected_version) and expected_version != snapshot.version ->
+            {:error, :conflict, snapshot}
+
+          true ->
+            snapshot
+            |> SearchIndexSnapshot.changeset(%{
+              device_id: attrs["device_id"] || attrs[:device_id],
+              version: snapshot.version + 1,
+              ciphertext: attrs["ciphertext"] || attrs[:ciphertext],
+              nonce: attrs["nonce"] || attrs[:nonce]
+            })
+            |> Repo.update()
+        end
+    end
+  end
+
+  def delete_search_index_snapshot(user_id) do
+    from(snapshot in SearchIndexSnapshot, where: snapshot.user_id == ^user_id)
+    |> Repo.delete_all()
+
+    :ok
   end
 end

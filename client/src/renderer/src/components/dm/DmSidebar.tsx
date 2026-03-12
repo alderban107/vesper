@@ -12,8 +12,10 @@ export default function DmSidebar(): React.JSX.Element {
   const selectConversation = useDmStore((s) => s.selectConversation)
   const fetchConversations = useDmStore((s) => s.fetchConversations)
   const openNewDmModal = useUIStore((s) => s.openNewDmModal)
+  const closeMobileNav = useUIStore((s) => s.closeMobileNav)
   const currentUserId = useAuthStore((s) => s.user?.id)
   const dmUnreads = useUnreadStore((s) => s.dmUnreads)
+  const isMobileLayout = typeof window !== 'undefined' && window.innerWidth <= 768
 
   useEffect(() => {
     fetchConversations()
@@ -30,6 +32,13 @@ export default function DmSidebar(): React.JSX.Element {
     if (!conv.last_message) return 'No messages yet'
     if (conv.last_message.ciphertext) return 'Message'
     return conv.last_message.content || ''
+  }
+
+  const handleConversationSelect = (conversationId: string): void => {
+    selectConversation(conversationId)
+    if (isMobileLayout) {
+      closeMobileNav()
+    }
   }
 
   return (
@@ -56,7 +65,7 @@ export default function DmSidebar(): React.JSX.Element {
             return (
               <button
                 key={conv.id}
-                onClick={() => selectConversation(conv.id)}
+                onClick={() => handleConversationSelect(conv.id)}
                 className={`w-full text-left px-3 py-2 flex items-center gap-2 transition-colors ${
                   conv.id === selectedId
                     ? 'bg-bg-tertiary/80 text-text-primary'
@@ -75,6 +84,13 @@ export default function DmSidebar(): React.JSX.Element {
                     })()}
                     displayName={getDisplayName(conv)}
                     size="sm"
+                    status={(() => {
+                      const others = conv.participants.filter((p) => p.user_id !== currentUserId)
+                      const status = others[0]?.user?.status
+                      return status === 'online' || status === 'idle' || status === 'dnd' || status === 'offline'
+                        ? status
+                        : undefined
+                    })()}
                   />
                 </div>
                 <div className="min-w-0 flex-1">

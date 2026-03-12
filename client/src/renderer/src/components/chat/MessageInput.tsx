@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from 'react'
 import { Paperclip, SendHorizonal, Smile, Loader2 } from 'lucide-react'
 import { useServerStore } from '../../stores/serverStore'
-import { useMessageStore } from '../../stores/messageStore'
+import { useMessageStore, cacheSentPlaintext } from '../../stores/messageStore'
 import { apiUpload } from '../../api/client'
 import { encryptFile } from '../../crypto/fileEncryption'
 import { useCryptoStore } from '../../stores/cryptoStore'
@@ -29,6 +29,8 @@ export default function MessageInput(): React.JSX.Element {
   const isTypingRef = useRef(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const dragDepthRef = useRef(0)
+  const [dragActive, setDragActive] = useState(false)
 
   const handleTyping = useCallback(() => {
     if (!activeChannelId) return
@@ -109,17 +111,12 @@ export default function MessageInput(): React.JSX.Element {
     textareaRef.current?.focus()
   }
 
-  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>): Promise<void> => {
-    const file = e.target.files?.[0]
-    if (!file || !activeChannelId) return
-
+  const uploadFile = async (file: File): Promise<void> => {
+    if (!activeChannelId) return
     setUploading(true)
     try {
-      // Read file and encrypt with AES-256-GCM
       const fileData = await file.arrayBuffer()
       const encrypted = await encryptFile(fileData)
-
-      // Upload encrypted blob
       const blob = new Blob([encrypted.ciphertext])
       const formData = new FormData()
       formData.append('file', blob, file.name)
@@ -131,7 +128,6 @@ export default function MessageInput(): React.JSX.Element {
       const data = await res.json()
       const attachmentId = data.attachment.id
 
-      // Build JSON envelope with AES key
       const envelope = JSON.stringify({
         type: 'file',
         text: content.trim() || undefined,
@@ -145,13 +141,10 @@ export default function MessageInput(): React.JSX.Element {
         }
       })
 
-      // Send message with attachment_ids via channel
       const topic = `chat:channel:${activeChannelId}`
       const crypto = useCryptoStore.getState()
       const replyTo = useMessageStore.getState().replyingTo
       const parentId = replyTo?.id || undefined
-
-      // Ensure MLS group exists
       if (!crypto.hasGroup(activeChannelId)) {
         await crypto.createGroup(activeChannelId)
       }
@@ -159,6 +152,7 @@ export default function MessageInput(): React.JSX.Element {
       if (crypto.hasGroup(activeChannelId)) {
         const enc = await crypto.encryptForChannel(activeChannelId, envelope)
         if (enc) {
+          cacheSentPlaintext(enc.ciphertext, envelope)
           pushToChannel(topic, 'new_message', {
             ciphertext: enc.ciphertext,
             mls_epoch: enc.epoch,
@@ -176,12 +170,72 @@ export default function MessageInput(): React.JSX.Element {
       // ignore
     } finally {
       setUploading(false)
-      if (fileInputRef.current) fileInputRef.current.value = ''
     }
   }
 
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>): Promise<void> => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    await uploadFile(file)
+
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+    }
+  }
+
+  const handleDragEnter = (event: React.DragEvent<HTMLFormElement>): void => {
+    event.preventDefault()
+    event.stopPropagation()
+    dragDepthRef.current += 1
+    setDragActive(true)
+  }
+
+  const handleDragLeave = (event: React.DragEvent<HTMLFormElement>): void => {
+    event.preventDefault()
+    event.stopPropagation()
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
+    if (dragDepthRef.current === 0) {
+      setDragActive(false)
+    }
+  }
+
+  const handleDrop = async (event: React.DragEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault()
+    event.stopPropagation()
+    dragDepthRef.current = 0
+    setDragActive(false)
+
+    const file = event.dataTransfer.files?.[0]
+    if (!file || uploading) {
+      return
+    }
+
+    await uploadFile(file)
+  }
+
   return (
-    <form onSubmit={handleSubmit} className="vesper-composer-form">
+    <form
+      onSubmit={handleSubmit}
+      onDragEnter={handleDragEnter}
+      onDragOver={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+      }}
+      onDragLeave={handleDragLeave}
+      onDrop={(event) => {
+        void handleDrop(event)
+      }}
+      className={`vesper-composer-form${dragActive ? ' vesper-composer-form-dragging' : ''}`}
+    >
+      {dragActive && (
+        <div className="vesper-composer-drop-overlay" aria-hidden="true">
+          <div className="vesper-composer-drop-card">
+            <Paperclip className="w-5 h-5" />
+            <span>Drop a file to send it to this channel</span>
+          </div>
+        </div>
+      )}
       {/* Mention autocomplete */}
       {mentionQuery !== null && (
         <div className="relative mb-1">
