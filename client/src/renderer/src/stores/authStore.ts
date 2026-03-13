@@ -11,6 +11,7 @@ import {
 import { initCipherSuite, createKeyPackageBatch, encodeKeyPackageBytes } from '../crypto/mls'
 import { saveIdentity, saveKeyPackages } from '../crypto/storage'
 import { uploadKeyPackages, getMyKeyPackageCount } from '../api/crypto'
+import { serializePrivatePackage } from '../crypto/keySerialization'
 
 interface User {
   id: string
@@ -118,11 +119,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       await saveKeyPackages(
         batchPairs.map((p) => ({
           publicData: encodeKeyPackageBytes(p.publicPackage),
-          privateData: new Uint8Array([
-            ...p.privatePackage.initPrivateKey,
-            ...p.privatePackage.hpkePrivateKey,
-            ...p.privatePackage.signaturePrivateKey
-          ])
+          privateData: serializePrivatePackage(p.privatePackage)
         }))
       )
 
@@ -176,11 +173,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
           const privateKeys = await decryptEncryptedKeyBundle(bundle, password)
 
-          // Store decrypted identity locally
+          // Retrieve the actual public keys from the server response
+          const publicIdentityKey = data.public_identity_key
+            ? base64ToUint8(data.public_identity_key)
+            : bundle.ciphertext // fallback for legacy accounts without public keys in response
+          const publicKeyExchange = data.public_key_exchange
+            ? base64ToUint8(data.public_key_exchange)
+            : bundle.ciphertext
+
+          // Store identity locally with correct public keys
           await saveIdentity(
             data.user.id,
-            bundle.ciphertext, // We stored the public key on the server
-            bundle.ciphertext,
+            publicIdentityKey,
+            publicKeyExchange,
             bundle.ciphertext,
             bundle.nonce,
             bundle.salt
@@ -195,7 +200,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             const signaturePrivateKey = privateKeys
             const pairs = await createKeyPackageBatch(username, toGenerate, {
               signKey: signaturePrivateKey,
-              publicKey: signaturePrivateKey // Will be overridden by the key package generation
+              publicKey: publicIdentityKey
             })
 
             const publicPackageBytes = pairs.map((p) => encodeKeyPackageBytes(p.publicPackage))
@@ -204,11 +209,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             await saveKeyPackages(
               pairs.map((p) => ({
                 publicData: encodeKeyPackageBytes(p.publicPackage),
-                privateData: new Uint8Array([
-                  ...p.privatePackage.initPrivateKey,
-                  ...p.privatePackage.hpkePrivateKey,
-                  ...p.privatePackage.signaturePrivateKey
-                ])
+                privateData: serializePrivatePackage(p.privatePackage)
               }))
             )
           }
@@ -325,11 +326,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       await saveKeyPackages(
         pairs.map((p) => ({
           publicData: encodeKeyPackageBytes(p.publicPackage),
-          privateData: new Uint8Array([
-            ...p.privatePackage.initPrivateKey,
-            ...p.privatePackage.hpkePrivateKey,
-            ...p.privatePackage.signaturePrivateKey
-          ])
+          privateData: serializePrivatePackage(p.privatePackage)
         }))
       )
     } catch {

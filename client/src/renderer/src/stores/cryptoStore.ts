@@ -22,6 +22,7 @@ import {
   loadKeyPackages,
   consumeKeyPackage
 } from '../crypto/storage'
+import { deserializePrivatePackage } from '../crypto/keySerialization'
 import { fetchKeyPackage, fetchPendingWelcomes, ackPendingWelcome } from '../api/crypto'
 import { base64ToUint8, uint8ToBase64 } from '../api/crypto'
 import { useAuthStore } from './authStore'
@@ -123,12 +124,7 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
         await consumeKeyPackage(pkg.id)
 
         publicPackage = decodeKeyPackageBytes(new Uint8Array(pkg.publicData))
-        const privateData = new Uint8Array(pkg.privateData)
-        privatePackage = {
-          initPrivateKey: privateData.slice(0, 32),
-          hpkePrivateKey: privateData.slice(32, 64),
-          signaturePrivateKey: privateData.slice(64)
-        }
+        privatePackage = deserializePrivatePackage(new Uint8Array(pkg.privateData))
       }
 
       const state = await createMLSGroup(channelId, publicPackage, privatePackage)
@@ -202,12 +198,7 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
         const pkg = localPackages[0]
         await consumeKeyPackage(pkg.id)
         publicPackage = decodeKeyPackageBytes(new Uint8Array(pkg.publicData))
-        const privateData = new Uint8Array(pkg.privateData)
-        privatePackage = {
-          initPrivateKey: privateData.slice(0, 32),
-          hpkePrivateKey: privateData.slice(32, 64),
-          signaturePrivateKey: privateData.slice(64)
-        }
+        privatePackage = deserializePrivatePackage(new Uint8Array(pkg.privateData))
       } else {
         const pairs = await createKeyPackageBatch(user.username, 1)
         publicPackage = pairs[0].publicPackage

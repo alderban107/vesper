@@ -44,13 +44,14 @@ const cryptoDbApi = {
   countLocalKeyPackages: () =>
     ipcRenderer.invoke('cryptoDb:countLocalKeyPackages'),
 
-  // Message cache
+  // Message cache (stores ciphertext, not plaintext)
   cacheMessage: (msg: {
     id: string
     channel_id: string
     sender_id: string | null
     sender_username: string | null
-    content: string | null
+    ciphertext: Uint8Array | null
+    mls_epoch: number | null
     inserted_at: string
   }) => ipcRenderer.invoke('cryptoDb:cacheMessage', msg),
   getCachedMessages: (channelId: string) =>
@@ -58,9 +59,8 @@ const cryptoDbApi = {
   clearMessageCache: (channelId: string) =>
     ipcRenderer.invoke('cryptoDb:clearMessageCache', channelId),
 
-  // Search
-  searchMessages: (query: string) =>
-    ipcRenderer.invoke('cryptoDb:searchMessages', query)
+  // Search (disabled — ciphertext cache cannot be searched; Phase 5 will add FTS5)
+  searchMessages: (_query: string) => Promise.resolve([])
 }
 
 const notificationApi = {

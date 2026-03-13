@@ -75,7 +75,8 @@ export function createIndexedDbAdapter(): CryptoDbApi & {
       channel_id: string
       sender_id: string | null
       sender_username: string | null
-      content: string | null
+      ciphertext: ArrayBuffer | null
+      mls_epoch: number | null
       inserted_at: string
     }>
   >
@@ -205,14 +206,15 @@ export function createIndexedDbAdapter(): CryptoDbApi & {
       return all.filter((pkg: { consumed: number }) => !pkg.consumed).length
     },
 
-    // --- Message Cache ---
+    // --- Message Cache (stores ciphertext, not plaintext) ---
 
     async cacheMessage(msg: {
       id: string
       channel_id: string
       sender_id: string | null
       sender_username: string | null
-      content: string | null
+      ciphertext: Uint8Array | null
+      mls_epoch: number | null
       inserted_at: string
     }) {
       const db = await getDb()
@@ -241,36 +243,11 @@ export function createIndexedDbAdapter(): CryptoDbApi & {
     },
 
     // --- Search ---
+    // Plaintext search disabled — ciphertext cache cannot be searched.
+    // Will be reimplemented with FTS5 in Phase 5 of the E2EE refactor.
 
-    async searchMessages(query: string) {
-      const db = await getDb()
-      const all = await req(tx(db, STORES.messageCache, 'readonly').getAll())
-      const lowerQuery = query.toLowerCase()
-      return all
-        .filter(
-          (msg: { content: string | null }) =>
-            msg.content && msg.content.toLowerCase().includes(lowerQuery)
-        )
-        .sort(
-          (a: { inserted_at: string }, b: { inserted_at: string }) =>
-            b.inserted_at.localeCompare(a.inserted_at)
-        )
-        .slice(0, 50)
-        .map((r: {
-          id: string
-          channel_id: string
-          sender_id: string | null
-          sender_username: string | null
-          content: string | null
-          inserted_at: string
-        }) => ({
-          id: r.id,
-          channel_id: r.channel_id,
-          sender_id: r.sender_id,
-          sender_username: r.sender_username,
-          content: r.content,
-          inserted_at: r.inserted_at
-        }))
+    async searchMessages(_query: string) {
+      return []
     }
   }
 }

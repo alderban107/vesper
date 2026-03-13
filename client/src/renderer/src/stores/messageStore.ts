@@ -7,6 +7,8 @@ import { useVoiceStore } from './voiceStore'
 import { useServerStore } from './serverStore'
 import { useDmStore } from './dmStore'
 import { usePresenceStore } from './presenceStore'
+import { cacheMessage as cacheMessageToDb, loadCachedMessages } from '../crypto/storage'
+import { base64ToUint8 } from '../api/crypto'
 
 export interface MessageSender {
   id: string
@@ -623,31 +625,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     pushToChannel(topic, 'unpin_message', { message_id: messageId })
   },
 
-  // Search (local SQLite)
-  searchMessages: async (query) => {
-    const db = (window as Record<string, unknown>).cryptoDb as {
-      searchMessages?: (q: string) => Promise<Array<{
-        id: string; channel_id: string; sender_id: string | null;
-        sender_username: string | null; content: string | null; inserted_at: string
-      }>>
-    } | undefined
-
-    if (!db?.searchMessages) return []
-
-    const results = await db.searchMessages(query)
-    return results.map((r) => ({
-      id: r.id,
-      content: r.content || '',
-      channel_id: r.channel_id,
-      conversation_id: null,
-      sender_id: r.sender_id,
-      sender: r.sender_username
-        ? { id: r.sender_id || '', username: r.sender_username, display_name: null, avatar_url: null }
-        : null,
-      inserted_at: r.inserted_at,
-      expires_at: null,
-      parent_message_id: null
-    }))
+  // Search — disabled while message cache stores ciphertext.
+  // Will be reimplemented with FTS5 in Phase 5 of the E2EE refactor.
+  searchMessages: async (_query) => {
+    return []
   }
 }))
 
@@ -797,19 +778,40 @@ async function handleNewMessage(
 
 /**
  * Process an incoming message — decrypt if encrypted, pass through if plaintext.
+ * Encrypted messages are cached as ciphertext in the local database so they can
+ * be decrypted on demand later without storing plaintext on disk.
  */
 async function processIncomingMessage(
   targetId: string,
   msg: Record<string, unknown>
 ): Promise<Message> {
   if (msg.ciphertext) {
+    const ciphertextB64 = msg.ciphertext as string
+    const mlsEpoch = (msg.mls_epoch as number) ?? null
+
     const plaintext = await useCryptoStore
       .getState()
-      .decryptForChannel(targetId, msg.ciphertext as string)
+      .decryptForChannel(targetId, ciphertextB64)
+
+    // Cache the ciphertext (not plaintext) to the local DB
+    try {
+      const ciphertextBytes = base64ToUint8(ciphertextB64)
+      await cacheMessageToDb({
+        id: msg.id as string,
+        channelId: targetId,
+        senderId: (msg.sender_id as string) || null,
+        senderUsername: (msg.sender as MessageSender)?.username || null,
+        ciphertext: ciphertextBytes,
+        mlsEpoch: mlsEpoch,
+        insertedAt: msg.inserted_at as string
+      })
+    } catch {
+      // Cache failure is non-fatal — message is still displayed from memory
+    }
 
     return {
       id: msg.id as string,
-      content: plaintext || 'Message unavailable',
+      content: plaintext || '[Message unavailable - decryption failed]',
       channel_id: (msg.channel_id as string) || null,
       conversation_id: (msg.conversation_id as string) || null,
       sender_id: (msg.sender_id as string) || null,

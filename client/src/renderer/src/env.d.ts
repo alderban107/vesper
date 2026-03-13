@@ -41,13 +41,14 @@ interface CryptoDbApi {
   consumeLocalKeyPackage(id: number): Promise<void>
   countLocalKeyPackages(): Promise<number>
 
-  // Message cache
+  // Message cache (stores ciphertext, not plaintext)
   cacheMessage(msg: {
     id: string
     channel_id: string
     sender_id: string | null
     sender_username: string | null
-    content: string | null
+    ciphertext: Uint8Array | null
+    mls_epoch: number | null
     inserted_at: string
   }): Promise<void>
   getCachedMessages(channelId: string): Promise<
@@ -56,7 +57,8 @@ interface CryptoDbApi {
       channel_id: string
       sender_id: string | null
       sender_username: string | null
-      content: string | null
+      ciphertext: ArrayBuffer | null
+      mls_epoch: number | null
       inserted_at: string
     }>
   >
