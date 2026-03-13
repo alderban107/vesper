@@ -26,6 +26,7 @@ import { deserializePrivatePackage } from '../crypto/keySerialization'
 import { fetchKeyPackage, fetchPendingWelcomes, ackPendingWelcome } from '../api/crypto'
 import { base64ToUint8, uint8ToBase64 } from '../api/crypto'
 import { useAuthStore } from './authStore'
+import { withGroupLock } from '../crypto/groupLock'
 
 interface CryptoState {
   /** In-memory MLS group states keyed by channel ID */
@@ -53,7 +54,7 @@ interface CryptoState {
   /** Check if a channel has an active MLS group */
   hasGroup: (channelId: string) => boolean
   /** Clear local group state and trigger rejoin */
-  resetGroup: (channelId: string) => void
+  resetGroup: (channelId: string) => Promise<void>
   /** Derive a 128-bit voice encryption key from the MLS group's epoch secret */
   getVoiceKey: (channelId: string) => Promise<Uint8Array | null>
 }
@@ -100,208 +101,257 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
   createGroup: async (channelId) => {
     if (get().groupStates[channelId] || get().groupSetupInProgress[channelId]) return
 
-    set((s) => ({
-      groupSetupInProgress: { ...s.groupSetupInProgress, [channelId]: true }
-    }))
+    await withGroupLock(channelId, async () => {
+      // Re-check after acquiring lock
+      if (get().groupStates[channelId]) return
 
-    try {
-      await initCipherSuite()
-      const user = useAuthStore.getState().user
-      if (!user) return
+      set((s) => ({
+        groupSetupInProgress: { ...s.groupSetupInProgress, [channelId]: true }
+      }))
 
-      // Get a local key package to use as the creator
-      const localPackages = await loadKeyPackages()
-      let publicPackage, privatePackage
+      try {
+        await initCipherSuite()
+        const user = useAuthStore.getState().user
+        if (!user) return
 
-      if (localPackages.length === 0) {
-        // Generate one on the fly
-        const pairs = await createKeyPackageBatch(user.username, 1)
-        publicPackage = pairs[0].publicPackage
-        privatePackage = pairs[0].privatePackage
-      } else {
-        // Use first available local key package
-        const pkg = localPackages[0]
-        await consumeKeyPackage(pkg.id)
+        // Get a local key package to use as the creator
+        const localPackages = await loadKeyPackages()
+        let publicPackage, privatePackage
 
-        publicPackage = decodeKeyPackageBytes(new Uint8Array(pkg.publicData))
-        privatePackage = deserializePrivatePackage(new Uint8Array(pkg.privateData))
+        if (localPackages.length === 0) {
+          // Generate one on the fly
+          const pairs = await createKeyPackageBatch(user.username, 1)
+          publicPackage = pairs[0].publicPackage
+          privatePackage = pairs[0].privatePackage
+        } else {
+          // Use first available local key package
+          const pkg = localPackages[0]
+          await consumeKeyPackage(pkg.id)
+
+          publicPackage = decodeKeyPackageBytes(new Uint8Array(pkg.publicData))
+          privatePackage = deserializePrivatePackage(new Uint8Array(pkg.privateData))
+        }
+
+        const state = await createMLSGroup(channelId, publicPackage, privatePackage)
+        const serialized = serializeGroupState(state)
+        await saveGroupState(channelId, serialized, Number(state.groupContext.epoch))
+
+        set((s) => ({
+          groupStates: { ...s.groupStates, [channelId]: state }
+        }))
+
+        // Replenish key packages after consuming one for group creation
+        useAuthStore.getState().replenishKeyPackages().catch(() => {})
+      } catch (e) {
+        console.error('Failed to create MLS group:', e)
+      } finally {
+        set((s) => ({
+          groupSetupInProgress: { ...s.groupSetupInProgress, [channelId]: false }
+        }))
       }
-
-      const state = await createMLSGroup(channelId, publicPackage, privatePackage)
-      const serialized = serializeGroupState(state)
-      await saveGroupState(channelId, serialized, Number(state.groupContext.epoch))
-
-      set((s) => ({
-        groupStates: { ...s.groupStates, [channelId]: state }
-      }))
-
-      // Replenish key packages after consuming one for group creation
-      useAuthStore.getState().replenishKeyPackages().catch(() => {})
-    } catch (e) {
-      console.error('Failed to create MLS group:', e)
-    } finally {
-      set((s) => ({
-        groupSetupInProgress: { ...s.groupSetupInProgress, [channelId]: false }
-      }))
-    }
+    })
   },
 
   handleJoinRequest: async (channelId, userId) => {
-    const state = get().groupStates[channelId]
-    if (!state) return // We're not the group owner / don't have state
+    if (!get().groupStates[channelId]) return // We're not the group owner / don't have state
 
-    try {
-      await initCipherSuite()
+    return withGroupLock(channelId, async () => {
+      const state = get().groupStates[channelId]
+      if (!state) return // Re-check after acquiring lock
 
-      // Fetch the requesting user's key package from the directory
-      const keyPackageBytes = await fetchKeyPackage(userId)
-      if (!keyPackageBytes) {
-        console.warn(`No key package available for user ${userId}`)
-        return
+      try {
+        await initCipherSuite()
+
+        // Fetch the requesting user's key package from the directory
+        const keyPackageBytes = await fetchKeyPackage(userId)
+        if (!keyPackageBytes) {
+          console.warn(`No key package available for user ${userId}`)
+          return
+        }
+
+        const memberKeyPackage = decodeKeyPackageBytes(keyPackageBytes)
+        const result = await addMemberToGroup(state, memberKeyPackage)
+
+        // Update local state
+        const serialized = serializeGroupState(result.newState)
+        await saveGroupState(channelId, serialized, Number(result.newState.groupContext.epoch))
+
+        set((s) => ({
+          groupStates: { ...s.groupStates, [channelId]: result.newState }
+        }))
+
+        // Return commit and welcome bytes for the caller to broadcast
+        // This is called from messageStore which handles the channel push
+        return {
+          commitBytes: uint8ToBase64(result.commitBytes),
+          welcomeBytes: result.welcomeBytes ? uint8ToBase64(result.welcomeBytes) : null
+        } as unknown as void
+      } catch (e) {
+        console.error('Failed to handle join request:', e)
       }
-
-      const memberKeyPackage = decodeKeyPackageBytes(keyPackageBytes)
-      const result = await addMemberToGroup(state, memberKeyPackage)
-
-      // Update local state
-      const serialized = serializeGroupState(result.newState)
-      await saveGroupState(channelId, serialized, Number(result.newState.groupContext.epoch))
-
-      set((s) => ({
-        groupStates: { ...s.groupStates, [channelId]: result.newState }
-      }))
-
-      // Return commit and welcome bytes for the caller to broadcast
-      // This is called from messageStore which handles the channel push
-      return {
-        commitBytes: uint8ToBase64(result.commitBytes),
-        welcomeBytes: result.welcomeBytes ? uint8ToBase64(result.welcomeBytes) : null
-      } as unknown as void
-    } catch (e) {
-      console.error('Failed to handle join request:', e)
-    }
+    })
   },
 
   handleWelcome: async (channelId, welcomeData) => {
-    try {
-      await initCipherSuite()
-      const user = useAuthStore.getState().user
-      if (!user) return
+    await withGroupLock(channelId, async () => {
+      try {
+        await initCipherSuite()
+        const user = useAuthStore.getState().user
+        if (!user) return
 
-      const welcomeBytes = base64ToUint8(welcomeData)
+        const welcomeBytes = base64ToUint8(welcomeData)
 
-      // Get a local key package
-      const localPackages = await loadKeyPackages()
-      let publicPackage, privatePackage
+        // Get a local key package
+        const localPackages = await loadKeyPackages()
+        let publicPackage, privatePackage
 
-      if (localPackages.length > 0) {
-        const pkg = localPackages[0]
-        await consumeKeyPackage(pkg.id)
-        publicPackage = decodeKeyPackageBytes(new Uint8Array(pkg.publicData))
-        privatePackage = deserializePrivatePackage(new Uint8Array(pkg.privateData))
-      } else {
-        const pairs = await createKeyPackageBatch(user.username, 1)
-        publicPackage = pairs[0].publicPackage
-        privatePackage = pairs[0].privatePackage
+        if (localPackages.length > 0) {
+          const pkg = localPackages[0]
+          await consumeKeyPackage(pkg.id)
+          publicPackage = decodeKeyPackageBytes(new Uint8Array(pkg.publicData))
+          privatePackage = deserializePrivatePackage(new Uint8Array(pkg.privateData))
+        } else {
+          const pairs = await createKeyPackageBatch(user.username, 1)
+          publicPackage = pairs[0].publicPackage
+          privatePackage = pairs[0].privatePackage
+        }
+
+        const state = await processWelcome(welcomeBytes, publicPackage, privatePackage)
+        const serialized = serializeGroupState(state)
+        await saveGroupState(channelId, serialized, Number(state.groupContext.epoch))
+
+        // Replace any stale group state with the fresh one from this Welcome
+        set((s) => ({
+          groupStates: { ...s.groupStates, [channelId]: state }
+        }))
+
+        // Replenish key packages after consuming one for welcome processing
+        useAuthStore.getState().replenishKeyPackages().catch(() => {})
+      } catch (e) {
+        console.error('Failed to process Welcome:', e)
       }
-
-      const state = await processWelcome(welcomeBytes, publicPackage, privatePackage)
-      const serialized = serializeGroupState(state)
-      await saveGroupState(channelId, serialized, Number(state.groupContext.epoch))
-
-      // Replace any stale group state with the fresh one from this Welcome
-      set((s) => ({
-        groupStates: { ...s.groupStates, [channelId]: state }
-      }))
-
-      // Replenish key packages after consuming one for welcome processing
-      useAuthStore.getState().replenishKeyPackages().catch(() => {})
-    } catch (e) {
-      console.error('Failed to process Welcome:', e)
-    }
+    })
   },
 
   handleCommit: async (channelId, commitData) => {
-    const state = get().groupStates[channelId]
-    if (!state) return
+    if (!get().groupStates[channelId]) return
 
-    try {
-      await initCipherSuite()
-      const commitBytes = base64ToUint8(commitData)
-      const newState = await processCommitMessage(state, commitBytes)
+    await withGroupLock(channelId, async () => {
+      const RETRY_DELAYS = [100, 500, 2000]
+      let lastError: unknown
 
-      const serialized = serializeGroupState(newState)
-      await saveGroupState(channelId, serialized, Number(newState.groupContext.epoch))
+      for (let attempt = 0; attempt < RETRY_DELAYS.length; attempt++) {
+        const state = get().groupStates[channelId]
+        if (!state) return
 
-      set((s) => ({
-        groupStates: { ...s.groupStates, [channelId]: newState }
-      }))
-    } catch (e) {
-      console.error('Failed to process commit:', e)
-    }
+        try {
+          await initCipherSuite()
+          const commitBytes = base64ToUint8(commitData)
+          const newState = await processCommitMessage(state, commitBytes)
+
+          const serialized = serializeGroupState(newState)
+          await saveGroupState(channelId, serialized, Number(newState.groupContext.epoch))
+
+          set((s) => ({
+            groupStates: { ...s.groupStates, [channelId]: newState }
+          }))
+          return // Success
+        } catch (e) {
+          lastError = e
+          if (attempt < RETRY_DELAYS.length - 1) {
+            console.warn(
+              `Commit processing failed for ${channelId} (attempt ${attempt + 1}/${RETRY_DELAYS.length}), retrying in ${RETRY_DELAYS[attempt]}ms:`,
+              e
+            )
+            await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS[attempt]))
+          }
+        }
+      }
+
+      // All retries exhausted — reset group state so the next operation triggers a rejoin
+      console.error(
+        `Commit processing failed for ${channelId} after ${RETRY_DELAYS.length} attempts, resetting group state:`,
+        lastError
+      )
+      set((s) => {
+        const { [channelId]: _, ...rest } = s.groupStates
+        return { groupStates: rest }
+      })
+      deleteGroupState(channelId).catch(() => {})
+    })
   },
 
   encryptForChannel: async (channelId, plaintext) => {
-    const state = get().groupStates[channelId]
-    if (!state) return null
+    if (!get().groupStates[channelId]) return null
 
-    try {
-      await initCipherSuite()
-      const result = await encryptMessage(state, plaintext)
+    return withGroupLock(channelId, async () => {
+      const state = get().groupStates[channelId]
+      if (!state) return null
 
-      // Update state (key ratcheting)
-      const serialized = serializeGroupState(result.newState)
-      await saveGroupState(channelId, serialized, Number(result.newState.groupContext.epoch))
+      try {
+        await initCipherSuite()
+        const result = await encryptMessage(state, plaintext)
 
-      set((s) => ({
-        groupStates: { ...s.groupStates, [channelId]: result.newState }
-      }))
+        // Update state (key ratcheting)
+        const serialized = serializeGroupState(result.newState)
+        await saveGroupState(channelId, serialized, Number(result.newState.groupContext.epoch))
 
-      return {
-        ciphertext: uint8ToBase64(result.ciphertext),
-        epoch: result.epoch
+        set((s) => ({
+          groupStates: { ...s.groupStates, [channelId]: result.newState }
+        }))
+
+        return {
+          ciphertext: uint8ToBase64(result.ciphertext),
+          epoch: result.epoch
+        }
+      } catch (e) {
+        console.error('Failed to encrypt message:', e)
+        return null
       }
-    } catch (e) {
-      console.error('Failed to encrypt message:', e)
-      return null
-    }
+    })
   },
 
   decryptForChannel: async (channelId, ciphertext) => {
-    const state = get().groupStates[channelId]
-    if (!state) return null
+    if (!get().groupStates[channelId]) return null
 
-    try {
-      await initCipherSuite()
-      const ciphertextBytes = base64ToUint8(ciphertext)
-      const result = await decryptMessage(state, ciphertextBytes)
+    return withGroupLock(channelId, async () => {
+      const state = get().groupStates[channelId]
+      if (!state) return null
 
-      if (!result) return null
+      try {
+        await initCipherSuite()
+        const ciphertextBytes = base64ToUint8(ciphertext)
+        const result = await decryptMessage(state, ciphertextBytes)
 
-      // Update state
-      const serialized = serializeGroupState(result.newState)
-      await saveGroupState(channelId, serialized, Number(result.newState.groupContext.epoch))
+        if (!result) return null
 
-      set((s) => ({
-        groupStates: { ...s.groupStates, [channelId]: result.newState }
-      }))
+        // Update state
+        const serialized = serializeGroupState(result.newState)
+        await saveGroupState(channelId, serialized, Number(result.newState.groupContext.epoch))
 
-      return result.plaintext
-    } catch {
-      return null
-    }
+        set((s) => ({
+          groupStates: { ...s.groupStates, [channelId]: result.newState }
+        }))
+
+        return result.plaintext
+      } catch {
+        return null
+      }
+    })
   },
 
   hasGroup: (channelId) => {
     return !!get().groupStates[channelId]
   },
 
-  resetGroup: (channelId) => {
-    set((s) => {
-      const { [channelId]: _, ...rest } = s.groupStates
-      return { groupStates: rest }
+  resetGroup: async (channelId) => {
+    await withGroupLock(channelId, async () => {
+      set((s) => {
+        const { [channelId]: _, ...rest } = s.groupStates
+        return { groupStates: rest }
+      })
+      await deleteGroupState(channelId).catch(() => {})
     })
-    deleteGroupState(channelId).catch(() => {})
   },
 
   getVoiceKey: async (channelId) => {
