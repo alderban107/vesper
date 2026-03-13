@@ -9,7 +9,7 @@ import {
   createRecoveryData
 } from '../crypto/identity'
 import { initCipherSuite, createKeyPackageBatch, encodeKeyPackageBytes } from '../crypto/mls'
-import { saveIdentity, saveKeyPackages } from '../crypto/storage'
+import { saveIdentity, saveKeyPackages, loadIdentity } from '../crypto/storage'
 import { uploadKeyPackages, getMyKeyPackageCount } from '../api/crypto'
 import { serializePrivatePackage } from '../crypto/keySerialization'
 
@@ -99,14 +99,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       setTokens(data.access_token, data.refresh_token)
       connectSocket()
 
-      // Store identity keys locally
+      // Store identity keys locally (including signature private key for key package replenishment)
       await saveIdentity(
         data.user.id,
         signaturePublicKey,
         signaturePublicKey,
         encryptedBundle.ciphertext,
         encryptedBundle.nonce,
-        encryptedBundle.salt
+        encryptedBundle.salt,
+        signaturePrivateKey
       )
 
       // Generate and upload key packages (use the same signature key pair)
@@ -181,14 +182,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             ? base64ToUint8(data.public_key_exchange)
             : bundle.ciphertext
 
-          // Store identity locally with correct public keys
+          // Store identity locally with correct public keys and signature private key
+          // (signature private key stored in encrypted DB for key package replenishment)
           await saveIdentity(
             data.user.id,
             publicIdentityKey,
             publicKeyExchange,
             bundle.ciphertext,
             bundle.nonce,
-            bundle.salt
+            bundle.salt,
+            privateKeys
           )
 
           // Check and replenish key packages
@@ -317,8 +320,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (count >= KEY_PACKAGE_THRESHOLD) return
 
       await initCipherSuite()
+
+      // Load signature key pair from local encrypted DB
+      const identity = await loadIdentity(user.id)
+      if (!identity?.signaturePrivateKey) {
+        console.warn('Cannot replenish key packages: no signature private key in local DB')
+        return
+      }
+
       const toGenerate = KEY_PACKAGE_TARGET - count
-      const pairs = await createKeyPackageBatch(user.username, toGenerate)
+      const pairs = await createKeyPackageBatch(user.username, toGenerate, {
+        signKey: identity.signaturePrivateKey,
+        publicKey: identity.publicIdentityKey
+      })
 
       const publicPackageBytes = pairs.map((p) => encodeKeyPackageBytes(p.publicPackage))
       await uploadKeyPackages(publicPackageBytes)

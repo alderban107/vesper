@@ -22,7 +22,8 @@ export async function saveIdentity(
   publicKeyExchange: Uint8Array,
   encryptedPrivateKeys: Uint8Array,
   nonce: Uint8Array,
-  salt: Uint8Array
+  salt: Uint8Array,
+  signaturePrivateKey?: Uint8Array | null
 ): Promise<void> {
   await db().setIdentityKeys(
     userId,
@@ -30,7 +31,8 @@ export async function saveIdentity(
     publicKeyExchange,
     encryptedPrivateKeys,
     nonce,
-    salt
+    salt,
+    signaturePrivateKey ?? null
   )
 }
 
@@ -40,6 +42,7 @@ export async function loadIdentity(userId: string): Promise<{
   encryptedPrivateKeys: Uint8Array
   nonce: Uint8Array
   salt: Uint8Array
+  signaturePrivateKey: Uint8Array | null
 } | null> {
   const result = await db().getIdentityKeys(userId)
   if (!result) return null
@@ -50,7 +53,10 @@ export async function loadIdentity(userId: string): Promise<{
     publicKeyExchange: new Uint8Array(result.public_key_exchange),
     encryptedPrivateKeys: new Uint8Array(result.encrypted_private_keys),
     nonce: new Uint8Array(result.nonce),
-    salt: new Uint8Array(result.salt)
+    salt: new Uint8Array(result.salt),
+    signaturePrivateKey: result.signature_private_key
+      ? new Uint8Array(result.signature_private_key)
+      : null
   }
 }
 

@@ -68,7 +68,8 @@ const SCHEMA_SQL = `
     public_key_exchange BLOB,
     encrypted_private_keys BLOB,
     nonce BLOB,
-    salt BLOB
+    salt BLOB,
+    signature_private_key BLOB
   );
 
   CREATE TABLE IF NOT EXISTS mls_groups (
@@ -229,6 +230,16 @@ export function initDb(): void {
     // Table doesn't exist yet — schema creation will handle it
   }
 
+  // Add signature_private_key column if missing (Phase 3 migration)
+  try {
+    const idCols = db.pragma('table_info(identity_keys)') as Array<{ name: string }>
+    if (idCols.length > 0 && !idCols.some((c) => c.name === 'signature_private_key')) {
+      db.exec('ALTER TABLE identity_keys ADD COLUMN signature_private_key BLOB')
+    }
+  } catch {
+    // Table doesn't exist yet — schema creation will handle it
+  }
+
   db.exec(SCHEMA_SQL)
 }
 
@@ -254,10 +265,11 @@ export function getIdentityKeys(
   encrypted_private_keys: Buffer
   nonce: Buffer
   salt: Buffer
+  signature_private_key: Buffer | null
 } | null {
   return getDb()
     .prepare(
-      'SELECT public_identity_key, public_key_exchange, encrypted_private_keys, nonce, salt FROM identity_keys WHERE user_id = ?'
+      'SELECT public_identity_key, public_key_exchange, encrypted_private_keys, nonce, salt, signature_private_key FROM identity_keys WHERE user_id = ?'
     )
     .get(userId) as ReturnType<typeof getIdentityKeys>
 }
@@ -268,13 +280,14 @@ export function setIdentityKeys(
   publicKeyExchange: Buffer,
   encryptedPrivateKeys: Buffer,
   nonce: Buffer,
-  salt: Buffer
+  salt: Buffer,
+  signaturePrivateKey: Buffer | null = null
 ): void {
   getDb()
     .prepare(
-      'INSERT OR REPLACE INTO identity_keys (user_id, public_identity_key, public_key_exchange, encrypted_private_keys, nonce, salt) VALUES (?, ?, ?, ?, ?, ?)'
+      'INSERT OR REPLACE INTO identity_keys (user_id, public_identity_key, public_key_exchange, encrypted_private_keys, nonce, salt, signature_private_key) VALUES (?, ?, ?, ?, ?, ?, ?)'
     )
-    .run(userId, publicIdentityKey, publicKeyExchange, encryptedPrivateKeys, nonce, salt)
+    .run(userId, publicIdentityKey, publicKeyExchange, encryptedPrivateKeys, nonce, salt, signaturePrivateKey)
 }
 
 export function deleteIdentityKeys(userId: string): void {

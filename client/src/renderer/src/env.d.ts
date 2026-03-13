@@ -8,6 +8,7 @@ interface CryptoDbApi {
     encrypted_private_keys: ArrayBuffer
     nonce: ArrayBuffer
     salt: ArrayBuffer
+    signature_private_key: ArrayBuffer | null
   } | null>
   setIdentityKeys(
     userId: string,
@@ -15,7 +16,8 @@ interface CryptoDbApi {
     publicKeyExchange: Uint8Array,
     encryptedPrivateKeys: Uint8Array,
     nonce: Uint8Array,
-    salt: Uint8Array
+    salt: Uint8Array,
+    signaturePrivateKey?: Uint8Array | null
   ): Promise<void>
   deleteIdentityKeys(userId: string): Promise<void>
 

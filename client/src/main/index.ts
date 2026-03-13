@@ -67,8 +67,9 @@ function registerIpcHandlers(): void {
       publicKeyExchange: Buffer,
       encryptedPrivateKeys: Buffer,
       nonce: Buffer,
-      salt: Buffer
-    ) => setIdentityKeys(userId, publicIdentityKey, publicKeyExchange, encryptedPrivateKeys, nonce, salt)
+      salt: Buffer,
+      signaturePrivateKey: Buffer | null
+    ) => setIdentityKeys(userId, publicIdentityKey, publicKeyExchange, encryptedPrivateKeys, nonce, salt, signaturePrivateKey ?? null)
   )
   ipcMain.handle('cryptoDb:deleteIdentityKeys', (_, userId: string) =>
     deleteIdentityKeys(userId)

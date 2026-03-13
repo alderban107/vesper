@@ -11,7 +11,8 @@ const cryptoDbApi = {
     publicKeyExchange: Uint8Array,
     encryptedPrivateKeys: Uint8Array,
     nonce: Uint8Array,
-    salt: Uint8Array
+    salt: Uint8Array,
+    signaturePrivateKey?: Uint8Array | null
   ) =>
     ipcRenderer.invoke(
       'cryptoDb:setIdentityKeys',
@@ -20,7 +21,8 @@ const cryptoDbApi = {
       publicKeyExchange,
       encryptedPrivateKeys,
       nonce,
-      salt
+      salt,
+      signaturePrivateKey ?? null
     ),
   deleteIdentityKeys: (userId: string) =>
     ipcRenderer.invoke('cryptoDb:deleteIdentityKeys', userId),

@@ -102,7 +102,8 @@ export function createIndexedDbAdapter(): CryptoDbApi & {
         public_key_exchange: result.public_key_exchange,
         encrypted_private_keys: result.encrypted_private_keys,
         nonce: result.nonce,
-        salt: result.salt
+        salt: result.salt,
+        signature_private_key: result.signature_private_key ?? null
       }
     },
 
@@ -112,7 +113,8 @@ export function createIndexedDbAdapter(): CryptoDbApi & {
       publicKeyExchange: Uint8Array,
       encryptedPrivateKeys: Uint8Array,
       nonce: Uint8Array,
-      salt: Uint8Array
+      salt: Uint8Array,
+      signaturePrivateKey?: Uint8Array | null
     ) {
       const db = await getDb()
       await req(
@@ -122,7 +124,8 @@ export function createIndexedDbAdapter(): CryptoDbApi & {
           public_key_exchange: publicKeyExchange,
           encrypted_private_keys: encryptedPrivateKeys,
           nonce: nonce,
-          salt: salt
+          salt: salt,
+          signature_private_key: signaturePrivateKey ?? null
         })
       )
     },
