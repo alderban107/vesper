@@ -245,12 +245,24 @@ export function createIndexedDbAdapter(): CryptoDbApi & {
       }
     },
 
-    // --- Search ---
-    // Plaintext search disabled — ciphertext cache cannot be searched.
-    // Will be reimplemented with FTS5 in Phase 5 of the E2EE refactor.
+    // --- FTS5 Search ---
+    // IndexedDB fallback does not support FTS5. These are stubs.
+    // Full-text search is only available in the Electron build (SQLite).
 
-    async searchMessages(_query: string) {
+    async searchMessages(_query: string, _channelId?: string) {
       return []
+    },
+
+    async indexDecryptedMessage(
+      _messageId: string,
+      _channelId: string,
+      _content: string
+    ) {
+      // no-op in web fallback
+    },
+
+    async removeFromFtsIndex(_messageId: string) {
+      // no-op in web fallback
     }
   }
 }

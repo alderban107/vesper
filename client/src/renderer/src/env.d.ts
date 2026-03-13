@@ -65,6 +65,24 @@ interface CryptoDbApi {
     }>
   >
   clearMessageCache(channelId: string): Promise<void>
+
+  // FTS5 full-text search
+  searchMessages(
+    query: string,
+    channelId?: string
+  ): Promise<
+    Array<{
+      message_id: string
+      channel_id: string
+      content: string
+    }>
+  >
+  indexDecryptedMessage(
+    messageId: string,
+    channelId: string,
+    content: string
+  ): Promise<void>
+  removeFromFtsIndex(messageId: string): Promise<void>
 }
 
 interface Window {

@@ -96,6 +96,12 @@ const SCHEMA_SQL = `
   );
 
   CREATE INDEX IF NOT EXISTS idx_message_cache_channel ON message_cache(channel_id);
+
+  CREATE VIRTUAL TABLE IF NOT EXISTS message_fts USING fts5(
+    message_id,
+    channel_id,
+    content
+  );
 `
 
 // ---------------------------------------------------------------------------
@@ -397,18 +403,69 @@ export function clearMessageCache(channelId: string): void {
   getDb().prepare('DELETE FROM message_cache WHERE channel_id = ?').run(channelId)
 }
 
-// --- Message Search ---
-// Plaintext search is no longer possible with encrypted message cache.
-// Will be reimplemented with FTS5 in Phase 5 of the E2EE refactor.
+// --- Full-Text Search (FTS5) ---
+// Populated from the renderer when messages are decrypted, creating a
+// client-side searchable index of plaintext content.
 
-export function searchMessages(_query: string): Array<{
-  id: string
+export function indexDecryptedMessage(
+  messageId: string,
+  channelId: string,
+  content: string
+): void {
+  // Upsert: delete any existing entry first to avoid duplicates on re-index
+  getDb()
+    .prepare('DELETE FROM message_fts WHERE message_id = ?')
+    .run(messageId)
+  getDb()
+    .prepare(
+      'INSERT INTO message_fts (message_id, channel_id, content) VALUES (?, ?, ?)'
+    )
+    .run(messageId, channelId, content)
+}
+
+export function removeFromFtsIndex(messageId: string): void {
+  getDb()
+    .prepare('DELETE FROM message_fts WHERE message_id = ?')
+    .run(messageId)
+}
+
+export function searchMessages(
+  query: string,
+  channelId?: string
+): Array<{
+  message_id: string
   channel_id: string
-  sender_id: string | null
-  sender_username: string | null
-  ciphertext: Buffer | null
-  mls_epoch: number | null
-  inserted_at: string
+  content: string
 }> {
-  return []
+  if (!query.trim()) return []
+
+  // Sanitize the query for FTS5: wrap each token in double quotes to avoid
+  // syntax errors from special characters, then join with implicit AND.
+  const tokens = query
+    .trim()
+    .split(/\s+/)
+    .map((t) => `"${t.replace(/"/g, '""')}"`)
+  const ftsQuery = tokens.join(' ')
+
+  if (channelId) {
+    return getDb()
+      .prepare(
+        'SELECT message_id, channel_id, content FROM message_fts WHERE channel_id = ? AND message_fts MATCH ? ORDER BY rank'
+      )
+      .all(channelId, ftsQuery) as Array<{
+      message_id: string
+      channel_id: string
+      content: string
+    }>
+  }
+
+  return getDb()
+    .prepare(
+      'SELECT message_id, channel_id, content FROM message_fts WHERE message_fts MATCH ? ORDER BY rank'
+    )
+    .all(ftsQuery) as Array<{
+    message_id: string
+    channel_id: string
+    content: string
+  }>
 }

@@ -61,8 +61,13 @@ const cryptoDbApi = {
   clearMessageCache: (channelId: string) =>
     ipcRenderer.invoke('cryptoDb:clearMessageCache', channelId),
 
-  // Search (disabled — ciphertext cache cannot be searched; Phase 5 will add FTS5)
-  searchMessages: (_query: string) => Promise.resolve([])
+  // FTS5 full-text search
+  searchMessages: (query: string, channelId?: string) =>
+    ipcRenderer.invoke('cryptoDb:searchMessages', query, channelId),
+  indexDecryptedMessage: (messageId: string, channelId: string, content: string) =>
+    ipcRenderer.invoke('cryptoDb:indexDecryptedMessage', messageId, channelId, content),
+  removeFromFtsIndex: (messageId: string) =>
+    ipcRenderer.invoke('cryptoDb:removeFromFtsIndex', messageId)
 }
 
 const notificationApi = {

@@ -170,3 +170,35 @@ export async function loadCachedMessages(channelId: string): Promise<
 export async function clearCachedMessages(channelId: string): Promise<void> {
   await db().clearMessageCache(channelId)
 }
+
+// --- Full-Text Search (FTS5) ---
+
+export async function indexDecryptedMessage(
+  messageId: string,
+  channelId: string,
+  content: string
+): Promise<void> {
+  await db().indexDecryptedMessage(messageId, channelId, content)
+}
+
+export async function removeFromFtsIndex(messageId: string): Promise<void> {
+  await db().removeFromFtsIndex(messageId)
+}
+
+export async function searchDecryptedMessages(
+  query: string,
+  channelId?: string
+): Promise<
+  Array<{
+    messageId: string
+    channelId: string
+    content: string
+  }>
+> {
+  const results = await db().searchMessages(query, channelId)
+  return results.map((r) => ({
+    messageId: r.message_id,
+    channelId: r.channel_id,
+    content: r.content
+  }))
+}

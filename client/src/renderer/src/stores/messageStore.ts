@@ -7,9 +7,19 @@ import { useVoiceStore } from './voiceStore'
 import { useServerStore } from './serverStore'
 import { useDmStore } from './dmStore'
 import { usePresenceStore } from './presenceStore'
-import { cacheMessage as cacheMessageToDb, loadCachedMessages } from '../crypto/storage'
+import {
+  cacheMessage as cacheMessageToDb,
+  loadCachedMessages,
+  indexDecryptedMessage as indexToFts,
+  removeFromFtsIndex
+} from '../crypto/storage'
 import { base64ToUint8 } from '../api/crypto'
 import { encodePayload, decodePayload } from '../crypto/payload'
+import {
+  getCachedDecryption,
+  setCachedDecryption,
+  removeCachedDecryption
+} from '../crypto/decryptionCache'
 
 export interface MessageSender {
   id: string
@@ -790,12 +800,20 @@ async function processIncomingMessage(
   msg: Record<string, unknown>
 ): Promise<Message> {
   if (msg.ciphertext) {
+    const messageId = msg.id as string
     const ciphertextB64 = msg.ciphertext as string
     const mlsEpoch = (msg.mls_epoch as number) ?? null
 
-    const plaintext = await useCryptoStore
+    // Check the in-memory decryption cache first to avoid redundant decryption
+    const cachedPlaintext = getCachedDecryption(messageId)
+    const plaintext = cachedPlaintext ?? await useCryptoStore
       .getState()
       .decryptForChannel(targetId, ciphertextB64)
+
+    // Populate the decryption cache on successful decrypt
+    if (plaintext && !cachedPlaintext) {
+      setCachedDecryption(messageId, plaintext)
+    }
 
     // Cache the ciphertext (not plaintext) to the local DB
     try {
@@ -818,10 +836,12 @@ async function processIncomingMessage(
     // For v1 file payloads, re-serialize to the JSON format that FilePreview consumes.
     // For decryption failures, show an error placeholder.
     let displayContent = '[Message unavailable - decryption failed]'
+    let searchableText = ''
     if (plaintext) {
       const payload = decodePayload(plaintext)
       if (payload.type === 'text') {
         displayContent = payload.text
+        searchableText = payload.text
       } else {
         // File payloads: store as JSON so parseMessageContent / FilePreview can consume them
         displayContent = JSON.stringify({
@@ -829,11 +849,17 @@ async function processIncomingMessage(
           text: payload.text,
           file: payload.file
         })
+        searchableText = payload.text || ''
       }
     }
 
+    // Index decrypted content for FTS5 search (fire-and-forget)
+    if (searchableText) {
+      indexToFts(messageId, targetId, searchableText).catch(() => {})
+    }
+
     return {
-      id: msg.id as string,
+      id: messageId,
       content: displayContent,
       channel_id: (msg.channel_id as string) || null,
       conversation_id: (msg.conversation_id as string) || null,
@@ -911,15 +937,23 @@ async function handleMessageEdited(
       .getState()
       .decryptForChannel(targetId, msg.ciphertext as string)
     if (plaintext) {
+      // Update decryption cache with new content
+      setCachedDecryption(messageId, plaintext)
       const payload = decodePayload(plaintext)
       if (payload.type === 'text') {
         newContent = payload.text
+        // Re-index for FTS search
+        indexToFts(messageId, targetId, payload.text).catch(() => {})
       } else {
         newContent = JSON.stringify({
           type: payload.type,
           text: payload.text,
           file: payload.file
         })
+        // Re-index caption text if present
+        if (payload.text) {
+          indexToFts(messageId, targetId, payload.text).catch(() => {})
+        }
       }
     } else {
       newContent = 'Message unavailable'
@@ -953,6 +987,10 @@ function handleMessageDeleted(
   set: (fn: (s: MessageState) => Partial<MessageState>) => void
 ): void {
   const messageId = msg.message_id as string
+
+  // Remove from caches
+  removeCachedDecryption(messageId)
+  removeFromFtsIndex(messageId).catch(() => {})
 
   set((s) => ({
     messagesByChannel: {

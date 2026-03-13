@@ -18,7 +18,9 @@ import {
   cacheMessage,
   getCachedMessages,
   clearMessageCache,
-  searchMessages
+  searchMessages,
+  indexDecryptedMessage,
+  removeFromFtsIndex
 } from './db'
 
 function createWindow(): void {
@@ -180,9 +182,19 @@ function registerIpcHandlers(): void {
     clearMessageCache(channelId)
   )
 
-  // Message search
-  ipcMain.handle('cryptoDb:searchMessages', (_, query: string) =>
-    searchMessages(query)
+  // Message search (FTS5)
+  ipcMain.handle('cryptoDb:searchMessages', (_, query: string, channelId?: string) =>
+    searchMessages(query, channelId)
+  )
+
+  // FTS5 index management
+  ipcMain.handle(
+    'cryptoDb:indexDecryptedMessage',
+    (_, messageId: string, channelId: string, content: string) =>
+      indexDecryptedMessage(messageId, channelId, content)
+  )
+  ipcMain.handle('cryptoDb:removeFromFtsIndex', (_, messageId: string) =>
+    removeFromFtsIndex(messageId)
   )
 }
 
