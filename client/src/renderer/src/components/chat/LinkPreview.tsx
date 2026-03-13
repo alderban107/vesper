@@ -1,3 +1,9 @@
+// TODO (Phase 6.2): Sender-side link previews — currently the server fetches
+// link metadata on behalf of the client (server sees the URLs in plaintext).
+// For full E2EE, the sender should fetch preview metadata client-side, embed it
+// in the encrypted message payload, and recipients render from the decrypted
+// payload. This requires: client-side URL fetching (CORS proxy or Electron net),
+// user opt-in settings, payload format extension, and abuse prevention.
 import { useState, useEffect } from 'react'
 import { ExternalLink } from 'lucide-react'
 import { apiFetch } from '../../api/client'

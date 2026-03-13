@@ -143,8 +143,8 @@ interface MessageState {
   deleteMessage: (targetId: string, topic: string, messageId: string) => void
 
   // Reactions
-  addReaction: (targetId: string, topic: string, messageId: string, emoji: string) => void
-  removeReaction: (targetId: string, topic: string, messageId: string, emoji: string) => void
+  addReaction: (targetId: string, topic: string, messageId: string, emoji: string) => Promise<void> | void
+  removeReaction: (targetId: string, topic: string, messageId: string, emoji: string) => Promise<void> | void
 
   // Pinning
   pinMessage: (topic: string, messageId: string) => void
@@ -621,12 +621,42 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     })
   },
 
-  // Reactions
-  addReaction: (_targetId, topic, messageId, emoji) => {
+  // Reactions — emoji is encrypted with the channel's MLS group key so the
+  // server only learns "user X reacted to message Y", not which emoji.
+  // NOTE: each encrypt/decrypt advances the MLS key schedule (epoch ratchet).
+  addReaction: async (_targetId, topic, messageId, emoji) => {
+    const channelId = topic.replace(/^chat:channel:|^dm:/, '')
+    const crypto = useCryptoStore.getState()
+    if (crypto.hasGroup(channelId)) {
+      const encrypted = await crypto.encryptForChannel(channelId, emoji)
+      if (encrypted) {
+        pushToChannel(topic, 'add_reaction', {
+          message_id: messageId,
+          ciphertext: encrypted.ciphertext,
+          mls_epoch: encrypted.epoch
+        })
+        return
+      }
+    }
+    // Fallback: unencrypted (no MLS group available)
     pushToChannel(topic, 'add_reaction', { message_id: messageId, emoji })
   },
 
-  removeReaction: (_targetId, topic, messageId, emoji) => {
+  removeReaction: async (_targetId, topic, messageId, emoji) => {
+    const channelId = topic.replace(/^chat:channel:|^dm:/, '')
+    const crypto = useCryptoStore.getState()
+    if (crypto.hasGroup(channelId)) {
+      const encrypted = await crypto.encryptForChannel(channelId, emoji)
+      if (encrypted) {
+        pushToChannel(topic, 'remove_reaction', {
+          message_id: messageId,
+          ciphertext: encrypted.ciphertext,
+          mls_epoch: encrypted.epoch
+        })
+        return
+      }
+    }
+    // Fallback: unencrypted
     pushToChannel(topic, 'remove_reaction', { message_id: messageId, emoji })
   },
 
@@ -691,16 +721,35 @@ function scheduleMessageExpiry(
 
 /**
  * Handle a reaction update event.
+ * If the reaction carries encrypted ciphertext, decrypt it to recover the emoji.
  */
-function handleReactionUpdate(
+async function handleReactionUpdate(
   targetId: string,
   msg: Record<string, unknown>,
   set: (fn: (s: MessageState) => Partial<MessageState>) => void
-): void {
+): Promise<void> {
   const action = msg.action as string
   const messageId = msg.message_id as string
-  const emoji = msg.emoji as string
   const senderId = msg.sender_id as string
+
+  // Decrypt emoji from ciphertext if present, otherwise use plaintext fallback
+  let emoji = msg.emoji as string | undefined
+  if (msg.ciphertext && typeof msg.ciphertext === 'string') {
+    try {
+      const crypto = useCryptoStore.getState()
+      const decrypted = await crypto.decryptForChannel(targetId, msg.ciphertext as string)
+      if (decrypted) {
+        emoji = decrypted
+      }
+    } catch (e) {
+      console.warn('Failed to decrypt reaction emoji:', e)
+    }
+  }
+
+  if (!emoji) {
+    console.warn('Reaction update with no emoji (decryption failed and no plaintext fallback)')
+    return
+  }
 
   set((s) => {
     const messages = s.messagesByChannel[targetId] || []
@@ -715,7 +764,7 @@ function handleReactionUpdate(
             existing.senderIds = [...existing.senderIds, senderId]
           }
         } else {
-          reactions.push({ emoji, senderIds: [senderId] })
+          reactions.push({ emoji: emoji!, senderIds: [senderId] })
         }
       } else if (action === 'remove') {
         const idx = reactions.findIndex((r) => r.emoji === emoji)

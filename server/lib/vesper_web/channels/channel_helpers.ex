@@ -115,13 +115,20 @@ defmodule VesperWeb.ChannelHelpers do
     end
   end
 
+  # Plaintext reaction (no encryption metadata)
+  def handle_reaction(action, message_id, emoji, sender_id, expected_scope_field, expected_scope_value) do
+    handle_reaction(action, message_id, emoji, sender_id, expected_scope_field, expected_scope_value, %{})
+  end
+
+  # Reaction with optional encryption metadata (ciphertext + mls_epoch)
   def handle_reaction(
         action,
         message_id,
         emoji,
         sender_id,
         expected_scope_field,
-        expected_scope_value
+        expected_scope_value,
+        crypto_meta
       ) do
     case Chat.get_message(message_id) do
       nil ->
@@ -133,11 +140,12 @@ defmodule VesperWeb.ChannelHelpers do
         else
           case action do
             :add ->
-              case Chat.add_reaction(%{
-                     message_id: message_id,
-                     sender_id: sender_id,
-                     emoji: emoji
-                   }) do
+              attrs =
+                %{message_id: message_id, sender_id: sender_id, emoji: emoji}
+                |> maybe_put(:ciphertext, Map.get(crypto_meta, :ciphertext))
+                |> maybe_put(:mls_epoch, Map.get(crypto_meta, :mls_epoch))
+
+              case Chat.add_reaction(attrs) do
                 {:ok, _} -> :ok
                 {:error, _} -> {:error, "could not add reaction"}
               end
@@ -147,10 +155,21 @@ defmodule VesperWeb.ChannelHelpers do
                 {:ok, _} -> :ok
                 {:error, _} -> {:error, "could not remove reaction"}
               end
+
+            :remove_encrypted ->
+              # For encrypted reactions, the server can't match on emoji.
+              # Remove the most recent reaction from this sender on this message.
+              case Chat.remove_encrypted_reaction(message_id, sender_id) do
+                {:ok, _} -> :ok
+                {:error, _} -> {:error, "could not remove reaction"}
+              end
           end
         end
     end
   end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   @doc """
   Build typing indicator payload. Accepts a socket to use cached username,

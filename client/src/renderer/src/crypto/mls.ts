@@ -270,6 +270,15 @@ export async function encryptMessage(
 
 /**
  * Decrypt a ciphertext message from the MLS group.
+ *
+ * AUDIT NOTE (Phase 6.3 — MLS sender authentication):
+ * ts-mls performs Ed25519 signature verification during processPrivateMessage().
+ * The path is: processPrivateMessage → unprotectPrivateMessage (messageProtection.js)
+ * which extracts the sender's signature public key from the ratchet tree via
+ * getSignaturePublicKeyFromLeafIndex(), then calls verifyFramedContentSignature().
+ * If the signature is invalid, it throws CryptoVerificationError("Signature invalid").
+ * This means every decrypted message is authenticated against the sender's leaf node
+ * key — a forged or tampered message will fail decryption entirely.
  */
 export async function decryptMessage(
   state: ClientState,
