@@ -4,6 +4,7 @@ import { useServerStore } from '../../stores/serverStore'
 import { useMessageStore } from '../../stores/messageStore'
 import { apiUpload } from '../../api/client'
 import { encryptFile } from '../../crypto/fileEncryption'
+import { encodePayload } from '../../crypto/payload'
 import { useCryptoStore } from '../../stores/cryptoStore'
 import { pushToChannel } from '../../api/socket'
 import EmojiPicker from './EmojiPicker'
@@ -129,10 +130,11 @@ export default function MessageInput(): React.JSX.Element {
       const data = await res.json()
       const attachmentId = data.attachment.id
 
-      // Build JSON envelope with AES key
-      const envelope = JSON.stringify({
+      // Build structured payload with AES key embedded
+      const envelope = encodePayload({
+        v: 1,
         type: 'file',
-        text: content.trim() || undefined,
+        text: content.trim() || null,
         file: {
           id: attachmentId,
           name: file.name,

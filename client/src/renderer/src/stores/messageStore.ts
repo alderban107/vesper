@@ -9,6 +9,7 @@ import { useDmStore } from './dmStore'
 import { usePresenceStore } from './presenceStore'
 import { cacheMessage as cacheMessageToDb, loadCachedMessages } from '../crypto/storage'
 import { base64ToUint8 } from '../api/crypto'
+import { encodePayload, decodePayload } from '../crypto/payload'
 
 export interface MessageSender {
   id: string
@@ -301,9 +302,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const replyingTo = get().replyingTo
     const parentId = replyingTo?.id || undefined
     const mentionedUserIds = extractMentionedUserIds(content)
+    const payloadStr = encodePayload({ v: 1, type: 'text', text: content })
 
     if (crypto.hasGroup(channelId)) {
-      const encrypted = await crypto.encryptForChannel(channelId, content)
+      const encrypted = await crypto.encryptForChannel(channelId, payloadStr)
       if (encrypted) {
         pushToChannel(`chat:channel:${channelId}`, 'new_message', {
           ciphertext: encrypted.ciphertext,
@@ -317,7 +319,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     } else {
       await crypto.createGroup(channelId)
       if (crypto.hasGroup(channelId)) {
-        const encrypted = await crypto.encryptForChannel(channelId, content)
+        const encrypted = await crypto.encryptForChannel(channelId, payloadStr)
         if (encrypted) {
           pushToChannel(`chat:channel:${channelId}`, 'new_message', {
             ciphertext: encrypted.ciphertext,
@@ -502,10 +504,11 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const topic = `dm:${conversationId}`
     const replyingTo = get().replyingTo
     const parentId = replyingTo?.id || undefined
+    const payloadStr = encodePayload({ v: 1, type: 'text', text: content })
 
     // Try encrypting with existing group, or create a new one
     const encrypted = crypto.hasGroup(conversationId)
-      ? await crypto.encryptForChannel(conversationId, content)
+      ? await crypto.encryptForChannel(conversationId, payloadStr)
       : null
 
     if (encrypted) {
@@ -553,7 +556,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         }
       }
 
-      const freshEncrypted = await crypto.encryptForChannel(conversationId, content)
+      const freshEncrypted = await crypto.encryptForChannel(conversationId, payloadStr)
       if (freshEncrypted) {
         pushToChannel(topic, 'new_message', {
           ciphertext: freshEncrypted.ciphertext,
@@ -584,9 +587,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
   editMessage: async (targetId, topic, messageId, newContent) => {
     const crypto = useCryptoStore.getState()
+    const payloadStr = encodePayload({ v: 1, type: 'text', text: newContent })
 
     if (crypto.hasGroup(targetId)) {
-      const encrypted = await crypto.encryptForChannel(targetId, newContent)
+      const encrypted = await crypto.encryptForChannel(targetId, payloadStr)
       if (encrypted) {
         pushToChannel(topic, 'edit_message', {
           message_id: messageId,
@@ -809,9 +813,28 @@ async function processIncomingMessage(
       // Cache failure is non-fatal — message is still displayed from memory
     }
 
+    // Decode structured payload — store the content that parseMessageContent expects.
+    // For v1 text payloads, extract the text string.
+    // For v1 file payloads, re-serialize to the JSON format that FilePreview consumes.
+    // For decryption failures, show an error placeholder.
+    let displayContent = '[Message unavailable - decryption failed]'
+    if (plaintext) {
+      const payload = decodePayload(plaintext)
+      if (payload.type === 'text') {
+        displayContent = payload.text
+      } else {
+        // File payloads: store as JSON so parseMessageContent / FilePreview can consume them
+        displayContent = JSON.stringify({
+          type: payload.type,
+          text: payload.text,
+          file: payload.file
+        })
+      }
+    }
+
     return {
       id: msg.id as string,
-      content: plaintext || '[Message unavailable - decryption failed]',
+      content: displayContent,
       channel_id: (msg.channel_id as string) || null,
       conversation_id: (msg.conversation_id as string) || null,
       sender_id: (msg.sender_id as string) || null,
@@ -887,7 +910,20 @@ async function handleMessageEdited(
     const plaintext = await useCryptoStore
       .getState()
       .decryptForChannel(targetId, msg.ciphertext as string)
-    newContent = plaintext || 'Message unavailable'
+    if (plaintext) {
+      const payload = decodePayload(plaintext)
+      if (payload.type === 'text') {
+        newContent = payload.text
+      } else {
+        newContent = JSON.stringify({
+          type: payload.type,
+          text: payload.text,
+          file: payload.file
+        })
+      }
+    } else {
+      newContent = 'Message unavailable'
+    }
   } else if (msg.content) {
     newContent = msg.content as string
   }
