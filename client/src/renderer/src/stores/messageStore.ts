@@ -18,7 +18,8 @@ import { encodePayload, decodePayload } from '../crypto/payload'
 import {
   getCachedDecryption,
   setCachedDecryption,
-  removeCachedDecryption
+  removeCachedDecryption,
+  getSentMessage
 } from '../crypto/decryptionCache'
 
 export interface MessageSender {
@@ -736,10 +737,16 @@ async function handleReactionUpdate(
   let emoji = msg.emoji as string | undefined
   if (msg.ciphertext && typeof msg.ciphertext === 'string') {
     try {
-      const crypto = useCryptoStore.getState()
-      const decrypted = await crypto.decryptForChannel(targetId, msg.ciphertext as string)
-      if (decrypted) {
-        emoji = decrypted
+      // Check sent cache first (sender can't MLS-decrypt their own messages)
+      const sentPlaintext = getSentMessage(msg.ciphertext as string)
+      if (sentPlaintext) {
+        emoji = sentPlaintext
+      } else {
+        const crypto = useCryptoStore.getState()
+        const decrypted = await crypto.decryptForChannel(targetId, msg.ciphertext as string)
+        if (decrypted) {
+          emoji = decrypted
+        }
       }
     } catch (e) {
       console.warn('Failed to decrypt reaction emoji:', e)
@@ -853,8 +860,11 @@ async function processIncomingMessage(
     const ciphertextB64 = msg.ciphertext as string
     const mlsEpoch = (msg.mls_epoch as number) ?? null
 
-    // Check the in-memory decryption cache first to avoid redundant decryption
-    const cachedPlaintext = getCachedDecryption(messageId)
+    // Check caches before attempting MLS decryption:
+    // 1. Decryption cache (keyed by message ID) — for previously decrypted messages
+    // 2. Sent-message cache (keyed by ciphertext) — for our own messages echoed back
+    //    MLS senders can't decrypt their own messages (ratchet key consumed on encrypt)
+    const cachedPlaintext = getCachedDecryption(messageId) ?? getSentMessage(ciphertextB64)
     const plaintext = cachedPlaintext ?? await useCryptoStore
       .getState()
       .decryptForChannel(targetId, ciphertextB64)
@@ -982,9 +992,11 @@ async function handleMessageEdited(
 
   let newContent: string | undefined
   if (msg.ciphertext) {
-    const plaintext = await useCryptoStore
+    // Check sent cache first (sender can't MLS-decrypt their own messages)
+    const ciphertextB64 = msg.ciphertext as string
+    const plaintext = getSentMessage(ciphertextB64) ?? await useCryptoStore
       .getState()
-      .decryptForChannel(targetId, msg.ciphertext as string)
+      .decryptForChannel(targetId, ciphertextB64)
     if (plaintext) {
       // Update decryption cache with new content
       setCachedDecryption(messageId, plaintext)

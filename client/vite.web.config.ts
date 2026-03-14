@@ -12,6 +12,7 @@ export default defineConfig({
   },
   build: {
     outDir: resolve(__dirname, 'dist-web'),
-    emptyOutDir: true
+    emptyOutDir: true,
+    sourcemap: true
   }
 })
