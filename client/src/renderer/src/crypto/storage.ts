@@ -22,7 +22,8 @@ export async function saveIdentity(
   publicKeyExchange: Uint8Array,
   encryptedPrivateKeys: Uint8Array,
   nonce: Uint8Array,
-  salt: Uint8Array
+  salt: Uint8Array,
+  signaturePrivateKey?: Uint8Array | null
 ): Promise<void> {
   await db().setIdentityKeys(
     userId,
@@ -30,7 +31,8 @@ export async function saveIdentity(
     publicKeyExchange,
     encryptedPrivateKeys,
     nonce,
-    salt
+    salt,
+    signaturePrivateKey ?? null
   )
 }
 
@@ -40,6 +42,7 @@ export async function loadIdentity(userId: string): Promise<{
   encryptedPrivateKeys: Uint8Array
   nonce: Uint8Array
   salt: Uint8Array
+  signaturePrivateKey: Uint8Array | null
 } | null> {
   const result = await db().getIdentityKeys(userId)
   if (!result) return null
@@ -50,7 +53,10 @@ export async function loadIdentity(userId: string): Promise<{
     publicKeyExchange: new Uint8Array(result.public_key_exchange),
     encryptedPrivateKeys: new Uint8Array(result.encrypted_private_keys),
     nonce: new Uint8Array(result.nonce),
-    salt: new Uint8Array(result.salt)
+    salt: new Uint8Array(result.salt),
+    signaturePrivateKey: result.signature_private_key
+      ? new Uint8Array(result.signature_private_key)
+      : null
   }
 }
 
@@ -116,14 +122,15 @@ export async function countKeyPackages(): Promise<number> {
   return db().countLocalKeyPackages()
 }
 
-// --- Message Cache ---
+// --- Message Cache (stores ciphertext, not plaintext) ---
 
 export async function cacheMessage(msg: {
   id: string
   channelId: string
   senderId: string | null
   senderUsername: string | null
-  content: string | null
+  ciphertext: Uint8Array | null
+  mlsEpoch: number | null
   insertedAt: string
 }): Promise<void> {
   await db().cacheMessage({
@@ -131,7 +138,8 @@ export async function cacheMessage(msg: {
     channel_id: msg.channelId,
     sender_id: msg.senderId,
     sender_username: msg.senderUsername,
-    content: msg.content,
+    ciphertext: msg.ciphertext,
+    mls_epoch: msg.mlsEpoch,
     inserted_at: msg.insertedAt
   })
 }
@@ -142,7 +150,8 @@ export async function loadCachedMessages(channelId: string): Promise<
     channelId: string
     senderId: string | null
     senderUsername: string | null
-    content: string | null
+    ciphertext: Uint8Array | null
+    mlsEpoch: number | null
     insertedAt: string
   }>
 > {
@@ -152,11 +161,44 @@ export async function loadCachedMessages(channelId: string): Promise<
     channelId: r.channel_id,
     senderId: r.sender_id,
     senderUsername: r.sender_username,
-    content: r.content,
+    ciphertext: r.ciphertext ? new Uint8Array(r.ciphertext) : null,
+    mlsEpoch: r.mls_epoch,
     insertedAt: r.inserted_at
   }))
 }
 
 export async function clearCachedMessages(channelId: string): Promise<void> {
   await db().clearMessageCache(channelId)
+}
+
+// --- Full-Text Search (FTS5) ---
+
+export async function indexDecryptedMessage(
+  messageId: string,
+  channelId: string,
+  content: string
+): Promise<void> {
+  await db().indexDecryptedMessage(messageId, channelId, content)
+}
+
+export async function removeFromFtsIndex(messageId: string): Promise<void> {
+  await db().removeFromFtsIndex(messageId)
+}
+
+export async function searchDecryptedMessages(
+  query: string,
+  channelId?: string
+): Promise<
+  Array<{
+    messageId: string
+    channelId: string
+    content: string
+  }>
+> {
+  const results = await db().searchMessages(query, channelId)
+  return results.map((r) => ({
+    messageId: r.message_id,
+    channelId: r.channel_id,
+    content: r.content
+  }))
 }

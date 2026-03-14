@@ -17,8 +17,14 @@ import {
   decodeGroupState,
   makePskIndex,
   mlsExporter,
+  defaultKeyRetentionConfig,
+  defaultLifetimeConfig,
+  defaultPaddingConfig,
+  defaultKeyPackageEqualityConfig,
+  defaultAuthenticationService,
   type CiphersuiteImpl,
   type ClientState,
+  type ClientConfig,
   type KeyPackage,
   type PrivateKeyPackage,
   type Proposal,
@@ -27,6 +33,25 @@ import {
 import type { KeyPackagePair } from './types'
 
 const CIPHERSUITE_NAME = 'MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519' as const
+
+/**
+ * Epoch key retention depth. Controls how many past epochs' decryption keys
+ * are kept in the serialized ClientState, enabling decryption of messages
+ * from older epochs. The ts-mls default is 4; we raise it to 64 so cached
+ * messages remain decryptable across a reasonable window of group updates.
+ */
+const RETAIN_KEYS_FOR_EPOCHS = 64
+
+const vesperClientConfig: ClientConfig = {
+  keyRetentionConfig: {
+    ...defaultKeyRetentionConfig,
+    retainKeysForEpochs: RETAIN_KEYS_FOR_EPOCHS
+  },
+  lifetimeConfig: defaultLifetimeConfig,
+  keyPackageEqualityConfig: defaultKeyPackageEqualityConfig,
+  paddingConfig: defaultPaddingConfig,
+  authService: defaultAuthenticationService
+}
 
 let csImpl: CiphersuiteImpl | null = null
 
@@ -101,7 +126,7 @@ export async function createMLSGroup(
 ): Promise<ClientState> {
   const cs = getCs()
   const groupIdBytes = new TextEncoder().encode(groupId)
-  return createGroup(groupIdBytes, keyPackage, privateKeyPackage, [], cs)
+  return createGroup(groupIdBytes, keyPackage, privateKeyPackage, [], cs, vesperClientConfig)
 }
 
 /**
@@ -189,7 +214,7 @@ export async function processWelcome(
   }
 
   const pskIndex = makePskIndex(undefined, {})
-  return joinGroup(decoded.welcome, keyPackage, privateKeys, pskIndex, cs)
+  return joinGroup(decoded.welcome, keyPackage, privateKeys, pskIndex, cs, undefined, undefined, vesperClientConfig)
 }
 
 /**
@@ -245,6 +270,15 @@ export async function encryptMessage(
 
 /**
  * Decrypt a ciphertext message from the MLS group.
+ *
+ * AUDIT NOTE (Phase 6.3 — MLS sender authentication):
+ * ts-mls performs Ed25519 signature verification during processPrivateMessage().
+ * The path is: processPrivateMessage → unprotectPrivateMessage (messageProtection.js)
+ * which extracts the sender's signature public key from the ratchet tree via
+ * getSignaturePublicKeyFromLeafIndex(), then calls verifyFramedContentSignature().
+ * If the signature is invalid, it throws CryptoVerificationError("Signature invalid").
+ * This means every decrypted message is authenticated against the sender's leaf node
+ * key — a forged or tampered message will fail decryption entirely.
  */
 export async function decryptMessage(
   state: ClientState,

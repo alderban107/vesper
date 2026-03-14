@@ -8,6 +8,7 @@ interface CryptoDbApi {
     encrypted_private_keys: ArrayBuffer
     nonce: ArrayBuffer
     salt: ArrayBuffer
+    signature_private_key: ArrayBuffer | null
   } | null>
   setIdentityKeys(
     userId: string,
@@ -15,7 +16,8 @@ interface CryptoDbApi {
     publicKeyExchange: Uint8Array,
     encryptedPrivateKeys: Uint8Array,
     nonce: Uint8Array,
-    salt: Uint8Array
+    salt: Uint8Array,
+    signaturePrivateKey?: Uint8Array | null
   ): Promise<void>
   deleteIdentityKeys(userId: string): Promise<void>
 
@@ -41,13 +43,14 @@ interface CryptoDbApi {
   consumeLocalKeyPackage(id: number): Promise<void>
   countLocalKeyPackages(): Promise<number>
 
-  // Message cache
+  // Message cache (stores ciphertext, not plaintext)
   cacheMessage(msg: {
     id: string
     channel_id: string
     sender_id: string | null
     sender_username: string | null
-    content: string | null
+    ciphertext: Uint8Array | null
+    mls_epoch: number | null
     inserted_at: string
   }): Promise<void>
   getCachedMessages(channelId: string): Promise<
@@ -56,11 +59,30 @@ interface CryptoDbApi {
       channel_id: string
       sender_id: string | null
       sender_username: string | null
-      content: string | null
+      ciphertext: ArrayBuffer | null
+      mls_epoch: number | null
       inserted_at: string
     }>
   >
   clearMessageCache(channelId: string): Promise<void>
+
+  // FTS5 full-text search
+  searchMessages(
+    query: string,
+    channelId?: string
+  ): Promise<
+    Array<{
+      message_id: string
+      channel_id: string
+      content: string
+    }>
+  >
+  indexDecryptedMessage(
+    messageId: string,
+    channelId: string,
+    content: string
+  ): Promise<void>
+  removeFromFtsIndex(messageId: string): Promise<void>
 }
 
 interface Window {

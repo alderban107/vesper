@@ -7,7 +7,7 @@ defmodule Vesper.Chat.Reaction do
 
   schema "reactions" do
     field :emoji, :string
-    field :ciphertext, :binary
+    field :ciphertext, :string
     field :mls_epoch, :integer
 
     belongs_to :message, Vesper.Chat.Message

@@ -1,60 +1,69 @@
 # Vesper — E2EE Requirements & Design Analysis
 
-> A brainstorm document written while the implementation is still early and can be
-> changed without breaking compatibility. This covers hard requirements, open design
-> decisions, and footguns to avoid before the design calcifies.
+> This document covers the hard requirements, design rationale, open decisions, and
+> footguns for Vesper's end-to-end encryption. It is meant to be read in full —
+> each requirement includes the reasoning behind it, the tradeoffs considered, and
+> the implications of each choice.
 >
-> Read this alongside DESIGN.md §5 (E2EE Design) and the source at
-> `client/src/renderer/src/crypto/`.
+> **Companion documents:**
+> - [REQUIREMENTS-E2EE-AUDIT.md](./REQUIREMENTS-E2EE-AUDIT.md) — Implementation
+>   status of every requirement. Shows what's met, what's partial, and what's not
+>   yet implemented, with references to the specific code that satisfies each one.
+> - [E2EE-IMPLEMENTATION.md](./E2EE-IMPLEMENTATION.md) — How the implementation
+>   works today. Architecture, key lifecycle, developer guide, gotchas.
+> - [DESIGN.md](../DESIGN.md) §5 — Overall E2EE architecture.
 >
-> **Current implementation bugs** are tracked separately in the GitHub issue
-> "E2EE implementation: security bugs and correctness issues" and are not repeated here.
+> Source: `client/src/renderer/src/crypto/`
 
 ---
 
 ## Requirements Index
 
-| ID | Summary |
-|----|---------|
-| [R-PROTO-1](#r-proto-1-mls-rfc-9420-is-the-group-encryption-protocol) | MLS (RFC 9420) is the group encryption protocol |
-| [R-PROTO-2](#r-proto-2-the-server-must-be-cryptographically-blind-to-message-content) | Server must be cryptographically blind to message content |
-| [R-PROTO-3](#r-proto-3-mls-authentication-is-required-not-optional) | MLS authentication is required, not optional |
-| [R-PROTO-4](#r-proto-4-ts-mls-must-be-security-audited-before-production) | ts-mls must be security-audited before production |
-| [R-KEY-1](#r-key-1-one-identity-per-user-account-not-per-device) | One identity per user account, not per device |
-| [R-KEY-2](#r-key-2-recovery-key-must-use-actual-bip39) | Recovery key must use actual BIP39 |
-| [R-KEY-3](#r-key-3-key-packages-must-be-pre-generated-and-replenished-proactively) | Key packages must be pre-generated and replenished proactively |
-| [R-KEY-4](#r-key-4-private-key-material-must-not-exist-in-memory-longer-than-necessary) | Private key material must not exist in memory longer than necessary |
-| [R-STORE-1](#r-store-1-mls-group-state-must-be-encrypted-at-rest-critical) | MLS group state must be encrypted at rest |
-| [R-STORE-2](#r-store-2-decrypted-message-content-must-not-be-stored-as-plaintext-critical) | Decrypted message content must not be stored as plaintext |
-| [R-STORE-3](#r-store-3-key-package-private-data-must-be-stored-securely) | Key package private data must be stored securely |
-| [R-EPOCH-1](#r-epoch-1-historical-messages-require-historical-epoch-keys-hard-problem) | Historical messages require historical epoch keys |
-| [R-EPOCH-2](#r-epoch-2-epoch-key-deletion-must-be-tied-to-message-lifecycle) | Epoch key deletion must be tied to message lifecycle |
-| [R-DEVICE-1](#r-device-1-new-device-bootstrap-requires-re-establishing-group-membership) | New device bootstrap requires re-establishing group membership |
-| [R-DEVICE-2](#r-device-2-multiple-active-devices-receive-the-same-commits) | Multiple active devices receive the same Commits |
-| [R-HIST-1](#r-hist-1-decide-the-history-policy-explicitly) | Decide the history policy explicitly |
-| [R-MEMBER-1](#r-member-1-key-rotation-on-member-leave-must-not-fan-out-catastrophically) | Key rotation on member leave must not fan-out catastrophically |
-| [R-MEMBER-2](#r-member-2-joins-must-not-block-on-sender-availability) | Joins must not block on sender availability |
-| [R-MEMBER-3](#r-member-3-the-group-creator-problem) | The group creator problem |
-| [R-SEARCH-1](#r-search-1-full-text-search-must-be-client-side-only) | Full-text search must be client-side only |
-| [R-SEARCH-2](#r-search-2-server-side-search-must-be-limited-to-metadata) | Server-side search must be limited to metadata |
-| [R-PERF-1](#r-perf-1-never-decrypt-all-messages-on-channel-open) | Never decrypt all messages on channel open |
-| [R-PERF-2](#r-perf-2-epoch-key-lookups-must-be-o1) | Epoch key lookups must be O(1) |
-| [R-PERF-3](#r-perf-3-group-state-updates-must-not-block-message-display) | Group state updates must not block message display |
-| [R-BOT-1](#r-bot-1-bots-are-e2ee-members-with-explicit-user-consent) | Bots are E2EE members with explicit user consent |
-| [R-BOT-2](#r-bot-2-bots-cannot-join-channels-automatically) | Bots cannot join channels automatically |
-| [R-DM-1](#r-dm-1-dms-have-different-churn-expectations) | DMs have different churn expectations |
-| [R-DM-2](#r-dm-2-dm-history-semantics-should-differ-from-channel-history) | DM history semantics should differ from channel history |
-| [R-DM-3](#r-dm-3-dm-key-rotation-policy-should-be-stricter) | DM key rotation policy should be stricter |
-| [R-FILE-1](#r-file-1-files-must-be-encrypted-client-side-before-upload) | Files must be encrypted client-side before upload |
-| [R-FILE-2](#r-file-2-large-file-decryption-must-be-chunked) | Large file decryption must be chunked |
-| [R-FILE-3](#r-file-3-file-deduplication-is-not-possible-with-e2ee) | File deduplication is not possible with E2EE |
-| [R-LINK-1](#r-link-1-server-side-link-preview-fetching-is-a-metadata-leak) | Server-side link preview fetching is a metadata leak |
-| [R-LINK-2](#r-link-2-link-preview-fetch-must-be-optional-and-auditable) | Link preview fetch must be optional and auditable |
-| [R-NOTIF-1](#r-notif-1-mention-user-ids-must-not-be-sent-in-plaintext-current-bug) | Mention user IDs must not be sent in plaintext |
-| [R-NOTIF-2](#r-notif-2-push-notifications-for-mobile-must-be-designed-before-adding-mobile-clients) | Push notifications for mobile must be designed before adding mobile clients |
-| [R-REACT-1](#r-react-1-decide-whether-reactions-are-encrypted) | Decide whether reactions are encrypted |
-| [R-VOICE-1](#r-voice-1-voice-key-rotation-on-member-joinleave-must-be-immediate) | Voice key rotation on member join/leave must be immediate |
-| [R-VOICE-2](#r-voice-2-voice-and-text-channels-should-use-separate-mls-groups) | Voice and text channels should use separate MLS groups |
+> **Status column** links to the [implementation audit](./REQUIREMENTS-E2EE-AUDIT.md)
+> which details what code satisfies each requirement, what's missing, and what must
+> not be removed.
+
+| ID | Summary | [Audit Status](./REQUIREMENTS-E2EE-AUDIT.md) |
+|----|---------|-------|
+| [R-PROTO-1](#r-proto-1-mls-rfc-9420-is-the-group-encryption-protocol) | MLS (RFC 9420) is the group encryption protocol | [✅ Met](./REQUIREMENTS-E2EE-AUDIT.md#r-proto-1-mls-rfc-9420-is-the-group-encryption-protocol) |
+| [R-PROTO-2](#r-proto-2-the-server-must-be-cryptographically-blind-to-message-content) | Server must be cryptographically blind to message content | [✅ Met](./REQUIREMENTS-E2EE-AUDIT.md#r-proto-2-the-server-must-be-cryptographically-blind-to-message-content) |
+| [R-PROTO-3](#r-proto-3-mls-authentication-is-required-not-optional) | MLS authentication is required, not optional | [✅ Met](./REQUIREMENTS-E2EE-AUDIT.md#r-proto-3-mls-authentication-is-required-not-optional) |
+| [R-PROTO-4](#r-proto-4-ts-mls-must-be-security-audited-before-production) | ts-mls must be security-audited before production | [❌ Not met](./REQUIREMENTS-E2EE-AUDIT.md#r-proto-4-ts-mls-must-be-security-audited-before-production) |
+| [R-KEY-1](#r-key-1-one-identity-per-user-account-not-per-device) | One identity per user account, not per device | [✅ Met](./REQUIREMENTS-E2EE-AUDIT.md#r-key-1-one-identity-per-user-account-not-per-device) |
+| [R-KEY-2](#r-key-2-recovery-key-must-use-actual-bip39) | Recovery key must use actual BIP39 | [✅ Met](./REQUIREMENTS-E2EE-AUDIT.md#r-key-2-recovery-key-must-use-actual-bip39) |
+| [R-KEY-3](#r-key-3-key-packages-must-be-pre-generated-and-replenished-proactively) | Key packages must be pre-generated and replenished proactively | [⚠️ Partial](./REQUIREMENTS-E2EE-AUDIT.md#r-key-3-key-packages-must-be-pre-generated-and-replenished-proactively) |
+| [R-KEY-4](#r-key-4-private-key-material-must-not-exist-in-memory-longer-than-necessary) | Private key material must not exist in memory longer than necessary | [⚠️ Partial](./REQUIREMENTS-E2EE-AUDIT.md#r-key-4-private-key-material-must-not-exist-in-memory-longer-than-necessary) |
+| [R-STORE-1](#r-store-1-mls-group-state-must-be-encrypted-at-rest-critical) | MLS group state must be encrypted at rest | [✅ Met](./REQUIREMENTS-E2EE-AUDIT.md#r-store-1-mls-group-state-must-be-encrypted-at-rest-critical) |
+| [R-STORE-2](#r-store-2-decrypted-message-content-must-not-be-stored-as-plaintext-critical) | Decrypted message content must not be stored as plaintext | [✅ Met](./REQUIREMENTS-E2EE-AUDIT.md#r-store-2-decrypted-message-content-must-not-be-stored-as-plaintext-critical) |
+| [R-STORE-3](#r-store-3-key-package-private-data-must-be-stored-securely) | Key package private data must be stored securely | [✅ Met](./REQUIREMENTS-E2EE-AUDIT.md#r-store-3-key-package-private-data-must-be-stored-securely) |
+| [R-EPOCH-1](#r-epoch-1-historical-messages-require-historical-epoch-keys-hard-problem) | Historical messages require historical epoch keys | [✅ Met](./REQUIREMENTS-E2EE-AUDIT.md#r-epoch-1-historical-messages-require-historical-epoch-keys-hard-problem) |
+| [R-EPOCH-2](#r-epoch-2-epoch-key-deletion-must-be-tied-to-message-lifecycle) | Epoch key deletion must be tied to message lifecycle | [❌ Not met](./REQUIREMENTS-E2EE-AUDIT.md#r-epoch-2-epoch-key-deletion-must-be-tied-to-message-lifecycle) |
+| [R-DEVICE-1](#r-device-1-new-device-bootstrap-requires-re-establishing-group-membership) | New device bootstrap requires re-establishing group membership | [⚠️ Partial](./REQUIREMENTS-E2EE-AUDIT.md#r-device-1-new-device-bootstrap-requires-re-establishing-group-membership) |
+| [R-DEVICE-2](#r-device-2-multiple-active-devices-receive-the-same-commits) | Multiple active devices receive the same Commits | [⚠️ Partial](./REQUIREMENTS-E2EE-AUDIT.md#r-device-2-multiple-active-devices-receive-the-same-commits) |
+| [R-HIST-1](#r-hist-1-decide-the-history-policy-explicitly) | Decide the history policy explicitly | [📌 Decided](./REQUIREMENTS-E2EE-AUDIT.md#r-hist-1-decide-the-history-policy-explicitly) |
+| [R-MEMBER-1](#r-member-1-key-rotation-on-member-leave-must-not-fan-out-catastrophically) | Key rotation on member leave must not fan-out catastrophically | [⚠️ Partial](./REQUIREMENTS-E2EE-AUDIT.md#r-member-1-key-rotation-on-member-leave-must-not-fan-out-catastrophically) |
+| [R-MEMBER-2](#r-member-2-joins-must-not-block-on-sender-availability) | Joins must not block on sender availability | [✅ Met](./REQUIREMENTS-E2EE-AUDIT.md#r-member-2-joins-must-not-block-on-sender-availability) |
+| [R-MEMBER-3](#r-member-3-the-group-creator-problem) | The group creator problem | [⚠️ Partial](./REQUIREMENTS-E2EE-AUDIT.md#r-member-3-the-group-creator-problem) |
+| [R-SEARCH-1](#r-search-1-full-text-search-must-be-client-side-only) | Full-text search must be client-side only | [⚠️ Partial](./REQUIREMENTS-E2EE-AUDIT.md#r-search-1-full-text-search-must-be-client-side-only) |
+| [R-SEARCH-2](#r-search-2-server-side-search-must-be-limited-to-metadata) | Server-side search must be limited to metadata | [✅ Met](./REQUIREMENTS-E2EE-AUDIT.md#r-search-2-server-side-search-must-be-limited-to-metadata) |
+| [R-PERF-1](#r-perf-1-never-decrypt-all-messages-on-channel-open) | Never decrypt all messages on channel open | [⚠️ Partial](./REQUIREMENTS-E2EE-AUDIT.md#r-perf-1-never-decrypt-all-messages-on-channel-open) |
+| [R-PERF-2](#r-perf-2-epoch-key-lookups-must-be-o1) | Epoch key lookups must be O(1) | [✅ Met](./REQUIREMENTS-E2EE-AUDIT.md#r-perf-2-epoch-key-lookups-must-be-o1) |
+| [R-PERF-3](#r-perf-3-group-state-updates-must-not-block-message-display) | Group state updates must not block message display | [⚠️ Partial](./REQUIREMENTS-E2EE-AUDIT.md#r-perf-3-group-state-updates-must-not-block-message-display) |
+| [R-BOT-1](#r-bot-1-bots-are-e2ee-members-with-explicit-user-consent) | Bots are E2EE members with explicit user consent | [❌ Not met](./REQUIREMENTS-E2EE-AUDIT.md#r-bot-1-bots-are-e2ee-members-with-explicit-user-consent) |
+| [R-BOT-2](#r-bot-2-bots-cannot-join-channels-automatically) | Bots cannot join channels automatically | [❌ Not met](./REQUIREMENTS-E2EE-AUDIT.md#r-bot-2-bots-cannot-join-channels-automatically) |
+| [R-DM-1](#r-dm-1-dms-have-different-churn-expectations) | DMs have different churn expectations | [✅ Met](./REQUIREMENTS-E2EE-AUDIT.md#r-dm-1-dms-have-different-churn-expectations) |
+| [R-DM-2](#r-dm-2-dm-history-semantics-should-differ-from-channel-history) | DM history semantics should differ from channel history | [✅ Met](./REQUIREMENTS-E2EE-AUDIT.md#r-dm-2-dm-history-semantics-should-differ-from-channel-history) |
+| [R-DM-3](#r-dm-3-dm-key-rotation-policy-should-be-stricter) | DM key rotation policy should be stricter | [⚠️ Partial](./REQUIREMENTS-E2EE-AUDIT.md#r-dm-3-dm-key-rotation-policy-should-be-stricter) |
+| [R-FILE-1](#r-file-1-files-must-be-encrypted-client-side-before-upload) | Files must be encrypted client-side before upload | [✅ Met](./REQUIREMENTS-E2EE-AUDIT.md#r-file-1-files-must-be-encrypted-client-side-before-upload) |
+| [R-FILE-2](#r-file-2-large-file-decryption-must-be-chunked) | Large file decryption must be chunked | [❌ Not met](./REQUIREMENTS-E2EE-AUDIT.md#r-file-2-large-file-decryption-must-be-chunked) |
+| [R-FILE-3](#r-file-3-file-deduplication-is-not-possible-with-e2ee) | File deduplication is not possible with E2EE | [✅ Met](./REQUIREMENTS-E2EE-AUDIT.md#r-file-3-file-deduplication-is-not-possible-with-e2ee) |
+| [R-LINK-1](#r-link-1-server-side-link-preview-fetching-is-a-metadata-leak) | Server-side link preview fetching is a metadata leak | [❌ Not met](./REQUIREMENTS-E2EE-AUDIT.md#r-link-1-server-side-link-preview-fetching-is-a-metadata-leak) |
+| [R-LINK-2](#r-link-2-link-preview-fetch-must-be-optional-and-auditable) | Link preview fetch must be optional and auditable | [❌ Not met](./REQUIREMENTS-E2EE-AUDIT.md#r-link-2-link-preview-fetch-must-be-optional-and-auditable) |
+| [R-NOTIF-1](#r-notif-1-mention-user-ids-must-not-be-sent-in-plaintext-current-bug) | Mention user IDs must not be sent in plaintext | [📌 Decided](./REQUIREMENTS-E2EE-AUDIT.md#r-notif-1-mention-user-ids-in-plaintext-accepted-metadata-leak) |
+| [R-NOTIF-2](#r-notif-2-push-notifications-for-mobile-must-be-designed-before-adding-mobile-clients) | Push notifications for mobile must be designed before adding mobile clients | [❌ Not met](./REQUIREMENTS-E2EE-AUDIT.md#r-notif-2-push-notifications-for-mobile-must-be-designed-before-adding-mobile-clients) |
+| [R-REACT-1](#r-react-1-decide-whether-reactions-are-encrypted) | Decide whether reactions are encrypted | [✅ Met](./REQUIREMENTS-E2EE-AUDIT.md#r-react-1-reactions-are-encrypted) |
+| [R-VOICE-1](#r-voice-1-voice-key-rotation-on-member-joinleave-must-be-immediate) | Voice key rotation on member join/leave must be immediate | [⚠️ Partial](./REQUIREMENTS-E2EE-AUDIT.md#r-voice-1-voice-key-rotation-on-member-joinleave-must-be-immediate) |
+| [R-VOICE-2](#r-voice-2-voice-and-text-channels-should-use-separate-mls-groups) | Voice and text channels should use separate MLS groups | [✅ Met](./REQUIREMENTS-E2EE-AUDIT.md#r-voice-2-voice-and-text-channels-should-use-separate-mls-groups) |
 
 ---
 

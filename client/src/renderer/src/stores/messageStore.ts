@@ -7,6 +7,19 @@ import { useVoiceStore } from './voiceStore'
 import { useServerStore } from './serverStore'
 import { useDmStore } from './dmStore'
 import { usePresenceStore } from './presenceStore'
+import {
+  cacheMessage as cacheMessageToDb,
+  loadCachedMessages,
+  indexDecryptedMessage as indexToFts,
+  removeFromFtsIndex
+} from '../crypto/storage'
+import { base64ToUint8 } from '../api/crypto'
+import { encodePayload, decodePayload } from '../crypto/payload'
+import {
+  getCachedDecryption,
+  setCachedDecryption,
+  removeCachedDecryption
+} from '../crypto/decryptionCache'
 
 export interface MessageSender {
   id: string
@@ -130,8 +143,8 @@ interface MessageState {
   deleteMessage: (targetId: string, topic: string, messageId: string) => void
 
   // Reactions
-  addReaction: (targetId: string, topic: string, messageId: string, emoji: string) => void
-  removeReaction: (targetId: string, topic: string, messageId: string, emoji: string) => void
+  addReaction: (targetId: string, topic: string, messageId: string, emoji: string) => Promise<void> | void
+  removeReaction: (targetId: string, topic: string, messageId: string, emoji: string) => Promise<void> | void
 
   // Pinning
   pinMessage: (topic: string, messageId: string) => void
@@ -299,9 +312,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const replyingTo = get().replyingTo
     const parentId = replyingTo?.id || undefined
     const mentionedUserIds = extractMentionedUserIds(content)
+    const payloadStr = encodePayload({ v: 1, type: 'text', text: content })
 
     if (crypto.hasGroup(channelId)) {
-      const encrypted = await crypto.encryptForChannel(channelId, content)
+      const encrypted = await crypto.encryptForChannel(channelId, payloadStr)
       if (encrypted) {
         pushToChannel(`chat:channel:${channelId}`, 'new_message', {
           ciphertext: encrypted.ciphertext,
@@ -315,7 +329,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     } else {
       await crypto.createGroup(channelId)
       if (crypto.hasGroup(channelId)) {
-        const encrypted = await crypto.encryptForChannel(channelId, content)
+        const encrypted = await crypto.encryptForChannel(channelId, payloadStr)
         if (encrypted) {
           pushToChannel(`chat:channel:${channelId}`, 'new_message', {
             ciphertext: encrypted.ciphertext,
@@ -500,10 +514,11 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const topic = `dm:${conversationId}`
     const replyingTo = get().replyingTo
     const parentId = replyingTo?.id || undefined
+    const payloadStr = encodePayload({ v: 1, type: 'text', text: content })
 
     // Try encrypting with existing group, or create a new one
     const encrypted = crypto.hasGroup(conversationId)
-      ? await crypto.encryptForChannel(conversationId, content)
+      ? await crypto.encryptForChannel(conversationId, payloadStr)
       : null
 
     if (encrypted) {
@@ -551,7 +566,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         }
       }
 
-      const freshEncrypted = await crypto.encryptForChannel(conversationId, content)
+      const freshEncrypted = await crypto.encryptForChannel(conversationId, payloadStr)
       if (freshEncrypted) {
         pushToChannel(topic, 'new_message', {
           ciphertext: freshEncrypted.ciphertext,
@@ -582,9 +597,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
   editMessage: async (targetId, topic, messageId, newContent) => {
     const crypto = useCryptoStore.getState()
+    const payloadStr = encodePayload({ v: 1, type: 'text', text: newContent })
 
     if (crypto.hasGroup(targetId)) {
-      const encrypted = await crypto.encryptForChannel(targetId, newContent)
+      const encrypted = await crypto.encryptForChannel(targetId, payloadStr)
       if (encrypted) {
         pushToChannel(topic, 'edit_message', {
           message_id: messageId,
@@ -605,12 +621,42 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     })
   },
 
-  // Reactions
-  addReaction: (_targetId, topic, messageId, emoji) => {
+  // Reactions — emoji is encrypted with the channel's MLS group key so the
+  // server only learns "user X reacted to message Y", not which emoji.
+  // NOTE: each encrypt/decrypt advances the MLS key schedule (epoch ratchet).
+  addReaction: async (_targetId, topic, messageId, emoji) => {
+    const channelId = topic.replace(/^chat:channel:|^dm:/, '')
+    const crypto = useCryptoStore.getState()
+    if (crypto.hasGroup(channelId)) {
+      const encrypted = await crypto.encryptForChannel(channelId, emoji)
+      if (encrypted) {
+        pushToChannel(topic, 'add_reaction', {
+          message_id: messageId,
+          ciphertext: encrypted.ciphertext,
+          mls_epoch: encrypted.epoch
+        })
+        return
+      }
+    }
+    // Fallback: unencrypted (no MLS group available)
     pushToChannel(topic, 'add_reaction', { message_id: messageId, emoji })
   },
 
-  removeReaction: (_targetId, topic, messageId, emoji) => {
+  removeReaction: async (_targetId, topic, messageId, emoji) => {
+    const channelId = topic.replace(/^chat:channel:|^dm:/, '')
+    const crypto = useCryptoStore.getState()
+    if (crypto.hasGroup(channelId)) {
+      const encrypted = await crypto.encryptForChannel(channelId, emoji)
+      if (encrypted) {
+        pushToChannel(topic, 'remove_reaction', {
+          message_id: messageId,
+          ciphertext: encrypted.ciphertext,
+          mls_epoch: encrypted.epoch
+        })
+        return
+      }
+    }
+    // Fallback: unencrypted
     pushToChannel(topic, 'remove_reaction', { message_id: messageId, emoji })
   },
 
@@ -623,31 +669,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     pushToChannel(topic, 'unpin_message', { message_id: messageId })
   },
 
-  // Search (local SQLite)
-  searchMessages: async (query) => {
-    const db = (window as Record<string, unknown>).cryptoDb as {
-      searchMessages?: (q: string) => Promise<Array<{
-        id: string; channel_id: string; sender_id: string | null;
-        sender_username: string | null; content: string | null; inserted_at: string
-      }>>
-    } | undefined
-
-    if (!db?.searchMessages) return []
-
-    const results = await db.searchMessages(query)
-    return results.map((r) => ({
-      id: r.id,
-      content: r.content || '',
-      channel_id: r.channel_id,
-      conversation_id: null,
-      sender_id: r.sender_id,
-      sender: r.sender_username
-        ? { id: r.sender_id || '', username: r.sender_username, display_name: null, avatar_url: null }
-        : null,
-      inserted_at: r.inserted_at,
-      expires_at: null,
-      parent_message_id: null
-    }))
+  // Search — disabled while message cache stores ciphertext.
+  // Will be reimplemented with FTS5 in Phase 5 of the E2EE refactor.
+  searchMessages: async (_query) => {
+    return []
   }
 }))
 
@@ -696,16 +721,35 @@ function scheduleMessageExpiry(
 
 /**
  * Handle a reaction update event.
+ * If the reaction carries encrypted ciphertext, decrypt it to recover the emoji.
  */
-function handleReactionUpdate(
+async function handleReactionUpdate(
   targetId: string,
   msg: Record<string, unknown>,
   set: (fn: (s: MessageState) => Partial<MessageState>) => void
-): void {
+): Promise<void> {
   const action = msg.action as string
   const messageId = msg.message_id as string
-  const emoji = msg.emoji as string
   const senderId = msg.sender_id as string
+
+  // Decrypt emoji from ciphertext if present, otherwise use plaintext fallback
+  let emoji = msg.emoji as string | undefined
+  if (msg.ciphertext && typeof msg.ciphertext === 'string') {
+    try {
+      const crypto = useCryptoStore.getState()
+      const decrypted = await crypto.decryptForChannel(targetId, msg.ciphertext as string)
+      if (decrypted) {
+        emoji = decrypted
+      }
+    } catch (e) {
+      console.warn('Failed to decrypt reaction emoji:', e)
+    }
+  }
+
+  if (!emoji) {
+    console.warn('Reaction update with no emoji (decryption failed and no plaintext fallback)')
+    return
+  }
 
   set((s) => {
     const messages = s.messagesByChannel[targetId] || []
@@ -720,7 +764,7 @@ function handleReactionUpdate(
             existing.senderIds = [...existing.senderIds, senderId]
           }
         } else {
-          reactions.push({ emoji, senderIds: [senderId] })
+          reactions.push({ emoji: emoji!, senderIds: [senderId] })
         }
       } else if (action === 'remove') {
         const idx = reactions.findIndex((r) => r.emoji === emoji)
@@ -797,19 +841,75 @@ async function handleNewMessage(
 
 /**
  * Process an incoming message — decrypt if encrypted, pass through if plaintext.
+ * Encrypted messages are cached as ciphertext in the local database so they can
+ * be decrypted on demand later without storing plaintext on disk.
  */
 async function processIncomingMessage(
   targetId: string,
   msg: Record<string, unknown>
 ): Promise<Message> {
   if (msg.ciphertext) {
-    const plaintext = await useCryptoStore
+    const messageId = msg.id as string
+    const ciphertextB64 = msg.ciphertext as string
+    const mlsEpoch = (msg.mls_epoch as number) ?? null
+
+    // Check the in-memory decryption cache first to avoid redundant decryption
+    const cachedPlaintext = getCachedDecryption(messageId)
+    const plaintext = cachedPlaintext ?? await useCryptoStore
       .getState()
-      .decryptForChannel(targetId, msg.ciphertext as string)
+      .decryptForChannel(targetId, ciphertextB64)
+
+    // Populate the decryption cache on successful decrypt
+    if (plaintext && !cachedPlaintext) {
+      setCachedDecryption(messageId, plaintext)
+    }
+
+    // Cache the ciphertext (not plaintext) to the local DB
+    try {
+      const ciphertextBytes = base64ToUint8(ciphertextB64)
+      await cacheMessageToDb({
+        id: msg.id as string,
+        channelId: targetId,
+        senderId: (msg.sender_id as string) || null,
+        senderUsername: (msg.sender as MessageSender)?.username || null,
+        ciphertext: ciphertextBytes,
+        mlsEpoch: mlsEpoch,
+        insertedAt: msg.inserted_at as string
+      })
+    } catch {
+      // Cache failure is non-fatal — message is still displayed from memory
+    }
+
+    // Decode structured payload — store the content that parseMessageContent expects.
+    // For v1 text payloads, extract the text string.
+    // For v1 file payloads, re-serialize to the JSON format that FilePreview consumes.
+    // For decryption failures, show an error placeholder.
+    let displayContent = '[Message unavailable - decryption failed]'
+    let searchableText = ''
+    if (plaintext) {
+      const payload = decodePayload(plaintext)
+      if (payload.type === 'text') {
+        displayContent = payload.text
+        searchableText = payload.text
+      } else {
+        // File payloads: store as JSON so parseMessageContent / FilePreview can consume them
+        displayContent = JSON.stringify({
+          type: payload.type,
+          text: payload.text,
+          file: payload.file
+        })
+        searchableText = payload.text || ''
+      }
+    }
+
+    // Index decrypted content for FTS5 search (fire-and-forget)
+    if (searchableText) {
+      indexToFts(messageId, targetId, searchableText).catch(() => {})
+    }
 
     return {
-      id: msg.id as string,
-      content: plaintext || 'Message unavailable',
+      id: messageId,
+      content: displayContent,
       channel_id: (msg.channel_id as string) || null,
       conversation_id: (msg.conversation_id as string) || null,
       sender_id: (msg.sender_id as string) || null,
@@ -885,7 +985,28 @@ async function handleMessageEdited(
     const plaintext = await useCryptoStore
       .getState()
       .decryptForChannel(targetId, msg.ciphertext as string)
-    newContent = plaintext || 'Message unavailable'
+    if (plaintext) {
+      // Update decryption cache with new content
+      setCachedDecryption(messageId, plaintext)
+      const payload = decodePayload(plaintext)
+      if (payload.type === 'text') {
+        newContent = payload.text
+        // Re-index for FTS search
+        indexToFts(messageId, targetId, payload.text).catch(() => {})
+      } else {
+        newContent = JSON.stringify({
+          type: payload.type,
+          text: payload.text,
+          file: payload.file
+        })
+        // Re-index caption text if present
+        if (payload.text) {
+          indexToFts(messageId, targetId, payload.text).catch(() => {})
+        }
+      }
+    } else {
+      newContent = 'Message unavailable'
+    }
   } else if (msg.content) {
     newContent = msg.content as string
   }
@@ -915,6 +1036,10 @@ function handleMessageDeleted(
   set: (fn: (s: MessageState) => Partial<MessageState>) => void
 ): void {
   const messageId = msg.message_id as string
+
+  // Remove from caches
+  removeCachedDecryption(messageId)
+  removeFromFtsIndex(messageId).catch(() => {})
 
   set((s) => ({
     messagesByChannel: {

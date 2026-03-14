@@ -75,7 +75,8 @@ export function createIndexedDbAdapter(): CryptoDbApi & {
       channel_id: string
       sender_id: string | null
       sender_username: string | null
-      content: string | null
+      ciphertext: ArrayBuffer | null
+      mls_epoch: number | null
       inserted_at: string
     }>
   >
@@ -101,7 +102,8 @@ export function createIndexedDbAdapter(): CryptoDbApi & {
         public_key_exchange: result.public_key_exchange,
         encrypted_private_keys: result.encrypted_private_keys,
         nonce: result.nonce,
-        salt: result.salt
+        salt: result.salt,
+        signature_private_key: result.signature_private_key ?? null
       }
     },
 
@@ -111,7 +113,8 @@ export function createIndexedDbAdapter(): CryptoDbApi & {
       publicKeyExchange: Uint8Array,
       encryptedPrivateKeys: Uint8Array,
       nonce: Uint8Array,
-      salt: Uint8Array
+      salt: Uint8Array,
+      signaturePrivateKey?: Uint8Array | null
     ) {
       const db = await getDb()
       await req(
@@ -121,7 +124,8 @@ export function createIndexedDbAdapter(): CryptoDbApi & {
           public_key_exchange: publicKeyExchange,
           encrypted_private_keys: encryptedPrivateKeys,
           nonce: nonce,
-          salt: salt
+          salt: salt,
+          signature_private_key: signaturePrivateKey ?? null
         })
       )
     },
@@ -205,14 +209,15 @@ export function createIndexedDbAdapter(): CryptoDbApi & {
       return all.filter((pkg: { consumed: number }) => !pkg.consumed).length
     },
 
-    // --- Message Cache ---
+    // --- Message Cache (stores ciphertext, not plaintext) ---
 
     async cacheMessage(msg: {
       id: string
       channel_id: string
       sender_id: string | null
       sender_username: string | null
-      content: string | null
+      ciphertext: Uint8Array | null
+      mls_epoch: number | null
       inserted_at: string
     }) {
       const db = await getDb()
@@ -240,37 +245,24 @@ export function createIndexedDbAdapter(): CryptoDbApi & {
       }
     },
 
-    // --- Search ---
+    // --- FTS5 Search ---
+    // IndexedDB fallback does not support FTS5. These are stubs.
+    // Full-text search is only available in the Electron build (SQLite).
 
-    async searchMessages(query: string) {
-      const db = await getDb()
-      const all = await req(tx(db, STORES.messageCache, 'readonly').getAll())
-      const lowerQuery = query.toLowerCase()
-      return all
-        .filter(
-          (msg: { content: string | null }) =>
-            msg.content && msg.content.toLowerCase().includes(lowerQuery)
-        )
-        .sort(
-          (a: { inserted_at: string }, b: { inserted_at: string }) =>
-            b.inserted_at.localeCompare(a.inserted_at)
-        )
-        .slice(0, 50)
-        .map((r: {
-          id: string
-          channel_id: string
-          sender_id: string | null
-          sender_username: string | null
-          content: string | null
-          inserted_at: string
-        }) => ({
-          id: r.id,
-          channel_id: r.channel_id,
-          sender_id: r.sender_id,
-          sender_username: r.sender_username,
-          content: r.content,
-          inserted_at: r.inserted_at
-        }))
+    async searchMessages(_query: string, _channelId?: string) {
+      return []
+    },
+
+    async indexDecryptedMessage(
+      _messageId: string,
+      _channelId: string,
+      _content: string
+    ) {
+      // no-op in web fallback
+    },
+
+    async removeFromFtsIndex(_messageId: string) {
+      // no-op in web fallback
     }
   }
 }

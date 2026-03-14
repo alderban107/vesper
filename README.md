@@ -112,10 +112,28 @@ The client connects to a Vesper server URL. In development, this defaults to `lo
 ## Project Structure
 
 ```
-server/          Elixir/Phoenix backend (API + WebSocket)
-client/          Electron + React frontend
-docker-compose.yml
-turnserver.conf  coturn configuration for voice relay
+server/                  Elixir/Phoenix backend (API + WebSocket)
+  lib/vesper/              domain logic (accounts, chat, encryption)
+  lib/vesper_web/          controllers, channels, router
+  priv/repo/migrations/   database migrations
+
+client/                  Electron + React frontend
+  src/main/                Electron main process (encrypted SQLite, IPC)
+  src/preload/             context bridge (IPC between main ↔ renderer)
+  src/renderer/src/
+    crypto/                E2EE layer (MLS, identity, payloads, key serialization)
+    stores/                Zustand stores (auth, crypto, messages, servers)
+    components/            React UI components
+
+doc/
+  DESIGN.md              architecture overview
+  e2ee/                  end-to-end encryption documentation
+    REQUIREMENTS-E2EE.md        requirements & design analysis
+    REQUIREMENTS-E2EE-AUDIT.md  implementation status audit
+    E2EE-IMPLEMENTATION.md      developer guide
+
+docker-compose.yml       full stack (PostgreSQL, Phoenix, web client, coturn)
+turnserver.conf          coturn configuration for voice relay
 ```
 
 ## Contributing

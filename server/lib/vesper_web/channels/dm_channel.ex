@@ -85,6 +85,36 @@ defmodule VesperWeb.DmChannel do
     end
   end
 
+  # Encrypted reactions
+  def handle_in("add_reaction", %{"message_id" => message_id, "ciphertext" => ciphertext} = payload, socket) do
+    mls_epoch = Map.get(payload, "mls_epoch")
+
+    case handle_reaction(
+           :add,
+           message_id,
+           "encrypted",
+           socket.assigns.user_id,
+           :conversation_id,
+           socket.assigns.conversation_id,
+           %{ciphertext: ciphertext, mls_epoch: mls_epoch}
+         ) do
+      :ok ->
+        broadcast!(socket, "reaction_update", %{
+          action: "add",
+          message_id: message_id,
+          ciphertext: ciphertext,
+          mls_epoch: mls_epoch,
+          sender_id: socket.assigns.user_id
+        })
+
+        {:reply, :ok, socket}
+
+      {:error, reason} ->
+        {:reply, {:error, %{reason: reason}}, socket}
+    end
+  end
+
+  # Plaintext fallback
   def handle_in("add_reaction", %{"message_id" => message_id, "emoji" => emoji}, socket) do
     case handle_reaction(
            :add,
@@ -109,6 +139,36 @@ defmodule VesperWeb.DmChannel do
     end
   end
 
+  # Encrypted remove
+  def handle_in("remove_reaction", %{"message_id" => message_id, "ciphertext" => ciphertext} = payload, socket) do
+    mls_epoch = Map.get(payload, "mls_epoch")
+
+    case handle_reaction(
+           :remove_encrypted,
+           message_id,
+           nil,
+           socket.assigns.user_id,
+           :conversation_id,
+           socket.assigns.conversation_id,
+           %{ciphertext: ciphertext, mls_epoch: mls_epoch}
+         ) do
+      :ok ->
+        broadcast!(socket, "reaction_update", %{
+          action: "remove",
+          message_id: message_id,
+          ciphertext: ciphertext,
+          mls_epoch: mls_epoch,
+          sender_id: socket.assigns.user_id
+        })
+
+        {:reply, :ok, socket}
+
+      {:error, reason} ->
+        {:reply, {:error, %{reason: reason}}, socket}
+    end
+  end
+
+  # Plaintext fallback
   def handle_in("remove_reaction", %{"message_id" => message_id, "emoji" => emoji}, socket) do
     case handle_reaction(
            :remove,
