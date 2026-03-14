@@ -105,6 +105,8 @@ If `safeStorage.isEncryptionAvailable()` returns false (headless Linux without a
 - **`safeStorage` requires the app to be ready.** The `initDb()` call must happen after Electron's `app.whenReady()`.
 - **Schema migrations run at startup.** If you add a table or column, add both the `CREATE TABLE IF NOT EXISTS` / `ALTER TABLE` in `initDb()` and update the `SCHEMA_SQL` constant (used by the migration path).
 - **The FTS5 virtual table** is created alongside regular tables. It survives the unencrypted-to-encrypted migration because it's defined in `SCHEMA_SQL`. However, its content is ephemeral — it's populated on-the-fly as messages are decrypted for display, not persisted across sessions in a meaningful way.
+- **`better-sqlite3-multiple-ciphers` is a native module.** It must be compiled against Electron's Node version. If the native build ever fails in CI or on a platform, the fallback approach is to revert to plain `better-sqlite3` and encrypt individual BLOB columns with Web Crypto before writing them to the database. This is less comprehensive (metadata columns like timestamps remain unencrypted) but avoids the native dependency. The current approach is preferable — only fall back if forced.
+- **The `PRAGMA key` syntax is exact.** The key must be passed as `PRAGMA key = "x'<hex>'"` — the outer double quotes and inner `x'...'` hex literal are both required. Getting this wrong produces a silently empty database (SQLite will open successfully but every table will appear to not exist).
 
 ---
 
@@ -143,6 +145,8 @@ ts-mls manages historical epoch keys internally via `historicalReceiverData` ins
 The 64-epoch retention window means messages can be decrypted as long as fewer than 64 Commits have advanced the group since the message was sent. For a typical chat with periodic member joins/leaves, this covers hours to days of history. Messages from epochs older than the retention window become permanently undecryptable.
 
 The retention is bounded rather than unlimited because each epoch snapshot adds ~2–5 KB to the serialized state. At 64 epochs, that's roughly 128–320 KB per group — manageable for the SQLite store.
+
+**Why not a separate `epoch_keys` table?** The original design considered extracting minimal epoch key material and storing it in a dedicated table keyed by `(group_id, epoch)`. A spike into the ts-mls source revealed that `processPrivateMessage` requires full `EpochReceiverData` (secret tree, ratchet tree, sender data secret, group context) rather than a single symmetric key — and this data is already stored inside `ClientState.historicalReceiverData`. Extracting and re-injecting it would require manipulating the library's internal structures with no public API support. Using the built-in retention config is simpler, safer, and achieves the same goal. If ts-mls ever exposes an API for standalone epoch decryption, the separate table approach could be revisited.
 
 ### 4.5 Concurrency
 
@@ -361,17 +365,18 @@ The Electron-specific code (SQLite, safeStorage, IPC) is not covered by the Play
 
 ## 12. Known Limitations and Future Work
 
-| Area | Current State | Target |
-|---|---|---|
-| Epoch key lifecycle | Bounded retention (64 epochs) via ts-mls config | Tie epoch key deletion to message lifecycle (delete key when last message from that epoch is gone) |
-| Search | FTS5 infrastructure wired, UI not connected | Full search UI with results navigation |
-| Large files | Single-shot AES-256-GCM | Chunked encryption (256 KB chunks) for streaming decrypt |
-| Crypto thread | Runs on renderer main thread | Web Worker for MLS operations (risk: `ClientState` may not survive `structuredClone`) |
-| Link previews | Server-side fetching (metadata leak) | Sender-side generation with user opt-out |
-| Multi-device | Each device must independently join every MLS group | Shared identity with key sync |
-| Key package expiry | No server-side expiration | Expiry timestamp + Oban purge job |
-| Batch removes | Each member leave = separate Commit | Batch Commit with timer-collected Remove proposals |
-| History for new members | No history on join | Encrypted history snapshot (post-v1) |
+| Area | Current State | Target | Notes |
+|---|---|---|---|
+| Epoch key lifecycle | Bounded retention (64 epochs) via ts-mls config | Tie epoch key deletion to message lifecycle (delete key when last message from that epoch is gone) | Requires hooking into disappearing message expiry to check if any messages remain for an epoch |
+| Search | FTS5 infrastructure wired, UI not connected | Full search UI with results navigation | Index is populated on decrypt — only viewed messages are searchable |
+| Large files | Single-shot AES-256-GCM | Chunked encryption (256 KB chunks) for streaming decrypt | Each chunk independently authenticated with chunk index in AAD to prevent reordering |
+| Crypto thread | Runs on renderer main thread | Web Worker for symmetric crypto offload | Full `ClientState` likely won't survive `structuredClone`. Recommended fallback: keep MLS state in main thread, offload only AES-GCM encrypt/decrypt to Worker |
+| Link previews | Server-side fetching (metadata leak) | Sender-side generation with user opt-out | Sender fetches URL metadata, includes in `MessagePayload.previews`, recipients render without network requests |
+| Multi-device | Each device must independently join every MLS group | Shared identity with key sync | No "rejoin all channels" flow exists — each channel rejoins lazily on first visit |
+| Key package expiry | No server-side expiration | `expires_at` column + Oban purge job + server rejection of expired packages | |
+| Batch removes | Each member leave = separate Commit | Batch Commit with 100ms collection window | Design: start a timer on first leave event, collect additional leaves, issue single batched Remove Commit when timer fires |
+| History for new members | No history on join | Encrypted history snapshot (post-v1) | Option C from requirements: adder creates re-encrypted history bundle under Welcome's group secret |
+| Group creator race | `groupSetupInProgress` flag prevents double-creation within one client | Server-side first-wins arbitration | Two clients may both create a group simultaneously; server should accept first Commit and reject second |
 
 ---
 

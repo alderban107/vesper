@@ -20,6 +20,26 @@
 
 ---
 
+## Bug Reference
+
+The "do not remove" warnings in this document reference bugs by ID. These were
+identified during the E2EE security review and fixed in the Phase 0–6 refactor.
+Removing the code that fixes them would reintroduce the vulnerability.
+
+| ID | Severity | Description | Fixed by |
+|----|----------|-------------|----------|
+| C1 | Critical | `crypto.db` stored as plain SQLite — MLS epoch secrets readable by anyone with filesystem access | `better-sqlite3-multiple-ciphers` + `safeStorage`-encrypted key |
+| C2 | Critical | `message_cache` stored decrypted plaintext in `content TEXT` column | Schema changed to `ciphertext BLOB` + `mls_epoch INTEGER` |
+| C3 | Critical | Login `saveIdentity()` passed `bundle.ciphertext` for all three key fields instead of actual public keys | Server login response now returns public keys; client stores them correctly |
+| H1 | High | No epoch key retention — messages from past epochs permanently undecryptable after any Commit | `retainKeysForEpochs = 64` via ts-mls config |
+| H2 | High | Fake BIP39 wordlist — generated pronounceable nonsense instead of standard dictionary words | Replaced with official 2048-word BIP39 English wordlist |
+| H3 | High | Fragile key package serialization — `slice(0,32)` / `slice(32,64)` / `slice(64)` with no length validation | Versioned length-prefixed format in `keySerialization.ts` |
+| H4 | High | `replenishKeyPackages()` generated key packages with random identity keys instead of the user's actual signing key | Signature private key stored in encrypted DB; loaded and passed to `createKeyPackageBatch()` |
+| H5 | High | No concurrency protection — concurrent encrypt/decrypt/commit operations could corrupt MLS group state | Per-group async mutex via `groupLock.ts` |
+| H6 | High | `handleCommit()` caught all errors silently — failed commits were swallowed with no retry or user feedback | 3-attempt retry with exponential backoff; evict state on total failure |
+
+---
+
 ## Requirements Index
 
 | ID | Summary | Status |
