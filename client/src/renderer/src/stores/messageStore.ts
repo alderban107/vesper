@@ -680,6 +680,17 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 // Track expiry timers so we can clean them up
 const expiryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
+/**
+ * Clear all pending message expiry timers.
+ * Called during logout to prevent timers firing after store reset.
+ */
+export function clearExpiryTimers(): void {
+  for (const timer of expiryTimers.values()) {
+    clearTimeout(timer)
+  }
+  expiryTimers.clear()
+}
+
 function scheduleExpiryTimers(targetId: string, messages: Message[]): void {
   for (const msg of messages) {
     if (msg.expires_at) {
