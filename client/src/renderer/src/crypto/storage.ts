@@ -1,46 +1,15 @@
 /**
  * Renderer-side interface to the local encrypted database.
  * In Electron, calls go through window.cryptoDb (exposed by preload).
- * In the web client, falls back to an IndexedDB adapter scoped to the
- * current user (vesper-crypto-{userId}).
+ * In the web client, falls back to an IndexedDB adapter.
  */
 import { createIndexedDbAdapter } from './indexedDbStorage'
 
 let _db: CryptoDbApi | null = null
 
-/**
- * Initialize storage for a specific user.
- * Must be called after login/registration before any crypto operations.
- * In Electron, uses the preload bridge (already user-scoped by the main process).
- * In web, creates a user-namespaced IndexedDB adapter.
- */
-export function initStorage(userId: string): void {
-  if (window.cryptoDb) {
-    _db = window.cryptoDb
-  } else {
-    _db = createIndexedDbAdapter(userId)
-    deleteLegacyDb()
-  }
-}
-
-/**
- * Reset the storage singleton.
- * Called during logout so the next login initializes a fresh adapter
- * for the new user.
- */
-export function resetStorage(): void {
-  _db = null
-}
-
 function db(): CryptoDbApi {
   if (!_db) {
-    if (window.cryptoDb) {
-      _db = window.cryptoDb
-      return _db
-    }
-    throw new Error(
-      'Crypto storage not initialized. Call initStorage(userId) after login.'
-    )
+    _db = window.cryptoDb ?? createIndexedDbAdapter()
   }
   return _db
 }
@@ -232,22 +201,4 @@ export async function searchDecryptedMessages(
     channelId: r.channel_id,
     content: r.content
   }))
-}
-
-// --- Legacy database cleanup ---
-
-/**
- * Delete the legacy un-namespaced 'vesper-crypto' IndexedDB database.
- * Before the user-scoping fix, all users shared this single database,
- * which caused key packages and group states to leak across accounts.
- */
-function deleteLegacyDb(): void {
-  try {
-    const req = indexedDB.deleteDatabase('vesper-crypto')
-    req.onerror = () => {
-      console.warn('Failed to delete legacy vesper-crypto database')
-    }
-  } catch {
-    // Ignore — not critical
-  }
 }

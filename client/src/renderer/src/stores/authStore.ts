@@ -9,10 +9,9 @@ import {
   createRecoveryData
 } from '../crypto/identity'
 import { initCipherSuite, createKeyPackageBatch, encodeKeyPackageBytes } from '../crypto/mls'
-import { saveIdentity, saveKeyPackages, loadIdentity, initStorage } from '../crypto/storage'
+import { saveIdentity, saveKeyPackages, loadIdentity } from '../crypto/storage'
 import { uploadKeyPackages, getMyKeyPackageCount } from '../api/crypto'
 import { serializePrivatePackage } from '../crypto/keySerialization'
-import { resetAllStores } from './resetStores'
 
 interface User {
   id: string
@@ -100,9 +99,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       setTokens(data.access_token, data.refresh_token)
       connectSocket()
 
-      // Initialize user-scoped crypto storage before any DB operations
-      initStorage(data.user.id)
-
       // Store identity keys locally (including signature private key for key package replenishment)
       await saveIdentity(
         data.user.id,
@@ -164,9 +160,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
       setTokens(data.access_token, data.refresh_token)
       connectSocket()
-
-      // Initialize user-scoped crypto storage before any DB operations
-      initStorage(data.user.id)
 
       // If user has encrypted key bundle, decrypt it and store locally
       if (data.encrypted_key_bundle) {
@@ -243,10 +236,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     } catch {
       // ignore
     }
-
-    // Clear all in-memory state before disconnecting
-    resetAllStores()
-
     disconnectSocket()
     clearTokens()
     set({ user: null, isAuthenticated: false, error: null, recoveryMnemonic: null })
@@ -264,9 +253,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (res.ok) {
         const data = await res.json()
         connectSocket()
-
-        // Initialize user-scoped crypto storage
-        initStorage(data.user.id)
 
         // Initialize cipher suite for later use
         initCipherSuite().catch(() => {

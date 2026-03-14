@@ -243,12 +243,8 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       .catch(() => {
         // Continue without encryption
       })
-      .finally(() => {
-        // Fetch messages AFTER group state is loaded so decryption can succeed.
-        // Previously these ran concurrently, causing a race where messages
-        // arrived before the group state was restored from IndexedDB.
-        get().fetchMessages(channelId)
-      })
+
+    get().fetchMessages(channelId)
   },
 
   leaveChannelChat: (channelId) => {
@@ -447,9 +443,8 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       .catch(() => {
         // Continue without encryption
       })
-      .finally(() => {
-        get().fetchDmMessages(conversationId)
-      })
+
+    get().fetchDmMessages(conversationId)
   },
 
   leaveDmChat: (conversationId) => {
@@ -684,17 +679,6 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
 // Track expiry timers so we can clean them up
 const expiryTimers = new Map<string, ReturnType<typeof setTimeout>>()
-
-/**
- * Clear all pending message expiry timers.
- * Called during logout to prevent timers firing after store reset.
- */
-export function clearExpiryTimers(): void {
-  for (const timer of expiryTimers.values()) {
-    clearTimeout(timer)
-  }
-  expiryTimers.clear()
-}
 
 function scheduleExpiryTimers(targetId: string, messages: Message[]): void {
   for (const msg of messages) {

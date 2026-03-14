@@ -1,15 +1,9 @@
 /**
  * IndexedDB-backed implementation of CryptoDbApi for the web client.
  * Mirrors the SQLite storage used in Electron (see main/db.ts).
- *
- * The database is namespaced per user: `vesper-crypto-{userId}`.
- * This prevents key packages, group states, and cached messages from
- * leaking across user sessions in the same browser.
- *
- * Fixes: https://github.com/vesper-chat/vesper/issues/22
  */
 
-const DB_NAME_PREFIX = 'vesper-crypto'
+const DB_NAME = 'vesper-crypto'
 const DB_VERSION = 1
 
 const STORES = {
@@ -19,10 +13,9 @@ const STORES = {
   messageCache: 'message_cache'
 } as const
 
-function openDb(userId: string): Promise<IDBDatabase> {
+function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const dbName = `${DB_NAME_PREFIX}-${userId}`
-    const req = indexedDB.open(dbName, DB_VERSION)
+    const req = indexedDB.open(DB_NAME, DB_VERSION)
 
     req.onupgradeneeded = () => {
       const db = req.result
@@ -75,7 +68,7 @@ function txComplete(transaction: IDBTransaction): Promise<void> {
   })
 }
 
-export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
+export function createIndexedDbAdapter(): CryptoDbApi & {
   searchMessages: (query: string) => Promise<
     Array<{
       id: string
@@ -92,7 +85,7 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
 
   function getDb(): Promise<IDBDatabase> {
     if (!dbPromise) {
-      dbPromise = openDb(userId)
+      dbPromise = openDb()
     }
     return dbPromise
   }
