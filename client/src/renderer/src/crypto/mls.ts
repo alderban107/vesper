@@ -359,8 +359,12 @@ export function deserializeGroupState(bytes: Uint8Array): ClientState {
   if (!result) {
     throw new Error('Failed to decode group state: decoder returned undefined')
   }
-  // decodeGroupState returns [decodedValue, bytesConsumed]
-  return result[0] as ClientState
+  // decodeGroupState returns [decodedValue, bytesConsumed].
+  // clientConfig is not part of the TLS serialization format, so we
+  // reattach the Vesper config after deserialization.
+  const state = result[0] as ClientState
+  state.clientConfig = vesperClientConfig
+  return state
 }
 
 /**

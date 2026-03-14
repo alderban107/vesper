@@ -27,6 +27,7 @@ import { fetchKeyPackage, fetchPendingWelcomes, ackPendingWelcome } from '../api
 import { base64ToUint8, uint8ToBase64 } from '../api/crypto'
 import { useAuthStore } from './authStore'
 import { withGroupLock } from '../crypto/groupLock'
+import { cacheSentMessage } from '../crypto/decryptionCache'
 
 interface CryptoState {
   /** In-memory MLS group states keyed by channel ID */
@@ -300,8 +301,15 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
           groupStates: { ...s.groupStates, [channelId]: result.newState }
         }))
 
+        const ciphertextB64 = uint8ToBase64(result.ciphertext)
+
+        // Cache plaintext so we can display our own message when the server
+        // echoes it back. MLS senders can't decrypt their own messages because
+        // the ratchet key is consumed during encryption.
+        cacheSentMessage(ciphertextB64, plaintext)
+
         return {
-          ciphertext: uint8ToBase64(result.ciphertext),
+          ciphertext: ciphertextB64,
           epoch: result.epoch
         }
       } catch (e) {
