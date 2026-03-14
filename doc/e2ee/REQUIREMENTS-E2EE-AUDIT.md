@@ -10,7 +10,7 @@
 >   requirement. Read that first if you need to understand *why* a requirement exists.
 > - [E2EE-IMPLEMENTATION.md](./E2EE-IMPLEMENTATION.md) — How the implementation
 >   works today. Architecture, key lifecycle, developer guide, gotchas.
-> - [DESIGN.md](./DESIGN.md) — Overall architecture.
+> - [DESIGN.md](../DESIGN.md) — Overall architecture.
 >
 > **Status key:**
 > - ✅ **Met** — Requirement is satisfied by the current implementation.

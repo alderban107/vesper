@@ -1,6 +1,6 @@
 # E2EE Implementation Guide
 
-This document describes how Vesper's end-to-end encryption works as currently implemented, how to work with it as a developer, and where the sharp edges are. It is a companion to [REQUIREMENTS-E2EE.md](./REQUIREMENTS-E2EE.md) (what the system must do and why), [REQUIREMENTS-E2EE-AUDIT.md](./REQUIREMENTS-E2EE-AUDIT.md) (which requirements are met and by what code), and [DESIGN.md](./DESIGN.md) (the overall architecture). This document covers what the system actually does right now, in enough detail to modify it without breaking things.
+This document describes how Vesper's end-to-end encryption works as currently implemented, how to work with it as a developer, and where the sharp edges are. It is a companion to [REQUIREMENTS-E2EE.md](./REQUIREMENTS-E2EE.md) (what the system must do and why), [REQUIREMENTS-E2EE-AUDIT.md](./REQUIREMENTS-E2EE-AUDIT.md) (which requirements are met and by what code), and [DESIGN.md](../DESIGN.md) (the overall architecture). This document covers what the system actually does right now, in enough detail to modify it without breaking things.
 
 Last updated after the Phase 0–6 E2EE refactor.
 

@@ -11,7 +11,7 @@
 >   yet implemented, with references to the specific code that satisfies each one.
 > - [E2EE-IMPLEMENTATION.md](./E2EE-IMPLEMENTATION.md) — How the implementation
 >   works today. Architecture, key lifecycle, developer guide, gotchas.
-> - [DESIGN.md](./DESIGN.md) §5 — Overall E2EE architecture.
+> - [DESIGN.md](../DESIGN.md) §5 — Overall E2EE architecture.
 >
 > Source: `client/src/renderer/src/crypto/`
 
