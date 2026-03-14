@@ -158,6 +158,18 @@ The lock is per-channel-ID, so operations on different channels proceed independ
 
 `handleCommit()` retries up to 3 times with exponential backoff (100ms, 500ms, 2s). If all retries fail, the group state is evicted from memory and deleted from the database. The next operation on that channel will trigger `ensureGroupMembership()`, which will attempt to rejoin via pending welcomes or request a fresh join.
 
+### 4.7 ts-mls Integration Notes
+
+Two aspects of the ts-mls API require care:
+
+**Decoder functions require explicit offset and return tuples.** ts-mls's `decodeMlsMessage` and `decodeGroupState` are raw TLS decoders with the signature `(buf: Uint8Array, offset: number) => [value, bytesConsumed] | undefined`. They must be called with an explicit offset (0 for top-level decoding). Omitting the offset leaves it as `undefined`, which corrupts the internal accumulator: `undefined + 2 = NaN`, causing every sub-decoder after the first to read from byte 0 instead of advancing through the buffer. The return value is a `[decodedValue, bytesConsumed]` tuple, not the decoded value directly.
+
+`decodeMlsMessageFromBytes()` in `mls.ts` wraps this correctly — always use it instead of calling `decodeMlsMessage` directly. The wrapper passes `offset = 0` and extracts the value from the tuple.
+
+**`clientConfig` is not serialized.** `encodeGroupState()` serializes the MLS `ClientState` for persistence, but the `clientConfig` field (which contains `paddingConfig`, `authService`, `keyRetentionConfig`, etc.) is not included in the TLS encoding. After a serialize → deserialize round-trip (page reload, session restore, app restart), `clientConfig` will be `undefined`. Any subsequent call to `createApplicationMessage` or `processPrivateMessage` will crash accessing `state.clientConfig.paddingConfig`.
+
+`deserializeGroupState()` in `mls.ts` handles this by reattaching `vesperClientConfig` after decoding. Do not call `decodeGroupState` directly — always use `deserializeGroupState()`.
+
 ---
 
 ## 5. Message Encryption
@@ -206,6 +218,7 @@ User types message
   → base64-encode ciphertext
   → push to WebSocket channel
   → cache ciphertext + epoch to message_cache (never plaintext)
+  → cache ciphertext → plaintext mapping in sent-message LRU (for self-decrypt)
 ```
 
 ### 5.4 Decrypt Path
@@ -213,6 +226,7 @@ User types message
 ```
 WebSocket delivers encrypted message
   → check LRU decryption cache by message ID
+  → if miss: check sent-message cache by ciphertext base64
   → if miss: withGroupLock(channelId, ...)
     → decryptMessage(state, ciphertextBytes)
       → ts-mls: look up epoch key, AEAD decrypt, verify Ed25519 signature
@@ -228,6 +242,12 @@ WebSocket delivers encrypted message
 ### 5.5 Decryption Cache
 
 A 2000-entry LRU cache (`decryptionCache.ts`) prevents re-decrypting messages that have already been shown. The cache is keyed by message ID and holds plaintext strings. It's checked before MLS decryption and populated on success. Entries are evicted on message deletion and updated on message edits.
+
+A separate sent-message cache (100-entry LRU, also in `decryptionCache.ts`) handles a fundamental MLS constraint: senders cannot decrypt their own messages. When `createApplicationMessage` encrypts, it consumes the sender's ratchet key and advances to the next generation. When the server echoes the message back via WebSocket, the sender's local state has already moved past that generation — `processPrivateMessage` cannot derive the decryption key. Other group members decrypt the message normally; only the sender is affected.
+
+The sent-message cache maps `ciphertext_base64 → plaintext` and is populated in `encryptForChannel()` at encrypt time. On the receive path, `processIncomingMessage()`, `handleReactionUpdate()`, and `handleMessageEdited()` all check this cache before attempting MLS decryption.
+
+The sent-message cache is volatile — it does not survive page reloads or app restarts. After a reload, the sender's own historical messages will show as "[Message unavailable - decryption failed]" until re-sent or until the messages age out of view. This is a known limitation (see §12). Other group members are unaffected.
 
 ### 5.6 Message Cache (On-Disk)
 
@@ -353,6 +373,9 @@ That's seven files for a schema change. The layers exist for security (renderer 
 - **"No key package available for user X"** — the target user has exhausted their server-side key package supply. They need to come online so `replenishKeyPackages()` runs.
 - **Decryption returns null** — either the epoch key has been evicted (>64 epochs ago) or the state is corrupted. Check the mls_groups table for the group's current epoch.
 - **State corruption** — if MLS state gets into a bad state, `resetGroup(channelId)` evicts it. The next operation will trigger a rejoin. This is the nuclear option.
+- **"Failed to decode MLS message: decoder returned undefined"** — the bytes passed to `decodeMlsMessageFromBytes()` are not a valid MLS message. Check that the input is a proper `Uint8Array` with correct MLS framing (first 2 bytes: protocol version, next 2 bytes: wireformat).
+- **"Cannot read properties of undefined (reading 'paddingConfig')"** — `clientConfig` is missing from the `ClientState`. This happens if `decodeGroupState` was called directly instead of through `deserializeGroupState()`, which reattaches `vesperClientConfig`.
+- **Sender's messages show as "[Message unavailable]"** — normal for messages sent before the current session. The sent-message cache is in-memory only. For messages in the current session, verify that `cacheSentMessage()` is being called in `encryptForChannel()`.
 
 ### Testing
 
@@ -368,6 +391,7 @@ The Electron-specific code (SQLite, safeStorage, IPC) is not covered by the Play
 | Area | Current State | Target | Notes |
 |---|---|---|---|
 | Epoch key lifecycle | Bounded retention (64 epochs) via ts-mls config | Tie epoch key deletion to message lifecycle (delete key when last message from that epoch is gone) | Requires hooking into disappearing message expiry to check if any messages remain for an epoch |
+| Self-decrypt after reload | Sender's own messages from previous sessions show as decryption failed (sent-message cache is volatile) | Persist sent-message cache or accept as limitation | MLS by design: sender's ratchet key is consumed on encrypt. The in-memory cache handles the current session; persistence would require storing plaintext mappings |
 | Search | FTS5 infrastructure wired, UI not connected | Full search UI with results navigation | Index is populated on decrypt — only viewed messages are searchable |
 | Large files | Single-shot AES-256-GCM | Chunked encryption (256 KB chunks) for streaming decrypt | Each chunk independently authenticated with chunk index in AAD to prevent reordering |
 | Crypto thread | Runs on renderer main thread | Web Worker for symmetric crypto offload | Full `ClientState` likely won't survive `structuredClone`. Recommended fallback: keep MLS state in main thread, offload only AES-GCM encrypt/decrypt to Worker |

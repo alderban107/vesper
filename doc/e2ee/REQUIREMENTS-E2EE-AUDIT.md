@@ -37,6 +37,9 @@ Removing the code that fixes them would reintroduce the vulnerability.
 | H4 | High | `replenishKeyPackages()` generated key packages with random identity keys instead of the user's actual signing key | Signature private key stored in encrypted DB; loaded and passed to `createKeyPackageBatch()` |
 | H5 | High | No concurrency protection — concurrent encrypt/decrypt/commit operations could corrupt MLS group state | Per-group async mutex via `groupLock.ts` |
 | H6 | High | `handleCommit()` caught all errors silently — failed commits were swallowed with no retry or user feedback | 3-attempt retry with exponential backoff; evict state on total failure |
+| C4 | Critical | `decodeMlsMessage` called without required `offset` argument — all MLS decode operations returned `undefined`, blocking group creation, welcome processing, commit handling, and message decryption | `decodeMlsMessageFromBytes()` wrapper in `mls.ts` passes `offset = 0` and extracts value from tuple. **Do not call `decodeMlsMessage` directly.** |
+| C5 | Critical | `clientConfig` lost on group state deserialization — `encodeGroupState` does not serialize `clientConfig`, so encrypt/decrypt crashed with `paddingConfig` undefined after any state reload | `deserializeGroupState()` in `mls.ts` reattaches `vesperClientConfig` after decoding. **Do not call `decodeGroupState` directly.** |
+| C6 | High | No self-decrypt mechanism — sender's own messages always showed as "[Message unavailable]" because MLS ratchet key is consumed on encrypt | Sent-message cache (100-entry LRU) in `decryptionCache.ts`, populated by `encryptForChannel()` in `cryptoStore.ts`, checked by `processIncomingMessage()` and reaction/edit handlers in `messageStore.ts` |
 
 ---
 
@@ -843,7 +846,7 @@ All design decisions from the original analysis have been resolved:
 - [ ] Commission security audit of ts-mls (full library, not just Vesper's usage)
 - [ ] Commission security audit of the identity backup/recovery flow
 - [ ] Penetration test of the Phoenix API (focus: key package injection, IDOR)
-- [x] All critical and high bugs from the E2EE refactor resolved (C1, C2, C3, H1-H6)
+- [x] All critical and high bugs from the E2EE refactor resolved (C1-C3, H1-H6, C4-C6)
 - [x] Verify MLS sender authentication is checked on every `decryptMessage` call
 - [ ] Verify ts-mls forward secrecy: confirm old epoch secrets are zeroed after epoch advance
 - [ ] Verify forward secrecy for disappearing messages: confirm epoch keys are deleted
