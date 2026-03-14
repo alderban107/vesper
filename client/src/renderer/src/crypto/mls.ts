@@ -32,6 +32,27 @@ import {
 } from 'ts-mls'
 import type { KeyPackagePair } from './types'
 
+/**
+ * Properly decode an MLS message from bytes.
+ *
+ * ts-mls's `decodeMlsMessage` is a raw TLS decoder with the signature
+ * `(buf: Uint8Array, offset: number) => [MLSMessage, bytesConsumed] | undefined`.
+ * It must be called with an explicit offset (0 for top-level decoding) and
+ * returns a `[value, length]` tuple — not the decoded value directly.
+ *
+ * Calling it without the offset argument leaves `offset` as `undefined`,
+ * which corrupts the internal accumulator (`undefined + 2 = NaN`) so every
+ * sub-decoder after the first reads from byte 0, producing garbage.
+ */
+function decodeMlsMessageFromBytes(bytes: Uint8Array): MLSMessage {
+  const result = decodeMlsMessage(bytes, 0)
+  if (!result) {
+    throw new Error('Failed to decode MLS message: decoder returned undefined')
+  }
+  // decodeMlsMessage returns [decodedValue, bytesConsumed]
+  return result[0] as MLSMessage
+}
+
 const CIPHERSUITE_NAME = 'MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519' as const
 
 /**
@@ -207,7 +228,7 @@ export async function processWelcome(
   privateKeys: PrivateKeyPackage
 ): Promise<ClientState> {
   const cs = getCs()
-  const decoded = decodeMlsMessage(welcomeBytes)
+  const decoded = decodeMlsMessageFromBytes(welcomeBytes)
 
   if (decoded.wireformat !== 'mls_welcome') {
     throw new Error(`Expected mls_welcome, got ${decoded.wireformat}`)
@@ -226,7 +247,7 @@ export async function processCommitMessage(
   commitBytes: Uint8Array
 ): Promise<ClientState> {
   const cs = getCs()
-  const decoded = decodeMlsMessage(commitBytes)
+  const decoded = decodeMlsMessageFromBytes(commitBytes)
 
   if (decoded.wireformat === 'mls_public_message') {
     const pskIndex = makePskIndex(state, {})
@@ -288,7 +309,7 @@ export async function decryptMessage(
   newState: ClientState
 } | null> {
   const cs = getCs()
-  const decoded = decodeMlsMessage(ciphertext)
+  const decoded = decodeMlsMessageFromBytes(ciphertext)
 
   if (decoded.wireformat !== 'mls_private_message') {
     throw new Error(`Expected mls_private_message, got ${decoded.wireformat}`)
@@ -334,7 +355,12 @@ export function serializeGroupState(state: ClientState): Uint8Array {
  * Deserialize MLS group state from local storage.
  */
 export function deserializeGroupState(bytes: Uint8Array): ClientState {
-  return decodeGroupState(bytes)
+  const result = decodeGroupState(bytes, 0)
+  if (!result) {
+    throw new Error('Failed to decode group state: decoder returned undefined')
+  }
+  // decodeGroupState returns [decodedValue, bytesConsumed]
+  return result[0] as ClientState
 }
 
 /**
@@ -351,7 +377,7 @@ export async function deriveVoiceKey(state: ClientState): Promise<Uint8Array> {
  * Decode a KeyPackage from its serialized form.
  */
 export function decodeKeyPackageBytes(bytes: Uint8Array): KeyPackage {
-  const decoded = decodeMlsMessage(bytes)
+  const decoded = decodeMlsMessageFromBytes(bytes)
   if (decoded.wireformat !== 'mls_key_package') {
     throw new Error(`Expected mls_key_package, got ${decoded.wireformat}`)
   }
