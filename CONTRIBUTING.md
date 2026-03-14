@@ -115,13 +115,9 @@ sudo docker compose exec db psql -U vesper -d vesper_prod -c "SELECT ..."
 
 ### IndexedDB isolation between users
 
-The web client's IndexedDB store (`vesper-crypto`) is **not namespaced by user**. When testing multiple users in the same browser, clear IndexedDB between sessions to prevent key package cross-contamination:
+The web client's IndexedDB crypto storage is namespaced per user (`vesper-crypto-{userId}`). Each login creates or reopens the database for that specific user. On logout, all in-memory stores and caches are cleared via `resetAllStores()`, and the storage adapter is reset so the next login opens a fresh database for the new user.
 
-```javascript
-indexedDB.deleteDatabase('vesper-crypto')
-```
-
-Without this, key packages from one user may be consumed by another, causing cryptographic identity mismatches. See [#22](https://github.com/alderban107/vesper/issues/22).
+The legacy un-namespaced `vesper-crypto` database (from before this fix) is automatically deleted on the first login after the migration.
 
 ### Two-user E2EE testing
 
