@@ -203,3 +203,22 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
     return get().statuses[userId] || 'offline'
   }
 }))
+
+/**
+ * Clean up module-level presence timers and channel references.
+ * Called during logout to stop heartbeats and idle detection.
+ */
+export function cleanupPresenceTimers(): void {
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval)
+    heartbeatInterval = null
+  }
+  if (idleTimeout) {
+    clearTimeout(idleTimeout)
+    idleTimeout = null
+  }
+  if (userTopic) {
+    leaveChannel(userTopic)
+    userTopic = null
+  }
+}
