@@ -243,8 +243,12 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       .catch(() => {
         // Continue without encryption
       })
-
-    get().fetchMessages(channelId)
+      .finally(() => {
+        // Fetch messages AFTER group state is loaded so decryption can succeed.
+        // Previously these ran concurrently, causing a race where messages
+        // arrived before the group state was restored from IndexedDB.
+        get().fetchMessages(channelId)
+      })
   },
 
   leaveChannelChat: (channelId) => {
@@ -443,8 +447,9 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       .catch(() => {
         // Continue without encryption
       })
-
-    get().fetchDmMessages(conversationId)
+      .finally(() => {
+        get().fetchDmMessages(conversationId)
+      })
   },
 
   leaveDmChat: (conversationId) => {

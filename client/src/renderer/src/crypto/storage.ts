@@ -16,14 +16,9 @@ let _db: CryptoDbApi | null = null
  */
 export function initStorage(userId: string): void {
   if (window.cryptoDb) {
-    // Electron: preload bridge handles user scoping
     _db = window.cryptoDb
   } else {
-    // Web: create a user-namespaced IndexedDB adapter
     _db = createIndexedDbAdapter(userId)
-
-    // Clean up the legacy un-namespaced database if it exists.
-    // Before this fix, all users shared a single 'vesper-crypto' DB.
     deleteLegacyDb()
   }
 }
@@ -39,7 +34,6 @@ export function resetStorage(): void {
 
 function db(): CryptoDbApi {
   if (!_db) {
-    // Fallback for Electron where initStorage may not have been called
     if (window.cryptoDb) {
       _db = window.cryptoDb
       return _db
