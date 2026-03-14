@@ -516,6 +516,16 @@ New members joining a channel cannot decrypt pre-join messages. This is correct 
 behavior and provides strong privacy guarantees. It is a significant UX regression from
 Discord, where new members can scroll back — but the privacy tradeoff is worth it.
 
+> **⚠️ Security note:** This policy is load-bearing for forward secrecy in the current
+> implementation. MLS group admission is currently automatic — any server member whose
+> client is online will process `mls_request_join` and issue a Welcome without human
+> confirmation (see #24). The only thing preventing an unauthorized party from reading
+> historical messages is that Welcome messages grant access to the *current epoch only*,
+> not past epochs. If Option C (history snapshot) or Option D (epoch key sharing) is
+> ever implemented, the automatic admission model must be revisited first — otherwise
+> anyone with an invite code gains access to message history with no gate beyond the
+> code itself.
+
 ---
 
 ## 9. Member Joins and Leaves
