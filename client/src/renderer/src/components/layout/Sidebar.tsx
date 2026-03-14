@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
   MessageCircle, Plus, ArrowRightToLine, Hash, Volume2, Settings, LogOut,
-  Copy, Pencil, Trash2
+  Copy, Pencil, Trash2, Check, Link
 } from 'lucide-react'
+import { apiFetch } from '../../api/client'
 import { useServerStore } from '../../stores/serverStore'
 import { useAuthStore } from '../../stores/authStore'
 import { useDmStore } from '../../stores/dmStore'
@@ -216,9 +217,12 @@ export default function Sidebar(): React.JSX.Element {
           {activeServer ? (
             <>
               <div className="px-4 py-3 border-b border-border">
-                <h2 className="text-text-primary font-semibold truncate">
-                  {activeServer.name}
-                </h2>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-text-primary font-semibold truncate flex-1 min-w-0">
+                    {activeServer.name}
+                  </h2>
+                  <InviteCodeButton serverId={activeServer.id} />
+                </div>
               </div>
 
               <div className="flex-1 overflow-y-auto py-2">
@@ -393,6 +397,81 @@ function UserBar({
         title="Logout"
       >
         <LogOut className="w-4 h-4" />
+      </button>
+    </div>
+  )
+}
+
+function InviteCodeButton({ serverId }: { serverId: string }): React.JSX.Element | null {
+  const [code, setCode] = useState<string | null>(null)
+  const [visible, setVisible] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [denied, setDenied] = useState(false)
+
+  const fetchAndShow = async (): Promise<void> => {
+    if (visible) {
+      setVisible(false)
+      setCode(null)
+      return
+    }
+    setLoading(true)
+    try {
+      const res = await apiFetch(`/api/v1/servers/${serverId}/invite-code`)
+      if (res.ok) {
+        const data = await res.json()
+        setCode(data.invite_code)
+        setVisible(true)
+      } else if (res.status === 403) {
+        setDenied(true)
+      }
+    } catch {
+      // ignore
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const copyCode = (): void => {
+    if (!code) return
+    navigator.clipboard.writeText(code)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  // Reset state when server changes
+  useEffect(() => {
+    setCode(null)
+    setVisible(false)
+    setCopied(false)
+    setDenied(false)
+  }, [serverId])
+
+  if (denied) return null
+
+  return (
+    <div className="flex items-center gap-1 shrink-0">
+      {visible && code ? (
+        <button
+          onClick={copyCode}
+          title={copied ? 'Copied!' : 'Copy invite code'}
+          className="flex items-center gap-1 bg-bg-base/50 px-1.5 py-0.5 rounded border border-border hover:border-accent/50 transition-colors max-w-[100px]"
+        >
+          <code className="text-accent-text text-[10px] font-mono truncate">{code}</code>
+          {copied ? (
+            <Check className="w-3 h-3 text-emerald-400 shrink-0" />
+          ) : (
+            <Copy className="w-3 h-3 text-text-faint shrink-0" />
+          )}
+        </button>
+      ) : null}
+      <button
+        onClick={fetchAndShow}
+        disabled={loading}
+        title={visible ? 'Hide invite code' : 'Show invite code'}
+        className="text-text-faint hover:text-text-primary transition-colors p-1 rounded hover:bg-bg-tertiary/50 disabled:opacity-40"
+      >
+        <Link className="w-3.5 h-3.5" />
       </button>
     </div>
   )
