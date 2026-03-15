@@ -861,11 +861,42 @@ function InviteCodeButton({ serverId }: { serverId: string }): React.JSX.Element
   const [copied, setCopied] = useState(false)
   const [loading, setLoading] = useState(false)
   const [denied, setDenied] = useState(false)
+  const [countdown, setCountdown] = useState(0)
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const AUTO_HIDE_SECONDS = 15
+
+  const clearTimer = (): void => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+  }
+
+  const hideCode = (): void => {
+    setVisible(false)
+    setCode(null)
+    setCountdown(0)
+    clearTimer()
+  }
+
+  const startTimer = (): void => {
+    clearTimer()
+    setCountdown(AUTO_HIDE_SECONDS)
+    timerRef.current = setInterval(() => {
+      setCountdown((prev) => {
+        if (prev <= 1) {
+          hideCode()
+          return 0
+        }
+        return prev - 1
+      })
+    }, 1000)
+  }
 
   const fetchAndShow = async (): Promise<void> => {
     if (visible) {
-      setVisible(false)
-      setCode(null)
+      hideCode()
       return
     }
 
@@ -876,6 +907,7 @@ function InviteCodeButton({ serverId }: { serverId: string }): React.JSX.Element
         const data = await res.json()
         setCode(data.invite_code)
         setVisible(true)
+        startTimer()
       } else if (res.status === 403) {
         setDenied(true)
       }
@@ -894,6 +926,8 @@ function InviteCodeButton({ serverId }: { serverId: string }): React.JSX.Element
     navigator.clipboard.writeText(code)
     setCopied(true)
     window.setTimeout(() => setCopied(false), 2000)
+    // Reset timer on copy since the user is interacting
+    startTimer()
   }
 
   useEffect(() => {
@@ -901,7 +935,12 @@ function InviteCodeButton({ serverId }: { serverId: string }): React.JSX.Element
     setVisible(false)
     setCopied(false)
     setDenied(false)
+    clearTimer()
   }, [serverId])
+
+  useEffect(() => {
+    return () => clearTimer()
+  }, [])
 
   if (denied) {
     return null
@@ -910,19 +949,29 @@ function InviteCodeButton({ serverId }: { serverId: string }): React.JSX.Element
   return (
     <div className="flex items-center gap-1 shrink-0">
       {visible && code ? (
-        <button
-          type="button"
-          onClick={copyCode}
-          title={copied ? 'Copied!' : 'Copy invite code'}
-          className="flex items-center gap-1 bg-bg-base/50 px-1.5 py-0.5 rounded border border-border hover:border-accent/50 transition-colors max-w-[100px]"
-        >
-          <code className="text-accent-text text-[10px] font-mono truncate">{code}</code>
-          {copied ? (
-            <Check className="w-3 h-3 text-emerald-400 shrink-0" />
-          ) : (
-            <Copy className="w-3 h-3 text-text-faint shrink-0" />
-          )}
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={copyCode}
+            title={copied ? 'Copied!' : 'Copy invite code'}
+            className="flex items-center gap-1 bg-bg-base/50 px-1.5 py-0.5 rounded border border-border hover:border-accent/50 transition-colors max-w-[100px]"
+          >
+            <code className="text-accent-text text-[10px] font-mono truncate">{code}</code>
+            {copied ? (
+              <Check className="w-3 h-3 text-emerald-400 shrink-0" />
+            ) : (
+              <Copy className="w-3 h-3 text-text-faint shrink-0" />
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={hideCode}
+            title="Dismiss"
+            className="text-text-faintest hover:text-text-muted transition-colors text-[10px] tabular-nums w-5 text-center"
+          >
+            {countdown}s
+          </button>
+        </div>
       ) : null}
       <button
         type="button"

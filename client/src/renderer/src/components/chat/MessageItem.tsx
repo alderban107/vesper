@@ -5,6 +5,8 @@ import { useMessageStore, parseMessageContent } from '../../stores/messageStore'
 import { useAuthStore } from '../../stores/authStore'
 import { usePresenceStore, type PresenceStatus } from '../../stores/presenceStore'
 import { useServerStore } from '../../stores/serverStore'
+import { useDmStore } from '../../stores/dmStore'
+import { useUIStore } from '../../stores/uiStore'
 import Avatar from '../ui/Avatar'
 import MarkdownContent from './MarkdownContent'
 import EmojiPicker from './EmojiPicker'
@@ -15,6 +17,7 @@ import { useContextMenu } from '../../hooks/useContextMenu'
 import MessageActions from './message/MessageActions'
 import MessageReplyPreview from './message/MessageReplyPreview'
 import MessageReactionBar from './message/MessageReactionBar'
+import ProfilePopout from '../profile/ProfilePopout'
 import { formatCustomEmojiToken, type CustomEmoji } from '../../utils/emoji'
 
 const STATUS_COLORS: Record<PresenceStatus, string> = {
@@ -181,6 +184,12 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
   const setEditingMessage = useMessageStore((s) => s.setEditingMessage)
   const editMessage = useMessageStore((s) => s.editMessage)
   const deleteMessage = useMessageStore((s) => s.deleteMessage)
+  const createConversation = useDmStore((s) => s.createConversation)
+  const setActiveServer = useServerStore((s) => s.setActiveServer)
+  const openSettingsModal = useUIStore((s) => s.openSettingsModal)
+
+  const [profileAnchor, setProfileAnchor] = useState<DOMRect | null>(null)
+  const [showProfile, setShowProfile] = useState(false)
 
   const targetId = message.channel_id || message.conversation_id || ''
   const topic = message.channel_id
@@ -273,6 +282,16 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
     setShowEmojiPicker(false)
   }
 
+  const handleOpenProfile = (event: React.MouseEvent): void => {
+    setProfileAnchor((event.currentTarget as HTMLElement).getBoundingClientRect())
+    setShowProfile(true)
+  }
+
+  const handleCloseProfile = (): void => {
+    setShowProfile(false)
+    setProfileAnchor(null)
+  }
+
   const getMessageItems = (): ContextMenuItem[] => {
     return [
       {
@@ -357,7 +376,11 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
     >
       <div className="vesper-message-avatar-column">
         {startsGroup ? (
-          <div className="relative w-10 h-10 shrink-0 mt-0.5">
+          <button
+            type="button"
+            className="relative w-10 h-10 shrink-0 mt-0.5 cursor-pointer border-0 bg-transparent p-0"
+            onClick={handleOpenProfile}
+          >
             <Avatar
               userId={message.sender_id || 'unknown'}
               avatarUrl={avatarUrl}
@@ -365,7 +388,7 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
               size="md"
             />
             <div className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-bg-primary ${STATUS_COLORS[status]}`} />
-          </div>
+          </button>
         ) : (
           <span className="vesper-message-inline-time">{formatTime(message.inserted_at)}</span>
         )}
@@ -410,7 +433,14 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
 
         {startsGroup && (
           <div className="vesper-message-header">
-            <span data-testid="message-sender" className="vesper-message-author">{displayName}</span>
+            <button
+              type="button"
+              data-testid="message-sender"
+              className="vesper-message-author vesper-message-author-clickable"
+              onClick={handleOpenProfile}
+            >
+              {displayName}
+            </button>
             <span className="vesper-message-time">{formatTime(message.inserted_at)}</span>
           </div>
         )}
@@ -485,6 +515,34 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
           y={msgMenu.menu.y}
           items={getMessageItems()}
           onClose={msgMenu.closeMenu}
+        />
+      )}
+
+      {showProfile && message.sender_id && (
+        <ProfilePopout
+          user={{
+            id: message.sender_id,
+            username: (liveMember?.user?.username || message.sender?.username || 'unknown'),
+            displayName,
+            avatarUrl: avatarUrl ?? null,
+            status,
+            roleLabel: activeServer?.owner_id === message.sender_id
+              ? 'Owner'
+              : liveMember?.role ?? undefined,
+            nickname: liveMember?.nickname,
+            isCurrentUser: isMe
+          }}
+          anchorRect={profileAnchor}
+          onClose={handleCloseProfile}
+          onMessage={isMe ? undefined : async () => {
+            await createConversation([message.sender_id!])
+            setActiveServer(null)
+            handleCloseProfile()
+          }}
+          onOpenSettings={isMe ? () => {
+            handleCloseProfile()
+            openSettingsModal()
+          } : undefined}
         />
       )}
     </div>
