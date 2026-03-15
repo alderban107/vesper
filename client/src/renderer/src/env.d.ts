@@ -96,6 +96,15 @@ interface CryptoDbApi {
 
 interface Window {
   cryptoDb: CryptoDbApi
+  linkPreview?: {
+    fetchMetadata(url: string): Promise<{
+      url: string
+      title: string | null
+      description: string | null
+      image_url: string | null
+      site_name: string | null
+    } | null>
+  }
   electron: {
     ipcRenderer: {
       invoke(channel: string, ...args: unknown[]): Promise<unknown>

@@ -94,9 +94,6 @@ defmodule VesperWeb.Router do
     post("/attachments", AttachmentController, :create)
     get("/attachments/:id", AttachmentController, :show)
 
-    # Link previews
-    post("/link-preview", LinkPreviewController, :create)
-
     # User search
     get("/users/search", UserController, :search)
 

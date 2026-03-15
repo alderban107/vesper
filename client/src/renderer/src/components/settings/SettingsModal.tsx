@@ -234,6 +234,8 @@ export default function SettingsModal(): React.JSX.Element {
   const closeSettingsModal = useUIStore((s) => s.closeSettingsModal)
   const serverUrl = useSettingsStore((s) => s.serverUrl)
   const setServerUrl = useSettingsStore((s) => s.setServerUrl)
+  const linkPreviewsEnabled = useSettingsStore((s) => s.linkPreviewsEnabled)
+  const setLinkPreviewsEnabled = useSettingsStore((s) => s.setLinkPreviewsEnabled)
   const inputDeviceId = useVoiceStore((s) => s.inputDeviceId)
   const outputDeviceId = useVoiceStore((s) => s.outputDeviceId)
   const echoCancellation = useVoiceStore((s) => s.echoCancellation)
@@ -327,6 +329,10 @@ export default function SettingsModal(): React.JSX.Element {
     const enabled = !notificationsEnabled
     setNotificationsEnabled(enabled)
     localStorage.setItem('notifications', enabled ? 'enabled' : 'disabled')
+  }
+
+  const handleLinkPreviewToggle = (): void => {
+    setLinkPreviewsEnabled(!linkPreviewsEnabled)
   }
 
   const handleTestConnection = async (): Promise<void> => {
@@ -620,6 +626,32 @@ export default function SettingsModal(): React.JSX.Element {
             <div className="vesper-settings-note-pill">
               <Bell className="w-4 h-4" />
               <span>{notificationsEnabled ? 'Notifications are enabled.' : 'Notifications are disabled.'}</span>
+            </div>
+          </div>
+
+          <div className="vesper-settings-card">
+            <div className="vesper-settings-row">
+              <div>
+                <div className="vesper-settings-row-title">Link Previews</div>
+                <div className="vesper-settings-row-copy">When enabled, this device may contact linked sites to fetch title and description data.</div>
+              </div>
+              <button
+                type="button"
+                onClick={handleLinkPreviewToggle}
+                className={linkPreviewsEnabled ? 'vesper-settings-toggle vesper-settings-toggle-on' : 'vesper-settings-toggle'}
+                aria-pressed={linkPreviewsEnabled}
+              >
+                <span className="vesper-settings-toggle-knob" />
+              </button>
+            </div>
+
+            <div className="vesper-settings-note-pill">
+              <Shield className="w-4 h-4" />
+              <span>
+                {linkPreviewsEnabled
+                  ? 'Preview fetches happen from this device only. URLs are no longer sent to the Vesper server for previews.'
+                  : 'Link previews are off. Vesper will not make automatic external requests for shared links.'}
+              </span>
             </div>
           </div>
         </>

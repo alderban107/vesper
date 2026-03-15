@@ -85,6 +85,12 @@ const notificationApi = {
   }
 }
 
+const linkPreviewApi = {
+  fetchMetadata: (url: string) =>
+    ipcRenderer.invoke('linkPreview:fetchMetadata', url)
+}
+
 contextBridge.exposeInMainWorld('electron', electronAPI)
 contextBridge.exposeInMainWorld('cryptoDb', cryptoDbApi)
 contextBridge.exposeInMainWorld('notifications', notificationApi)
+contextBridge.exposeInMainWorld('linkPreview', linkPreviewApi)
