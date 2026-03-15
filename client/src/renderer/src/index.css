@@ -519,6 +519,19 @@
   color: var(--color-text-primary);
 }
 
+.vesper-message-author-clickable {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  transition: color 0.14s ease;
+}
+
+.vesper-message-author-clickable:hover {
+  color: var(--color-accent);
+  text-decoration: underline;
+}
+
 .vesper-message-time {
   font-size: 0.72rem;
   color: var(--color-text-faintest);
@@ -2534,6 +2547,59 @@
   background: transparent;
   color: var(--color-text-faint);
   cursor: pointer;
+}
+
+.vesper-composer-staged-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  padding: 0.65rem 0.75rem 0.4rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+
+.vesper-composer-staged-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  max-width: 16rem;
+  padding: 0.35rem 0.45rem 0.35rem 0.55rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  border-radius: 0.7rem;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 50%, transparent);
+  font-size: 0.78rem;
+  line-height: 1;
+}
+
+.vesper-composer-staged-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
+
+.vesper-composer-staged-size {
+  color: var(--color-text-faint);
+  white-space: nowrap;
+}
+
+.vesper-composer-staged-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.3rem;
+  height: 1.3rem;
+  border: 0;
+  border-radius: 0.4rem;
+  background: transparent;
+  color: var(--color-text-faint);
+  cursor: pointer;
+  transition: background-color 0.14s ease, color 0.14s ease;
+}
+
+.vesper-composer-staged-remove:hover {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 80%, transparent);
+  color: #fca5a5;
 }
 
 .vesper-composer-controls {
