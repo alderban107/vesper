@@ -5,13 +5,18 @@ let socket: Socket | null = null
 let channels: Map<string, Channel> = new Map()
 
 export function connectSocket(): Socket {
-  if (socket?.isConnected()) return socket
+  if (socket) {
+    if (!socket.isConnected()) {
+      socket.connect()
+    }
+    return socket
+  }
 
   const serverUrl = getServerUrl()
   const wsUrl = serverUrl.replace(/^http/, 'ws') + '/socket'
 
   socket = new Socket(wsUrl, {
-    params: { token: getAccessToken() }
+    params: () => ({ token: getAccessToken() })
   })
 
   socket.connect()
