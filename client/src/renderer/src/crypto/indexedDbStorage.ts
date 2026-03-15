@@ -85,6 +85,7 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
       sender_id: string | null
       sender_username: string | null
       ciphertext: ArrayBuffer | null
+      decrypted_content: string | null
       mls_epoch: number | null
       inserted_at: string
     }>
@@ -228,11 +229,30 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
       sender_id: string | null
       sender_username: string | null
       ciphertext: Uint8Array | null
+      decrypted_content: string | null
       mls_epoch: number | null
       inserted_at: string
     }) {
       const db = await getDb()
       await req(tx(db, STORES.messageCache, 'readwrite').put(msg))
+    },
+
+    async getCachedMessageDecryption(messageId: string) {
+      const db = await getDb()
+      const result = await req(tx(db, STORES.messageCache, 'readonly').get(messageId))
+      return result?.decrypted_content ?? null
+    },
+
+    async setCachedMessageDecryption(messageId: string, plaintext: string) {
+      const db = await getDb()
+      const store = tx(db, STORES.messageCache, 'readwrite')
+      const existing = await req(store.get(messageId))
+      if (!existing) {
+        return
+      }
+
+      existing.decrypted_content = plaintext
+      await req(store.put(existing))
     },
 
     async getCachedMessages(channelId: string) {

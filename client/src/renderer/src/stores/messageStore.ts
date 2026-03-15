@@ -9,7 +9,9 @@ import { useDmStore } from './dmStore'
 import { usePresenceStore } from './presenceStore'
 import {
   cacheMessage as cacheMessageToDb,
+  loadCachedMessageDecryption,
   searchDecryptedMessages,
+  saveCachedMessageDecryption,
   indexDecryptedMessage as indexToFts,
   removeFromFtsIndex
 } from '../crypto/storage'
@@ -1641,12 +1643,14 @@ async function processIncomingMessage(
     const senderId = (msg.sender_id as string) || null
     const mlsEpoch = (msg.mls_epoch as number) ?? null
     const cachedPlaintext =
-      getCachedDecryption(messageId) ?? getSentMessage(ciphertextB64)
+      getCachedDecryption(messageId) ??
+      getSentMessage(ciphertextB64) ??
+      (await loadCachedMessageDecryption(messageId))
     const plaintext =
       cachedPlaintext ??
       (await useCryptoStore.getState().decryptForChannel(targetId, ciphertextB64))
 
-    if (plaintext && !cachedPlaintext) {
+    if (plaintext) {
       setCachedDecryption(messageId, plaintext)
     }
 
@@ -1659,6 +1663,7 @@ async function processIncomingMessage(
         senderId,
         senderUsername: (msg.sender as MessageSender)?.username ?? null,
         ciphertext: base64ToUint8(ciphertextB64),
+        decryptedContent: plaintext,
         mlsEpoch,
         insertedAt: msg.inserted_at as string
       })
@@ -1734,6 +1739,7 @@ async function processIncomingMessage(
       senderId: plaintextMessage.sender_id,
       senderUsername: plaintextMessage.sender?.username ?? null,
       ciphertext: null,
+      decryptedContent: plaintextMessage.content,
       mlsEpoch: null,
       insertedAt: plaintextMessage.inserted_at
     })
@@ -1794,6 +1800,7 @@ async function handleMessageEdited(
 
     if (plaintext) {
       setCachedDecryption(messageId, plaintext)
+      await saveCachedMessageDecryption(messageId, plaintext).catch(() => {})
       const payload = decodePayload(plaintext)
       if (payload.type === 'text') {
         newContent = payload.text

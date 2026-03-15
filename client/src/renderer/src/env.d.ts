@@ -52,9 +52,12 @@ interface CryptoDbApi {
     sender_id: string | null
     sender_username: string | null
     ciphertext: Uint8Array | null
+    decrypted_content: string | null
     mls_epoch: number | null
     inserted_at: string
   }): Promise<void>
+  getCachedMessageDecryption(messageId: string): Promise<string | null>
+  setCachedMessageDecryption(messageId: string, plaintext: string): Promise<void>
   getCachedMessages(channelId: string): Promise<
     Array<{
       id: string
@@ -64,6 +67,7 @@ interface CryptoDbApi {
       sender_id: string | null
       sender_username: string | null
       ciphertext: ArrayBuffer | null
+      decrypted_content: string | null
       mls_epoch: number | null
       inserted_at: string
     }>

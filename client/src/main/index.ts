@@ -17,6 +17,8 @@ import {
   consumeLocalKeyPackage,
   countLocalKeyPackages,
   cacheMessage,
+  getCachedMessageDecryption,
+  setCachedMessageDecryption,
   getCachedMessages,
   clearMessageCache,
   searchMessages,
@@ -262,6 +264,7 @@ function registerIpcHandlers(): void {
         sender_id: string | null
         sender_username: string | null
         ciphertext: Uint8Array | null
+        decrypted_content: string | null
         mls_epoch: number | null
         inserted_at: string
       }
@@ -269,6 +272,14 @@ function registerIpcHandlers(): void {
       ...msg,
       ciphertext: msg.ciphertext ? Buffer.from(msg.ciphertext) : null
     })
+  )
+  ipcMain.handle('cryptoDb:getCachedMessageDecryption', (_, messageId: string) =>
+    getCachedMessageDecryption(messageId)
+  )
+  ipcMain.handle(
+    'cryptoDb:setCachedMessageDecryption',
+    (_, messageId: string, plaintext: string) =>
+      setCachedMessageDecryption(messageId, plaintext)
   )
   ipcMain.handle('cryptoDb:getCachedMessages', (_, channelId: string) =>
     getCachedMessages(channelId)

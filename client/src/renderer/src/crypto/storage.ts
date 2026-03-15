@@ -163,6 +163,7 @@ export async function cacheMessage(msg: {
   senderId: string | null
   senderUsername: string | null
   ciphertext: Uint8Array | null
+  decryptedContent: string | null
   mlsEpoch: number | null
   insertedAt: string
 }): Promise<void> {
@@ -174,9 +175,21 @@ export async function cacheMessage(msg: {
     sender_id: msg.senderId,
     sender_username: msg.senderUsername,
     ciphertext: msg.ciphertext,
+    decrypted_content: msg.decryptedContent,
     mls_epoch: msg.mlsEpoch,
     inserted_at: msg.insertedAt
   })
+}
+
+export async function loadCachedMessageDecryption(messageId: string): Promise<string | null> {
+  return db().getCachedMessageDecryption(messageId)
+}
+
+export async function saveCachedMessageDecryption(
+  messageId: string,
+  plaintext: string
+): Promise<void> {
+  await db().setCachedMessageDecryption(messageId, plaintext)
 }
 
 export async function loadCachedMessages(channelId: string): Promise<
@@ -188,6 +201,7 @@ export async function loadCachedMessages(channelId: string): Promise<
     senderId: string | null
     senderUsername: string | null
     ciphertext: Uint8Array | null
+    decryptedContent: string | null
     mlsEpoch: number | null
     insertedAt: string
   }>
@@ -201,6 +215,7 @@ export async function loadCachedMessages(channelId: string): Promise<
     senderId: r.sender_id,
     senderUsername: r.sender_username,
     ciphertext: r.ciphertext ? new Uint8Array(r.ciphertext) : null,
+    decryptedContent: r.decrypted_content,
     mlsEpoch: r.mls_epoch,
     insertedAt: r.inserted_at
   }))

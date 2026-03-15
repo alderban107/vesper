@@ -93,6 +93,7 @@ const SCHEMA_SQL = `
     sender_id TEXT,
     sender_username TEXT,
     ciphertext BLOB,
+    decrypted_content TEXT,
     mls_epoch INTEGER,
     inserted_at TEXT NOT NULL
   );
@@ -280,6 +281,7 @@ function ensureColumn(tableName: string, columnName: string, columnType: string)
 function ensureMessageCacheColumns(): void {
   ensureColumn('message_cache', 'conversation_id', 'TEXT')
   ensureColumn('message_cache', 'server_id', 'TEXT')
+  ensureColumn('message_cache', 'decrypted_content', 'TEXT')
 }
 
 function ensureMessageCacheIndexes(): void {
@@ -401,12 +403,34 @@ export function cacheMessage(msg: {
   sender_id: string | null
   sender_username: string | null
   ciphertext: Buffer | null
+  decrypted_content: string | null
   mls_epoch: number | null
   inserted_at: string
 }): void {
   getDb()
     .prepare(
-      'INSERT OR REPLACE INTO message_cache (id, channel_id, conversation_id, server_id, sender_id, sender_username, ciphertext, mls_epoch, inserted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      `INSERT INTO message_cache (
+        id,
+        channel_id,
+        conversation_id,
+        server_id,
+        sender_id,
+        sender_username,
+        ciphertext,
+        decrypted_content,
+        mls_epoch,
+        inserted_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        channel_id = excluded.channel_id,
+        conversation_id = excluded.conversation_id,
+        server_id = excluded.server_id,
+        sender_id = excluded.sender_id,
+        sender_username = excluded.sender_username,
+        ciphertext = excluded.ciphertext,
+        decrypted_content = excluded.decrypted_content,
+        mls_epoch = excluded.mls_epoch,
+        inserted_at = excluded.inserted_at`
     )
     .run(
       msg.id,
@@ -416,9 +440,24 @@ export function cacheMessage(msg: {
       msg.sender_id,
       msg.sender_username,
       msg.ciphertext,
+      msg.decrypted_content,
       msg.mls_epoch,
       msg.inserted_at
     )
+}
+
+export function getCachedMessageDecryption(messageId: string): string | null {
+  const row = getDb()
+    .prepare('SELECT decrypted_content FROM message_cache WHERE id = ?')
+    .get(messageId) as { decrypted_content: string | null } | undefined
+
+  return row?.decrypted_content ?? null
+}
+
+export function setCachedMessageDecryption(messageId: string, plaintext: string): void {
+  getDb()
+    .prepare('UPDATE message_cache SET decrypted_content = ? WHERE id = ?')
+    .run(plaintext, messageId)
 }
 
 export function getCachedMessages(channelId: string): Array<{
@@ -429,6 +468,7 @@ export function getCachedMessages(channelId: string): Array<{
   sender_id: string | null
   sender_username: string | null
   ciphertext: Buffer | null
+  decrypted_content: string | null
   mls_epoch: number | null
   inserted_at: string
 }> {

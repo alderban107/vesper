@@ -55,9 +55,14 @@ const cryptoDbApi = {
     sender_id: string | null
     sender_username: string | null
     ciphertext: Uint8Array | null
+    decrypted_content: string | null
     mls_epoch: number | null
     inserted_at: string
   }) => ipcRenderer.invoke('cryptoDb:cacheMessage', msg),
+  getCachedMessageDecryption: (messageId: string) =>
+    ipcRenderer.invoke('cryptoDb:getCachedMessageDecryption', messageId),
+  setCachedMessageDecryption: (messageId: string, plaintext: string) =>
+    ipcRenderer.invoke('cryptoDb:setCachedMessageDecryption', messageId, plaintext),
   getCachedMessages: (channelId: string) =>
     ipcRenderer.invoke('cryptoDb:getCachedMessages', channelId),
   clearMessageCache: (channelId: string) =>
