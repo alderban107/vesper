@@ -6,9 +6,9 @@ import Config
 # to provide built-in test partitioning in CI environment.
 # Run `mix help test` for more information.
 config :vesper, Vesper.Repo,
-  username: "postgres",
-  password: "postgres",
-  hostname: "localhost",
+  username: System.get_env("TEST_DB_USER", "postgres"),
+  password: System.get_env("TEST_DB_PASS", "postgres"),
+  hostname: System.get_env("TEST_DB_HOST", "localhost"),
   database: "vesper_test#{System.get_env("MIX_TEST_PARTITION")}",
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: System.schedulers_online() * 2
