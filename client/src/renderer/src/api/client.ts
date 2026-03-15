@@ -1,5 +1,7 @@
 const DEFAULT_SERVER_URL =
   (window as any).VESPER_API_URL || 'http://localhost:4000'
+const SESSION_NOTICE_KEY = 'vesperSessionNotice'
+const SESSION_NOTICE_EVENT = 'vesper:session-notice'
 
 let refreshRequest: Promise<string | null> | null = null
 
@@ -58,6 +60,47 @@ function clearTokens(): void {
   localStorage.removeItem('refreshToken')
 }
 
+export interface SessionNotice {
+  title: string
+  message: string
+}
+
+function emitSessionNotice(): void {
+  window.dispatchEvent(new CustomEvent(SESSION_NOTICE_EVENT))
+}
+
+function setSessionNotice(notice: SessionNotice): void {
+  localStorage.setItem(SESSION_NOTICE_KEY, JSON.stringify(notice))
+  emitSessionNotice()
+}
+
+function clearSessionNotice(): void {
+  localStorage.removeItem(SESSION_NOTICE_KEY)
+  emitSessionNotice()
+}
+
+function getSessionNotice(): SessionNotice | null {
+  const raw = localStorage.getItem(SESSION_NOTICE_KEY)
+  if (!raw) {
+    return null
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<SessionNotice>
+    if (typeof parsed.title === 'string' && typeof parsed.message === 'string') {
+      return {
+        title: parsed.title,
+        message: parsed.message
+      }
+    }
+  } catch {
+    // Ignore malformed stored data.
+  }
+
+  localStorage.removeItem(SESSION_NOTICE_KEY)
+  return null
+}
+
 async function refreshAccessToken(): Promise<string | null> {
   if (refreshRequest) {
     return refreshRequest
@@ -77,11 +120,17 @@ async function refreshAccessToken(): Promise<string | null> {
 
       if (!res.ok) {
         clearTokens()
+        setSessionNotice({
+          title: 'Sign in again on this device',
+          message:
+            'This session can no longer be renewed. If this device was signed in before device-based sessions shipped, one fresh login is required.'
+        })
         return null
       }
 
       const data = await res.json()
       setTokens(data.access_token, data.refresh_token)
+      clearSessionNotice()
       return data.access_token
     } catch {
       clearTokens()
@@ -149,4 +198,13 @@ export async function apiUpload(
   return res
 }
 
-export { getServerUrl, getAccessToken, getRefreshToken, setTokens, clearTokens }
+export {
+  SESSION_NOTICE_EVENT,
+  clearSessionNotice,
+  getServerUrl,
+  getAccessToken,
+  getRefreshToken,
+  getSessionNotice,
+  setTokens,
+  clearTokens
+}

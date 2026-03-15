@@ -1,6 +1,12 @@
 import { Component, useEffect, useState, type ReactNode, type ErrorInfo } from 'react'
-import { Star } from 'lucide-react'
+import { AlertTriangle, Star } from 'lucide-react'
 import { useAuthStore } from './stores/authStore'
+import {
+  SESSION_NOTICE_EVENT,
+  clearSessionNotice,
+  getSessionNotice,
+  type SessionNotice
+} from './api/client'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
 import RecoveryPage from './pages/RecoveryPage'
@@ -45,14 +51,69 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
   }
 }
 
+function SessionNoticeModal({
+  notice,
+  onClose
+}: {
+  notice: SessionNotice
+  onClose: () => void
+}): React.JSX.Element {
+  return (
+    <div className="fixed inset-0 z-[200] bg-bg-base/86 backdrop-blur-md flex items-center justify-center p-6">
+      <div className="glass-card rounded-3xl max-w-md w-full p-6 border border-border/60 shadow-2xl animate-scale-in">
+        <div className="flex items-start gap-4">
+          <div className="w-12 h-12 rounded-2xl bg-error/15 text-error flex items-center justify-center shrink-0">
+            <AlertTriangle className="w-6 h-6" />
+          </div>
+          <div>
+            <h2 className="text-xl font-semibold text-text-primary">{notice.title}</h2>
+            <p className="text-text-muted mt-2">{notice.message}</p>
+          </div>
+        </div>
+
+        <div className="mt-6 flex justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            className="glow-accent hover:glow-accent-hover text-bg-base font-semibold px-5 py-2.5 rounded-xl transition-all"
+          >
+            Continue to sign in
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function App(): React.JSX.Element {
   const { isAuthenticated, isLoading, checkAuth, recoveryMnemonic, clearRecoveryMnemonic } =
     useAuthStore()
   const [page, setPage] = useState<'login' | 'register' | 'recovery'>('login')
+  const [sessionNotice, setSessionNotice] = useState<SessionNotice | null>(() => getSessionNotice())
 
   useEffect(() => {
     checkAuth()
   }, [checkAuth])
+
+  useEffect(() => {
+    const syncSessionNotice = (): void => {
+      setSessionNotice(getSessionNotice())
+    }
+
+    window.addEventListener(SESSION_NOTICE_EVENT, syncSessionNotice)
+    window.addEventListener('storage', syncSessionNotice)
+
+    return () => {
+      window.removeEventListener(SESSION_NOTICE_EVENT, syncSessionNotice)
+      window.removeEventListener('storage', syncSessionNotice)
+    }
+  }, [])
+
+  const handleDismissSessionNotice = (): void => {
+    clearSessionNotice()
+    setSessionNotice(null)
+    setPage('login')
+  }
 
   if (isLoading) {
     return (
@@ -67,16 +128,35 @@ function App(): React.JSX.Element {
 
   if (!isAuthenticated) {
     if (page === 'register') {
-      return <RegisterPage onSwitchToLogin={() => setPage('login')} />
+      return (
+        <>
+          <RegisterPage onSwitchToLogin={() => setPage('login')} />
+          {sessionNotice && (
+            <SessionNoticeModal notice={sessionNotice} onClose={handleDismissSessionNotice} />
+          )}
+        </>
+      )
     }
     if (page === 'recovery') {
-      return <RecoveryPage onBack={() => setPage('login')} />
+      return (
+        <>
+          <RecoveryPage onBack={() => setPage('login')} />
+          {sessionNotice && (
+            <SessionNoticeModal notice={sessionNotice} onClose={handleDismissSessionNotice} />
+          )}
+        </>
+      )
     }
     return (
-      <LoginPage
-        onSwitchToRegister={() => setPage('register')}
-        onSwitchToRecovery={() => setPage('recovery')}
-      />
+      <>
+        <LoginPage
+          onSwitchToRegister={() => setPage('register')}
+          onSwitchToRecovery={() => setPage('recovery')}
+        />
+        {sessionNotice && (
+          <SessionNoticeModal notice={sessionNotice} onClose={handleDismissSessionNotice} />
+        )}
+      </>
     )
   }
 
