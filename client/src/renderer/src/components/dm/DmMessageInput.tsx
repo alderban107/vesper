@@ -4,8 +4,10 @@ import { useDmStore } from '../../stores/dmStore'
 import { useMessageStore, cacheSentPlaintext } from '../../stores/messageStore'
 import { apiUpload } from '../../api/client'
 import { encryptFile } from '../../crypto/fileEncryption'
+import { encodePayload } from '../../crypto/payload'
 import { useCryptoStore } from '../../stores/cryptoStore'
 import { pushToChannel } from '../../api/socket'
+import { useAuthStore } from '../../stores/authStore'
 import EmojiPicker from '../chat/EmojiPicker'
 import ComposerShell from '../chat/message/ComposerShell'
 import { formatCustomEmojiToken } from '../../utils/emoji'
@@ -89,9 +91,10 @@ export default function DmMessageInput(): React.JSX.Element {
       const data = await res.json()
       const attachmentId = data.attachment.id
 
-      const envelope = JSON.stringify({
+      const envelope = encodePayload({
+        v: 1,
         type: 'file',
-        text: content.trim() || undefined,
+        text: content.trim() || null,
         file: {
           id: attachmentId,
           name: file.name,
@@ -106,17 +109,59 @@ export default function DmMessageInput(): React.JSX.Element {
       const crypto = useCryptoStore.getState()
       const replyTo = useMessageStore.getState().replyingTo
       const parentId = replyTo?.id || undefined
-      if (!crypto.hasGroup(conversationId)) {
-        await crypto.createGroup(conversationId)
+      const enc = crypto.hasGroup(conversationId)
+        ? await crypto.encryptForChannel(conversationId, envelope)
+        : null
+
+      if (enc) {
+        cacheSentPlaintext(enc.ciphertext, envelope)
+        pushToChannel(topic, 'new_message', {
+          ciphertext: enc.ciphertext,
+          mls_epoch: enc.epoch,
+          attachment_ids: [attachmentId],
+          ...(parentId && { parent_message_id: parentId })
+        })
+        setContent('')
+        useMessageStore.getState().setReplyingTo(null)
+        return
       }
 
       if (crypto.hasGroup(conversationId)) {
-        const enc = await crypto.encryptForChannel(conversationId, envelope)
-        if (enc) {
-          cacheSentPlaintext(enc.ciphertext, envelope)
+        await crypto.resetGroup(conversationId)
+      }
+
+      await crypto.createGroup(conversationId)
+      if (crypto.hasGroup(conversationId)) {
+        const conversation = useDmStore
+          .getState()
+          .conversations.find((entry) => entry.id === conversationId)
+        const myId = useAuthStore.getState().user?.id
+
+        if (conversation && myId) {
+          for (const participant of conversation.participants) {
+            if (participant.user_id === myId) continue
+            const result = await crypto.handleJoinRequest(conversationId, participant.user_id)
+            if (!result) continue
+
+            pushToChannel(topic, 'mls_commit', {
+              commit_data: result.commitBytes
+            })
+
+            if (result.welcomeBytes) {
+              pushToChannel(topic, 'mls_welcome', {
+                recipient_id: participant.user_id,
+                welcome_data: result.welcomeBytes
+              })
+            }
+          }
+        }
+
+        const freshEncrypted = await crypto.encryptForChannel(conversationId, envelope)
+        if (freshEncrypted) {
+          cacheSentPlaintext(freshEncrypted.ciphertext, envelope)
           pushToChannel(topic, 'new_message', {
-            ciphertext: enc.ciphertext,
-            mls_epoch: enc.epoch,
+            ciphertext: freshEncrypted.ciphertext,
+            mls_epoch: freshEncrypted.epoch,
             attachment_ids: [attachmentId],
             ...(parentId && { parent_message_id: parentId })
           })

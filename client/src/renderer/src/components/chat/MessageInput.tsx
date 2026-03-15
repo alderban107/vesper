@@ -149,6 +149,10 @@ export default function MessageInput(): React.JSX.Element {
       const parentId = replyTo?.id || undefined
       if (!crypto.hasGroup(activeChannelId)) {
         await crypto.createGroup(activeChannelId)
+        if (crypto.hasGroup(activeChannelId)) {
+          pushToChannel(topic, 'mls_request_join_all', {})
+          await new Promise((resolve) => setTimeout(resolve, 250))
+        }
       }
 
       if (crypto.hasGroup(activeChannelId)) {
