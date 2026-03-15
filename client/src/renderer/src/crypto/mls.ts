@@ -11,6 +11,7 @@ import {
   createApplicationMessage,
   processMessage,
   processPrivateMessage,
+  acceptAll,
   encodeMlsMessage,
   decodeMlsMessage,
   encodeGroupState,
@@ -251,7 +252,10 @@ export async function processCommitMessage(
 
   if (decoded.wireformat === 'mls_public_message') {
     const pskIndex = makePskIndex(state, {})
-    const result = await processMessage(state, decoded, pskIndex, cs)
+    // ts-mls@1.6.x expects processMessage(message, state, pskIndex, action, cs).
+    // Passing the old argument order turns the commit message into `undefined`
+    // inside the library, which then crashes while reading `pm.epoch`.
+    const result = await processMessage(decoded.publicMessage, state, pskIndex, acceptAll, cs)
     if (result.kind === 'newState') {
       return result.newState
     }
