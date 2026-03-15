@@ -1357,8 +1357,7 @@ async function handleNewMessage(
   if (
     processed.encrypted &&
     processed.decryptionFailed &&
-    processed.sender_id !== myId &&
-    !useCryptoStore.getState().hasGroup(targetId)
+    processed.sender_id !== myId
   ) {
     const topic = processed.channel_id
       ? `chat:channel:${processed.channel_id}`

@@ -1180,7 +1180,10 @@ async function initVoice(
           if (changed) set({ participants: updated })
         })
 
-        void setupVoiceE2EE(topic).catch(() => {
+        const preferredCreatorId =
+          typeof data.e2ee_creator_id === 'string' ? data.e2ee_creator_id : undefined
+
+        void setupVoiceE2EE(topic, preferredCreatorId).catch(() => {
           set({
             errorMessage: 'Voice encryption setup failed. Rejoin the call to try again.'
           })
@@ -1312,7 +1315,10 @@ async function initVoice(
   })
 }
 
-async function setupVoiceE2EE(topic: string): Promise<void> {
+async function setupVoiceE2EE(
+  topic: string,
+  preferredCreatorId?: string
+): Promise<void> {
   const crypto = useCryptoStore.getState()
   const userId = useAuthStore.getState().user?.id
   if (!userId) {
@@ -1325,11 +1331,9 @@ async function setupVoiceE2EE(topic: string): Promise<void> {
   if (!crypto.hasGroup(topic)) {
     await new Promise((resolve) => setTimeout(resolve, 150))
 
-    const participantIds = new Set(useVoiceStore.getState().participants.map((participant) => participant.user_id))
-    participantIds.add(userId)
-    const preferredCreatorId = [...participantIds].sort((left, right) => left.localeCompare(right))[0]
+    const creatorId = preferredCreatorId ?? userId
 
-    if (preferredCreatorId === userId) {
+    if (creatorId === userId) {
       await crypto.createGroup(topic)
       if (crypto.hasGroup(topic)) {
         pushToChannel(topic, 'mls_request_join_all', {})

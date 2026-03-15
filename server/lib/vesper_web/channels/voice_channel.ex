@@ -192,7 +192,12 @@ defmodule VesperWeb.VoiceChannel do
            Voice.join_room(room_id, user_id, self())
          end) do
       {:ok, offer_sdp, track_map, publish_map} ->
-        push(socket, "offer", %{sdp: offer_sdp, track_map: track_map, publish_map: publish_map})
+        push(socket, "offer", %{
+          sdp: offer_sdp,
+          track_map: track_map,
+          publish_map: publish_map,
+          e2ee_creator_id: preferred_creator_id(room_id, user_id)
+        })
 
         broadcast!(socket, "voice_state_update", %{
           participants: Voice.get_participants(room_id)
@@ -212,7 +217,12 @@ defmodule VesperWeb.VoiceChannel do
   end
 
   def handle_info({:renegotiate, sdp, track_map, publish_map}, socket) do
-    push(socket, "offer", %{sdp: sdp, track_map: track_map, publish_map: publish_map})
+    push(socket, "offer", %{
+      sdp: sdp,
+      track_map: track_map,
+      publish_map: publish_map,
+      e2ee_creator_id: preferred_creator_id(socket.assigns.room_id, socket.assigns.user_id)
+    })
     {:noreply, socket}
   end
 
@@ -251,5 +261,17 @@ defmodule VesperWeb.VoiceChannel do
 
   defp voice_group_id(room_id, room_type) do
     "voice:#{room_type}:#{room_id}"
+  end
+
+  defp preferred_creator_id(room_id, fallback_user_id) do
+    case Voice.get_participants(room_id) do
+      [] ->
+        fallback_user_id
+
+      participants ->
+        participants
+        |> Enum.map(& &1.user_id)
+        |> Enum.min()
+    end
   end
 end
