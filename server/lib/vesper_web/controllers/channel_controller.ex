@@ -123,7 +123,20 @@ defmodule VesperWeb.ChannelController do
 
   defp has_channel_update_params?(params) do
     Enum.any?(
-      ["name", "type", "topic", "position", "category_id", "disappearing_ttl", :name, :type, :topic, :position, :category_id, :disappearing_ttl],
+      [
+        "name",
+        "type",
+        "topic",
+        "position",
+        "category_id",
+        "disappearing_ttl",
+        :name,
+        :type,
+        :topic,
+        :position,
+        :category_id,
+        :disappearing_ttl
+      ],
       &Map.has_key?(params, &1)
     )
   end

@@ -301,6 +301,7 @@ defmodule Vesper.Voice.Room do
 
     if sender_id do
       sender_participant = Map.get(state.participants, sender_id)
+
       media_slot =
         if sender_participant do
           sender_participant
@@ -534,7 +535,9 @@ defmodule Vesper.Voice.Room do
     target = state.participants[target_user_id]
 
     # Add outgoing media tracks for the source user's audio/video slot.
-    outgoing = Map.put(target.outgoing_tracks, source_user_id, create_outgoing_track_set(target.pc))
+    outgoing =
+      Map.put(target.outgoing_tracks, source_user_id, create_outgoing_track_set(target.pc))
+
     updated_target = %{target | outgoing_tracks: outgoing}
     state = put_in(state.participants[target_user_id], updated_target)
 
@@ -637,7 +640,8 @@ defmodule Vesper.Voice.Room do
     pc
     |> PeerConnection.get_transceivers()
     |> Enum.reduce(%{}, fn transceiver, acc ->
-      if transceiver.direction in [:sendonly, :sendrecv] && transceiver.sender.track && transceiver.mid do
+      if transceiver.direction in [:sendonly, :sendrecv] && transceiver.sender.track &&
+           transceiver.mid do
         case find_track_owner_and_kind(outgoing_tracks, transceiver.sender.track.id) do
           {source_user_id, media_slot} ->
             Map.put(acc, transceiver.mid, %{

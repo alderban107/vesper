@@ -7,6 +7,7 @@ defmodule VesperWeb.PendingWelcomeController do
   @doc "GET /api/v1/pending-welcomes/:channel_id — fetch pending welcomes for the current MLS scope"
   def index(conn, %{"channel_id" => scope_id}) do
     user = conn.assigns.current_user
+
     case authorized_scope(user.id, scope_id) do
       {:ok, authorized_group_id} ->
         render_welcomes(conn, Encryption.get_pending_welcomes(user.id, authorized_group_id))

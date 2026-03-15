@@ -143,8 +143,23 @@ defmodule VesperWeb.ChannelHelpers do
   end
 
   # Plaintext reaction (no encryption metadata)
-  def handle_reaction(action, message_id, emoji, sender_id, expected_scope_field, expected_scope_value) do
-    handle_reaction(action, message_id, emoji, sender_id, expected_scope_field, expected_scope_value, %{})
+  def handle_reaction(
+        action,
+        message_id,
+        emoji,
+        sender_id,
+        expected_scope_field,
+        expected_scope_value
+      ) do
+    handle_reaction(
+      action,
+      message_id,
+      emoji,
+      sender_id,
+      expected_scope_field,
+      expected_scope_value,
+      %{}
+    )
   end
 
   # Reaction with optional encryption metadata (ciphertext + mls_epoch)

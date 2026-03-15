@@ -8,6 +8,7 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit",
+    "check:web": "npm run typecheck && npm run build:web",
     "dist": "electron-vite build && electron-builder --config electron-builder.yml",
     "dist:linux": "electron-vite build && electron-builder --linux --config electron-builder.yml",
     "dist:mac": "electron-vite build && electron-builder --mac --config electron-builder.yml",

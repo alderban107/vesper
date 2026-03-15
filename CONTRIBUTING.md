@@ -22,11 +22,29 @@ mix phx.server     # start on localhost:4000
 cd client
 npm install
 npm run dev        # start Electron with hot reload
+npm run check:web  # typecheck + production web build
 ```
 
 The client connects to `http://localhost:4000` by default.
 
 ## Running Tests
+
+### Full pre-commit verification
+
+```bash
+./scripts/setup-git-hooks.sh
+./scripts/pre-commit-checks.sh
+./scripts/pre-push-checks.sh
+```
+
+The git hooks run these checks automatically:
+
+- `pre-commit` runs `./scripts/pre-commit-checks.sh`
+- `pre-push` runs `./scripts/pre-push-checks.sh`
+
+`pre-commit` runs `mix precommit` in `server/`, then `npm run check:web` in `client/`. `pre-push` reruns `npm run check:web`, so a push is blocked if the web app no longer typechecks or builds.
+
+Git hooks help for local clones, but the real repo-wide gate is GitHub Actions. The `Verify` workflow runs `npm run check:web` on pushes and pull requests, so branch protection can require it before merge.
 
 ### Server tests
 

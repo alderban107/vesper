@@ -507,5 +507,4 @@ defmodule Vesper.Chat do
       attrs
     end
   end
-
 end

@@ -19,7 +19,14 @@ defmodule Vesper.Encryption.PendingWelcome do
 
   def changeset(welcome, attrs) do
     welcome
-    |> cast(attrs, [:welcome_data, :group_id, :recipient_id, :sender_id, :channel_id, :conversation_id])
+    |> cast(attrs, [
+      :welcome_data,
+      :group_id,
+      :recipient_id,
+      :sender_id,
+      :channel_id,
+      :conversation_id
+    ])
     |> validate_required([:welcome_data, :group_id, :recipient_id, :sender_id])
   end
 end

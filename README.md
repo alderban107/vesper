@@ -85,8 +85,17 @@ cd client
 npm install
 npm run dev          # Electron dev with hot reload
 npm run dev:web      # web client dev server
+npm run check:web    # typecheck + production web build
 npm run build:web    # production web build (outputs dist-web/)
 npm run dist:linux   # build AppImage + deb
+```
+
+To run the same verification used by the git pre-commit hook from the repo root:
+
+```bash
+./scripts/setup-git-hooks.sh
+./scripts/pre-commit-checks.sh
+./scripts/pre-push-checks.sh
 ```
 
 The dev server connects to `http://localhost:4000` by default.
