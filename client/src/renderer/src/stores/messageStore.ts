@@ -276,6 +276,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           msg.channel_id as string,
           msg.disappearing_ttl as number | null
         )
+      } else if (event === 'mls_request_join_all') {
+        if (!useCryptoStore.getState().hasGroup(channelId)) {
+          pushToChannel(topic, 'mls_request_join', {})
+        }
       } else if (event === 'mls_request_join') {
         handleMlsJoinRequest(channelId, msg, `chat:channel:${channelId}`)
       } else if (event === 'mls_commit') {
@@ -397,16 +401,21 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const shouldClearInlineReply = !parentMessageId
     const mentionedUserIds = extractMentionedUserIds(content)
     const payloadStr = encodePayload({ v: 1, type: 'text', text: content })
+    const topic = `chat:channel:${channelId}`
 
     if (!crypto.hasGroup(channelId)) {
       await crypto.createGroup(channelId)
+      if (crypto.hasGroup(channelId)) {
+        pushToChannel(topic, 'mls_request_join_all', {})
+        await new Promise((resolve) => setTimeout(resolve, 250))
+      }
     }
 
     if (crypto.hasGroup(channelId)) {
       const encrypted = await crypto.encryptForChannel(channelId, payloadStr)
       if (encrypted) {
         cacheSentPlaintext(encrypted.ciphertext, content)
-        pushToChannel(`chat:channel:${channelId}`, 'new_message', {
+        pushToChannel(topic, 'new_message', {
           ciphertext: encrypted.ciphertext,
           mls_epoch: encrypted.epoch,
           ...(parentId && { parent_message_id: parentId }),
@@ -629,13 +638,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       if (conversation && myId) {
         for (const participant of conversation.participants) {
           if (participant.user_id === myId) continue
-          const result = (await crypto.handleJoinRequest(
-            conversationId,
-            participant.user_id
-          )) as unknown as {
-            commitBytes: string
-            welcomeBytes: string | null
-          } | void
+          const result = await crypto.handleJoinRequest(conversationId, participant.user_id)
           if (result) {
             pushToChannel(topic, 'mls_commit', {
               commit_data: result.commitBytes
@@ -1351,6 +1354,23 @@ async function handleNewMessage(
     }
   }
 
+  if (
+    processed.encrypted &&
+    processed.decryptionFailed &&
+    processed.sender_id !== myId &&
+    !useCryptoStore.getState().hasGroup(targetId)
+  ) {
+    const topic = processed.channel_id
+      ? `chat:channel:${processed.channel_id}`
+      : processed.conversation_id
+        ? `dm:${processed.conversation_id}`
+        : null
+
+    if (topic) {
+      pushToChannel(topic, 'mls_request_join', {})
+    }
+  }
+
   set((s) => ({
     messagesByChannel: {
       ...s.messagesByChannel,
@@ -1488,10 +1508,7 @@ async function handleMlsJoinRequest(
 
   if (!crypto.hasGroup(targetId)) return
 
-  const result = (await crypto.handleJoinRequest(targetId, userId)) as unknown as {
-    commitBytes: string
-    welcomeBytes: string | null
-  } | void
+  const result = await crypto.handleJoinRequest(targetId, userId)
 
   if (!result) return
 

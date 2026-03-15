@@ -9,9 +9,10 @@ const EMPTY_TYPING: { user_id: string; username: string }[] = []
 
 export default function DmMessageList(): React.JSX.Element {
   const conversationId = useDmStore((s) => s.selectedConversationId)
-  const messages = useMessageStore((s) =>
+  const allMessages = useMessageStore((s) =>
     conversationId ? (s.messagesByChannel[conversationId] ?? EMPTY_MESSAGES) : EMPTY_MESSAGES
   )
+  const messages = allMessages.filter((message) => !message.parent_message_id)
   const typingUsers = useMessageStore((s) =>
     conversationId ? (s.typingUsers[conversationId] ?? EMPTY_TYPING) : EMPTY_TYPING
   )
@@ -44,6 +45,7 @@ export default function DmMessageList(): React.JSX.Element {
   return (
     <MessageFeed
       messages={messages}
+      messageLookup={allMessages}
       typingUsers={typingUsers}
       hasMore={hasMore}
       emptyState="No messages yet. Say something!"

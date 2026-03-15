@@ -99,22 +99,11 @@ defmodule Vesper.Encryption do
   end
 
   @doc """
-  Get all pending Welcomes for a user in a specific channel.
+  Get all pending Welcomes for a user in a specific MLS group scope.
   """
-  def get_pending_welcomes(recipient_id, channel_id) do
+  def get_pending_welcomes(recipient_id, group_id) do
     from(pw in PendingWelcome,
-      where: pw.recipient_id == ^recipient_id and pw.channel_id == ^channel_id,
-      order_by: [asc: pw.inserted_at]
-    )
-    |> Repo.all()
-  end
-
-  @doc """
-  Get all pending Welcomes for a user in a specific DM conversation.
-  """
-  def get_pending_conversation_welcomes(recipient_id, conversation_id) do
-    from(pw in PendingWelcome,
-      where: pw.recipient_id == ^recipient_id and pw.conversation_id == ^conversation_id,
+      where: pw.recipient_id == ^recipient_id and pw.group_id == ^group_id,
       order_by: [asc: pw.inserted_at]
     )
     |> Repo.all()

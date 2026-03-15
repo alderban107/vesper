@@ -325,6 +325,11 @@ defmodule VesperWeb.ChatChannel do
     {:noreply, socket}
   end
 
+  def handle_in("mls_request_join_all", _payload, socket) do
+    broadcast_from!(socket, "mls_request_join_all", %{user_id: socket.assigns.user_id})
+    {:noreply, socket}
+  end
+
   def handle_in("mls_commit", %{"commit_data" => commit_data}, socket)
       when is_binary(commit_data) do
     broadcast!(socket, "mls_commit", %{
@@ -361,20 +366,25 @@ defmodule VesperWeb.ChatChannel do
         channel_id = socket.assigns.channel_id
         sender_id = socket.assigns.user_id
 
-        broadcast!(socket, "mls_welcome", %{
-          recipient_id: recipient_id,
-          welcome_data: welcome_data,
-          sender_id: sender_id
-        })
+        case Encryption.store_pending_welcome(%{
+               recipient_id: recipient_id,
+               channel_id: channel_id,
+               group_id: channel_id,
+               welcome_data: decoded,
+               sender_id: sender_id
+             }) do
+          {:ok, _welcome} ->
+            broadcast!(socket, "mls_welcome", %{
+              recipient_id: recipient_id,
+              welcome_data: welcome_data,
+              sender_id: sender_id
+            })
 
-        Encryption.store_pending_welcome(%{
-          recipient_id: recipient_id,
-          channel_id: channel_id,
-          welcome_data: decoded,
-          sender_id: sender_id
-        })
+            {:noreply, socket}
 
-        {:noreply, socket}
+          {:error, _changeset} ->
+            {:reply, {:error, %{reason: "could not store welcome"}}, socket}
+        end
 
       {:error, _} ->
         {:reply, {:error, %{reason: "invalid encoding"}}, socket}

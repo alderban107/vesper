@@ -8,11 +8,8 @@ defmodule VesperWeb.PendingWelcomeController do
   def index(conn, %{"channel_id" => scope_id}) do
     user = conn.assigns.current_user
     case authorized_scope(user.id, scope_id) do
-      {:ok, {:channel, channel_id}} ->
-        render_welcomes(conn, Encryption.get_pending_welcomes(user.id, channel_id))
-
-      {:ok, {:conversation, conversation_id}} ->
-        render_welcomes(conn, Encryption.get_pending_conversation_welcomes(user.id, conversation_id))
+      {:ok, authorized_group_id} ->
+        render_welcomes(conn, Encryption.get_pending_welcomes(user.id, authorized_group_id))
 
       {:error, :invalid_scope} ->
         conn |> put_status(:bad_request) |> json(%{error: "invalid scope"})
@@ -57,8 +54,19 @@ defmodule VesperWeb.PendingWelcomeController do
     })
   end
 
-  defp authorized_scope(user_id, "voice:channel:" <> channel_id), do: authorize_channel_scope(user_id, channel_id)
-  defp authorized_scope(user_id, "voice:dm:" <> conversation_id), do: authorize_conversation_scope(user_id, conversation_id)
+  defp authorized_scope(user_id, "voice:channel:" <> channel_id) do
+    case authorize_channel_scope(user_id, channel_id) do
+      {:ok, _channel_id} -> {:ok, "voice:channel:#{channel_id}"}
+      error -> error
+    end
+  end
+
+  defp authorized_scope(user_id, "voice:dm:" <> conversation_id) do
+    case authorize_conversation_scope(user_id, conversation_id) do
+      {:ok, _conversation_id} -> {:ok, "voice:dm:#{conversation_id}"}
+      error -> error
+    end
+  end
 
   defp authorized_scope(user_id, scope_id) do
     with {:ok, uuid} <- Ecto.UUID.cast(scope_id) do
@@ -77,8 +85,8 @@ defmodule VesperWeb.PendingWelcomeController do
         {:error, :not_found}
 
       channel ->
-        if Servers.user_is_member?(user_id, channel.server_id) do
-          {:ok, {:channel, channel_id}}
+        if Servers.user_can_view_channel?(user_id, channel) do
+          {:ok, channel_id}
         else
           {:error, :forbidden}
         end
@@ -92,7 +100,7 @@ defmodule VesperWeb.PendingWelcomeController do
 
       _conversation ->
         if Chat.user_is_participant?(user_id, conversation_id) do
-          {:ok, {:conversation, conversation_id}}
+          {:ok, conversation_id}
         else
           {:error, :forbidden}
         end

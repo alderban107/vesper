@@ -118,6 +118,14 @@ defmodule VesperWeb.VoiceChannel do
     {:noreply, socket}
   end
 
+  def handle_in("mls_request_join_all", _payload, socket) do
+    broadcast_from!(socket, "mls_request_join_all", %{
+      user_id: socket.assigns.user_id
+    })
+
+    {:noreply, socket}
+  end
+
   def handle_in("mls_commit", %{"commit_data" => commit_data}, socket)
       when is_binary(commit_data) do
     broadcast!(socket, "mls_commit", %{
@@ -139,23 +147,29 @@ defmodule VesperWeb.VoiceChannel do
         room_id = socket.assigns.room_id
         room_type = socket.assigns.room_type
         sender_id = socket.assigns.user_id
+        group_id = voice_group_id(room_id, room_type)
 
-        broadcast!(socket, "mls_welcome", %{
-          recipient_id: recipient_id,
-          welcome_data: welcome_data,
-          sender_id: sender_id
-        })
+        case Encryption.store_pending_welcome(
+               %{
+                 recipient_id: recipient_id,
+                 group_id: group_id,
+                 welcome_data: decoded,
+                 sender_id: sender_id
+               }
+               |> put_voice_scope(room_id, room_type)
+             ) do
+          {:ok, _welcome} ->
+            broadcast!(socket, "mls_welcome", %{
+              recipient_id: recipient_id,
+              welcome_data: welcome_data,
+              sender_id: sender_id
+            })
 
-        Encryption.store_pending_welcome(
-          %{
-            recipient_id: recipient_id,
-            welcome_data: decoded,
-            sender_id: sender_id
-          }
-          |> put_voice_scope(room_id, room_type)
-        )
+            {:noreply, socket}
 
-        {:noreply, socket}
+          {:error, _changeset} ->
+            {:reply, {:error, %{reason: "could not store welcome"}}, socket}
+        end
 
       {:error, _} ->
         {:reply, {:error, %{reason: "invalid encoding"}}, socket}
@@ -233,5 +247,9 @@ defmodule VesperWeb.VoiceChannel do
 
   defp put_voice_scope(attrs, room_id, :dm) do
     Map.put(attrs, :conversation_id, room_id)
+  end
+
+  defp voice_group_id(room_id, room_type) do
+    "voice:#{room_type}:#{room_id}"
   end
 end

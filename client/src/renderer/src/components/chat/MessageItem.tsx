@@ -243,11 +243,9 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
     : 0
   const threadReplyCount = Math.max(fetchedThreadReplyCount, inlineThreadReplyCount)
   const isActiveThread = activeThreadParentId === threadAnchorId
-  const threadLinkLabel = message.parent_message_id
-    ? 'View thread'
-    : threadReplyCount > 0
-      ? `${threadReplyCount} ${threadReplyCount === 1 ? 'reply' : 'replies'}`
-      : 'Start thread'
+  const threadActionLabel = message.parent_message_id ? 'Open thread' : 'Start thread'
+  const showThreadSummary = !message.parent_message_id && threadReplyCount > 0
+  const threadSummaryLabel = `${threadReplyCount} ${threadReplyCount === 1 ? 'reply' : 'replies'} in thread`
   const handleOpenThread = (): void => {
     void openThread(threadAnchorMessage)
   }
@@ -381,10 +379,12 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
             <MessageActions
               canEdit={isMe}
               onReply={() => setReplyingTo(message)}
+              onThread={handleOpenThread}
               onReact={() => setShowEmojiPicker((value) => !value)}
               onEdit={handleStartEdit}
               onDelete={handleDelete}
               expiryLabel={expiryLabel}
+              threadLabel={threadActionLabel}
             />
             {showEmojiPicker && (
               <div className="vesper-message-emoji-popout">
@@ -457,15 +457,20 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
           customEmojis={customEmojis}
         />
 
-        <div className="vesper-message-thread-meta">
-          <button
-            type="button"
-            onClick={handleOpenThread}
-            className={`vesper-message-thread-link${isActiveThread ? ' vesper-message-thread-link-active' : ''}`}
-          >
-            {threadLinkLabel}
-          </button>
-        </div>
+        {showThreadSummary && (
+          <div className="vesper-message-thread-meta">
+            <button
+              type="button"
+              onClick={handleOpenThread}
+              className={`vesper-message-thread-link${isActiveThread ? ' vesper-message-thread-link-active' : ''}`}
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <MessageSquare className="w-3.5 h-3.5" />
+                {threadSummaryLabel}
+              </span>
+            </button>
+          </div>
+        )}
       </div>
 
       {msgMenu.menu && (

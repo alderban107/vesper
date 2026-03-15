@@ -39,7 +39,6 @@ async function encryptFrame(
   controller: TransformStreamDefaultController<RTCEncodedFrameLike>
 ): Promise<void> {
   if (!currentKey) {
-    controller.enqueue(frame)
     return
   }
 
@@ -71,7 +70,6 @@ async function decryptFrame(
   controller: TransformStreamDefaultController<RTCEncodedFrameLike>
 ): Promise<void> {
   if (!currentKey) {
-    controller.enqueue(frame)
     return
   }
 

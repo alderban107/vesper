@@ -7,6 +7,7 @@ defmodule Vesper.Encryption.PendingWelcome do
 
   schema "mls_pending_welcomes" do
     field :welcome_data, :binary
+    field :group_id, :string
 
     belongs_to :recipient, Vesper.Accounts.User
     belongs_to :sender, Vesper.Accounts.User
@@ -18,7 +19,7 @@ defmodule Vesper.Encryption.PendingWelcome do
 
   def changeset(welcome, attrs) do
     welcome
-    |> cast(attrs, [:welcome_data, :recipient_id, :sender_id, :channel_id, :conversation_id])
-    |> validate_required([:welcome_data, :recipient_id, :sender_id])
+    |> cast(attrs, [:welcome_data, :group_id, :recipient_id, :sender_id, :channel_id, :conversation_id])
+    |> validate_required([:welcome_data, :group_id, :recipient_id, :sender_id])
   end
 end

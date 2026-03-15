@@ -1,23 +1,27 @@
-import { MoreHorizontal, Pencil, Reply, SmilePlus, Trash2 } from 'lucide-react'
+import { MessageSquare, MoreHorizontal, Pencil, Reply, SmilePlus, Trash2 } from 'lucide-react'
 
 interface Props {
   canEdit: boolean
   onReply: () => void
+  onThread?: () => void
   onReact: () => void
   onEdit: () => void
   onDelete: () => void
   onMore?: () => void
   expiryLabel?: string | null
+  threadLabel?: string
 }
 
 export default function MessageActions({
   canEdit,
   onReply,
+  onThread,
   onReact,
   onEdit,
   onDelete,
   onMore,
-  expiryLabel
+  expiryLabel,
+  threadLabel
 }: Props): React.JSX.Element {
   return (
     <div className="vesper-message-actions">
@@ -46,6 +50,18 @@ export default function MessageActions({
       >
         <Reply className="w-4 h-4" />
       </button>
+
+      {onThread && (
+        <button
+          type="button"
+          onClick={onThread}
+          className="vesper-message-action-button"
+          title={threadLabel ?? 'Open thread'}
+          aria-label={threadLabel ?? 'Open thread'}
+        >
+          <MessageSquare className="w-4 h-4" />
+        </button>
+      )}
 
       {canEdit && (
         <>

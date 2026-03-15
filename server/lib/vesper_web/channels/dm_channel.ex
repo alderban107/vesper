@@ -318,20 +318,25 @@ defmodule VesperWeb.DmChannel do
         conversation_id = socket.assigns.conversation_id
         sender_id = socket.assigns.user_id
 
-        broadcast!(socket, "mls_welcome", %{
-          recipient_id: recipient_id,
-          welcome_data: welcome_data,
-          sender_id: sender_id
-        })
+        case Encryption.store_pending_welcome(%{
+               recipient_id: recipient_id,
+               conversation_id: conversation_id,
+               group_id: conversation_id,
+               welcome_data: decoded,
+               sender_id: sender_id
+             }) do
+          {:ok, _welcome} ->
+            broadcast!(socket, "mls_welcome", %{
+              recipient_id: recipient_id,
+              welcome_data: welcome_data,
+              sender_id: sender_id
+            })
 
-        Encryption.store_pending_welcome(%{
-          recipient_id: recipient_id,
-          conversation_id: conversation_id,
-          welcome_data: decoded,
-          sender_id: sender_id
-        })
+            {:noreply, socket}
 
-        {:noreply, socket}
+          {:error, _changeset} ->
+            {:reply, {:error, %{reason: "could not store welcome"}}, socket}
+        end
 
       {:error, _} ->
         {:reply, {:error, %{reason: "invalid encoding"}}, socket}

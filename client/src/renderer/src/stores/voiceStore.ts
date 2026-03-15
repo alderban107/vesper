@@ -229,6 +229,7 @@ function cleanup(get: () => VoiceState): void {
   if (roomId) {
     const topic = roomType === 'dm' ? `voice:dm:${roomId}` : `voice:channel:${roomId}`
     leaveChannel(topic)
+    useCryptoStore.getState().resetGroup(topic).catch(() => {})
   }
 
   webrtcManager?.destroy()
@@ -1179,7 +1180,12 @@ async function initVoice(
           if (changed) set({ participants: updated })
         })
 
-        setupVoiceE2EE(topic)
+        void setupVoiceE2EE(topic).catch(() => {
+          set({
+            errorMessage: 'Voice encryption setup failed. Rejoin the call to try again.'
+          })
+          get().disconnect()
+        })
       } catch {
         set({
           errorMessage: 'Voice setup failed. Check your permissions and selected devices.'
@@ -1256,6 +1262,10 @@ async function initVoice(
           }
         })
       }
+    } else if (event === 'mls_request_join_all') {
+      if (!useCryptoStore.getState().hasGroup(topic)) {
+        pushToChannel(topic, 'mls_request_join', {})
+      }
     } else if (event === 'mls_request_join') {
       handleVoiceMlsJoinRequest(roomId, data, topic)
     } else if (event === 'mls_commit') {
@@ -1273,9 +1283,11 @@ async function initVoice(
       const userId = useAuthStore.getState().user?.id
       if (recipientId === userId) {
         const crypto = useCryptoStore.getState()
-        await crypto.handleWelcome(topic, data.welcome_data as string)
-        const voiceKey = await crypto.getVoiceKey(topic)
-        if (voiceKey) voiceEncryption?.setKey(voiceKey)
+        const processed = await crypto.handleWelcome(topic, data.welcome_data as string)
+        if (processed) {
+          const voiceKey = await crypto.getVoiceKey(topic)
+          if (voiceKey) voiceEncryption?.setKey(voiceKey)
+        }
       }
     } else if (event === 'join_error') {
       set({
@@ -1302,14 +1314,27 @@ async function initVoice(
 
 async function setupVoiceE2EE(topic: string): Promise<void> {
   const crypto = useCryptoStore.getState()
+  const userId = useAuthStore.getState().user?.id
+  if (!userId) {
+    return
+  }
 
   // Try to join existing MLS group or create one
   await crypto.ensureGroupMembership(topic)
 
   if (!crypto.hasGroup(topic)) {
-    // No group exists — create one and request others to join
-    await crypto.createGroup(topic)
-    pushToChannel(topic, 'mls_request_join', {})
+    await new Promise((resolve) => setTimeout(resolve, 150))
+
+    const participantIds = new Set(useVoiceStore.getState().participants.map((participant) => participant.user_id))
+    participantIds.add(userId)
+    const preferredCreatorId = [...participantIds].sort((left, right) => left.localeCompare(right))[0]
+
+    if (preferredCreatorId === userId) {
+      await crypto.createGroup(topic)
+      if (crypto.hasGroup(topic)) {
+        pushToChannel(topic, 'mls_request_join_all', {})
+      }
+    }
   }
 
   // Derive and set voice key
@@ -1329,10 +1354,7 @@ async function handleVoiceMlsJoinRequest(
 
   if (!crypto.hasGroup(topic)) return
 
-  const result = (await crypto.handleJoinRequest(topic, userId)) as unknown as {
-    commitBytes: string
-    welcomeBytes: string | null
-  } | void
+  const result = await crypto.handleJoinRequest(topic, userId)
 
   if (!result) return
 

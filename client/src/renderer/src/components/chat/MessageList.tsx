@@ -9,9 +9,10 @@ const EMPTY_TYPING: { user_id: string; username: string }[] = []
 
 export default function MessageList(): React.JSX.Element {
   const activeChannelId = useServerStore((s) => s.activeChannelId)
-  const messages = useMessageStore((s) =>
+  const allMessages = useMessageStore((s) =>
     activeChannelId ? (s.messagesByChannel[activeChannelId] ?? EMPTY_MESSAGES) : EMPTY_MESSAGES
   )
+  const messages = allMessages.filter((message) => !message.parent_message_id)
   const typingUsers = useMessageStore((s) =>
     activeChannelId ? (s.typingUsers[activeChannelId] ?? EMPTY_TYPING) : EMPTY_TYPING
   )
@@ -45,6 +46,7 @@ export default function MessageList(): React.JSX.Element {
   return (
     <MessageFeed
       messages={messages}
+      messageLookup={allMessages}
       typingUsers={typingUsers}
       hasMore={hasMore}
       emptyState="No messages yet. Say something!"

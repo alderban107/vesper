@@ -29,20 +29,27 @@ import { useAuthStore } from './authStore'
 import { withGroupLock } from '../crypto/groupLock'
 import { cacheSentMessage } from '../crypto/decryptionCache'
 
+export interface JoinRequestResult {
+  commitBytes: string
+  welcomeBytes: string | null
+}
+
 interface CryptoState {
   /** In-memory MLS group states keyed by channel ID */
   groupStates: Record<string, ClientState>
   /** Whether we're currently setting up a group */
   groupSetupInProgress: Record<string, boolean>
+  /** Commits received before local state is ready */
+  pendingCommits: Record<string, string[]>
 
   /** Ensure this user is a member of the MLS group for a channel */
   ensureGroupMembership: (channelId: string) => Promise<void>
   /** Create a new MLS group for a channel (first user) */
   createGroup: (channelId: string) => Promise<void>
   /** Handle a join request from another user */
-  handleJoinRequest: (channelId: string, userId: string) => Promise<void>
+  handleJoinRequest: (channelId: string, userId: string) => Promise<JoinRequestResult | null>
   /** Process a Welcome message to join an existing group */
-  handleWelcome: (channelId: string, welcomeData: string) => Promise<void>
+  handleWelcome: (channelId: string, welcomeData: string) => Promise<boolean>
   /** Process a Commit message to update group state */
   handleCommit: (channelId: string, commitData: string) => Promise<void>
   /** Encrypt a plaintext message for a channel */
@@ -63,10 +70,25 @@ interface CryptoState {
 export const useCryptoStore = create<CryptoState>((set, get) => ({
   groupStates: {},
   groupSetupInProgress: {},
+  pendingCommits: {},
 
   ensureGroupMembership: async (channelId) => {
     // Already have state in memory
-    if (get().groupStates[channelId]) return
+    if (get().groupStates[channelId]) {
+      const pending = get().pendingCommits[channelId] ?? []
+      if (pending.length > 0) {
+        set((s) => ({
+          pendingCommits: {
+            ...s.pendingCommits,
+            [channelId]: []
+          }
+        }))
+        for (const commitData of pending) {
+          await get().handleCommit(channelId, commitData)
+        }
+      }
+      return
+    }
 
     // Check local DB for persisted state
     const persisted = await loadGroupState(channelId)
@@ -76,6 +98,18 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
         set((s) => ({
           groupStates: { ...s.groupStates, [channelId]: state }
         }))
+        const pending = get().pendingCommits[channelId] ?? []
+        if (pending.length > 0) {
+          set((s) => ({
+            pendingCommits: {
+              ...s.pendingCommits,
+              [channelId]: []
+            }
+          }))
+          for (const commitData of pending) {
+            await get().handleCommit(channelId, commitData)
+          }
+        }
         return
       } catch {
         // Corrupted state — delete and re-request join
@@ -86,12 +120,10 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
     // Check for pending welcomes (offline delivery)
     const welcomes = await fetchPendingWelcomes(channelId)
     for (const welcome of welcomes) {
-      try {
-        await get().handleWelcome(channelId, uint8ToBase64(welcome.welcome_data))
+      const processed = await get().handleWelcome(channelId, uint8ToBase64(welcome.welcome_data))
+      if (processed) {
         await ackPendingWelcome(welcome.id)
         return
-      } catch {
-        // Try next welcome
       }
     }
 
@@ -186,56 +218,86 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
         return {
           commitBytes: uint8ToBase64(result.commitBytes),
           welcomeBytes: result.welcomeBytes ? uint8ToBase64(result.welcomeBytes) : null
-        } as unknown as void
+        }
       } catch (e) {
         console.error('Failed to handle join request:', e)
+        return null
       }
     })
   },
 
   handleWelcome: async (channelId, welcomeData) => {
-    await withGroupLock(channelId, async () => {
+    return withGroupLock(channelId, async () => {
       try {
         await initCipherSuite()
-        const user = useAuthStore.getState().user
-        if (!user) return
-
         const welcomeBytes = base64ToUint8(welcomeData)
 
         // Get a local key package
         const localPackages = await loadKeyPackages()
-        let publicPackage, privatePackage
 
-        if (localPackages.length > 0) {
-          const pkg = localPackages[0]
-          await consumeKeyPackage(pkg.id)
-          publicPackage = decodeKeyPackageBytes(new Uint8Array(pkg.publicData))
-          privatePackage = deserializePrivatePackage(new Uint8Array(pkg.privateData))
-        } else {
-          const pairs = await createKeyPackageBatch(user.username, 1)
-          publicPackage = pairs[0].publicPackage
-          privatePackage = pairs[0].privatePackage
+        if (localPackages.length === 0) {
+          console.warn(`No local key packages available to process Welcome for ${channelId}`)
+          return false
         }
 
-        const state = await processWelcome(welcomeBytes, publicPackage, privatePackage)
-        const serialized = serializeGroupState(state)
-        await saveGroupState(channelId, serialized, Number(state.groupContext.epoch))
+        for (const pkg of localPackages) {
+          try {
+            const publicPackageBytes = new Uint8Array(pkg.publicData)
+            const publicPackage = decodeKeyPackageBytes(publicPackageBytes)
+            const privatePackage = deserializePrivatePackage(new Uint8Array(pkg.privateData))
+            const state = await processWelcome(welcomeBytes, publicPackage, privatePackage)
+            const serialized = serializeGroupState(state)
+            await saveGroupState(channelId, serialized, Number(state.groupContext.epoch))
+            await consumeKeyPackage(pkg.id)
 
-        // Replace any stale group state with the fresh one from this Welcome
-        set((s) => ({
-          groupStates: { ...s.groupStates, [channelId]: state }
-        }))
+            set((s) => ({
+              groupStates: { ...s.groupStates, [channelId]: state }
+            }))
 
-        // Replenish key packages after consuming one for welcome processing
-        useAuthStore.getState().replenishKeyPackages().catch(() => {})
+            const pending = get().pendingCommits[channelId] ?? []
+            if (pending.length > 0) {
+              set((s) => ({
+                pendingCommits: {
+                  ...s.pendingCommits,
+                  [channelId]: []
+                }
+              }))
+              for (const commitData of pending) {
+                await get().handleCommit(channelId, commitData)
+              }
+            }
+
+            // Replenish key packages after consuming the matched local package.
+            useAuthStore.getState().replenishKeyPackages().catch(() => {})
+            return true
+          } catch {
+            continue
+          }
+        }
+
+        console.warn(`Failed to match Welcome to any local key package for ${channelId}`)
+        return false
       } catch (e) {
         console.error('Failed to process Welcome:', e)
+        return false
       }
     })
   },
 
   handleCommit: async (channelId, commitData) => {
-    if (!get().groupStates[channelId]) return
+    if (!get().groupStates[channelId]) {
+      const existing = get().pendingCommits[channelId] ?? []
+      if (!existing.includes(commitData)) {
+        set((s) => ({
+          pendingCommits: {
+            ...s.pendingCommits,
+            [channelId]: [...existing, commitData]
+          }
+        }))
+      }
+      await get().ensureGroupMembership(channelId)
+      return
+    }
 
     await withGroupLock(channelId, async () => {
       const RETRY_DELAYS = [100, 500, 2000]
@@ -275,8 +337,14 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
         lastError
       )
       set((s) => {
-        const { [channelId]: _, ...rest } = s.groupStates
-        return { groupStates: rest }
+        const { [channelId]: _groupState, ...remainingGroups } = s.groupStates
+        return {
+          groupStates: remainingGroups,
+          pendingCommits: {
+            ...s.pendingCommits,
+            [channelId]: []
+          }
+        }
       })
       deleteGroupState(channelId).catch(() => {})
     })
@@ -355,8 +423,14 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
   resetGroup: async (channelId) => {
     await withGroupLock(channelId, async () => {
       set((s) => {
-        const { [channelId]: _, ...rest } = s.groupStates
-        return { groupStates: rest }
+        const { [channelId]: _groupState, ...remainingGroups } = s.groupStates
+        return {
+          groupStates: remainingGroups,
+          pendingCommits: {
+            ...s.pendingCommits,
+            [channelId]: []
+          }
+        }
       })
       await deleteGroupState(channelId).catch(() => {})
     })
