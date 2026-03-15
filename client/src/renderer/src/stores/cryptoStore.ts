@@ -14,7 +14,8 @@ import {
   encodeKeyPackageBytes,
   decodeKeyPackageBytes,
   deriveVoiceKey,
-  groupHasMember
+  groupHasMember,
+  getGroupMemberIdentities
 } from '../crypto/mls'
 import {
   saveGroupState,
@@ -197,9 +198,10 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
 
       try {
         await initCipherSuite()
+        const localIdentity = useAuthStore.getState().user?.username
+        const memberIdentities = getGroupMemberIdentities(state)
 
-        if (groupHasMember(state, userId)) {
-          console.warn(`Skipping MLS join request for existing member ${userId} in ${channelId}`)
+        if (!localIdentity || memberIdentities[0] !== localIdentity) {
           return null
         }
 
@@ -211,6 +213,19 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
         }
 
         const memberKeyPackage = decodeKeyPackageBytes(keyPackageBytes)
+        const requestedCredential = memberKeyPackage.leafNode.credential
+        const requestedIdentity =
+          requestedCredential.credentialType === 'basic'
+            ? new TextDecoder().decode(requestedCredential.identity)
+            : null
+
+        if (requestedIdentity && memberIdentities.includes(requestedIdentity)) {
+          console.warn(
+            `Skipping MLS join request for existing member ${requestedIdentity} in ${channelId}`
+          )
+          return null
+        }
+
         const result = await addMemberToGroup(state, memberKeyPackage)
 
         // Update local state
