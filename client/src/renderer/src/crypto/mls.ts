@@ -93,12 +93,12 @@ function getCs(): CiphersuiteImpl {
 }
 
 /**
- * Create a basic MLS credential from a user ID.
+ * Create a basic MLS credential from a stable identity string.
  */
-function makeCredential(userId: string) {
+function makeCredential(identity: string) {
   return {
     credentialType: 'basic' as const,
-    identity: new TextEncoder().encode(userId)
+    identity: new TextEncoder().encode(identity)
   }
 }
 
@@ -107,12 +107,12 @@ function makeCredential(userId: string) {
  * Returns public packages (for server) and private packages (for local storage).
  */
 export async function createKeyPackageBatch(
-  userId: string,
+  identity: string,
   count: number,
   signatureKeyPair?: { signKey: Uint8Array; publicKey: Uint8Array }
 ): Promise<KeyPackagePair[]> {
   const cs = getCs()
-  const credential = makeCredential(userId)
+  const credential = makeCredential(identity)
   const capabilities = defaultCapabilities()
   const lifetime = defaultLifetime
 
@@ -156,15 +156,22 @@ export async function createMLSGroup(
  */
 export function groupHasMember(
   state: ClientState,
-  userId: string
+  ...identities: Array<string | undefined | null>
 ): boolean {
+  const candidates = new Set(
+    identities.filter((identity): identity is string => typeof identity === 'string' && identity.length > 0)
+  )
+  if (candidates.size === 0) {
+    return false
+  }
+
   return state.ratchetTree.some((node) => {
     if (!node || node.nodeType !== 'leaf') return false
 
     const credential = node.leaf.credential
     if (credential.credentialType !== 'basic') return false
 
-    return new TextDecoder().decode(credential.identity) === userId
+    return candidates.has(new TextDecoder().decode(credential.identity))
   })
 }
 

@@ -124,7 +124,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       )
 
       // Generate and upload key packages (use the same signature key pair)
-      const batchPairs = await createKeyPackageBatch(username, KEY_PACKAGE_TARGET, {
+      const batchPairs = await createKeyPackageBatch(data.user.id, KEY_PACKAGE_TARGET, {
         signKey: signaturePrivateKey,
         publicKey: signaturePublicKey
       })
@@ -213,7 +213,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             // We need the signature key pair to generate new key packages
             // The private key is the decrypted bundle
             const signaturePrivateKey = privateKeys
-            const pairs = await createKeyPackageBatch(username, toGenerate, {
+            const pairs = await createKeyPackageBatch(data.user.id, toGenerate, {
               signKey: signaturePrivateKey,
               publicKey: publicIdentityKey
             })
@@ -361,7 +361,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
 
       const toGenerate = KEY_PACKAGE_TARGET - count
-      const pairs = await createKeyPackageBatch(user.username, toGenerate, {
+      const pairs = await createKeyPackageBatch(user.id, toGenerate, {
         signKey: identity.signaturePrivateKey,
         publicKey: identity.publicIdentityKey
       })

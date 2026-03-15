@@ -1368,11 +1368,12 @@ async function handleVoiceMlsJoinRequest(
   topic: string
 ): Promise<void> {
   const userId = msg.user_id as string
+  const username = (msg.username as string | undefined) ?? undefined
   const crypto = useCryptoStore.getState()
 
   if (!crypto.hasGroup(topic)) return
 
-  const result = await crypto.handleJoinRequest(topic, userId)
+  const result = await crypto.handleJoinRequest(topic, userId, username)
 
   if (!result) return
 

@@ -741,7 +741,11 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       if (conversation && myId) {
         for (const participant of conversation.participants) {
           if (participant.user_id === myId) continue
-          const result = await crypto.handleJoinRequest(conversationId, participant.user_id)
+          const result = await crypto.handleJoinRequest(
+            conversationId,
+            participant.user_id,
+            participant.user.username
+          )
           if (result) {
             pushToChannel(topic, 'mls_commit', {
               commit_data: result.commitBytes
@@ -1606,11 +1610,12 @@ async function handleMlsJoinRequest(
   topic: string
 ): Promise<void> {
   const userId = msg.user_id as string
+  const username = (msg.username as string | undefined) ?? undefined
   const crypto = useCryptoStore.getState()
 
   if (!crypto.hasGroup(targetId)) return
 
-  const result = await crypto.handleJoinRequest(targetId, userId)
+  const result = await crypto.handleJoinRequest(targetId, userId, username)
 
   if (!result) return
 

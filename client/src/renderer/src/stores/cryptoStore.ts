@@ -49,7 +49,11 @@ interface CryptoState {
   /** Create a new MLS group for a channel (first user) */
   createGroup: (channelId: string) => Promise<void>
   /** Handle a join request from another user */
-  handleJoinRequest: (channelId: string, userId: string) => Promise<JoinRequestResult | null>
+  handleJoinRequest: (
+    channelId: string,
+    userId: string,
+    username?: string
+  ) => Promise<JoinRequestResult | null>
   /** Process a Welcome message to join an existing group */
   handleWelcome: (channelId: string, welcomeData: string) => Promise<boolean>
   /** Process a Commit message to update group state */
@@ -157,7 +161,7 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
 
         if (localPackages.length === 0) {
           // Generate one on the fly
-          const pairs = await createKeyPackageBatch(user.username, 1)
+          const pairs = await createKeyPackageBatch(user.id, 1)
           publicPackage = pairs[0].publicPackage
           privatePackage = pairs[0].privatePackage
         } else {
@@ -189,7 +193,7 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
     })
   },
 
-  handleJoinRequest: async (channelId, userId) => {
+  handleJoinRequest: async (channelId, userId, username) => {
     if (!get().groupStates[channelId]) return // We're not the group owner / don't have state
 
     return withGroupLock(channelId, async () => {
@@ -198,10 +202,21 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
 
       try {
         await initCipherSuite()
-        const localIdentity = useAuthStore.getState().user?.username
+        const localUser = useAuthStore.getState().user
         const memberIdentities = getGroupMemberIdentities(state)
 
-        if (!localIdentity || memberIdentities[0] !== localIdentity) {
+        if (
+          !localUser ||
+          !memberIdentities.some(
+            (identity) => identity === localUser.id || identity === localUser.username
+          ) ||
+          (memberIdentities[0] !== localUser.id && memberIdentities[0] !== localUser.username)
+        ) {
+          return null
+        }
+
+        if (groupHasMember(state, userId, username)) {
+          console.warn(`Skipping MLS join request for existing member ${userId} in ${channelId}`)
           return null
         }
 

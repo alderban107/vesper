@@ -140,7 +140,11 @@ export default function DmMessageInput(): React.JSX.Element {
         if (conversation && myId) {
           for (const participant of conversation.participants) {
             if (participant.user_id === myId) continue
-            const result = await crypto.handleJoinRequest(conversationId, participant.user_id)
+            const result = await crypto.handleJoinRequest(
+              conversationId,
+              participant.user_id,
+              participant.user.username
+            )
             if (!result) continue
 
             pushToChannel(topic, 'mls_commit', {

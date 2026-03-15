@@ -112,7 +112,8 @@ defmodule VesperWeb.VoiceChannel do
   # MLS events for voice E2EE (same pattern as ChatChannel)
   def handle_in("mls_request_join", _payload, socket) do
     broadcast_from!(socket, "mls_request_join", %{
-      user_id: socket.assigns.user_id
+      user_id: socket.assigns.user_id,
+      username: socket.assigns.username
     })
 
     {:noreply, socket}

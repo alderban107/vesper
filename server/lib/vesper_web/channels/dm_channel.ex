@@ -278,7 +278,10 @@ defmodule VesperWeb.DmChannel do
   end
 
   def handle_in("mls_request_join", _payload, socket) do
-    broadcast_from!(socket, "mls_request_join", %{user_id: socket.assigns.user_id})
+    broadcast_from!(socket, "mls_request_join", %{
+      user_id: socket.assigns.user_id,
+      username: socket.assigns.username
+    })
     {:noreply, socket}
   end
 
