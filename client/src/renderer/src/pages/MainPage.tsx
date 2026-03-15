@@ -93,6 +93,9 @@ export default function MainPage(): React.JSX.Element {
   const setMemberListVisible = useUIStore((s) => s.setMemberListVisible)
   const closePins = useUIStore((s) => s.closePins)
   const incomingCall = useVoiceStore((s) => s.incomingCall)
+  const voiceState = useVoiceStore((s) => s.state)
+  const voiceRoomId = useVoiceStore((s) => s.roomId)
+  const voiceRoomType = useVoiceStore((s) => s.roomType)
   const servers = useServerStore((s) => s.servers)
   const currentUser = useAuthStore((s) => s.user)
   const joinPresence = usePresenceStore((s) => s.joinPresence)
@@ -140,6 +143,11 @@ export default function MainPage(): React.JSX.Element {
   const isDmView = !!selectedConversationId
   const isChannelView = !!activeChannelId && !isDmView
   const isVoiceChannelView = activeChannel?.type === 'voice'
+  const isCurrentVoiceRoomView =
+    isVoiceChannelView &&
+    voiceRoomType === 'channel' &&
+    voiceRoomId === activeChannelId
+  const shouldShowCallOverlay = isMobile && voiceState !== 'idle' && !isCurrentVoiceRoomView
   const showThreadPanel = Boolean(activeThreadParentId && (isChannelView || isDmView))
   const inlineThreadReplies = activeThreadParentId
     ? activeTargetMessages.filter((message) => message.parent_message_id === activeThreadParentId)
@@ -314,7 +322,7 @@ export default function MainPage(): React.JSX.Element {
               )}
             </div>
 
-            {isChannelView && showMemberList && <MemberListPanel />}
+            {isChannelView && showMemberList && !showThreadPanel && <MemberListPanel />}
             {renderThreadPanel(true)}
           </div>
         )}
@@ -328,7 +336,7 @@ export default function MainPage(): React.JSX.Element {
         {showServerSettingsModal && <ServerSettingsModal />}
         {showChannelSettingsModal && <ChannelSettingsModal />}
         {incomingCall && <IncomingCallModal />}
-        <CallOverlay />
+        {shouldShowCallOverlay && <CallOverlay />}
       </div>
     )
   }
@@ -386,7 +394,7 @@ export default function MainPage(): React.JSX.Element {
       {showServerSettingsModal && <ServerSettingsModal />}
       {showChannelSettingsModal && <ChannelSettingsModal />}
       {incomingCall && <IncomingCallModal />}
-      <CallOverlay />
+      {shouldShowCallOverlay && <CallOverlay />}
     </div>
   )
 }

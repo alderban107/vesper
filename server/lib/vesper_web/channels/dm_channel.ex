@@ -38,54 +38,94 @@ defmodule VesperWeb.DmChannel do
         %{"ciphertext" => ciphertext, "mls_epoch" => epoch} = params,
         socket
       ) do
-    case safe_decode64(ciphertext) do
-      {:ok, decoded} ->
-        attrs =
-          %{
-            ciphertext: decoded,
-            mls_epoch: epoch,
-            conversation_id: socket.assigns.conversation_id,
-            sender_id: socket.assigns.user_id
-          }
-          |> maybe_add_parent(params)
+    with {:ok, decoded} <- safe_decode64(ciphertext),
+         {:ok, parent_message_id} <-
+           resolve_parent_message_id(params, :conversation_id, socket.assigns.conversation_id) do
+      attrs =
+        %{
+          ciphertext: decoded,
+          mls_epoch: epoch,
+          conversation_id: socket.assigns.conversation_id,
+          sender_id: socket.assigns.user_id
+        }
+        |> maybe_add_parent_id(parent_message_id)
 
-        case Chat.create_message(attrs) do
-          {:ok, message} ->
-            message = maybe_link_attachments(message, params)
+      case Chat.create_message(attrs) do
+        {:ok, message} ->
+          message = maybe_link_attachments(message, params)
 
-            broadcast!(
-              socket,
-              "new_message",
-              encrypted_message_payload(message, :conversation_id)
+          broadcast!(
+            socket,
+            "new_message",
+            encrypted_message_payload(message, :conversation_id)
+          )
+
+          # Run notifications async to avoid blocking the channel process
+          conversation_id = socket.assigns.conversation_id
+          sender_id = socket.assigns.user_id
+          participant_ids = socket.assigns.participant_ids
+          sender_info = socket.assigns.sender_info
+
+          Task.Supervisor.start_child(Vesper.NotificationSupervisor, fn ->
+            notify_participants(
+              conversation_id,
+              sender_id,
+              participant_ids,
+              sender_info,
+              message
             )
+          end)
 
-            # Run notifications async to avoid blocking the channel process
-            conversation_id = socket.assigns.conversation_id
-            sender_id = socket.assigns.user_id
-            participant_ids = socket.assigns.participant_ids
-            sender_info = socket.assigns.sender_info
+          {:reply, :ok, socket}
 
-            Task.Supervisor.start_child(Vesper.NotificationSupervisor, fn ->
-              notify_participants(
-                conversation_id,
-                sender_id,
-                participant_ids,
-                sender_info,
-                message
-              )
-            end)
-
-            {:reply, :ok, socket}
-
-          {:error, _changeset} ->
-            {:reply, {:error, %{reason: "could not send message"}}, socket}
-        end
-
-      {:error, _} ->
+        {:error, _changeset} ->
+          {:reply, {:error, %{reason: "could not send message"}}, socket}
+      end
+    else
+      {:error, :missing} ->
         {:reply, {:error, %{reason: "invalid encoding"}}, socket}
+
+      {:error, :invalid_base64} ->
+        {:reply, {:error, %{reason: "invalid encoding"}}, socket}
+
+      {:error, :invalid_type} ->
+        {:reply, {:error, %{reason: "invalid encoding"}}, socket}
+
+      {:error, reason} when is_binary(reason) ->
+        {:reply, {:error, %{reason: reason}}, socket}
     end
   end
 
+  # Encrypted reactions
+  def handle_in("add_reaction", %{"message_id" => message_id, "ciphertext" => ciphertext} = payload, socket) do
+    mls_epoch = Map.get(payload, "mls_epoch")
+
+    case handle_reaction(
+           :add,
+           message_id,
+           "encrypted",
+           socket.assigns.user_id,
+           :conversation_id,
+           socket.assigns.conversation_id,
+           %{ciphertext: ciphertext, mls_epoch: mls_epoch}
+         ) do
+      :ok ->
+        broadcast!(socket, "reaction_update", %{
+          action: "add",
+          message_id: message_id,
+          ciphertext: ciphertext,
+          mls_epoch: mls_epoch,
+          sender_id: socket.assigns.user_id
+        })
+
+        {:reply, :ok, socket}
+
+      {:error, reason} ->
+        {:reply, {:error, %{reason: reason}}, socket}
+    end
+  end
+
+  # Plaintext fallback
   def handle_in("add_reaction", %{"message_id" => message_id, "emoji" => emoji}, socket) do
     case handle_reaction(
            :add,
@@ -110,6 +150,36 @@ defmodule VesperWeb.DmChannel do
     end
   end
 
+  # Encrypted remove
+  def handle_in("remove_reaction", %{"message_id" => message_id, "ciphertext" => ciphertext} = payload, socket) do
+    mls_epoch = Map.get(payload, "mls_epoch")
+
+    case handle_reaction(
+           :remove_encrypted,
+           message_id,
+           nil,
+           socket.assigns.user_id,
+           :conversation_id,
+           socket.assigns.conversation_id,
+           %{ciphertext: ciphertext, mls_epoch: mls_epoch}
+         ) do
+      :ok ->
+        broadcast!(socket, "reaction_update", %{
+          action: "remove",
+          message_id: message_id,
+          ciphertext: ciphertext,
+          mls_epoch: mls_epoch,
+          sender_id: socket.assigns.user_id
+        })
+
+        {:reply, :ok, socket}
+
+      {:error, reason} ->
+        {:reply, {:error, %{reason: reason}}, socket}
+    end
+  end
+
+  # Plaintext fallback
   def handle_in("remove_reaction", %{"message_id" => message_id, "emoji" => emoji}, socket) do
     case handle_reaction(
            :remove,
@@ -198,6 +268,7 @@ defmodule VesperWeb.DmChannel do
       conversation_id: conversation_id,
       user_id: user_id
     })
+
     VesperWeb.Endpoint.broadcast("voice:dm:#{conversation_id}", "call_rejected", %{
       conversation_id: conversation_id,
       user_id: user_id

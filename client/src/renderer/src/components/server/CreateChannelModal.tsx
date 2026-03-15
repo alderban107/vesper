@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Folder, Hash, Volume2, Loader2 } from 'lucide-react'
 import { useServerStore } from '../../stores/serverStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -34,7 +34,34 @@ export default function CreateChannelModal(): React.JSX.Element {
   const createChannel = useServerStore((s) => s.createChannel)
   const setActiveChannel = useServerStore((s) => s.setActiveChannel)
   const closeModal = useUIStore((s) => s.closeCreateChannelModal)
+  const draft = useUIStore((s) => s.createChannelDraft)
   const categories = (activeServer?.channels ?? []).filter((channel) => channel.type === 'category')
+
+  useEffect(() => {
+    setName('')
+    setType(draft?.type ?? 'text')
+    setCategoryId(draft?.categoryId ?? '')
+  }, [draft?.categoryId, draft?.type])
+
+  useEffect(() => {
+    if (type === 'category') {
+      setCategoryId('')
+    }
+  }, [type])
+
+  const contextualSubtitle = useMemo(() => {
+    if (type === 'category') {
+      return 'Add a clean grouping for channels in the sidebar.'
+    }
+
+    if (draft?.categoryId && draft.scopeLabel) {
+      return `This new ${type} channel will land in ${draft.scopeLabel}.`
+    }
+
+    return 'Choose how people will use this space.'
+  }, [draft?.categoryId, draft?.scopeLabel, type])
+
+  const submitLabel = type === 'category' ? 'Create Category' : 'Create Channel'
 
   const handleSubmit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault()
@@ -81,10 +108,21 @@ export default function CreateChannelModal(): React.JSX.Element {
             )}
           </div>
           <div>
-            <h2 className="text-lg font-semibold text-text-primary">Create Channel</h2>
-            <p className="text-sm text-text-faint">Choose how people will use this space.</p>
+            <h2 className="text-lg font-semibold text-text-primary">
+              {type === 'category' ? 'Create Category' : 'Create Channel'}
+            </h2>
+            <p className="text-sm text-text-faint">
+              {contextualSubtitle}
+            </p>
           </div>
         </div>
+
+        {type !== 'category' && draft?.categoryId && draft.scopeLabel && (
+          <div className="vesper-channel-create-scope">
+            <span className="vesper-channel-create-scope-label">Location</span>
+            <span className="vesper-channel-create-scope-value">{draft.scopeLabel}</span>
+          </div>
+        )}
 
         <div className="mb-5">
           <span className="text-text-muted text-sm font-medium block mb-2">Channel Type</span>
@@ -123,7 +161,7 @@ export default function CreateChannelModal(): React.JSX.Element {
               type === 'voice'
                 ? 'general voice'
                 : type === 'category'
-                  ? 'Text Channels'
+                  ? 'Project Space'
                   : 'general'
             }
             className="mt-1 block w-full rounded-lg bg-bg-base/50 border border-border text-text-primary px-3 py-2.5 input-focus"
@@ -175,7 +213,7 @@ export default function CreateChannelModal(): React.JSX.Element {
                 Creating...
               </>
             ) : (
-              'Create'
+              submitLabel
             )}
           </button>
         </div>

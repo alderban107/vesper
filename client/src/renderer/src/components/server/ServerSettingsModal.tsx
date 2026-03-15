@@ -83,6 +83,14 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
   ]
 
   useEffect(() => {
+    setServerName(server?.name || '')
+  }, [server?.id, server?.name])
+
+  useEffect(() => {
+    void fetchMembers(activeServerId)
+  }, [activeServerId, fetchMembers])
+
+  useEffect(() => {
     if (activeSection === 'emojis') {
       void fetchServerEmojis(activeServerId)
     }

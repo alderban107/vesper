@@ -11,7 +11,8 @@ const cryptoDbApi = {
     publicKeyExchange: Uint8Array,
     encryptedPrivateKeys: Uint8Array,
     nonce: Uint8Array,
-    salt: Uint8Array
+    salt: Uint8Array,
+    signaturePrivateKey?: Uint8Array | null
   ) =>
     ipcRenderer.invoke(
       'cryptoDb:setIdentityKeys',
@@ -20,7 +21,8 @@ const cryptoDbApi = {
       publicKeyExchange,
       encryptedPrivateKeys,
       nonce,
-      salt
+      salt,
+      signaturePrivateKey ?? null
     ),
   deleteIdentityKeys: (userId: string) =>
     ipcRenderer.invoke('cryptoDb:deleteIdentityKeys', userId),
@@ -44,28 +46,28 @@ const cryptoDbApi = {
   countLocalKeyPackages: () =>
     ipcRenderer.invoke('cryptoDb:countLocalKeyPackages'),
 
-  // Message cache
+  // Message cache (stores ciphertext, not plaintext)
   cacheMessage: (msg: {
     id: string
-    channel_id: string | null
-    conversation_id: string | null
-    server_id: string | null
+    channel_id: string
     sender_id: string | null
     sender_username: string | null
-    content: string | null
-    attachment_filenames: string[]
+    ciphertext: Uint8Array | null
+    mls_epoch: number | null
     inserted_at: string
   }) => ipcRenderer.invoke('cryptoDb:cacheMessage', msg),
   getCachedMessages: (channelId: string) =>
     ipcRenderer.invoke('cryptoDb:getCachedMessages', channelId),
-  getAllCachedMessages: () =>
-    ipcRenderer.invoke('cryptoDb:getAllCachedMessages'),
   clearMessageCache: (channelId: string) =>
     ipcRenderer.invoke('cryptoDb:clearMessageCache', channelId),
-  deleteCachedMessage: (messageId: string) =>
-    ipcRenderer.invoke('cryptoDb:deleteCachedMessage', messageId),
-  pruneMessageCache: (maxRows: number) =>
-    ipcRenderer.invoke('cryptoDb:pruneMessageCache', maxRows)
+
+  // FTS5 full-text search
+  searchMessages: (query: string, channelId?: string) =>
+    ipcRenderer.invoke('cryptoDb:searchMessages', query, channelId),
+  indexDecryptedMessage: (messageId: string, channelId: string, content: string) =>
+    ipcRenderer.invoke('cryptoDb:indexDecryptedMessage', messageId, channelId, content),
+  removeFromFtsIndex: (messageId: string) =>
+    ipcRenderer.invoke('cryptoDb:removeFromFtsIndex', messageId)
 }
 
 const notificationApi = {

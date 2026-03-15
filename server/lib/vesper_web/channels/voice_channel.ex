@@ -137,6 +137,7 @@ defmodule VesperWeb.VoiceChannel do
     case safe_decode64(welcome_data) do
       {:ok, decoded} ->
         room_id = socket.assigns.room_id
+        room_type = socket.assigns.room_type
         sender_id = socket.assigns.user_id
 
         broadcast!(socket, "mls_welcome", %{
@@ -147,7 +148,7 @@ defmodule VesperWeb.VoiceChannel do
 
         Encryption.store_pending_welcome(%{
           recipient_id: recipient_id,
-          channel_id: room_id,
+          channel_id: voice_group_id(room_id, room_type),
           welcome_data: decoded,
           sender_id: sender_id
         })
@@ -174,8 +175,8 @@ defmodule VesperWeb.VoiceChannel do
     case Semaphore.call({:voice_room, room_id}, @max_concurrent_voice_ops, fn ->
            Voice.join_room(room_id, user_id, self())
          end) do
-      {:ok, offer_sdp, track_map} ->
-        push(socket, "offer", %{sdp: offer_sdp, track_map: track_map})
+      {:ok, offer_sdp, track_map, publish_map} ->
+        push(socket, "offer", %{sdp: offer_sdp, track_map: track_map, publish_map: publish_map})
 
         broadcast!(socket, "voice_state_update", %{
           participants: Voice.get_participants(room_id)
@@ -194,8 +195,8 @@ defmodule VesperWeb.VoiceChannel do
     {:noreply, socket}
   end
 
-  def handle_info({:renegotiate, sdp, track_map}, socket) do
-    push(socket, "offer", %{sdp: sdp, track_map: track_map})
+  def handle_info({:renegotiate, sdp, track_map, publish_map}, socket) do
+    push(socket, "offer", %{sdp: sdp, track_map: track_map, publish_map: publish_map})
     {:noreply, socket}
   end
 
@@ -222,5 +223,9 @@ defmodule VesperWeb.VoiceChannel do
     end
 
     :ok
+  end
+
+  defp voice_group_id(room_id, room_type) do
+    "voice:#{room_type}:#{room_id}"
   end
 end

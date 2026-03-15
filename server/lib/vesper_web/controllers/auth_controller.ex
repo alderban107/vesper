@@ -59,13 +59,15 @@ defmodule VesperWeb.AuthController do
           expires_in: tokens.expires_in
         }
 
-        # Include encrypted key bundle if the user has one
+        # Include encrypted key bundle and public keys if the user has one
         response =
           if user.encrypted_key_bundle do
             Map.merge(response, %{
               encrypted_key_bundle: Base.encode64(user.encrypted_key_bundle),
               key_bundle_salt: Base.encode64(user.key_bundle_salt),
-              key_bundle_nonce: Base.encode64(user.key_bundle_nonce)
+              key_bundle_nonce: Base.encode64(user.key_bundle_nonce),
+              public_identity_key: Base.encode64(user.public_identity_key),
+              public_key_exchange: Base.encode64(user.public_key_exchange)
             })
           else
             response

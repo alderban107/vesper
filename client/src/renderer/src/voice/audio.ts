@@ -10,9 +10,10 @@ export class AudioManager {
   private deafened = false
   private outputVolume = 1
   private speakingThreshold = 0.018
-  private perStreamVolume: Map<string, number> = new Map()
+  private perSourceVolume: Map<string, number> = new Map()
+  private sourceKeyByTrackId: Map<string, string> = new Map()
 
-  addRemoteTrack(trackId: string, track: MediaStreamTrack): void {
+  addRemoteTrack(trackId: string, track: MediaStreamTrack, sourceKey: string): void {
     // Remove existing element for this track if any
     this.removeRemoteTrack(trackId)
 
@@ -28,7 +29,8 @@ export class AudioManager {
     })
 
     this.audioElements.set(trackId, audio)
-    audio.volume = this.outputVolume * (this.perStreamVolume.get(trackId) ?? 1)
+    this.sourceKeyByTrackId.set(trackId, sourceKey)
+    audio.volume = this.outputVolume * (this.perSourceVolume.get(sourceKey) ?? 1)
 
     // Set up analyser for speaking detection
     this.ensureAudioContext()
@@ -49,6 +51,8 @@ export class AudioManager {
       audio.srcObject = null
       this.audioElements.delete(trackId)
     }
+
+    this.sourceKeyByTrackId.delete(trackId)
 
     const entry = this.analysers.get(trackId)
     if (entry) {
@@ -92,16 +96,19 @@ export class AudioManager {
     this.outputVolume = Math.max(0, Math.min(2, volume / 100))
 
     for (const [trackId, audio] of this.audioElements.entries()) {
-      audio.volume = this.outputVolume * (this.perStreamVolume.get(trackId) ?? 1)
+      const sourceKey = this.sourceKeyByTrackId.get(trackId)
+      audio.volume = this.outputVolume * (sourceKey ? (this.perSourceVolume.get(sourceKey) ?? 1) : 1)
     }
   }
 
-  setStreamVolume(trackId: string, volume: number): void {
+  setSourceVolume(sourceKey: string, volume: number): void {
     const normalized = Math.max(0, Math.min(2, volume / 100))
-    this.perStreamVolume.set(trackId, normalized)
-    const audio = this.audioElements.get(trackId)
-    if (audio) {
-      audio.volume = this.outputVolume * normalized
+    this.perSourceVolume.set(sourceKey, normalized)
+
+    for (const [trackId, audio] of this.audioElements.entries()) {
+      if (this.sourceKeyByTrackId.get(trackId) === sourceKey) {
+        audio.volume = this.outputVolume * normalized
+      }
     }
   }
 
@@ -128,6 +135,7 @@ export class AudioManager {
       audio.srcObject = null
     }
     this.audioElements.clear()
+    this.sourceKeyByTrackId.clear()
 
     for (const { source } of this.analysers.values()) {
       source.disconnect()

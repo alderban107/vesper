@@ -1,20 +1,22 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   ArrowRightToLine,
+  Check,
   ChevronDown,
   Copy,
   Pencil,
   Folder,
   GripVertical,
   Hash,
+  Link,
   LogOut,
   MessageCircle,
   Plus,
   Settings,
   Trash2,
-  UserPlus,
   Volume2
 } from 'lucide-react'
+import { apiFetch } from '../../api/client'
 import { useAuthStore } from '../../stores/authStore'
 import { useDmStore } from '../../stores/dmStore'
 import { usePresenceStore } from '../../stores/presenceStore'
@@ -63,6 +65,11 @@ function sortChannels(channels: Channel[]): Channel[] {
   )
 }
 
+function isLegacyDefaultCategory(category: Channel, kind: 'text' | 'voice'): boolean {
+  const normalized = category.name.trim().toLowerCase()
+  return kind === 'text' ? normalized === 'text channels' : normalized === 'voice channels'
+}
+
 function buildSections(channels: Channel[]): ChannelSection[] {
   const categories = sortChannels(channels.filter((channel) => channel.type === 'category'))
   const regularChannels = sortChannels(channels.filter((channel) => channel.type !== 'category'))
@@ -92,25 +99,71 @@ function buildSections(channels: Channel[]): ChannelSection[] {
     (channel) => channel.type === 'voice' && !channel.category_id
   )
 
+  const filteredSections = sections.filter((section) => {
+    if (!section.category || section.channels.length > 0) {
+      return true
+    }
+
+    if (uncategorizedText.length > 0 && isLegacyDefaultCategory(section.category, 'text')) {
+      return false
+    }
+
+    if (uncategorizedVoice.length > 0 && isLegacyDefaultCategory(section.category, 'voice')) {
+      return false
+    }
+
+    return true
+  })
+  const hasVisibleCategories = filteredSections.some((section) => section.category !== null)
+
   if (uncategorizedText.length > 0) {
-    sections.push({
+    filteredSections.push({
       id: 'root-text',
-      label: 'Text Channels',
+      label: hasVisibleCategories ? 'Uncategorized Text' : 'Text Channels',
       category: null,
       channels: uncategorizedText
     })
   }
 
   if (uncategorizedVoice.length > 0) {
-    sections.push({
+    filteredSections.push({
       id: 'root-voice',
-      label: 'Voice Channels',
+      label: hasVisibleCategories ? 'Uncategorized Voice' : 'Voice Channels',
       category: null,
       channels: uncategorizedVoice
     })
   }
 
-  return sections
+  return filteredSections
+}
+
+function getScopedChannelDraft(section: ChannelSection): {
+  type: 'text' | 'voice' | 'category'
+  categoryId: string | null
+  scopeLabel: string | null
+} {
+  if (section.category) {
+    const firstChannel = section.channels[0]
+    return {
+      type: firstChannel?.type === 'voice' ? 'voice' : 'text',
+      categoryId: section.category.id,
+      scopeLabel: section.category.name
+    }
+  }
+
+  if (section.id === 'root-voice') {
+    return {
+      type: 'voice',
+      categoryId: null,
+      scopeLabel: 'Voice Channels'
+    }
+  }
+
+  return {
+    type: 'text',
+    categoryId: null,
+    scopeLabel: section.label
+  }
 }
 
 export default function Sidebar(): React.JSX.Element {
@@ -452,6 +505,7 @@ export default function Sidebar(): React.JSX.Element {
                     </div>
                     <ChevronDown className={`vesper-guild-header-chevron${serverHeaderOpen ? ' vesper-guild-header-chevron-open' : ''}`} />
                   </button>
+                  <InviteCodeButton serverId={activeServer.id} />
 
                   {serverHeaderOpen && (
                     <div className="vesper-guild-header-menu" role="menu" aria-label={`${activeServer.name} actions`}>
@@ -464,7 +518,7 @@ export default function Sidebar(): React.JSX.Element {
                         }}
                         role="menuitem"
                       >
-                        <UserPlus className="w-4 h-4" />
+                        <Copy className="w-4 h-4" />
                         <span>Copy Server ID</span>
                       </button>
                       {isServerOwner && (
@@ -544,14 +598,6 @@ export default function Sidebar(): React.JSX.Element {
                       >
                         <div
                           className="vesper-channel-group-header"
-                          draggable={isServerOwner && isRealCategory}
-                          onDragStart={() => {
-                            if (!isServerOwner || !section.category) {
-                              return
-                            }
-                            setDragState({ type: 'category', id: section.category.id })
-                          }}
-                          onDragEnd={clearDragState}
                           onContextMenu={(event) => {
                             if (section.category) {
                               channelMenu.onContextMenu(event, {
@@ -561,6 +607,20 @@ export default function Sidebar(): React.JSX.Element {
                             }
                           }}
                         >
+                          {isRealCategory && isServerOwner && section.category && (
+                            <span
+                              className="vesper-channel-category-grip"
+                              draggable
+                              onDragStart={() => {
+                                setDragState({ type: 'category', id: section.category!.id })
+                              }}
+                              onDragEnd={clearDragState}
+                              title="Drag category"
+                              aria-hidden="true"
+                            >
+                              <GripVertical className="w-3.5 h-3.5" />
+                            </span>
+                          )}
                           <button
                             type="button"
                             className="vesper-channel-category-toggle"
@@ -571,20 +631,9 @@ export default function Sidebar(): React.JSX.Element {
                               }))
                             }
                           >
-                            {isRealCategory && isServerOwner ? (
-                              <span className="vesper-channel-drag-handle" aria-hidden="true">
-                                <GripVertical className="w-3.5 h-3.5" />
-                              </span>
-                            ) : (
-                              <ChevronDown
-                                className={`vesper-channel-category-chevron${isCollapsed ? ' vesper-channel-category-chevron-collapsed' : ''}`}
-                              />
-                            )}
-                            {isRealCategory && isServerOwner && (
-                              <ChevronDown
-                                className={`vesper-channel-category-chevron${isCollapsed ? ' vesper-channel-category-chevron-collapsed' : ''}`}
-                              />
-                            )}
+                            <ChevronDown
+                              className={`vesper-channel-category-chevron${isCollapsed ? ' vesper-channel-category-chevron-collapsed' : ''}`}
+                            />
                             {isRealCategory && (
                               <span className="vesper-channel-category-icon" aria-hidden="true">
                                 <Folder className="w-3.5 h-3.5" />
@@ -605,9 +654,15 @@ export default function Sidebar(): React.JSX.Element {
                                 </button>
                               )}
                               <button
-                                onClick={openCreateChannelModal}
+                                onClick={() => openCreateChannelModal(getScopedChannelDraft(section))}
                                 className="vesper-channel-group-action"
-                                title="Create Channel"
+                                title={
+                                  section.category
+                                    ? `Create channel in ${section.category.name}`
+                                    : section.id === 'root-voice'
+                                      ? 'Create voice channel'
+                                      : 'Create text channel'
+                                }
                               >
                                 <Plus className="w-4 h-4" />
                               </button>
@@ -669,11 +724,12 @@ export default function Sidebar(): React.JSX.Element {
                                         serverId: activeServer.id
                                       })
                                     }
-                                    onClick={() =>
-                                      isVoice
-                                        ? useVoiceStore.getState().joinVoiceChannel(channel.id)
-                                        : handleChannelSelect(channel.id)
-                                    }
+                                    onClick={() => {
+                                      handleChannelSelect(channel.id)
+                                      if (isVoice) {
+                                        void useVoiceStore.getState().joinVoiceChannel(channel.id)
+                                      }
+                                    }}
                                     className={`vesper-channel-row${isActive ? ' vesper-channel-row-active' : ''}${unread > 0 && !isActive ? ' vesper-channel-row-unread' : ''}${isVoice ? ' vesper-channel-row-voice' : ''}`}
                                   >
                                     <span className="vesper-channel-row-icon">
@@ -710,7 +766,7 @@ export default function Sidebar(): React.JSX.Element {
                                       </span>
                                     )}
                                   </button>
-                                  {isVoice && <VoiceParticipants channelId={channel.id} />}
+                                  {isVoice && !isActive && <VoiceParticipants channelId={channel.id} />}
                                   {isServerOwner && (
                                     <ChannelDropZone
                                       active={dropTarget === `${section.id}-channel-zone-${channelIndex + 1}`}
@@ -793,6 +849,88 @@ export default function Sidebar(): React.JSX.Element {
           onClose={channelMenu.closeMenu}
         />
       )}
+    </div>
+  )
+}
+
+function InviteCodeButton({ serverId }: { serverId: string }): React.JSX.Element | null {
+  const [code, setCode] = useState<string | null>(null)
+  const [visible, setVisible] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [denied, setDenied] = useState(false)
+
+  const fetchAndShow = async (): Promise<void> => {
+    if (visible) {
+      setVisible(false)
+      setCode(null)
+      return
+    }
+
+    setLoading(true)
+    try {
+      const res = await apiFetch(`/api/v1/servers/${serverId}/invite-code`)
+      if (res.ok) {
+        const data = await res.json()
+        setCode(data.invite_code)
+        setVisible(true)
+      } else if (res.status === 403) {
+        setDenied(true)
+      }
+    } catch {
+      // ignore
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const copyCode = (): void => {
+    if (!code) {
+      return
+    }
+
+    navigator.clipboard.writeText(code)
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 2000)
+  }
+
+  useEffect(() => {
+    setCode(null)
+    setVisible(false)
+    setCopied(false)
+    setDenied(false)
+  }, [serverId])
+
+  if (denied) {
+    return null
+  }
+
+  return (
+    <div className="flex items-center gap-1 shrink-0">
+      {visible && code ? (
+        <button
+          type="button"
+          onClick={copyCode}
+          title={copied ? 'Copied!' : 'Copy invite code'}
+          className="flex items-center gap-1 bg-bg-base/50 px-1.5 py-0.5 rounded border border-border hover:border-accent/50 transition-colors max-w-[100px]"
+        >
+          <code className="text-accent-text text-[10px] font-mono truncate">{code}</code>
+          {copied ? (
+            <Check className="w-3 h-3 text-emerald-400 shrink-0" />
+          ) : (
+            <Copy className="w-3 h-3 text-text-faint shrink-0" />
+          )}
+        </button>
+      ) : null}
+      <button
+        type="button"
+        onClick={fetchAndShow}
+        disabled={loading}
+        title={visible ? 'Hide invite code' : 'Show invite code'}
+        className="text-text-faint hover:text-text-primary transition-colors p-1 rounded hover:bg-bg-tertiary/50 disabled:opacity-40"
+      >
+        <Link className="w-3.5 h-3.5" />
+      </button>
     </div>
   )
 }

@@ -1,9 +1,16 @@
 import { create } from 'zustand'
 
+export interface CreateChannelDraft {
+  type?: 'text' | 'voice' | 'category'
+  categoryId?: string | null
+  scopeLabel?: string | null
+}
+
 interface UIState {
   showCreateServerModal: boolean
   showJoinServerModal: boolean
   showCreateChannelModal: boolean
+  createChannelDraft: CreateChannelDraft | null
   showNewDmModal: boolean
   showSettingsModal: boolean
   showRoleManager: boolean
@@ -20,7 +27,7 @@ interface UIState {
   closeCreateServerModal: () => void
   openJoinServerModal: () => void
   closeJoinServerModal: () => void
-  openCreateChannelModal: () => void
+  openCreateChannelModal: (draft?: CreateChannelDraft) => void
   closeCreateChannelModal: () => void
   openNewDmModal: () => void
   closeNewDmModal: () => void
@@ -47,6 +54,7 @@ export const useUIStore = create<UIState>((set) => ({
   showCreateServerModal: false,
   showJoinServerModal: false,
   showCreateChannelModal: false,
+  createChannelDraft: null,
   showNewDmModal: false,
   showSettingsModal: false,
   showRoleManager: false,
@@ -54,7 +62,7 @@ export const useUIStore = create<UIState>((set) => ({
   showChannelSettingsModal: false,
   channelSettingsChannelId: null,
   showPins: false,
-  showMemberList: true,
+  showMemberList: false,
   showMobileNav: false,
   channelSidebarWidth: 248,
   memberListWidth: 264,
@@ -63,8 +71,8 @@ export const useUIStore = create<UIState>((set) => ({
   closeCreateServerModal: () => set({ showCreateServerModal: false }),
   openJoinServerModal: () => set({ showJoinServerModal: true }),
   closeJoinServerModal: () => set({ showJoinServerModal: false }),
-  openCreateChannelModal: () => set({ showCreateChannelModal: true }),
-  closeCreateChannelModal: () => set({ showCreateChannelModal: false }),
+  openCreateChannelModal: (draft) => set({ showCreateChannelModal: true, createChannelDraft: draft ?? null }),
+  closeCreateChannelModal: () => set({ showCreateChannelModal: false, createChannelDraft: null }),
   openNewDmModal: () => set({ showNewDmModal: true }),
   closeNewDmModal: () => set({ showNewDmModal: false }),
   openSettingsModal: () => set({ showSettingsModal: true }),

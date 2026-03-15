@@ -29,21 +29,10 @@ defmodule Vesper.Servers do
         |> Server.changeset(attrs)
         |> Repo.insert!()
 
-      text_category =
-        %Channel{server_id: server.id}
-        |> Channel.changeset(%{name: "Text Channels", type: "category", position: 0})
-        |> Repo.insert!()
-
-      voice_category =
-        %Channel{server_id: server.id}
-        |> Channel.changeset(%{name: "Voice Channels", type: "category", position: 1})
-        |> Repo.insert!()
-
       %Channel{server_id: server.id}
       |> Channel.changeset(%{
         name: "general",
         type: "text",
-        category_id: text_category.id,
         position: 0
       })
       |> Repo.insert!()
@@ -52,8 +41,7 @@ defmodule Vesper.Servers do
       |> Channel.changeset(%{
         name: "General Voice",
         type: "voice",
-        category_id: voice_category.id,
-        position: 0
+        position: 1
       })
       |> Repo.insert!()
 

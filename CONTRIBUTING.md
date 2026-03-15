@@ -65,6 +65,69 @@ E2E tests use Playwright and require both the server and a test database to be r
 - UTC timestamps everywhere
 - Commit messages should explain the *why*, not just the *what*
 
+## Web Client Testing (Docker)
+
+The web client runs as a static build served by nginx inside Docker. Testing changes requires a rebuild cycle:
+
+```bash
+# Build and restart the web container
+sudo docker compose build web && sudo docker compose up -d web
+
+# Web client: http://localhost:8080
+# API server: http://localhost:4000
+```
+
+### Debugging in the browser
+
+The web build includes source maps (`vite.web.config.ts` → `sourcemap: true`), so browser devtools show original source locations instead of minified line numbers.
+
+When using automated browser tools that don't expose devtools (e.g., Playwright, agent-browser), inject a log interceptor to capture console output:
+
+```javascript
+// Paste into browser console or eval via automation
+window.__logs = [];
+const _log = console.log;
+console.log = (...args) => {
+  window.__logs.push(args.map(a =>
+    typeof a === 'object' ? JSON.stringify(a) : String(a)
+  ).join(' '));
+  _log.apply(console, args);
+};
+const _err = console.error;
+console.error = (...args) => {
+  window.__logs.push('ERROR: ' + args.map(a =>
+    typeof a === 'object' ? (a?.stack || JSON.stringify(a)) : String(a)
+  ).join(' '));
+  _err.apply(console, args);
+};
+
+// After triggering the action, read captured logs:
+JSON.stringify(window.__logs, null, 2)
+```
+
+### Database inspection
+
+Query the PostgreSQL database directly for debugging:
+
+```bash
+sudo docker compose exec db psql -U vesper -d vesper_prod -c "SELECT ..."
+```
+
+### IndexedDB isolation between users
+
+The web client's IndexedDB crypto storage is namespaced per user (`vesper-crypto-{userId}`). Each login creates or reopens the database for that specific user. On logout, all in-memory stores and caches are cleared via `resetAllStores()`, and the storage adapter is reset so the next login opens a fresh database for the new user.
+
+The legacy un-namespaced `vesper-crypto` database (from before this fix) is automatically deleted on the first login after the migration.
+
+### Two-user E2EE testing
+
+MLS group joining requires both users to be online simultaneously — one user sends `mls_request_join`, and an online group member handles it by sending a Commit + Welcome. This means single-browser automation cannot test the full two-user channel flow.
+
+**Workarounds:**
+- **DM conversations** don't have this limitation. The sender creates the group and adds the recipient in one operation (`sendDmMessage` → `createGroup` → `handleJoinRequest` for each participant). The welcome is stored server-side for offline delivery.
+- **Two browser windows** (manual testing) — the most reliable way to verify cross-user decryption in channels.
+- **Page reload after send** — verifies that group state persistence and `clientConfig` reattachment work correctly (exercises `deserializeGroupState`).
+
 ## Migration Safety
 
 Container images are published on every push to `main` and deployments can happen automatically. This means migrations must be backwards-compatible with the previous release — a bad migration can't be rolled back if it breaks the schema for the currently-running code.

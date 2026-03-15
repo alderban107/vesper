@@ -94,6 +94,20 @@ export default function SettingsShell({
       }}
     >
       <div className="vesper-settings-shell">
+        <div className="vesper-settings-close-cluster">
+          <button
+            type="button"
+            className="vesper-settings-close"
+            onClick={onClose}
+            aria-label="Close settings"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M18.4 4L12 10.4L5.6 4L4 5.6L10.4 12L4 18.4L5.6 20L12 13.6L18.4 20L20 18.4L13.6 12L20 5.6L18.4 4Z" />
+            </svg>
+          </button>
+          <span className="vesper-settings-close-hint">ESC</span>
+        </div>
+
         <aside className="vesper-settings-sidebar" aria-label={`${title} navigation`}>
           <div className="vesper-settings-sidebar-scroll">
             <div className="vesper-settings-nav">
@@ -138,20 +152,6 @@ export default function SettingsShell({
               {children}
             </div>
           </div>
-        </div>
-
-        <div className="vesper-settings-close-region">
-          <button
-            type="button"
-            className="vesper-settings-close"
-            onClick={onClose}
-            aria-label="Close settings"
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-              <path d="M18.4 4L12 10.4L5.6 4L4 5.6L10.4 12L4 18.4L5.6 20L12 13.6L18.4 20L20 18.4L13.6 12L20 5.6L18.4 4Z" />
-            </svg>
-          </button>
-          <span className="vesper-settings-close-hint">ESC</span>
         </div>
       </div>
     </div>

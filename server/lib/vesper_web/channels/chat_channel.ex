@@ -39,56 +39,100 @@ defmodule VesperWeb.ChatChannel do
       ) do
     start_time = System.monotonic_time()
 
-    if Servers.user_can_send_messages_in_channel?(socket.assigns.user_id, socket.assigns.channel_id) do
-      case safe_decode64(ciphertext) do
-        {:ok, decoded} ->
-          attrs =
-            %{
-              ciphertext: decoded,
-              mls_epoch: epoch,
-              channel_id: socket.assigns.channel_id,
-              sender_id: socket.assigns.user_id
-            }
-            |> maybe_add_parent(params)
-            |> maybe_add_expires_at(socket.assigns.disappearing_ttl)
+    if Servers.user_can_send_messages_in_channel?(
+         socket.assigns.user_id,
+         socket.assigns.channel_id
+       ) do
+      with {:ok, decoded} <- safe_decode64(ciphertext),
+           {:ok, parent_message_id} <-
+             resolve_parent_message_id(params, :channel_id, socket.assigns.channel_id) do
+        attrs =
+          %{
+            ciphertext: decoded,
+            mls_epoch: epoch,
+            channel_id: socket.assigns.channel_id,
+            sender_id: socket.assigns.user_id
+          }
+          |> maybe_add_parent_id(parent_message_id)
+          |> maybe_add_expires_at(socket.assigns.disappearing_ttl)
 
-          case Chat.create_message(attrs) do
-            {:ok, message} ->
-              message = maybe_link_attachments(message, params)
-              broadcast!(socket, "new_message", encrypted_message_payload(message, :channel_id))
+        case Chat.create_message(attrs) do
+          {:ok, message} ->
+            message = maybe_link_attachments(message, params)
+            broadcast!(socket, "new_message", encrypted_message_payload(message, :channel_id))
 
-              :telemetry.execute(
-                [:vesper, :chat, :message, :send],
-                %{duration: System.monotonic_time() - start_time},
-                %{channel_id: socket.assigns.channel_id}
-              )
+            :telemetry.execute(
+              [:vesper, :chat, :message, :send],
+              %{duration: System.monotonic_time() - start_time},
+              %{channel_id: socket.assigns.channel_id}
+            )
 
-              # Run notifications async under supervision
-              channel_id = socket.assigns.channel_id
-              sender_id = socket.assigns.user_id
-              server_id = socket.assigns.server_id
-              member_ids = MemberCache.get_member_ids(server_id)
-              mentioned = params["mentioned_user_ids"]
+            # Run notifications async under supervision
+            channel_id = socket.assigns.channel_id
+            sender_id = socket.assigns.user_id
+            server_id = socket.assigns.server_id
+            member_ids = MemberCache.get_member_ids(server_id)
+            mentioned = params["mentioned_user_ids"]
 
-              Task.Supervisor.start_child(Vesper.NotificationSupervisor, fn ->
-                notify_unread(channel_id, message.id, sender_id, member_ids)
-                notify_mentions(mentioned, channel_id, sender_id, server_id, member_ids)
-              end)
+            Task.Supervisor.start_child(Vesper.NotificationSupervisor, fn ->
+              notify_unread(channel_id, message.id, sender_id, member_ids)
+              notify_mentions(mentioned, channel_id, sender_id, server_id, member_ids)
+            end)
 
-              {:reply, :ok, socket}
+            {:reply, :ok, socket}
 
-            {:error, _changeset} ->
-              {:reply, {:error, %{reason: "could not send message"}}, socket}
-          end
-
-        {:error, _} ->
+          {:error, _changeset} ->
+            {:reply, {:error, %{reason: "could not send message"}}, socket}
+        end
+      else
+        {:error, :missing} ->
           {:reply, {:error, %{reason: "invalid encoding"}}, socket}
+
+        {:error, :invalid_base64} ->
+          {:reply, {:error, %{reason: "invalid encoding"}}, socket}
+
+        {:error, :invalid_type} ->
+          {:reply, {:error, %{reason: "invalid encoding"}}, socket}
+
+        {:error, reason} when is_binary(reason) ->
+          {:reply, {:error, %{reason: reason}}, socket}
       end
     else
       {:reply, {:error, %{reason: "insufficient permissions"}}, socket}
     end
   end
 
+  # Encrypted reactions: client sends {ciphertext, mls_epoch} instead of emoji.
+  # The server stores the ciphertext and broadcasts it; only group members can decrypt.
+  def handle_in("add_reaction", %{"message_id" => message_id, "ciphertext" => ciphertext} = payload, socket) do
+    mls_epoch = Map.get(payload, "mls_epoch")
+
+    case handle_reaction(
+           :add,
+           message_id,
+           "encrypted",
+           socket.assigns.user_id,
+           :channel_id,
+           socket.assigns.channel_id,
+           %{ciphertext: ciphertext, mls_epoch: mls_epoch}
+         ) do
+      :ok ->
+        broadcast!(socket, "reaction_update", %{
+          action: "add",
+          message_id: message_id,
+          ciphertext: ciphertext,
+          mls_epoch: mls_epoch,
+          sender_id: socket.assigns.user_id
+        })
+
+        {:reply, :ok, socket}
+
+      {:error, reason} ->
+        {:reply, {:error, %{reason: reason}}, socket}
+    end
+  end
+
+  # Plaintext fallback for non-E2EE reactions
   def handle_in("add_reaction", %{"message_id" => message_id, "emoji" => emoji}, socket) do
     case handle_reaction(
            :add,
@@ -113,6 +157,36 @@ defmodule VesperWeb.ChatChannel do
     end
   end
 
+  # Encrypted remove: client sends ciphertext of the emoji to remove
+  def handle_in("remove_reaction", %{"message_id" => message_id, "ciphertext" => ciphertext} = payload, socket) do
+    mls_epoch = Map.get(payload, "mls_epoch")
+
+    case handle_reaction(
+           :remove_encrypted,
+           message_id,
+           nil,
+           socket.assigns.user_id,
+           :channel_id,
+           socket.assigns.channel_id,
+           %{ciphertext: ciphertext, mls_epoch: mls_epoch}
+         ) do
+      :ok ->
+        broadcast!(socket, "reaction_update", %{
+          action: "remove",
+          message_id: message_id,
+          ciphertext: ciphertext,
+          mls_epoch: mls_epoch,
+          sender_id: socket.assigns.user_id
+        })
+
+        {:reply, :ok, socket}
+
+      {:error, reason} ->
+        {:reply, {:error, %{reason: reason}}, socket}
+    end
+  end
+
+  # Plaintext fallback
   def handle_in("remove_reaction", %{"message_id" => message_id, "emoji" => emoji}, socket) do
     case handle_reaction(
            :remove,

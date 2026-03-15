@@ -1,19 +1,49 @@
 import { useEffect, useRef, useState } from 'react'
 import { Mic, MicOff, Headphones, HeadphoneOff, PhoneOff, Video, VideoOff, ScreenShare, ScreenShareOff } from 'lucide-react'
+import { useAuthStore } from '../../stores/authStore'
 import { useVoiceStore } from '../../stores/voiceStore'
 import { useServerStore } from '../../stores/serverStore'
 import { useDmStore } from '../../stores/dmStore'
 
+interface OverlayEntry {
+  id: string
+  stream: MediaStream
+  label: string
+  kind: 'camera' | 'share'
+  avatarUrl: string | null
+  speaking: boolean
+  participantMuted: boolean
+  isLocal: boolean
+  hasShareAudio: boolean
+}
+
 function OverlayVideo({
   stream,
   muted = false,
-  className
+  className,
+  label,
+  kind,
+  avatarUrl,
+  mirror = false,
+  speaking = false,
+  participantMuted = false,
+  isLocal = false,
+  hasShareAudio = false
 }: {
   stream: MediaStream
   muted?: boolean
   className?: string
+  label: string
+  kind: 'camera' | 'share'
+  avatarUrl: string | null
+  mirror?: boolean
+  speaking?: boolean
+  participantMuted?: boolean
+  isLocal?: boolean
+  hasShareAudio?: boolean
 }): React.JSX.Element {
   const videoRef = useRef<HTMLVideoElement | null>(null)
+  const [ready, setReady] = useState(false)
 
   useEffect(() => {
     if (!videoRef.current) {
@@ -23,6 +53,7 @@ function OverlayVideo({
     if (videoRef.current.srcObject !== stream) {
       videoRef.current.srcObject = stream
     }
+    setReady(false)
 
     return () => {
       if (videoRef.current) {
@@ -31,14 +62,50 @@ function OverlayVideo({
     }
   }, [stream])
 
+  const initials = label
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? '')
+    .join('') || '?'
+
   return (
-    <video
-      ref={videoRef}
-      autoPlay
-      playsInline
-      muted={muted}
-      className={className ?? ''}
-    />
+    <div className={speaking ? 'vesper-call-overlay-video-shell vesper-call-overlay-video-shell-speaking' : 'vesper-call-overlay-video-shell'}>
+      {!ready && (
+        <div className="vesper-call-overlay-video-loading">
+          {avatarUrl ? <img src={avatarUrl} alt="" className="vesper-call-overlay-video-preview" /> : null}
+          <div className="vesper-call-overlay-video-fallback">{initials}</div>
+        </div>
+      )}
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted={muted}
+        onLoadedData={() => setReady(true)}
+        className={`${className ?? ''}${mirror ? ' vesper-call-overlay-video-mirror' : ''}`}
+      />
+      <div className="vesper-call-overlay-video-topline">
+        <div className="vesper-call-overlay-video-chips">
+          <span className="vesper-call-overlay-video-kind">{kind === 'share' ? 'Share' : 'Camera'}</span>
+          {isLocal && <span className="vesper-call-overlay-video-chip">You</span>}
+          {participantMuted && <span className="vesper-call-overlay-video-chip">Muted</span>}
+          {hasShareAudio && kind === 'share' && <span className="vesper-call-overlay-video-chip">Audio</span>}
+        </div>
+      </div>
+      <div className="vesper-call-overlay-video-meta">
+        <span className="vesper-call-overlay-video-label">{label}</span>
+        <span className="vesper-call-overlay-video-state">
+          {kind === 'share'
+            ? 'Presenting'
+            : speaking
+              ? 'Speaking'
+              : participantMuted
+                ? 'Muted'
+                : 'Live'}
+        </span>
+      </div>
+    </div>
   )
 }
 
@@ -60,12 +127,17 @@ export default function CallOverlay(): React.JSX.Element | null {
   const outboundBitrateKbps = useVoiceStore((s) => s.outboundBitrateKbps)
   const cameraEnabled = useVoiceStore((s) => s.cameraEnabled)
   const screenShareEnabled = useVoiceStore((s) => s.screenShareEnabled)
-  const localVideoStream = useVoiceStore((s) => s.localVideoStream)
-  const remoteVideoStreams = useVoiceStore((s) => s.remoteVideoStreams)
+  const localCameraStream = useVoiceStore((s) => s.localCameraStream)
+  const localShareStream = useVoiceStore((s) => s.localShareStream)
+  const remoteMediaStreams = useVoiceStore((s) => s.remoteMediaStreams)
+  const shareAudioPreferred = useVoiceStore((s) => s.shareAudioPreferred)
+  const setShareAudioPreferred = useVoiceStore((s) => s.setShareAudioPreferred)
   const toggleCamera = useVoiceStore((s) => s.toggleCamera)
   const toggleScreenShare = useVoiceStore((s) => s.toggleScreenShare)
   const activeServer = useServerStore((s) => s.servers.find((server) => server.id === s.activeServerId))
+  const members = useServerStore((s) => s.members)
   const conversations = useDmStore((s) => s.conversations)
+  const currentUserId = useAuthStore((s) => s.user?.id ?? null)
 
   const [duration, setDuration] = useState(0)
 
@@ -90,6 +162,9 @@ export default function CallOverlay(): React.JSX.Element | null {
     roomType === 'channel'
       ? activeServer?.channels.find((channel) => channel.id === roomId)?.name ?? 'Voice Channel'
       : conversations.find((conversation) => conversation.id === roomId)?.name ?? 'Direct Call'
+  const activeConversation = roomType === 'dm'
+    ? conversations.find((conversation) => conversation.id === roomId) ?? null
+    : null
 
   const formatDuration = (seconds: number): string => {
     const m = Math.floor(seconds / 60)
@@ -111,149 +186,325 @@ export default function CallOverlay(): React.JSX.Element | null {
   }
 
   const remoteVideoEntries = participants
-    .map((participant) => ({
-      id: participant.user_id,
-      stream: remoteVideoStreams[participant.user_id] ?? null
-    }))
-    .filter((entry) => entry.stream !== null)
-    .slice(0, 2) as Array<{ id: string, stream: MediaStream }>
+    .flatMap((participant) => {
+      const member = members.find((entry) => entry.user_id === participant.user_id)
+      const dmParticipant = activeConversation?.participants.find((entry) => entry.user_id === participant.user_id)
+      const displayName =
+        member?.user.display_name ||
+        member?.user.username ||
+        dmParticipant?.user.display_name ||
+        dmParticipant?.user.username ||
+        participant.user_id.slice(0, 8)
+      const avatarUrl = member?.user.avatar_url ?? dmParticipant?.user.avatar_url ?? null
+      const entries: OverlayEntry[] = []
+      const shareStream = remoteMediaStreams[`${participant.user_id}:share_video`]
+      const cameraStream = remoteMediaStreams[`${participant.user_id}:camera_video`]
+
+      if (shareStream) {
+        entries.push({
+          id: `${participant.user_id}:share_video`,
+          stream: shareStream,
+          label: displayName,
+          kind: 'share',
+          avatarUrl,
+          speaking: participant.speaking ?? false,
+          participantMuted: participant.muted,
+          isLocal: false,
+          hasShareAudio: Boolean(participant.share_audio_track_id)
+        })
+      }
+
+      if (cameraStream) {
+        entries.push({
+          id: `${participant.user_id}:camera_video`,
+          stream: cameraStream,
+          label: displayName,
+          kind: 'camera',
+          avatarUrl,
+          speaking: participant.speaking ?? false,
+          participantMuted: participant.muted,
+          isLocal: false,
+          hasShareAudio: false
+        })
+      }
+
+      return entries
+    })
+    .slice(0, 3)
+
+  const localVideoEntries = [
+    localShareStream ? {
+      id: 'local:share_video',
+      stream: localShareStream,
+      label: 'You',
+      kind: 'share' as const,
+      avatarUrl: null,
+      speaking: false,
+      participantMuted: muted,
+      isLocal: true,
+      hasShareAudio: shareAudioPreferred
+    } : null,
+    localCameraStream ? {
+      id: 'local:camera_video',
+      stream: localCameraStream,
+      label: 'You',
+      kind: 'camera' as const,
+      avatarUrl: null,
+      speaking: false,
+      participantMuted: muted,
+      isLocal: true,
+      hasShareAudio: false
+    } : null
+  ].filter((entry): entry is OverlayEntry => entry !== null)
+
+  const overlayMediaEntries = [...remoteVideoEntries, ...localVideoEntries]
+
+  const participantPills = participants
+    .slice(0, 6)
+    .map((participant) => {
+      const member = members.find((entry) => entry.user_id === participant.user_id)
+      const dmParticipant = activeConversation?.participants.find((entry) => entry.user_id === participant.user_id)
+      const label =
+        member?.user.display_name ||
+        member?.user.username ||
+        dmParticipant?.user.display_name ||
+        dmParticipant?.user.username ||
+        participant.user_id.slice(0, 8)
+      const avatarUrl = member?.user.avatar_url ?? dmParticipant?.user.avatar_url ?? null
+      const isLocal = participant.user_id === currentUserId
+      const hasShare = isLocal
+        ? Boolean(localShareStream || remoteMediaStreams[`${participant.user_id}:share_video`])
+        : Boolean(remoteMediaStreams[`${participant.user_id}:share_video`])
+      const hasCamera = isLocal
+        ? Boolean(localCameraStream || remoteMediaStreams[`${participant.user_id}:camera_video`])
+        : Boolean(remoteMediaStreams[`${participant.user_id}:camera_video`])
+
+      return {
+        id: participant.user_id,
+        label,
+        avatarUrl,
+        speaking: participant.speaking ?? false,
+        muted: participant.muted,
+        hasShare,
+        hasCamera
+      }
+    })
 
   const canShareVideo = voiceState === 'connected' || voiceState === 'in_call'
+  const statusLabel =
+    voiceState === 'ringing'
+      ? 'Calling...'
+      : voiceState === 'connecting'
+        ? 'Connecting...'
+        : 'Voice Active'
+  const qualityClass =
+    connectionQuality === 'good'
+      ? 'vesper-call-overlay-quality-good'
+      : connectionQuality === 'fair'
+        ? 'vesper-call-overlay-quality-fair'
+        : connectionQuality === 'poor'
+          ? 'vesper-call-overlay-quality-poor'
+          : 'vesper-call-overlay-quality-unknown'
 
   return (
-    <div className="vesper-call-overlay fixed bottom-4 right-4 glass-card rounded-2xl p-4 w-72 z-40 animate-slide-up">
-      <div className="flex items-center justify-between mb-3">
-        <div>
-          <p className="text-text-primary text-sm font-semibold">
-            {voiceState === 'ringing' ? 'Calling...' : voiceState === 'connecting' ? 'Connecting...' : 'Voice Active'}
-          </p>
-          {voiceError ? (
-            <p className="text-red-300 text-xs max-w-[12rem] leading-relaxed">{voiceError}</p>
-          ) : voiceState === 'in_call' || voiceState === 'connected' ? (
-            <p className="text-text-faint text-xs">{roomLabel} · {formatDuration(duration)}</p>
-          ) : (
-            <p className="text-text-faint text-xs">{roomLabel}</p>
-          )}
+    <div className="vesper-call-overlay">
+      <div className="vesper-call-overlay-shell glass-card">
+        <div className="vesper-call-overlay-status-row">
+          <div className="vesper-call-overlay-status-copy">
+            <span className={`vesper-call-overlay-status-dot ${qualityClass}`} aria-hidden="true" />
+            <div className="vesper-call-overlay-header-copy">
+              <p className="vesper-call-overlay-title">{statusLabel}</p>
+              {voiceError ? (
+                <p className="vesper-call-overlay-error">{voiceError}</p>
+              ) : voiceState === 'in_call' || voiceState === 'connected' ? (
+                <p className="vesper-call-overlay-subtitle">{roomLabel} · {formatDuration(duration)}</p>
+              ) : (
+                <p className="vesper-call-overlay-subtitle">{roomLabel}</p>
+              )}
+            </div>
+          </div>
+          <div className="vesper-call-overlay-connection">
+            <span className={`vesper-call-overlay-quality ${qualityClass}`}>
+              {connectionQuality.toUpperCase()}
+            </span>
+            <span className="vesper-call-overlay-count">
+              {participants.length} participant{participants.length !== 1 ? 's' : ''}
+            </span>
+          </div>
         </div>
-        <div className="flex flex-col items-end gap-1">
-          <span className={`text-xs font-semibold ${
-            connectionQuality === 'good'
-              ? 'text-emerald-300'
-              : connectionQuality === 'fair'
-                ? 'text-amber-300'
-                : connectionQuality === 'poor'
-                  ? 'text-red-300'
-                  : 'text-text-faint'
-          }`}>
-            {connectionQuality.toUpperCase()}
-          </span>
-          <span className="text-text-faint text-[10px]">
-            {participants.length} participant{participants.length !== 1 ? 's' : ''}
-          </span>
-        </div>
-      </div>
 
-      {(roundTripMs !== null || packetLossPct !== null) && (
-        <div className="mb-3 flex items-center gap-2 text-[11px] text-text-faint">
-          <span>RTT {roundTripMs !== null ? `${roundTripMs}ms` : 'n/a'}</span>
-          <span>•</span>
-          <span>Loss {packetLossPct !== null ? `${packetLossPct}%` : 'n/a'}</span>
-        </div>
-      )}
+        {(roundTripMs !== null || packetLossPct !== null || inboundBitrateKbps !== null || outboundBitrateKbps !== null) && (
+          <div className="vesper-call-overlay-metrics-row">
+            {(roundTripMs !== null || packetLossPct !== null) && (
+              <div className="vesper-call-overlay-stats">
+                <span>RTT {roundTripMs !== null ? `${roundTripMs}ms` : 'n/a'}</span>
+                <span>Loss {packetLossPct !== null ? `${packetLossPct}%` : 'n/a'}</span>
+              </div>
+            )}
+            {(inboundBitrateKbps !== null || outboundBitrateKbps !== null) && (
+              <div className="vesper-call-overlay-stats">
+                <span>In {formatBitrate(inboundBitrateKbps)}</span>
+                <span>Out {formatBitrate(outboundBitrateKbps)}</span>
+              </div>
+            )}
+          </div>
+        )}
 
-      {(inboundBitrateKbps !== null || outboundBitrateKbps !== null) && (
-        <div className="mb-3 flex items-center gap-2 text-[11px] text-text-faint">
-          <span>In {formatBitrate(inboundBitrateKbps)}</span>
-          <span>•</span>
-          <span>Out {formatBitrate(outboundBitrateKbps)}</span>
-        </div>
-      )}
+        {overlayMediaEntries.length > 0 && (
+          <div className="vesper-call-overlay-media-rail">
+            {overlayMediaEntries.map((entry) => (
+              <OverlayVideo
+                key={entry.id}
+                stream={entry.stream}
+                label={entry.label}
+                kind={entry.kind}
+                avatarUrl={entry.avatarUrl}
+                muted={entry.isLocal}
+                mirror={entry.isLocal && entry.kind === 'camera'}
+                speaking={entry.speaking}
+                participantMuted={entry.participantMuted}
+                isLocal={entry.isLocal}
+                hasShareAudio={entry.hasShareAudio}
+                className={`vesper-call-overlay-video${entry.isLocal ? ' vesper-call-overlay-video-local' : ''}`}
+              />
+            ))}
+          </div>
+        )}
 
-      {(remoteVideoEntries.length > 0 || localVideoStream) && (
-        <div className="vesper-call-overlay-video-grid">
-          {remoteVideoEntries.map((entry) => (
-            <OverlayVideo
-              key={entry.id}
-              stream={entry.stream}
-              className="vesper-call-overlay-video"
-            />
-          ))}
-          {localVideoStream && (
-            <OverlayVideo
-              stream={localVideoStream}
+        {participantPills.length > 0 && (
+          <div className="vesper-call-overlay-presence-row">
+            {participantPills.map((participant) => (
+              <CallPresencePill key={participant.id} participant={participant} />
+            ))}
+          </div>
+        )}
+
+        <div className="vesper-call-overlay-controls">
+          <button
+            onClick={toggleMute}
+            className={`vesper-call-overlay-control${
               muted
-              className="vesper-call-overlay-video vesper-call-overlay-video-local"
-            />
-          )}
+                ? ' vesper-call-overlay-control-danger'
+                : ''
+            }`}
+            title={muted ? 'Unmute' : 'Mute'}
+          >
+            {muted ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+          </button>
+
+          <button
+            onClick={toggleDeafen}
+            className={`vesper-call-overlay-control${
+              deafened
+                ? ' vesper-call-overlay-control-danger'
+                : ''
+            }`}
+            title={deafened ? 'Undeafen' : 'Deafen'}
+          >
+            {deafened ? <HeadphoneOff className="w-4 h-4" /> : <Headphones className="w-4 h-4" />}
+          </button>
+
+          <button
+            onClick={disconnect}
+            className="vesper-call-overlay-control vesper-call-overlay-control-hangup"
+            title="Hang up"
+          >
+            <PhoneOff className="w-4 h-4" />
+          </button>
+
+          <button
+            onClick={() => {
+              void toggleCamera()
+            }}
+            disabled={!canShareVideo}
+            className={`vesper-call-overlay-control${
+              cameraEnabled
+                ? ' vesper-call-overlay-control-active'
+                : ''
+            }${!canShareVideo ? ' vesper-call-overlay-control-disabled' : ''}`}
+            title={cameraEnabled ? 'Stop Camera' : 'Start Camera'}
+          >
+            {cameraEnabled ? <VideoOff className="w-4 h-4" /> : <Video className="w-4 h-4" />}
+          </button>
+
+          <button
+            onClick={() => {
+              void toggleScreenShare(undefined, shareAudioPreferred)
+            }}
+            disabled={!canShareVideo}
+            className={`vesper-call-overlay-control${
+              screenShareEnabled
+                ? ' vesper-call-overlay-control-active'
+                : ''
+            }${!canShareVideo ? ' vesper-call-overlay-control-disabled' : ''}`}
+            title={screenShareEnabled ? 'Stop Screen Share' : 'Start Screen Share'}
+          >
+            {screenShareEnabled
+              ? <ScreenShareOff className="w-4 h-4" />
+              : <ScreenShare className="w-4 h-4" />}
+          </button>
         </div>
-      )}
 
-      <div className="flex gap-2 justify-center">
-        <button
-          onClick={toggleMute}
-          className={`w-10 h-10 rounded-full flex items-center justify-center transition-all ${
-            muted
-              ? 'bg-red-600/20 text-red-400'
-              : 'bg-bg-tertiary/50 text-text-primary hover:bg-bg-tertiary'
-          }`}
-          title={muted ? 'Unmute' : 'Mute'}
-        >
-          {muted ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-        </button>
-
-        <button
-          onClick={toggleDeafen}
-          className={`w-10 h-10 rounded-full flex items-center justify-center transition-all ${
-            deafened
-              ? 'bg-red-600/20 text-red-400'
-              : 'bg-bg-tertiary/50 text-text-primary hover:bg-bg-tertiary'
-          }`}
-          title={deafened ? 'Undeafen' : 'Deafen'}
-        >
-          {deafened ? <HeadphoneOff className="w-4 h-4" /> : <Headphones className="w-4 h-4" />}
-        </button>
-
-        <button
-          onClick={disconnect}
-          className="w-10 h-10 rounded-full bg-red-600/20 hover:bg-red-600/30 text-red-400 flex items-center justify-center transition-colors"
-          title="Hang up"
-        >
-          <PhoneOff className="w-4 h-4" />
-        </button>
+        {canShareVideo && (
+          <label className="vesper-call-overlay-share-audio">
+            <input
+              type="checkbox"
+              checked={shareAudioPreferred}
+              onChange={(event) => setShareAudioPreferred(event.target.checked)}
+            />
+            <span>Share system audio when available</span>
+          </label>
+        )}
       </div>
+    </div>
+  )
+}
 
-      <div className="mt-2 flex gap-2 justify-center">
-        <button
-          onClick={() => {
-            void toggleCamera()
-          }}
-          disabled={!canShareVideo}
-          className={`w-10 h-10 rounded-full flex items-center justify-center transition-all ${
-            cameraEnabled
-              ? 'bg-emerald-600/20 text-emerald-300'
-              : 'bg-bg-tertiary/50 text-text-primary hover:bg-bg-tertiary'
-          } ${!canShareVideo ? 'opacity-45 cursor-not-allowed' : ''}`}
-          title={cameraEnabled ? 'Stop Camera' : 'Start Camera'}
-        >
-          {cameraEnabled ? <VideoOff className="w-4 h-4" /> : <Video className="w-4 h-4" />}
-        </button>
+function CallPresencePill({
+  participant
+}: {
+  participant: {
+    id: string
+    label: string
+    avatarUrl: string | null
+    speaking: boolean
+    muted: boolean
+    hasShare: boolean
+    hasCamera: boolean
+  }
+}): React.JSX.Element {
+  const initials = participant.label
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? '')
+    .join('') || '?'
 
-        <button
-          onClick={() => {
-            void toggleScreenShare()
-          }}
-          disabled={!canShareVideo}
-          className={`w-10 h-10 rounded-full flex items-center justify-center transition-all ${
-            screenShareEnabled
-              ? 'bg-emerald-600/20 text-emerald-300'
-              : 'bg-bg-tertiary/50 text-text-primary hover:bg-bg-tertiary'
-          } ${!canShareVideo ? 'opacity-45 cursor-not-allowed' : ''}`}
-          title={screenShareEnabled ? 'Stop Screen Share' : 'Start Screen Share'}
-        >
-          {screenShareEnabled
-            ? <ScreenShareOff className="w-4 h-4" />
-            : <ScreenShare className="w-4 h-4" />}
-        </button>
+  return (
+    <div className={participant.speaking ? 'vesper-call-overlay-presence-pill vesper-call-overlay-presence-pill-speaking' : 'vesper-call-overlay-presence-pill'}>
+      <div className="vesper-call-overlay-presence-avatar">
+        {participant.avatarUrl ? (
+          <img src={participant.avatarUrl} alt="" className="vesper-call-overlay-presence-avatar-image" />
+        ) : (
+          <span className="vesper-call-overlay-presence-avatar-fallback">{initials}</span>
+        )}
+        {participant.muted && (
+          <span className="vesper-call-overlay-presence-muted">
+            <MicOff className="w-2.5 h-2.5" />
+          </span>
+        )}
+      </div>
+      <div className="vesper-call-overlay-presence-copy">
+        <span className="vesper-call-overlay-presence-name">{participant.label}</span>
+        <span className="vesper-call-overlay-presence-meta">
+          {participant.hasShare
+            ? 'Live'
+            : participant.hasCamera
+              ? 'Camera'
+              : participant.speaking
+                ? 'Speaking'
+                : 'Audio'}
+        </span>
       </div>
     </div>
   )

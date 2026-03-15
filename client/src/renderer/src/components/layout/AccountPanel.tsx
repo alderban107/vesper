@@ -1,4 +1,4 @@
-import { Headphones, HeadphoneOff, LogOut, Mic, MicOff, PhoneOff, Settings } from 'lucide-react'
+import { Headphones, HeadphoneOff, LogOut, Mic, MicOff, PhoneOff, ScreenShare, ScreenShareOff, Settings, Video, VideoOff } from 'lucide-react'
 import { useVoiceStore } from '../../stores/voiceStore'
 import { useServerStore } from '../../stores/serverStore'
 import { useDmStore } from '../../stores/dmStore'
@@ -53,10 +53,15 @@ export default function AccountPanel({
   const roomType = useVoiceStore((s) => s.roomType)
   const muted = useVoiceStore((s) => s.muted)
   const deafened = useVoiceStore((s) => s.deafened)
+  const cameraEnabled = useVoiceStore((s) => s.cameraEnabled)
+  const screenShareEnabled = useVoiceStore((s) => s.screenShareEnabled)
+  const shareAudioPreferred = useVoiceStore((s) => s.shareAudioPreferred)
   const voiceError = useVoiceStore((s) => s.errorMessage)
   const disconnect = useVoiceStore((s) => s.disconnect)
   const toggleMute = useVoiceStore((s) => s.toggleMute)
   const toggleDeafen = useVoiceStore((s) => s.toggleDeafen)
+  const toggleCamera = useVoiceStore((s) => s.toggleCamera)
+  const toggleScreenShare = useVoiceStore((s) => s.toggleScreenShare)
   const connectionQuality = useVoiceStore((s) => s.connectionQuality)
   const activeServer = useServerStore((s) => s.servers.find((server) => server.id === s.activeServerId))
   const conversations = useDmStore((s) => s.conversations)
@@ -85,6 +90,7 @@ export default function AccountPanel({
     voiceState === 'idle' || voiceError
       ? voiceStatusCopy
       : `${voiceStatusCopy} · ${VOICE_QUALITY_COPY[connectionQuality]}`
+  const canPublishVideo = voiceState === 'connected' || voiceState === 'in_call'
 
   const cycleStatus = (): void => {
     const cycle: PresenceStatus[] = ['online', 'idle', 'dnd']
@@ -106,7 +112,6 @@ export default function AccountPanel({
               avatarUrl={user?.avatar_url}
               displayName={user?.display_name || user?.username || 'You'}
               size="sm"
-              status={myStatus}
             />
           </div>
 
@@ -146,6 +151,28 @@ export default function AccountPanel({
               title={deafened ? 'Undeafen' : 'Deafen'}
             >
               {deafened ? <HeadphoneOff className="w-4 h-4" /> : <Headphones className="w-4 h-4" />}
+            </button>
+            <button
+              type="button"
+              className={`vesper-account-panel-button${cameraEnabled ? ' vesper-account-panel-button-active' : ''}${!canPublishVideo ? ' vesper-account-panel-button-disabled' : ''}`}
+              onClick={() => {
+                void toggleCamera()
+              }}
+              disabled={!canPublishVideo}
+              title={cameraEnabled ? 'Stop Camera' : 'Start Camera'}
+            >
+              {cameraEnabled ? <VideoOff className="w-4 h-4" /> : <Video className="w-4 h-4" />}
+            </button>
+            <button
+              type="button"
+              className={`vesper-account-panel-button${screenShareEnabled ? ' vesper-account-panel-button-active' : ''}${!canPublishVideo ? ' vesper-account-panel-button-disabled' : ''}`}
+              onClick={() => {
+                void toggleScreenShare(undefined, shareAudioPreferred)
+              }}
+              disabled={!canPublishVideo}
+              title={screenShareEnabled ? 'Stop Screen Share' : 'Start Screen Share'}
+            >
+              {screenShareEnabled ? <ScreenShareOff className="w-4 h-4" /> : <ScreenShare className="w-4 h-4" />}
             </button>
             <button
               type="button"

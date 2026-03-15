@@ -1,42 +1,13 @@
 import { argon2id } from 'hash-wasm'
 import type { EncryptedKeyBundle, RecoveryKeyData } from './types'
+import { WORDLIST } from './bip39-wordlist'
 
-// BIP39 english wordlist (2048 words) — subset used for 256-bit recovery keys
-// We use a simplified approach: 24 words from a curated list of 256 unambiguous words
-// This gives 24 * 8 = 192 bits of entropy per word selection from 256 options,
-// but we actually encode 256 bits by using 2048-word list indices
-const WORDLIST_URL = 'https://raw.githubusercontent.com/bitcoin/bips/master/bip-0039/english.txt'
-let cachedWordlist: string[] | null = null
-
-async function getWordlist(): Promise<string[]> {
-  if (cachedWordlist) return cachedWordlist
-  // Embedded minimal wordlist — 256 carefully chosen words for recovery keys
-  // Each word encodes ~11 bits (2048 possible words). 24 words = 264 bits (with checksum)
-  // For our purposes we use 24 words to encode 256 bits of key material
-  cachedWordlist = generateWordlist()
-  return cachedWordlist
-}
-
-function generateWordlist(): string[] {
-  // BIP39-compatible: 2048 common English words
-  // Rather than bundling the full list, we'll generate indices
-  // and use a deterministic approach
-  // For production, we embed the actual BIP39 wordlist
-  // For now, we use a simpler scheme: convert bytes to hex-based words
-  const words: string[] = []
-  const consonants = 'bcdfghjklmnpqrstvwxyz'
-  const vowels = 'aeiou'
-  // Generate 2048 pronounceable words deterministically
-  for (let i = 0; i < 2048; i++) {
-    const c1 = consonants[i % consonants.length]
-    const v1 = vowels[Math.floor(i / consonants.length) % vowels.length]
-    const c2 = consonants[Math.floor(i / (consonants.length * vowels.length)) % consonants.length]
-    const v2 = vowels[Math.floor(i / (consonants.length * vowels.length * consonants.length)) % vowels.length]
-    const c3 = consonants[Math.floor(i / (consonants.length * vowels.length * consonants.length * vowels.length)) % consonants.length]
-    words.push(c1 + v1 + c2 + v2 + c3)
-  }
-  return words
-}
+// BIP39 mnemonic encoding: 24 words from the standard 2048-word English list.
+// Each word encodes 11 bits. 24 words × 11 bits = 264 bits = 256 bits of key + 8-bit checksum.
+//
+// BREAKING CHANGE (Phase 3): The previous implementation used a fake wordlist of
+// consonant/vowel pattern words. Recovery keys generated before this change are
+// invalid and must be re-generated.
 
 /**
  * Derive a 256-bit encryption key from a password using Argon2id.
@@ -127,11 +98,10 @@ export async function generateRecoveryKey(): Promise<{
   keyBytes: Uint8Array
 }> {
   const keyBytes = crypto.getRandomValues(new Uint8Array(32))
-  const wordlist = await getWordlist()
   const words: string[] = []
 
   // Convert 32 bytes (256 bits) to 24 words from 2048-word list
-  // Each word encodes ~10.67 bits. We use 11-bit indices (BIP39 style)
+  // Each word encodes 11 bits (BIP39 style)
   // 24 words * 11 bits = 264 bits — last 8 bits are checksum
   const hashBuffer = await crypto.subtle.digest('SHA-256', keyBytes)
   const checksum = new Uint8Array(hashBuffer)[0]
@@ -155,7 +125,7 @@ export async function generateRecoveryKey(): Promise<{
       index = (index >> (16 - bitIndex - 11)) & 0x7ff
     }
 
-    words.push(wordlist[index])
+    words.push(WORDLIST[index])
   }
 
   return { mnemonic: words.join(' '), keyBytes }
@@ -165,7 +135,6 @@ export async function generateRecoveryKey(): Promise<{
  * Convert a 24-word mnemonic back to the raw 256-bit key.
  */
 export async function recoveryKeyToBytes(mnemonic: string): Promise<Uint8Array> {
-  const wordlist = await getWordlist()
   const words = mnemonic.trim().split(/\s+/)
   if (words.length !== 24) {
     throw new Error('Recovery key must be exactly 24 words')
@@ -173,7 +142,7 @@ export async function recoveryKeyToBytes(mnemonic: string): Promise<Uint8Array> 
 
   // Convert words back to 11-bit indices
   const indices = words.map((word) => {
-    const idx = wordlist.indexOf(word.toLowerCase())
+    const idx = WORDLIST.indexOf(word.toLowerCase())
     if (idx === -1) throw new Error(`Unknown recovery key word: ${word}`)
     return idx
   })

@@ -16,11 +16,11 @@ import {
   consumeLocalKeyPackage,
   countLocalKeyPackages,
   cacheMessage,
-  getAllCachedMessages,
   getCachedMessages,
   clearMessageCache,
-  deleteCachedMessage,
-  pruneMessageCache
+  searchMessages,
+  indexDecryptedMessage,
+  removeFromFtsIndex
 } from './db'
 
 function createWindow(): void {
@@ -69,8 +69,9 @@ function registerIpcHandlers(): void {
       publicKeyExchange: Buffer,
       encryptedPrivateKeys: Buffer,
       nonce: Buffer,
-      salt: Buffer
-    ) => setIdentityKeys(userId, publicIdentityKey, publicKeyExchange, encryptedPrivateKeys, nonce, salt)
+      salt: Buffer,
+      signaturePrivateKey: Buffer | null
+    ) => setIdentityKeys(userId, publicIdentityKey, publicKeyExchange, encryptedPrivateKeys, nonce, salt, signaturePrivateKey ?? null)
   )
   ipcMain.handle('cryptoDb:deleteIdentityKeys', (_, userId: string) =>
     deleteIdentityKeys(userId)
@@ -155,26 +156,24 @@ function registerIpcHandlers(): void {
     }
   )
 
-  // Message cache
+  // Message cache (stores ciphertext, not plaintext)
   ipcMain.handle(
     'cryptoDb:cacheMessage',
     (
       _,
       msg: {
         id: string
-        channel_id: string | null
-        conversation_id: string | null
-        server_id: string | null
+        channel_id: string
         sender_id: string | null
         sender_username: string | null
-        content: string | null
-        attachment_filenames: string[]
+        ciphertext: Uint8Array | null
+        mls_epoch: number | null
         inserted_at: string
       }
-    ) => cacheMessage(msg)
-  )
-  ipcMain.handle('cryptoDb:getAllCachedMessages', () =>
-    getAllCachedMessages()
+    ) => cacheMessage({
+      ...msg,
+      ciphertext: msg.ciphertext ? Buffer.from(msg.ciphertext) : null
+    })
   )
   ipcMain.handle('cryptoDb:getCachedMessages', (_, channelId: string) =>
     getCachedMessages(channelId)
@@ -182,11 +181,20 @@ function registerIpcHandlers(): void {
   ipcMain.handle('cryptoDb:clearMessageCache', (_, channelId: string) =>
     clearMessageCache(channelId)
   )
-  ipcMain.handle('cryptoDb:deleteCachedMessage', (_, messageId: string) =>
-    deleteCachedMessage(messageId)
+
+  // Message search (FTS5)
+  ipcMain.handle('cryptoDb:searchMessages', (_, query: string, channelId?: string) =>
+    searchMessages(query, channelId)
   )
-  ipcMain.handle('cryptoDb:pruneMessageCache', (_, maxRows: number) =>
-    pruneMessageCache(maxRows)
+
+  // FTS5 index management
+  ipcMain.handle(
+    'cryptoDb:indexDecryptedMessage',
+    (_, messageId: string, channelId: string, content: string) =>
+      indexDecryptedMessage(messageId, channelId, content)
+  )
+  ipcMain.handle('cryptoDb:removeFromFtsIndex', (_, messageId: string) =>
+    removeFromFtsIndex(messageId)
   )
 }
 

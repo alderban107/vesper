@@ -7,6 +7,39 @@ function getServerUrl(): string {
   return localStorage.getItem('serverUrl') || DEFAULT_SERVER_URL
 }
 
+function isNetworkError(error: unknown): error is Error {
+  return (
+    error instanceof Error &&
+    /failed to fetch|networkerror|load failed/i.test(error.message)
+  )
+}
+
+function normalizeFetchError(error: unknown, url: string): Error {
+  if (isNetworkError(error)) {
+    const origin = (() => {
+      try {
+        return new URL(url).origin
+      } catch {
+        return url
+      }
+    })()
+
+    return new Error(
+      `Could not reach the Vesper server at ${origin}. Check that the backend is running and your server URL is correct.`
+    )
+  }
+
+  return error instanceof Error ? error : new Error('Request failed')
+}
+
+async function performFetch(url: string, options: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, options)
+  } catch (error) {
+    throw normalizeFetchError(error, url)
+  }
+}
+
 function getAccessToken(): string | null {
   return localStorage.getItem('accessToken')
 }
@@ -35,7 +68,8 @@ async function refreshAccessToken(): Promise<string | null> {
 
   refreshRequest = (async () => {
     try {
-      const res = await fetch(`${getServerUrl()}/api/v1/auth/refresh`, {
+      const url = `${getServerUrl()}/api/v1/auth/refresh`
+      const res = await performFetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ refresh_token: refreshToken })
@@ -76,14 +110,14 @@ export async function apiFetch(
     headers['Authorization'] = `Bearer ${token}`
   }
 
-  let res = await fetch(url, { ...options, headers })
+  let res = await performFetch(url, { ...options, headers })
 
   // If 401, try refreshing the token
   if (res.status === 401 && token) {
     const newToken = await refreshAccessToken()
     if (newToken) {
       headers['Authorization'] = `Bearer ${newToken}`
-      res = await fetch(url, { ...options, headers })
+      res = await performFetch(url, { ...options, headers })
     }
   }
 
@@ -102,14 +136,14 @@ export async function apiUpload(
     headers['Authorization'] = `Bearer ${token}`
   }
 
-  let res = await fetch(url, { method: 'POST', headers, body: formData })
+  let res = await performFetch(url, { method: 'POST', headers, body: formData })
 
   if (res.status === 401 && token) {
     const newToken = await refreshAccessToken()
     if (newToken) {
       headers['Authorization'] = `Bearer ${newToken}`
-      res = await fetch(url, { method: 'POST', headers, body: formData })
-    }
+      res = await performFetch(url, { method: 'POST', headers, body: formData })
+  }
   }
 
   return res

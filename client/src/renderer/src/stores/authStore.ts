@@ -9,13 +9,18 @@ import {
   createRecoveryData
 } from '../crypto/identity'
 import { initCipherSuite, createKeyPackageBatch, encodeKeyPackageBytes } from '../crypto/mls'
-import { saveIdentity, saveKeyPackages } from '../crypto/storage'
-import { uploadKeyPackages, getMyKeyPackageCount } from '../api/crypto'
 import {
-  clearSearchIndexSyncCredentials,
-  initializeSearchIndexSync,
-  resumeSearchIndexSync
+  saveIdentity,
+  saveKeyPackages,
+  loadIdentity,
+  initStorage
+} from '../crypto/storage'
+import { uploadKeyPackages, getMyKeyPackageCount } from '../api/crypto'
+import { serializePrivatePackage } from '../crypto/keySerialization'
+import {
+  clearSearchIndexSyncCredentials
 } from '../crypto/searchIndexSync'
+import { resetAllStores } from './resetStores'
 
 interface User {
   id: string
@@ -105,6 +110,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       setTokens(data.access_token, data.refresh_token)
       connectSocket()
 
+      initStorage(data.user.id)
+
       // Store identity keys locally
       await saveIdentity(
         data.user.id,
@@ -112,7 +119,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         signaturePublicKey,
         encryptedBundle.ciphertext,
         encryptedBundle.nonce,
-        encryptedBundle.salt
+        encryptedBundle.salt,
+        signaturePrivateKey
       )
 
       // Generate and upload key packages (use the same signature key pair)
@@ -125,11 +133,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       await saveKeyPackages(
         batchPairs.map((p) => ({
           publicData: encodeKeyPackageBytes(p.publicPackage),
-          privateData: new Uint8Array([
-            ...p.privatePackage.initPrivateKey,
-            ...p.privatePackage.hpkePrivateKey,
-            ...p.privatePackage.signaturePrivateKey
-          ])
+          privateData: serializePrivatePackage(p.privatePackage)
         }))
       )
 
@@ -143,11 +147,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         error: null,
         recoveryMnemonic: recoveryData.mnemonic
       })
-      try {
-        await initializeSearchIndexSync(data.user.id, password)
-      } catch {
-        // Search index sync is optional and should not block auth.
-      }
       return true
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Could not connect to server'
@@ -175,6 +174,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       setTokens(data.access_token, data.refresh_token)
       connectSocket()
 
+      initStorage(data.user.id)
+
       // If user has encrypted key bundle, decrypt it and store locally
       if (data.encrypted_key_bundle) {
         try {
@@ -187,15 +188,22 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           }
 
           const privateKeys = await decryptEncryptedKeyBundle(bundle, password)
+          const publicIdentityKey = data.public_identity_key
+            ? base64ToUint8(data.public_identity_key)
+            : bundle.ciphertext
+          const publicKeyExchange = data.public_key_exchange
+            ? base64ToUint8(data.public_key_exchange)
+            : bundle.ciphertext
 
           // Store decrypted identity locally
           await saveIdentity(
             data.user.id,
-            bundle.ciphertext, // We stored the public key on the server
-            bundle.ciphertext,
+            publicIdentityKey,
+            publicKeyExchange,
             bundle.ciphertext,
             bundle.nonce,
-            bundle.salt
+            bundle.salt,
+            privateKeys
           )
 
           // Check and replenish key packages
@@ -207,7 +215,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             const signaturePrivateKey = privateKeys
             const pairs = await createKeyPackageBatch(username, toGenerate, {
               signKey: signaturePrivateKey,
-              publicKey: signaturePrivateKey // Will be overridden by the key package generation
+              publicKey: publicIdentityKey
             })
 
             const publicPackageBytes = pairs.map((p) => encodeKeyPackageBytes(p.publicPackage))
@@ -216,11 +224,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             await saveKeyPackages(
               pairs.map((p) => ({
                 publicData: encodeKeyPackageBytes(p.publicPackage),
-                privateData: new Uint8Array([
-                  ...p.privatePackage.initPrivateKey,
-                  ...p.privatePackage.hpkePrivateKey,
-                  ...p.privatePackage.signaturePrivateKey
-                ])
+                privateData: serializePrivatePackage(p.privatePackage)
               }))
             )
           }
@@ -231,11 +235,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
 
       set({ user: data.user, isAuthenticated: true, error: null })
-      try {
-        await initializeSearchIndexSync(data.user.id, password)
-      } catch {
-        // Search index sync is optional and should not block auth.
-      }
       return true
     } catch {
       set({ error: 'Could not connect to server' })
@@ -249,6 +248,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     } catch {
       // ignore
     }
+
+    resetAllStores()
     disconnectSocket()
     clearTokens()
     clearSearchIndexSyncCredentials()
@@ -267,15 +268,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (res.ok) {
         const data = await res.json()
         connectSocket()
+        initStorage(data.user.id)
 
         // Initialize cipher suite for later use
         initCipherSuite().catch(() => {
           console.warn('Failed to initialize cipher suite')
-        })
-
-        // Token-only restore path: resume encrypted search sync without password prompt.
-        resumeSearchIndexSync(data.user.id).catch(() => {
-          // Search sync resume is optional.
         })
 
         set({ user: data.user, isAuthenticated: true, isLoading: false })
@@ -357,8 +354,17 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (count >= KEY_PACKAGE_THRESHOLD) return
 
       await initCipherSuite()
+      const identity = await loadIdentity(user.id)
+      if (!identity?.signaturePrivateKey) {
+        console.warn('Cannot replenish key packages: no signature private key in local DB')
+        return
+      }
+
       const toGenerate = KEY_PACKAGE_TARGET - count
-      const pairs = await createKeyPackageBatch(user.username, toGenerate)
+      const pairs = await createKeyPackageBatch(user.username, toGenerate, {
+        signKey: identity.signaturePrivateKey,
+        publicKey: identity.publicIdentityKey
+      })
 
       const publicPackageBytes = pairs.map((p) => encodeKeyPackageBytes(p.publicPackage))
       await uploadKeyPackages(publicPackageBytes)
@@ -366,11 +372,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       await saveKeyPackages(
         pairs.map((p) => ({
           publicData: encodeKeyPackageBytes(p.publicPackage),
-          privateData: new Uint8Array([
-            ...p.privatePackage.initPrivateKey,
-            ...p.privatePackage.hpkePrivateKey,
-            ...p.privatePackage.signaturePrivateKey
-          ])
+          privateData: serializePrivatePackage(p.privatePackage)
         }))
       )
     } catch {

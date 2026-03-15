@@ -1,55 +1,252 @@
-import Database from 'better-sqlite3'
-import { app } from 'electron'
+import Database from 'better-sqlite3-multiple-ciphers'
+import { app, safeStorage } from 'electron'
+import { randomBytes } from 'crypto'
+import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync } from 'fs'
 import { join } from 'path'
 
 let db: Database.Database | null = null
-const DEFAULT_MESSAGE_CACHE_MAX_ROWS = 5000
+
+// ---------------------------------------------------------------------------
+// Encryption key management
+// ---------------------------------------------------------------------------
+
+const DB_FILENAME = 'crypto.db'
+const KEY_FILENAME = 'crypto.db.key'
+const KEY_LENGTH = 32 // 256-bit
+
+/**
+ * Retrieve or generate the hex-encoded encryption key for crypto.db.
+ *
+ * The raw key is 32 random bytes. It is encrypted at rest using Electron's
+ * safeStorage API (OS keychain) and written to `crypto.db.key` beside the DB.
+ *
+ * Returns the hex string, or `null` if safeStorage is unavailable (graceful
+ * degradation — the DB will be opened without encryption in that case).
+ */
+function getOrCreateEncryptionKey(userDataPath: string): string | null {
+  if (!safeStorage.isEncryptionAvailable()) {
+    console.warn(
+      '[vesper/db] safeStorage is not available on this system. ' +
+        'crypto.db will NOT be encrypted at rest. ' +
+        'This is expected on headless Linux without a keychain.'
+    )
+    return null
+  }
+
+  const keyPath = join(userDataPath, KEY_FILENAME)
+
+  if (existsSync(keyPath)) {
+    // Decrypt existing key
+    const encrypted = readFileSync(keyPath)
+    const raw = safeStorage.decryptString(encrypted)
+    return raw
+  }
+
+  // First run — generate a fresh key
+  const rawKey = randomBytes(KEY_LENGTH).toString('hex')
+  const encrypted = safeStorage.encryptString(rawKey)
+  writeFileSync(keyPath, encrypted)
+  return rawKey
+}
+
+/**
+ * Apply the encryption key to an open database handle. Must be called
+ * immediately after `new Database(...)` before any other operations.
+ */
+function applyKey(database: Database.Database, hexKey: string): void {
+  database.pragma(`key = "x'${hexKey}'"`)
+}
+
+// ---------------------------------------------------------------------------
+// Schema
+// ---------------------------------------------------------------------------
+
+const SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS identity_keys (
+    user_id TEXT PRIMARY KEY,
+    public_identity_key BLOB,
+    public_key_exchange BLOB,
+    encrypted_private_keys BLOB,
+    nonce BLOB,
+    salt BLOB,
+    signature_private_key BLOB
+  );
+
+  CREATE TABLE IF NOT EXISTS mls_groups (
+    group_id TEXT PRIMARY KEY,
+    state BLOB NOT NULL,
+    epoch INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS local_key_packages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key_package_public BLOB NOT NULL,
+    key_package_private BLOB NOT NULL,
+    consumed INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS message_cache (
+    id TEXT PRIMARY KEY,
+    channel_id TEXT NOT NULL,
+    sender_id TEXT,
+    sender_username TEXT,
+    ciphertext BLOB,
+    mls_epoch INTEGER,
+    inserted_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_message_cache_channel ON message_cache(channel_id);
+
+  CREATE VIRTUAL TABLE IF NOT EXISTS message_fts USING fts5(
+    message_id,
+    channel_id,
+    content
+  );
+`
+
+// ---------------------------------------------------------------------------
+// Migration: unencrypted → encrypted
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect whether an existing database is unencrypted by trying to open it
+ * without a key and reading `PRAGMA schema_version`. If that succeeds, the
+ * DB is plaintext and needs migration.
+ */
+function isUnencryptedDb(dbPath: string): boolean {
+  if (!existsSync(dbPath)) return false
+
+  try {
+    const probe = new Database(dbPath, { readonly: true })
+    try {
+      // If this returns a number, the DB is readable without a key
+      probe.pragma('schema_version')
+      probe.close()
+      return true
+    } catch {
+      probe.close()
+      return false
+    }
+  } catch {
+    return false
+  }
+}
+
+interface TableRow {
+  name: string
+}
+
+/**
+ * Migrate an existing unencrypted crypto.db to an encrypted one.
+ *
+ * Strategy: open unencrypted → dump all rows → close → rename to .bak →
+ * create new encrypted DB → re-insert everything.
+ */
+function migrateToEncrypted(dbPath: string, hexKey: string): void {
+  console.log('[vesper/db] Migrating unencrypted crypto.db to encrypted format…')
+
+  const backupPath = dbPath + '.bak'
+
+  // 1. Open unencrypted and read all user tables
+  const oldDb = new Database(dbPath, { readonly: true })
+  const tables = oldDb
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+    )
+    .all() as TableRow[]
+
+  const tableData: Record<string, unknown[]> = {}
+  for (const { name } of tables) {
+    tableData[name] = oldDb.prepare(`SELECT * FROM "${name}"`).all()
+  }
+  oldDb.close()
+
+  // 2. Move old DB aside
+  renameSync(dbPath, backupPath)
+  // Also remove WAL/SHM if present
+  for (const suffix of ['-wal', '-shm']) {
+    const p = dbPath + suffix
+    if (existsSync(p)) unlinkSync(p)
+  }
+
+  // 3. Create new encrypted DB
+  const newDb = new Database(dbPath)
+  applyKey(newDb, hexKey)
+  newDb.pragma('journal_mode = WAL')
+  newDb.exec(SCHEMA_SQL)
+
+  // 4. Re-insert data
+  for (const { name } of tables) {
+    const rows = tableData[name]
+    if (!rows || rows.length === 0) continue
+
+    const columns = Object.keys(rows[0] as Record<string, unknown>)
+    const placeholders = columns.map(() => '?').join(', ')
+    const colList = columns.map((c) => `"${c}"`).join(', ')
+    const insert = newDb.prepare(
+      `INSERT OR REPLACE INTO "${name}" (${colList}) VALUES (${placeholders})`
+    )
+
+    const insertAll = newDb.transaction((data: unknown[]) => {
+      for (const row of data) {
+        const vals = columns.map((c) => (row as Record<string, unknown>)[c])
+        insert.run(...vals)
+      }
+    })
+    insertAll(rows)
+  }
+
+  newDb.close()
+  console.log(
+    `[vesper/db] Migration complete. Old DB backed up to ${backupPath}`
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
 export function initDb(): void {
-  const dbPath = join(app.getPath('userData'), 'crypto.db')
+  const userDataPath = app.getPath('userData')
+  const dbPath = join(userDataPath, DB_FILENAME)
+  const hexKey = getOrCreateEncryptionKey(userDataPath)
+
+  // Handle migration from unencrypted → encrypted
+  if (hexKey && existsSync(dbPath) && isUnencryptedDb(dbPath)) {
+    migrateToEncrypted(dbPath, hexKey)
+  }
+
   db = new Database(dbPath)
+
+  if (hexKey) {
+    applyKey(db, hexKey)
+  }
+
   db.pragma('journal_mode = WAL')
 
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS identity_keys (
-      user_id TEXT PRIMARY KEY,
-      public_identity_key BLOB,
-      public_key_exchange BLOB,
-      encrypted_private_keys BLOB,
-      nonce BLOB,
-      salt BLOB
-    );
+  // Migrate message_cache from plaintext (content TEXT) to ciphertext (ciphertext BLOB + mls_epoch INTEGER).
+  // One-time loss of cached messages is acceptable.
+  try {
+    const cols = db.pragma('table_info(message_cache)') as Array<{ name: string }>
+    if (cols.length > 0 && cols.some((c) => c.name === 'content') && !cols.some((c) => c.name === 'ciphertext')) {
+      db.exec('DROP TABLE IF EXISTS message_cache')
+      db.exec('DROP INDEX IF EXISTS idx_message_cache_channel')
+    }
+  } catch {
+    // Table doesn't exist yet — schema creation will handle it
+  }
 
-    CREATE TABLE IF NOT EXISTS mls_groups (
-      group_id TEXT PRIMARY KEY,
-      state BLOB NOT NULL,
-      epoch INTEGER NOT NULL DEFAULT 0
-    );
+  // Add signature_private_key column if missing (Phase 3 migration)
+  try {
+    const idCols = db.pragma('table_info(identity_keys)') as Array<{ name: string }>
+    if (idCols.length > 0 && !idCols.some((c) => c.name === 'signature_private_key')) {
+      db.exec('ALTER TABLE identity_keys ADD COLUMN signature_private_key BLOB')
+    }
+  } catch {
+    // Table doesn't exist yet — schema creation will handle it
+  }
 
-    CREATE TABLE IF NOT EXISTS local_key_packages (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      key_package_public BLOB NOT NULL,
-      key_package_private BLOB NOT NULL,
-      consumed INTEGER NOT NULL DEFAULT 0
-    );
-
-    CREATE TABLE IF NOT EXISTS message_cache (
-      id TEXT PRIMARY KEY,
-      channel_id TEXT,
-      conversation_id TEXT,
-      server_id TEXT,
-      sender_id TEXT,
-      sender_username TEXT,
-      content TEXT,
-      attachment_filenames TEXT,
-      inserted_at TEXT NOT NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_message_cache_channel ON message_cache(channel_id);
-  `)
-
-  ensureMessageCacheColumns()
-  ensureMessageCacheIndexes()
+  db.exec(SCHEMA_SQL)
 }
 
 export function closeDb(): void {
@@ -64,33 +261,6 @@ function getDb(): Database.Database {
   return db
 }
 
-function ensureColumn(
-  tableName: string,
-  columnName: string,
-  columnType: string
-): void {
-  const row = getDb()
-    .prepare(
-      `SELECT name FROM pragma_table_info('${tableName}') WHERE name = ?`
-    )
-    .get(columnName) as { name: string } | undefined
-
-  if (!row) {
-    getDb().exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnType}`)
-  }
-}
-
-function ensureMessageCacheColumns(): void {
-  ensureColumn('message_cache', 'conversation_id', 'TEXT')
-  ensureColumn('message_cache', 'server_id', 'TEXT')
-  ensureColumn('message_cache', 'attachment_filenames', 'TEXT')
-}
-
-function ensureMessageCacheIndexes(): void {
-  getDb().exec('CREATE INDEX IF NOT EXISTS idx_message_cache_conversation ON message_cache(conversation_id)')
-  getDb().exec('CREATE INDEX IF NOT EXISTS idx_message_cache_inserted ON message_cache(inserted_at DESC)')
-}
-
 // --- Identity Keys ---
 
 export function getIdentityKeys(
@@ -101,10 +271,11 @@ export function getIdentityKeys(
   encrypted_private_keys: Buffer
   nonce: Buffer
   salt: Buffer
+  signature_private_key: Buffer | null
 } | null {
   return getDb()
     .prepare(
-      'SELECT public_identity_key, public_key_exchange, encrypted_private_keys, nonce, salt FROM identity_keys WHERE user_id = ?'
+      'SELECT public_identity_key, public_key_exchange, encrypted_private_keys, nonce, salt, signature_private_key FROM identity_keys WHERE user_id = ?'
     )
     .get(userId) as ReturnType<typeof getIdentityKeys>
 }
@@ -115,13 +286,14 @@ export function setIdentityKeys(
   publicKeyExchange: Buffer,
   encryptedPrivateKeys: Buffer,
   nonce: Buffer,
-  salt: Buffer
+  salt: Buffer,
+  signaturePrivateKey: Buffer | null = null
 ): void {
   getDb()
     .prepare(
-      'INSERT OR REPLACE INTO identity_keys (user_id, public_identity_key, public_key_exchange, encrypted_private_keys, nonce, salt) VALUES (?, ?, ?, ?, ?, ?)'
+      'INSERT OR REPLACE INTO identity_keys (user_id, public_identity_key, public_key_exchange, encrypted_private_keys, nonce, salt, signature_private_key) VALUES (?, ?, ?, ?, ?, ?, ?)'
     )
-    .run(userId, publicIdentityKey, publicKeyExchange, encryptedPrivateKeys, nonce, salt)
+    .run(userId, publicIdentityKey, publicKeyExchange, encryptedPrivateKeys, nonce, salt, signaturePrivateKey)
 }
 
 export function deleteIdentityKeys(userId: string): void {
@@ -197,124 +369,103 @@ export function countLocalKeyPackages(): number {
 
 export function cacheMessage(msg: {
   id: string
-  channel_id: string | null
-  conversation_id: string | null
-  server_id: string | null
+  channel_id: string
   sender_id: string | null
   sender_username: string | null
-  content: string | null
-  attachment_filenames: string[]
+  ciphertext: Buffer | null
+  mls_epoch: number | null
   inserted_at: string
 }): void {
   getDb()
     .prepare(
-      `
-      INSERT OR REPLACE INTO message_cache
-      (id, channel_id, conversation_id, server_id, sender_id, sender_username, content, attachment_filenames, inserted_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `
+      'INSERT OR REPLACE INTO message_cache (id, channel_id, sender_id, sender_username, ciphertext, mls_epoch, inserted_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
     )
-    .run(
-      msg.id,
-      msg.channel_id,
-      msg.conversation_id,
-      msg.server_id,
-      msg.sender_id,
-      msg.sender_username,
-      msg.content,
-      JSON.stringify(msg.attachment_filenames || []),
-      msg.inserted_at
-    )
-
-  pruneMessageCache(DEFAULT_MESSAGE_CACHE_MAX_ROWS)
+    .run(msg.id, msg.channel_id, msg.sender_id, msg.sender_username, msg.ciphertext, msg.mls_epoch, msg.inserted_at)
 }
 
 export function getCachedMessages(channelId: string): Array<{
   id: string
-  channel_id: string | null
-  conversation_id: string | null
-  server_id: string | null
+  channel_id: string
   sender_id: string | null
   sender_username: string | null
-  content: string | null
-  attachment_filenames: string[]
+  ciphertext: Buffer | null
+  mls_epoch: number | null
   inserted_at: string
 }> {
-  const rows = getDb()
+  return getDb()
     .prepare(
       'SELECT * FROM message_cache WHERE channel_id = ? ORDER BY inserted_at ASC'
     )
     .all(channelId) as ReturnType<typeof getCachedMessages>
-
-  return rows.map((row) => ({
-    ...row,
-    attachment_filenames: parseAttachmentFilenames(row.attachment_filenames as unknown)
-  }))
-}
-
-export function getAllCachedMessages(): Array<{
-  id: string
-  channel_id: string | null
-  conversation_id: string | null
-  server_id: string | null
-  sender_id: string | null
-  sender_username: string | null
-  content: string | null
-  attachment_filenames: string[]
-  inserted_at: string
-}> {
-  const rows = getDb()
-    .prepare('SELECT * FROM message_cache ORDER BY inserted_at DESC')
-    .all() as ReturnType<typeof getAllCachedMessages>
-
-  return rows.map((row) => ({
-    ...row,
-    attachment_filenames: parseAttachmentFilenames(row.attachment_filenames as unknown)
-  }))
 }
 
 export function clearMessageCache(channelId: string): void {
   getDb().prepare('DELETE FROM message_cache WHERE channel_id = ?').run(channelId)
 }
 
-export function deleteCachedMessage(messageId: string): void {
-  getDb().prepare('DELETE FROM message_cache WHERE id = ?').run(messageId)
-}
+// --- Full-Text Search (FTS5) ---
+// Populated from the renderer when messages are decrypted, creating a
+// client-side searchable index of plaintext content.
 
-export function pruneMessageCache(maxRows: number = DEFAULT_MESSAGE_CACHE_MAX_ROWS): void {
-  const safeMaxRows = Number.isFinite(maxRows) ? Math.max(100, Math.floor(maxRows)) : DEFAULT_MESSAGE_CACHE_MAX_ROWS
-
+export function indexDecryptedMessage(
+  messageId: string,
+  channelId: string,
+  content: string
+): void {
+  // Upsert: delete any existing entry first to avoid duplicates on re-index
+  getDb()
+    .prepare('DELETE FROM message_fts WHERE message_id = ?')
+    .run(messageId)
   getDb()
     .prepare(
-      `
-      DELETE FROM message_cache
-      WHERE id IN (
-        SELECT id
-        FROM message_cache
-        ORDER BY inserted_at DESC
-        LIMIT -1 OFFSET ?
-      )
-      `
+      'INSERT INTO message_fts (message_id, channel_id, content) VALUES (?, ?, ?)'
     )
-    .run(safeMaxRows)
+    .run(messageId, channelId, content)
 }
 
-function parseAttachmentFilenames(raw: unknown): string[] {
-  if (Array.isArray(raw)) {
-    return raw.filter((item): item is string => typeof item === 'string')
+export function removeFromFtsIndex(messageId: string): void {
+  getDb()
+    .prepare('DELETE FROM message_fts WHERE message_id = ?')
+    .run(messageId)
+}
+
+export function searchMessages(
+  query: string,
+  channelId?: string
+): Array<{
+  message_id: string
+  channel_id: string
+  content: string
+}> {
+  if (!query.trim()) return []
+
+  // Sanitize the query for FTS5: wrap each token in double quotes to avoid
+  // syntax errors from special characters, then join with implicit AND.
+  const tokens = query
+    .trim()
+    .split(/\s+/)
+    .map((t) => `"${t.replace(/"/g, '""')}"`)
+  const ftsQuery = tokens.join(' ')
+
+  if (channelId) {
+    return getDb()
+      .prepare(
+        'SELECT message_id, channel_id, content FROM message_fts WHERE channel_id = ? AND message_fts MATCH ? ORDER BY rank'
+      )
+      .all(channelId, ftsQuery) as Array<{
+      message_id: string
+      channel_id: string
+      content: string
+    }>
   }
 
-  if (typeof raw !== 'string' || raw.trim() === '') {
-    return []
-  }
-
-  try {
-    const parsed = JSON.parse(raw)
-    if (!Array.isArray(parsed)) {
-      return []
-    }
-    return parsed.filter((item): item is string => typeof item === 'string')
-  } catch {
-    return []
-  }
+  return getDb()
+    .prepare(
+      'SELECT message_id, channel_id, content FROM message_fts WHERE message_fts MATCH ? ORDER BY rank'
+    )
+    .all(ftsQuery) as Array<{
+    message_id: string
+    channel_id: string
+    content: string
+  }>
 }

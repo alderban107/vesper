@@ -14,6 +14,22 @@ interface BitrateSample {
 }
 
 export type LocalVideoMode = 'camera' | 'screen'
+export type VoiceMediaSlot = 'voice_audio' | 'share_audio' | 'camera_video' | 'share_video'
+type LocalVisualSlot = 'camera_video' | 'share_video'
+
+export interface VideoPublishProfile {
+  width: number
+  height: number
+  frameRate: number
+  bitrateKbps: number
+  contentHint: 'motion' | 'detail' | 'text'
+}
+
+function stopStream(stream: MediaStream): void {
+  for (const track of stream.getTracks()) {
+    track.stop()
+  }
+}
 
 export class WebRTCManager {
   private static readonly NOISE_GATE_FLOOR_RMS = 0.00001
@@ -25,8 +41,13 @@ export class WebRTCManager {
   private pc: RTCPeerConnection | null = null
   private localStream: MediaStream | null = null
   private rawLocalStream: MediaStream | null = null
-  private localVideoSourceStream: MediaStream | null = null
-  private localVideoPreviewStream: MediaStream | null = null
+  private localVideoSourceStreams: Partial<Record<LocalVisualSlot, MediaStream>> = {}
+  private localVideoPreviewStreams: Partial<Record<LocalVisualSlot, MediaStream>> = {}
+  private localShareAudioTrack: MediaStreamTrack | null = null
+  private publishMidBySlot: Partial<Record<VoiceMediaSlot, string>> = {}
+  private currentCameraProfile: VideoPublishProfile | null = null
+  private currentShareProfile: VideoPublishProfile | null = null
+  private shareAudioRequested = false
   private audioContext: AudioContext | null = null
   private inputSourceNode: MediaStreamAudioSourceNode | null = null
   private inputGainNode: GainNode | null = null
@@ -44,6 +65,10 @@ export class WebRTCManager {
   private onConnectionStateChange: ((state: RTCPeerConnectionState) => void) | null = null
   private previousInboundBitrateSamples = new Map<string, BitrateSample>()
   private previousOutboundBitrateSamples = new Map<string, BitrateSample>()
+
+  static supportsEncryptedMedia(): boolean {
+    return typeof window !== 'undefined' && 'RTCRtpScriptTransform' in window
+  }
 
   init(
     iceServers: RTCIceServer[],
@@ -79,13 +104,8 @@ export class WebRTCManager {
   async startAudio(preferences: VoicePreferences): Promise<void> {
     await this.attachAudio(preferences)
     const audioTrack = this.localStream?.getAudioTracks()[0]
-    if (audioTrack && this.pc && this.localStream) {
-      const sender = this.findSender('audio')
-      if (sender) {
-        await sender.replaceTrack(audioTrack)
-      } else {
-        this.pc.addTrack(audioTrack, this.localStream)
-      }
+    if (audioTrack) {
+      await this.attachTrackToSlot('voice_audio', audioTrack)
     }
   }
 
@@ -102,74 +122,163 @@ export class WebRTCManager {
       return
     }
 
-    const sender = this.findSender('audio')
-    if (sender) {
-      await sender.replaceTrack(nextTrack)
-    } else {
-      this.pc.addTrack(nextTrack, this.localStream!)
-    }
+    await this.attachTrackToSlot('voice_audio', nextTrack)
 
     previousTrack?.stop()
   }
 
-  async startVideo(mode: LocalVideoMode): Promise<MediaStream> {
+  setPublishMap(publishMap: Partial<Record<VoiceMediaSlot, string>>): void {
+    this.publishMidBySlot = publishMap
+  }
+
+  async prepareOffer(
+    sdp: string,
+    publishMap: Partial<Record<VoiceMediaSlot, string>>
+  ): Promise<void> {
     if (!this.pc) {
       throw new Error('PeerConnection not initialized')
     }
 
-    await this.stopVideo()
+    await this.pc.setRemoteDescription({ type: 'offer', sdp })
+    this.setPublishMap(publishMap)
+  }
 
-    const captureConstraints: DisplayMediaStreamOptions | MediaStreamConstraints =
-      mode === 'screen'
-        ? {
-            video: {
-              frameRate: { ideal: 30, max: 30 }
-            },
-            audio: false
-          }
-        : {
-            video: {
-              width: { ideal: 1280 },
-              height: { ideal: 720 },
-              frameRate: { ideal: 30, max: 30 }
-            },
-            audio: false
-          }
+  async finalizeAnswer(): Promise<string> {
+    if (!this.pc) {
+      throw new Error('PeerConnection not initialized')
+    }
 
-    this.localVideoSourceStream =
-      mode === 'screen'
-        ? await navigator.mediaDevices.getDisplayMedia(captureConstraints as DisplayMediaStreamOptions)
-        : await navigator.mediaDevices.getUserMedia(captureConstraints as MediaStreamConstraints)
+    const answer = await this.pc.createAnswer()
+    await this.pc.setLocalDescription(answer)
+    return answer.sdp!
+  }
 
-    const nextTrack = this.localVideoSourceStream.getVideoTracks()[0]
+  async startVideo(
+    mode: LocalVideoMode,
+    profile: VideoPublishProfile,
+    includeAudio = false
+  ): Promise<MediaStream> {
+    if (!this.pc) {
+      throw new Error('PeerConnection not initialized')
+    }
+
+    if (mode === 'screen') {
+      return this.startScreenShare(profile, includeAudio)
+    }
+
+    return this.startCamera(profile)
+  }
+
+  async startCamera(profile: VideoPublishProfile): Promise<MediaStream> {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        width: { ideal: profile.width },
+        height: { ideal: profile.height },
+        frameRate: { ideal: profile.frameRate, max: profile.frameRate }
+      },
+      audio: false
+    })
+
+    await this.stopCamera()
+
+    const nextTrack = stream.getVideoTracks()[0]
     if (!nextTrack) {
-      this.cleanupLocalVideoCapture()
-      throw new Error('No video track available')
+      stopStream(stream)
+      throw new Error('No camera track available')
     }
 
-    const sender = this.findSender('video')
-    if (!sender) {
-      this.cleanupLocalVideoCapture()
-      throw new Error('Video slot unavailable')
+    this.currentCameraProfile = profile
+    this.localVideoSourceStreams.camera_video = stream
+    this.localVideoPreviewStreams.camera_video = new MediaStream([nextTrack])
+    await this.attachTrackToSlot('camera_video', nextTrack)
+    await this.applyVideoProfile('camera_video', nextTrack, profile)
+
+    return this.localVideoPreviewStreams.camera_video
+  }
+
+  async startScreenShare(
+    profile: VideoPublishProfile,
+    includeAudio: boolean
+  ): Promise<MediaStream> {
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: {
+        width: { ideal: profile.width },
+        height: { ideal: profile.height },
+        frameRate: { ideal: profile.frameRate, max: profile.frameRate }
+      },
+      audio: includeAudio
+    })
+
+    await this.stopScreenShare()
+
+    const videoTrack = stream.getVideoTracks()[0]
+    if (!videoTrack) {
+      stopStream(stream)
+      throw new Error('No screen track available')
     }
 
-    await sender.replaceTrack(nextTrack)
+    this.currentShareProfile = profile
+    this.shareAudioRequested = includeAudio
+    this.localVideoSourceStreams.share_video = stream
+    this.localVideoPreviewStreams.share_video = new MediaStream([videoTrack])
+    await this.attachTrackToSlot('share_video', videoTrack)
+    await this.applyVideoProfile('share_video', videoTrack, profile)
 
-    this.localVideoPreviewStream = new MediaStream([nextTrack])
-    return this.localVideoPreviewStream
+    const audioTrack = stream.getAudioTracks()[0] ?? null
+    this.localShareAudioTrack = audioTrack
+    if (audioTrack) {
+      await this.attachTrackToSlot('share_audio', audioTrack)
+    } else {
+      await this.attachTrackToSlot('share_audio', null)
+    }
+
+    return this.localVideoPreviewStreams.share_video
+  }
+
+  async rebindLocalTracks(): Promise<void> {
+    const voiceTrack = this.localStream?.getAudioTracks()[0] ?? null
+    await this.attachTrackToSlot('voice_audio', voiceTrack)
+
+    const cameraTrack = this.localVideoSourceStreams.camera_video?.getVideoTracks()[0] ?? null
+    await this.attachTrackToSlot('camera_video', cameraTrack)
+    if (cameraTrack && this.currentCameraProfile) {
+      await this.applyVideoProfile('camera_video', cameraTrack, this.currentCameraProfile)
+    }
+
+    const shareTrack = this.localVideoSourceStreams.share_video?.getVideoTracks()[0] ?? null
+    await this.attachTrackToSlot('share_video', shareTrack)
+    if (shareTrack && this.currentShareProfile) {
+      await this.applyVideoProfile('share_video', shareTrack, this.currentShareProfile)
+    }
+
+    await this.attachTrackToSlot('share_audio', this.localShareAudioTrack)
   }
 
   async stopVideo(): Promise<void> {
-    const sender = this.findSender('video')
-    if (sender) {
-      await sender.replaceTrack(null)
-    }
-
-    this.cleanupLocalVideoCapture()
+    await Promise.all([this.stopCamera(), this.stopScreenShare()])
   }
 
-  getLocalVideoStream(): MediaStream | null {
-    return this.localVideoPreviewStream
+  async stopCamera(): Promise<void> {
+    await this.attachTrackToSlot('camera_video', null)
+    this.currentCameraProfile = null
+    this.cleanupLocalVideoCapture('camera_video')
+  }
+
+  async stopScreenShare(): Promise<void> {
+    await this.attachTrackToSlot('share_video', null)
+    await this.attachTrackToSlot('share_audio', null)
+    this.currentShareProfile = null
+    this.shareAudioRequested = false
+    this.localShareAudioTrack = null
+    this.cleanupLocalVideoCapture('share_video')
+  }
+
+  getLocalVideoStream(slot: LocalVisualSlot): MediaStream | null {
+    return this.localVideoPreviewStreams[slot] ?? null
+  }
+
+  hasPublishSlot(slot: VoiceMediaSlot): boolean {
+    return this.findSenderBySlot(slot) !== null
   }
 
   setInputVolume(volume: number): void {
@@ -243,11 +352,8 @@ export class WebRTCManager {
   async handleOffer(sdp: string): Promise<string> {
     if (!this.pc) throw new Error('PeerConnection not initialized')
 
-    await this.pc.setRemoteDescription({ type: 'offer', sdp })
-    const answer = await this.pc.createAnswer()
-    await this.pc.setLocalDescription(answer)
-
-    return answer.sdp!
+    await this.prepareOffer(sdp, this.publishMidBySlot)
+    return this.finalizeAnswer()
   }
 
   async addIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
@@ -301,7 +407,7 @@ export class WebRTCManager {
         }
       }
 
-      if (stat.type === 'inbound-rtp' && stat.kind === 'audio') {
+      if (stat.type === 'inbound-rtp' && (stat.kind === 'audio' || stat.kind === 'video')) {
         if (typeof stat.packetsLost === 'number') {
           packetsLost += stat.packetsLost
         }
@@ -324,7 +430,7 @@ export class WebRTCManager {
         }
       }
 
-      if (stat.type === 'outbound-rtp' && stat.kind === 'audio') {
+      if (stat.type === 'outbound-rtp' && (stat.kind === 'audio' || stat.kind === 'video')) {
         const outboundBitrateSample = this.buildBitrateSample(stat)
         if (outboundBitrateSample) {
           nextOutboundBitrateSamples.set(stat.id, outboundBitrateSample)
@@ -359,7 +465,8 @@ export class WebRTCManager {
   }
 
   destroy(): void {
-    this.cleanupLocalVideoCapture()
+    this.cleanupLocalVideoCapture('camera_video')
+    this.cleanupLocalVideoCapture('share_video')
     this.cleanupLocalAudioGraph()
 
     if (this.pc) {
@@ -372,6 +479,10 @@ export class WebRTCManager {
     this.onConnectionStateChange = null
     this.previousInboundBitrateSamples.clear()
     this.previousOutboundBitrateSamples.clear()
+    this.publishMidBySlot = {}
+    this.localShareAudioTrack = null
+    this.currentCameraProfile = null
+    this.currentShareProfile = null
   }
 
   private buildBitrateSample(stat: RTCStats & Record<string, unknown>): BitrateSample | null {
@@ -410,32 +521,89 @@ export class WebRTCManager {
     return (deltaBytes * 8 * 1000) / deltaMs
   }
 
-  private findSender(kind: 'audio' | 'video'): RTCRtpSender | null {
+  private findSenderBySlot(slot: VoiceMediaSlot): RTCRtpSender | null {
     if (!this.pc) {
       return null
     }
 
-    const byTrackKind = this.pc.getSenders().find((entry) => entry.track?.kind === kind)
-    if (byTrackKind) {
-      return byTrackKind
+    const mid = this.publishMidBySlot[slot]
+    if (!mid) {
+      return null
     }
 
     const byTransceiver = this.pc
       .getTransceivers()
-      .find((entry) => entry.receiver.track?.kind === kind)
+      .find((entry) => entry.mid === mid)
 
     return byTransceiver?.sender ?? null
   }
 
-  private cleanupLocalVideoCapture(): void {
-    if (this.localVideoSourceStream) {
-      for (const track of this.localVideoSourceStream.getTracks()) {
-        track.stop()
-      }
-      this.localVideoSourceStream = null
+  private async attachTrackToSlot(
+    slot: VoiceMediaSlot,
+    track: MediaStreamTrack | null
+  ): Promise<void> {
+    const sender = this.findSenderBySlot(slot)
+    if (!sender) {
+      return
     }
 
-    this.localVideoPreviewStream = null
+    await sender.replaceTrack(track)
+  }
+
+  private async applyVideoProfile(
+    slot: LocalVisualSlot,
+    track: MediaStreamTrack,
+    profile: VideoPublishProfile
+  ): Promise<void> {
+    try {
+      track.contentHint = profile.contentHint
+    } catch {
+      // Ignore unsupported content hints.
+    }
+
+    try {
+      await track.applyConstraints({
+        width: profile.width,
+        height: profile.height,
+        frameRate: profile.frameRate
+      })
+    } catch {
+      // Some browsers ignore/deny dynamic constraints on captured tracks.
+    }
+
+    const sender = this.findSenderBySlot(slot)
+    if (!sender) {
+      return
+    }
+
+    try {
+      const params = sender.getParameters()
+      const existingEncoding = params.encodings?.[0] ?? {}
+      params.encodings = [
+        {
+          ...existingEncoding,
+          maxBitrate: profile.bitrateKbps * 1000,
+          maxFramerate: profile.frameRate,
+          scaleResolutionDownBy: 1
+        }
+      ]
+      params.degradationPreference = slot === 'share_video' ? 'maintain-resolution' : 'balanced'
+      await sender.setParameters(params)
+    } catch {
+      // Some browsers reject sender parameter changes for captured media.
+    }
+  }
+
+  private cleanupLocalVideoCapture(slot: LocalVisualSlot): void {
+    const sourceStream = this.localVideoSourceStreams[slot]
+    if (sourceStream) {
+      for (const track of sourceStream.getTracks()) {
+        track.stop()
+      }
+      delete this.localVideoSourceStreams[slot]
+    }
+
+    delete this.localVideoPreviewStreams[slot]
   }
 
   private cleanupLocalAudioGraph(): void {

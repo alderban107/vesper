@@ -327,6 +327,25 @@ defmodule Vesper.Chat do
     end
   end
 
+  @doc """
+  Remove an encrypted reaction. Since the server cannot match on emoji content
+  (it's encrypted), we remove the most recent reaction from this sender on this
+  message. The client is responsible for tracking which emoji it's toggling.
+  """
+  def remove_encrypted_reaction(message_id, sender_id) do
+    query =
+      from(r in Reaction,
+        where: r.message_id == ^message_id and r.sender_id == ^sender_id,
+        order_by: [desc: r.inserted_at],
+        limit: 1
+      )
+
+    case Repo.one(query) do
+      nil -> {:error, :not_found}
+      reaction -> Repo.delete(reaction)
+    end
+  end
+
   def list_reactions(message_id, opts \\ []) do
     limit = Keyword.get(opts, :limit, 200)
 

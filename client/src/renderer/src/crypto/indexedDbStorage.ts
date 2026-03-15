@@ -1,10 +1,16 @@
 /**
  * IndexedDB-backed implementation of CryptoDbApi for the web client.
  * Mirrors the SQLite storage used in Electron (see main/db.ts).
+ *
+ * The database is namespaced per user: `vesper-crypto-{userId}`.
+ * This prevents key packages, group states, and cached messages from
+ * leaking across user sessions in the same browser.
+ *
+ * Fixes: https://github.com/vesper-chat/vesper/issues/22
  */
 
-const DB_NAME = 'vesper-crypto'
-const DB_VERSION = 2
+const DB_NAME_PREFIX = 'vesper-crypto'
+const DB_VERSION = 1
 
 const STORES = {
   identityKeys: 'identity_keys',
@@ -13,9 +19,10 @@ const STORES = {
   messageCache: 'message_cache'
 } as const
 
-function openDb(): Promise<IDBDatabase> {
+function openDb(userId: string): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION)
+    const dbName = `${DB_NAME_PREFIX}-${userId}`
+    const req = indexedDB.open(dbName, DB_VERSION)
 
     req.onupgradeneeded = () => {
       const db = req.result
@@ -38,12 +45,6 @@ function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(STORES.messageCache)) {
         const msgStore = db.createObjectStore(STORES.messageCache, { keyPath: 'id' })
         msgStore.createIndex('channel_id', 'channel_id', { unique: false })
-        msgStore.createIndex('conversation_id', 'conversation_id', { unique: false })
-      } else if (req.transaction) {
-        const msgStore = req.transaction.objectStore(STORES.messageCache)
-        if (!msgStore.indexNames.contains('conversation_id')) {
-          msgStore.createIndex('conversation_id', 'conversation_id', { unique: false })
-        }
       }
     }
 
@@ -74,15 +75,24 @@ function txComplete(transaction: IDBTransaction): Promise<void> {
   })
 }
 
-export function createIndexedDbAdapter(): CryptoDbApi & {
-  deleteCachedMessage: (messageId: string) => Promise<void>
-  pruneMessageCache: (maxRows: number) => Promise<void>
+export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
+  searchMessages: (query: string) => Promise<
+    Array<{
+      id: string
+      channel_id: string
+      sender_id: string | null
+      sender_username: string | null
+      ciphertext: ArrayBuffer | null
+      mls_epoch: number | null
+      inserted_at: string
+    }>
+  >
 } {
   let dbPromise: Promise<IDBDatabase> | null = null
 
   function getDb(): Promise<IDBDatabase> {
     if (!dbPromise) {
-      dbPromise = openDb()
+      dbPromise = openDb(userId)
     }
     return dbPromise
   }
@@ -99,7 +109,8 @@ export function createIndexedDbAdapter(): CryptoDbApi & {
         public_key_exchange: result.public_key_exchange,
         encrypted_private_keys: result.encrypted_private_keys,
         nonce: result.nonce,
-        salt: result.salt
+        salt: result.salt,
+        signature_private_key: result.signature_private_key ?? null
       }
     },
 
@@ -109,7 +120,8 @@ export function createIndexedDbAdapter(): CryptoDbApi & {
       publicKeyExchange: Uint8Array,
       encryptedPrivateKeys: Uint8Array,
       nonce: Uint8Array,
-      salt: Uint8Array
+      salt: Uint8Array,
+      signaturePrivateKey?: Uint8Array | null
     ) {
       const db = await getDb()
       await req(
@@ -119,7 +131,8 @@ export function createIndexedDbAdapter(): CryptoDbApi & {
           public_key_exchange: publicKeyExchange,
           encrypted_private_keys: encryptedPrivateKeys,
           nonce: nonce,
-          salt: salt
+          salt: salt,
+          signature_private_key: signaturePrivateKey ?? null
         })
       )
     },
@@ -203,17 +216,15 @@ export function createIndexedDbAdapter(): CryptoDbApi & {
       return all.filter((pkg: { consumed: number }) => !pkg.consumed).length
     },
 
-    // --- Message Cache ---
+    // --- Message Cache (stores ciphertext, not plaintext) ---
 
     async cacheMessage(msg: {
       id: string
-      channel_id: string | null
-      conversation_id: string | null
-      server_id: string | null
+      channel_id: string
       sender_id: string | null
       sender_username: string | null
-      content: string | null
-      attachment_filenames: string[]
+      ciphertext: Uint8Array | null
+      mls_epoch: number | null
       inserted_at: string
     }) {
       const db = await getDb()
@@ -229,24 +240,6 @@ export function createIndexedDbAdapter(): CryptoDbApi & {
         (a: { inserted_at: string }, b: { inserted_at: string }) =>
           a.inserted_at.localeCompare(b.inserted_at)
       )
-        .map((row: Record<string, unknown>) => ({
-          ...row,
-          attachment_filenames: normalizeAttachmentFilenames(row.attachment_filenames)
-        }))
-    },
-
-    async getAllCachedMessages() {
-      const db = await getDb()
-      const rows = await req(tx(db, STORES.messageCache, 'readonly').getAll())
-      return rows
-        .sort(
-          (a: { inserted_at: string }, b: { inserted_at: string }) =>
-            b.inserted_at.localeCompare(a.inserted_at)
-        )
-        .map((row: Record<string, unknown>) => ({
-          ...row,
-          attachment_filenames: normalizeAttachmentFilenames(row.attachment_filenames)
-        }))
     },
 
     async clearMessageCache(channelId: string) {
@@ -259,40 +252,24 @@ export function createIndexedDbAdapter(): CryptoDbApi & {
       }
     },
 
-    async deleteCachedMessage(messageId: string) {
-      const db = await getDb()
-      await req(tx(db, STORES.messageCache, 'readwrite').delete(messageId))
+    // --- FTS5 Search ---
+    // IndexedDB fallback does not support FTS5. These are stubs.
+    // Full-text search is only available in the Electron build (SQLite).
+
+    async searchMessages(_query: string, _channelId?: string) {
+      return []
     },
 
-    async pruneMessageCache(maxRows: number) {
-      const db = await getDb()
-      const safeMaxRows = Number.isFinite(maxRows) ? Math.max(100, Math.floor(maxRows)) : 5000
-      const all = await req(tx(db, STORES.messageCache, 'readonly').getAll())
-      const toDelete = all
-        .sort(
-          (a: { inserted_at: string }, b: { inserted_at: string }) =>
-            b.inserted_at.localeCompare(a.inserted_at)
-        )
-        .slice(safeMaxRows)
+    async indexDecryptedMessage(
+      _messageId: string,
+      _channelId: string,
+      _content: string
+    ) {
+      // no-op in web fallback
+    },
 
-      if (toDelete.length === 0) {
-        return
-      }
-
-      const transaction = db.transaction(STORES.messageCache, 'readwrite')
-      const store = transaction.objectStore(STORES.messageCache)
-      for (const row of toDelete as Array<{ id: string }>) {
-        store.delete(row.id)
-      }
-      await txComplete(transaction)
+    async removeFromFtsIndex(_messageId: string) {
+      // no-op in web fallback
     }
   }
-}
-
-function normalizeAttachmentFilenames(raw: unknown): string[] {
-  if (!Array.isArray(raw)) {
-    return []
-  }
-
-  return raw.filter((item): item is string => typeof item === 'string')
 }

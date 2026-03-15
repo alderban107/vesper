@@ -17,8 +17,14 @@ import {
   decodeGroupState,
   makePskIndex,
   mlsExporter,
+  defaultKeyRetentionConfig,
+  defaultLifetimeConfig,
+  defaultPaddingConfig,
+  defaultKeyPackageEqualityConfig,
+  defaultAuthenticationService,
   type CiphersuiteImpl,
   type ClientState,
+  type ClientConfig,
   type KeyPackage,
   type PrivateKeyPackage,
   type Proposal,
@@ -26,7 +32,47 @@ import {
 } from 'ts-mls'
 import type { KeyPackagePair } from './types'
 
+/**
+ * Properly decode an MLS message from bytes.
+ *
+ * ts-mls's `decodeMlsMessage` is a raw TLS decoder with the signature
+ * `(buf: Uint8Array, offset: number) => [MLSMessage, bytesConsumed] | undefined`.
+ * It must be called with an explicit offset (0 for top-level decoding) and
+ * returns a `[value, length]` tuple — not the decoded value directly.
+ *
+ * Calling it without the offset argument leaves `offset` as `undefined`,
+ * which corrupts the internal accumulator (`undefined + 2 = NaN`) so every
+ * sub-decoder after the first reads from byte 0, producing garbage.
+ */
+function decodeMlsMessageFromBytes(bytes: Uint8Array): MLSMessage {
+  const result = decodeMlsMessage(bytes, 0)
+  if (!result) {
+    throw new Error('Failed to decode MLS message: decoder returned undefined')
+  }
+  // decodeMlsMessage returns [decodedValue, bytesConsumed]
+  return result[0] as MLSMessage
+}
+
 const CIPHERSUITE_NAME = 'MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519' as const
+
+/**
+ * Epoch key retention depth. Controls how many past epochs' decryption keys
+ * are kept in the serialized ClientState, enabling decryption of messages
+ * from older epochs. The ts-mls default is 4; we raise it to 64 so cached
+ * messages remain decryptable across a reasonable window of group updates.
+ */
+const RETAIN_KEYS_FOR_EPOCHS = 64
+
+const vesperClientConfig: ClientConfig = {
+  keyRetentionConfig: {
+    ...defaultKeyRetentionConfig,
+    retainKeysForEpochs: RETAIN_KEYS_FOR_EPOCHS
+  },
+  lifetimeConfig: defaultLifetimeConfig,
+  keyPackageEqualityConfig: defaultKeyPackageEqualityConfig,
+  paddingConfig: defaultPaddingConfig,
+  authService: defaultAuthenticationService
+}
 
 let csImpl: CiphersuiteImpl | null = null
 
@@ -101,7 +147,7 @@ export async function createMLSGroup(
 ): Promise<ClientState> {
   const cs = getCs()
   const groupIdBytes = new TextEncoder().encode(groupId)
-  return createGroup(groupIdBytes, keyPackage, privateKeyPackage, [], cs)
+  return createGroup(groupIdBytes, keyPackage, privateKeyPackage, [], cs, vesperClientConfig)
 }
 
 /**
@@ -182,14 +228,14 @@ export async function processWelcome(
   privateKeys: PrivateKeyPackage
 ): Promise<ClientState> {
   const cs = getCs()
-  const decoded = decodeMlsMessage(welcomeBytes)
+  const decoded = decodeMlsMessageFromBytes(welcomeBytes)
 
   if (decoded.wireformat !== 'mls_welcome') {
     throw new Error(`Expected mls_welcome, got ${decoded.wireformat}`)
   }
 
   const pskIndex = makePskIndex(undefined, {})
-  return joinGroup(decoded.welcome, keyPackage, privateKeys, pskIndex, cs)
+  return joinGroup(decoded.welcome, keyPackage, privateKeys, pskIndex, cs, undefined, undefined, vesperClientConfig)
 }
 
 /**
@@ -201,7 +247,7 @@ export async function processCommitMessage(
   commitBytes: Uint8Array
 ): Promise<ClientState> {
   const cs = getCs()
-  const decoded = decodeMlsMessage(commitBytes)
+  const decoded = decodeMlsMessageFromBytes(commitBytes)
 
   if (decoded.wireformat === 'mls_public_message') {
     const pskIndex = makePskIndex(state, {})
@@ -245,6 +291,15 @@ export async function encryptMessage(
 
 /**
  * Decrypt a ciphertext message from the MLS group.
+ *
+ * AUDIT NOTE (Phase 6.3 — MLS sender authentication):
+ * ts-mls performs Ed25519 signature verification during processPrivateMessage().
+ * The path is: processPrivateMessage → unprotectPrivateMessage (messageProtection.js)
+ * which extracts the sender's signature public key from the ratchet tree via
+ * getSignaturePublicKeyFromLeafIndex(), then calls verifyFramedContentSignature().
+ * If the signature is invalid, it throws CryptoVerificationError("Signature invalid").
+ * This means every decrypted message is authenticated against the sender's leaf node
+ * key — a forged or tampered message will fail decryption entirely.
  */
 export async function decryptMessage(
   state: ClientState,
@@ -254,7 +309,7 @@ export async function decryptMessage(
   newState: ClientState
 } | null> {
   const cs = getCs()
-  const decoded = decodeMlsMessage(ciphertext)
+  const decoded = decodeMlsMessageFromBytes(ciphertext)
 
   if (decoded.wireformat !== 'mls_private_message') {
     throw new Error(`Expected mls_private_message, got ${decoded.wireformat}`)
@@ -300,7 +355,16 @@ export function serializeGroupState(state: ClientState): Uint8Array {
  * Deserialize MLS group state from local storage.
  */
 export function deserializeGroupState(bytes: Uint8Array): ClientState {
-  return decodeGroupState(bytes)
+  const result = decodeGroupState(bytes, 0)
+  if (!result) {
+    throw new Error('Failed to decode group state: decoder returned undefined')
+  }
+  // decodeGroupState returns [decodedValue, bytesConsumed].
+  // clientConfig is not part of the TLS serialization format, so we
+  // reattach the Vesper config after deserialization.
+  const state = result[0] as ClientState
+  state.clientConfig = vesperClientConfig
+  return state
 }
 
 /**
@@ -317,7 +381,7 @@ export async function deriveVoiceKey(state: ClientState): Promise<Uint8Array> {
  * Decode a KeyPackage from its serialized form.
  */
 export function decodeKeyPackageBytes(bytes: Uint8Array): KeyPackage {
-  const decoded = decodeMlsMessage(bytes)
+  const decoded = decodeMlsMessageFromBytes(bytes)
   if (decoded.wireformat !== 'mls_key_package') {
     throw new Error(`Expected mls_key_package, got ${decoded.wireformat}`)
   }

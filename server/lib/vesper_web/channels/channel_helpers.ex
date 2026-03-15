@@ -50,6 +50,33 @@ defmodule VesperWeb.ChannelHelpers do
 
   def maybe_add_parent(attrs, _params), do: attrs
 
+  def maybe_add_parent_id(attrs, parent_id) when is_binary(parent_id) do
+    Map.put(attrs, :parent_message_id, parent_id)
+  end
+
+  def maybe_add_parent_id(attrs, _parent_id), do: attrs
+
+  def resolve_parent_message_id(params, scope_field, scope_id) do
+    case Map.get(params, "parent_message_id") do
+      nil ->
+        {:ok, nil}
+
+      parent_id when is_binary(parent_id) ->
+        with {:ok, root_parent} <- load_thread_root(parent_id),
+             true <-
+               scope_matches?(root_parent, scope_field, scope_id) ||
+                 {:error, "parent message is not in this scope"} do
+          {:ok, root_parent.id}
+        else
+          {:error, reason} -> {:error, reason}
+          false -> {:error, "parent message is not in this scope"}
+        end
+
+      _ ->
+        {:error, "parent_message_id must be a string"}
+    end
+  end
+
   def maybe_link_attachments(message, %{"attachment_ids" => ids})
       when is_list(ids) and ids != [] do
     Chat.link_attachments_to_message(ids, message.id)
@@ -115,13 +142,20 @@ defmodule VesperWeb.ChannelHelpers do
     end
   end
 
+  # Plaintext reaction (no encryption metadata)
+  def handle_reaction(action, message_id, emoji, sender_id, expected_scope_field, expected_scope_value) do
+    handle_reaction(action, message_id, emoji, sender_id, expected_scope_field, expected_scope_value, %{})
+  end
+
+  # Reaction with optional encryption metadata (ciphertext + mls_epoch)
   def handle_reaction(
         action,
         message_id,
         emoji,
         sender_id,
         expected_scope_field,
-        expected_scope_value
+        expected_scope_value,
+        crypto_meta
       ) do
     case Chat.get_message(message_id) do
       nil ->
@@ -133,11 +167,12 @@ defmodule VesperWeb.ChannelHelpers do
         else
           case action do
             :add ->
-              case Chat.add_reaction(%{
-                     message_id: message_id,
-                     sender_id: sender_id,
-                     emoji: emoji
-                   }) do
+              attrs =
+                %{message_id: message_id, sender_id: sender_id, emoji: emoji}
+                |> maybe_put(:ciphertext, Map.get(crypto_meta, :ciphertext))
+                |> maybe_put(:mls_epoch, Map.get(crypto_meta, :mls_epoch))
+
+              case Chat.add_reaction(attrs) do
                 {:ok, _} -> :ok
                 {:error, _} -> {:error, "could not add reaction"}
               end
@@ -147,10 +182,21 @@ defmodule VesperWeb.ChannelHelpers do
                 {:ok, _} -> :ok
                 {:error, _} -> {:error, "could not remove reaction"}
               end
+
+            :remove_encrypted ->
+              # For encrypted reactions, the server can't match on emoji.
+              # Remove the most recent reaction from this sender on this message.
+              case Chat.remove_encrypted_reaction(message_id, sender_id) do
+                {:ok, _} -> :ok
+                {:error, _} -> {:error, "could not remove reaction"}
+              end
           end
         end
     end
   end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   @doc """
   Build typing indicator payload. Accepts a socket to use cached username,
@@ -162,5 +208,30 @@ defmodule VesperWeb.ChannelHelpers do
 
   def typing_start_payload(%{assigns: %{user_id: user_id}}) do
     %{user_id: user_id, username: nil}
+  end
+
+  defp load_thread_root(parent_id) do
+    case Chat.get_message(parent_id) do
+      nil ->
+        {:error, "parent message not found"}
+
+      parent ->
+        if parent.parent_message_id do
+          case Chat.get_message(parent.parent_message_id) do
+            nil -> {:ok, parent}
+            root -> {:ok, root}
+          end
+        else
+          {:ok, parent}
+        end
+    end
+  end
+
+  defp scope_matches?(message, :channel_id, scope_id) do
+    message.channel_id == scope_id and is_nil(message.conversation_id)
+  end
+
+  defp scope_matches?(message, :conversation_id, scope_id) do
+    message.conversation_id == scope_id and is_nil(message.channel_id)
   end
 end

@@ -1069,9 +1069,11 @@
 .vesper-settings-shell {
   position: relative;
   display: flex;
-  width: min(80vw, 1180px);
-  height: min(80vh, 880px);
-  min-height: min(80vh, 880px);
+  width: calc(100vw - 8rem);
+  height: calc(100vh - 8rem);
+  min-height: 0;
+  max-width: 1440px;
+  max-height: 960px;
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
   border-radius: 1.6rem;
@@ -1092,7 +1094,7 @@
 .vesper-settings-sidebar-scroll {
   height: 100%;
   overflow-y: auto;
-  padding: 1.25rem 1rem 1.25rem 3.15rem;
+  padding: 1.25rem 1rem 1.25rem 1.1rem;
 }
 
 .vesper-settings-nav {
@@ -1173,7 +1175,7 @@
 .vesper-settings-content-scroll {
   width: min(920px, 100%);
   overflow-y: auto;
-  padding: 3.2rem 1.5rem 3rem;
+  padding: 2.2rem 1.75rem 3rem;
 }
 
 .vesper-settings-content-inner {
@@ -1181,7 +1183,7 @@
   max-width: 740px;
 }
 
-.vesper-settings-close-region {
+.vesper-settings-close-cluster {
   position: absolute;
   top: 1.05rem;
   right: 1.05rem;
@@ -1206,10 +1208,13 @@
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  transition: border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease;
 }
 
 .vesper-settings-close:hover {
   color: var(--color-text-primary);
+  border-color: color-mix(in srgb, var(--color-border) 98%, transparent);
+  background: color-mix(in srgb, var(--color-bg-tertiary) 92%, transparent);
 }
 
 .vesper-settings-close-hint {
@@ -3359,6 +3364,28 @@
   padding: 0 0.35rem 0.35rem;
 }
 
+.vesper-channel-category-grip {
+  width: 1.55rem;
+  height: 1.55rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.55rem;
+  color: var(--color-text-faint);
+  cursor: grab;
+  flex: 0 0 auto;
+  transition: background-color 0.16s ease, color 0.16s ease;
+}
+
+.vesper-channel-category-grip:hover {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 72%, transparent);
+  color: var(--color-text-primary);
+}
+
+.vesper-channel-category-grip:active {
+  cursor: grabbing;
+}
+
 .vesper-channel-group-actions {
   display: inline-flex;
   align-items: center;
@@ -3568,6 +3595,31 @@
   font-weight: 600;
 }
 
+.vesper-channel-create-scope {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-bottom: 1rem;
+  padding: 0.8rem 0.95rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  border-radius: 0.95rem;
+  background: color-mix(in srgb, var(--color-bg-base) 68%, transparent);
+}
+
+.vesper-channel-create-scope-label {
+  color: var(--color-text-faint);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.vesper-channel-create-scope-value {
+  color: var(--color-text-primary);
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
 .vesper-channel-row-voice {
   color: var(--color-text-secondary);
 }
@@ -3592,8 +3644,76 @@
 .vesper-voice-participant-row {
   display: flex;
   align-items: center;
-  gap: 0.45rem;
+  gap: 0.35rem;
   min-width: 0;
+}
+
+.vesper-voice-participant-row-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.28rem 0.45rem;
+  border-radius: 0.75rem;
+  transition: background-color 0.16s ease;
+}
+
+.vesper-voice-participant-avatar {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.vesper-voice-participant-avatar-ring {
+  position: absolute;
+  inset: -0.18rem;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.vesper-voice-participant-avatar-speaking .vesper-voice-participant-avatar-ring {
+  border-color: rgba(59, 165, 92, 0.34);
+  box-shadow: 0 0 0 3px rgba(59, 165, 92, 0.14);
+}
+
+.vesper-voice-participant-row:hover .vesper-voice-participant-row-content {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 62%, transparent);
+}
+
+.vesper-voice-participant-name {
+  flex: 1;
+  min-width: 0;
+  color: var(--color-text-muted);
+  font-size: 0.76rem;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vesper-voice-participant-name-speaking {
+  color: var(--color-text-primary);
+}
+
+.vesper-voice-participant-icons {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.22rem;
+  color: var(--color-text-faint);
+  flex: 0 0 auto;
+}
+
+.vesper-voice-participant-state-icon {
+  width: 0.8rem;
+  height: 0.8rem;
+}
+
+.vesper-voice-participant-state-icon-muted {
+  color: #fca5a5;
 }
 
 .vesper-voice-participant-volume-button {
@@ -3832,6 +3952,168 @@
   background: color-mix(in srgb, #10b981 22%, transparent);
 }
 
+.vesper-voice-room-presence-strip {
+  margin-top: 1rem;
+  padding: 0.95rem 1rem 1rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  border-radius: 1.35rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent),
+    color-mix(in srgb, var(--color-bg-secondary) 78%, transparent);
+}
+
+.vesper-voice-room-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.85rem;
+}
+
+.vesper-voice-room-section-title {
+  color: var(--color-text-primary);
+  font-size: 0.86rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.vesper-voice-room-section-meta {
+  color: var(--color-text-faint);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.vesper-voice-room-presence-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8.8rem, 1fr));
+  gap: 0.75rem;
+}
+
+.vesper-voice-presence-tile {
+  position: relative;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.9rem 0.75rem 0.8rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
+  border-radius: 1.1rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent),
+    color-mix(in srgb, var(--color-bg-tertiary) 54%, transparent);
+  text-align: center;
+  transition: transform 0.16s ease, border-color 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.vesper-voice-presence-tile:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--color-accent) 20%, var(--color-border) 80%);
+}
+
+.vesper-voice-presence-tile:disabled {
+  cursor: default;
+}
+
+.vesper-voice-presence-tile-active {
+  border-color: color-mix(in srgb, var(--color-accent) 34%, var(--color-border) 66%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 20%, transparent);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--color-accent) 12%, transparent), transparent 75%),
+    color-mix(in srgb, var(--color-bg-tertiary) 64%, transparent);
+}
+
+.vesper-voice-presence-avatar-shell {
+  position: relative;
+}
+
+.vesper-voice-presence-avatar-ring {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.vesper-voice-presence-avatar-ring-speaking {
+  border-color: rgba(59, 165, 92, 0.35);
+  box-shadow: 0 0 0 3px rgba(59, 165, 92, 0.14);
+}
+
+.vesper-voice-presence-avatar {
+  width: 3.8rem;
+  height: 3.8rem;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--color-bg-base) 78%, transparent);
+  color: var(--color-text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.98rem;
+  font-weight: 700;
+}
+
+.vesper-voice-presence-avatar-speaking {
+  box-shadow: 0 0 0 3px rgba(59, 165, 92, 0.8);
+}
+
+.vesper-voice-presence-avatar-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.vesper-voice-presence-avatar-fallback {
+  user-select: none;
+}
+
+.vesper-voice-presence-status-badge {
+  position: absolute;
+  right: -0.1rem;
+  bottom: -0.05rem;
+  width: 1.2rem;
+  height: 1.2rem;
+  border-radius: 999px;
+  background: rgba(127, 29, 29, 0.9);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-bg-secondary) 90%, transparent);
+}
+
+.vesper-voice-presence-live-badge {
+  position: absolute;
+  left: -0.15rem;
+  top: -0.15rem;
+  padding: 0.18rem 0.38rem;
+  border-radius: 0.45rem;
+  background: #d22c39;
+  color: #fff;
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.vesper-voice-presence-name {
+  width: 100%;
+  color: var(--color-text-primary);
+  font-size: 0.82rem;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vesper-voice-presence-meta {
+  color: var(--color-text-faint);
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
 .vesper-voice-room-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
@@ -4028,27 +4310,995 @@
 }
 
 .vesper-call-overlay {
-  overflow: hidden;
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 40;
+  width: min(22rem, calc(100vw - 2rem));
 }
 
-.vesper-call-overlay-video-grid {
-  margin-bottom: 0.7rem;
+.vesper-call-overlay-shell {
+  overflow: hidden;
+  padding: 0.85rem;
+  border-radius: 1.4rem;
+  box-shadow: 0 22px 40px rgba(0, 0, 0, 0.26);
+}
+
+.vesper-call-overlay-status-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.vesper-call-overlay-status-copy {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+}
+
+.vesper-call-overlay-status-dot {
+  width: 0.62rem;
+  height: 0.62rem;
+  margin-top: 0.34rem;
+  border-radius: 999px;
+  flex: 0 0 auto;
+  background: currentColor;
+  box-shadow: 0 0 0 5px color-mix(in srgb, currentColor 18%, transparent);
+}
+
+.vesper-call-overlay-header-copy {
+  min-width: 0;
+}
+
+.vesper-call-overlay-title {
+  color: var(--color-text-primary);
+  font-size: 0.92rem;
+  font-weight: 800;
+  line-height: 1.15;
+}
+
+.vesper-call-overlay-subtitle {
+  margin-top: 0.18rem;
+  color: var(--color-text-faint);
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+
+.vesper-call-overlay-error {
+  margin-top: 0.18rem;
+  max-width: 14rem;
+  color: #fca5a5;
+  font-size: 0.74rem;
+  line-height: 1.45;
+}
+
+.vesper-call-overlay-connection {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.16rem;
+}
+
+.vesper-call-overlay-quality {
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+}
+
+.vesper-call-overlay-quality-good {
+  color: #86efac;
+}
+
+.vesper-call-overlay-quality-fair {
+  color: #fcd34d;
+}
+
+.vesper-call-overlay-quality-poor {
+  color: #fca5a5;
+}
+
+.vesper-call-overlay-quality-unknown {
+  color: var(--color-text-faint);
+}
+
+.vesper-call-overlay-count {
+  color: var(--color-text-faint);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.vesper-call-overlay-metrics-row {
+  margin-top: 0.72rem;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.35rem;
+  gap: 0.45rem;
+}
+
+.vesper-call-overlay-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.08rem;
+  padding: 0.48rem 0.58rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  border-radius: 0.9rem;
+  background: color-mix(in srgb, var(--color-bg-base) 58%, transparent);
+  color: var(--color-text-faint);
+  font-size: 0.66rem;
+  font-weight: 700;
+}
+
+.vesper-call-overlay-media-rail {
+  margin-top: 0.75rem;
+  display: flex;
+  gap: 0.5rem;
+  overflow-x: auto;
+  padding-bottom: 0.12rem;
+  scrollbar-width: thin;
+}
+
+.vesper-call-overlay-video-shell {
+  position: relative;
+  flex: 0 0 10rem;
+  overflow: hidden;
+  border-radius: 0.95rem;
+  background: #05070f;
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  transition: border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
+}
+
+.vesper-call-overlay-video-shell-speaking {
+  border-color: rgba(59, 165, 92, 0.42);
+  box-shadow: inset 0 0 0 1px rgba(59, 165, 92, 0.18);
 }
 
 .vesper-call-overlay-video {
   width: 100%;
   aspect-ratio: 16 / 9;
-  border-radius: 0.7rem;
-  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
   object-fit: cover;
   background: #05070f;
 }
 
+.vesper-call-overlay-video-mirror {
+  transform: scaleX(-1);
+}
+
 .vesper-call-overlay-video-local {
-  grid-column: span 2;
+  border-color: color-mix(in srgb, var(--color-accent) 26%, var(--color-border) 74%);
+}
+
+.vesper-call-overlay-video-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #05070f;
+  z-index: 1;
+}
+
+.vesper-call-overlay-video-preview {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: blur(12px) brightness(0.7);
+}
+
+.vesper-call-overlay-video-fallback {
+  position: relative;
+  z-index: 1;
+  width: 2.2rem;
+  height: 2.2rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-secondary) 88%, transparent);
+  color: var(--color-text-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.vesper-call-overlay-video-topline {
+  position: absolute;
+  inset: 0 0 auto;
+  padding: 0.42rem;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.vesper-call-overlay-video-chips {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.26rem;
+}
+
+.vesper-call-overlay-video-kind,
+.vesper-call-overlay-video-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.16rem 0.38rem;
+  border-radius: 999px;
+  background: rgba(3, 5, 10, 0.62);
+  color: white;
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  backdrop-filter: blur(8px);
+}
+
+.vesper-call-overlay-video-meta {
+  position: absolute;
+  inset: auto 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+  padding: 0.46rem 0.5rem;
+  background: linear-gradient(180deg, transparent, rgba(3, 5, 10, 0.9));
+  z-index: 2;
+}
+
+.vesper-call-overlay-video-label {
+  min-width: 0;
+  color: white;
+  font-size: 0.7rem;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vesper-call-overlay-video-state {
+  flex: 0 0 auto;
+  color: rgba(255, 255, 255, 0.84);
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.vesper-call-overlay-presence-row {
+  margin-top: 0.72rem;
+  display: flex;
+  gap: 0.45rem;
+  overflow-x: auto;
+  padding-bottom: 0.12rem;
+}
+
+.vesper-call-overlay-presence-pill {
+  min-width: 0;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+  padding: 0.34rem 0.48rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 62%, transparent);
+}
+
+.vesper-call-overlay-presence-pill-speaking {
+  border-color: rgba(59, 165, 92, 0.38);
+  box-shadow: inset 0 0 0 1px rgba(59, 165, 92, 0.14);
+}
+
+.vesper-call-overlay-presence-avatar {
+  position: relative;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--color-bg-base) 84%, transparent);
+  color: var(--color-text-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+}
+
+.vesper-call-overlay-presence-avatar-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.vesper-call-overlay-presence-avatar-fallback {
+  font-size: 0.64rem;
+  font-weight: 700;
+}
+
+.vesper-call-overlay-presence-muted {
+  position: absolute;
+  right: -0.05rem;
+  bottom: -0.05rem;
+  width: 0.82rem;
+  height: 0.82rem;
+  border-radius: 999px;
+  background: rgba(127, 29, 29, 0.92);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-bg-secondary) 92%, transparent);
+}
+
+.vesper-call-overlay-presence-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.04rem;
+  min-width: 0;
+}
+
+.vesper-call-overlay-presence-name {
+  max-width: 4.8rem;
+  color: var(--color-text-primary);
+  font-size: 0.68rem;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vesper-call-overlay-presence-meta {
+  color: var(--color-text-faint);
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.vesper-call-overlay-controls {
+  margin-top: 0.75rem;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.42rem;
+  padding: 0.42rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--color-bg-base) 56%, transparent);
+}
+
+.vesper-call-overlay-control {
+  width: 100%;
+  min-height: 2.5rem;
+  border: 0;
+  border-radius: 0.8rem;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 74%, transparent);
+  color: var(--color-text-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.16s ease, color 0.16s ease, transform 0.16s ease;
+}
+
+.vesper-call-overlay-control:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: color-mix(in srgb, var(--color-bg-tertiary) 88%, transparent);
+}
+
+.vesper-call-overlay-control-active {
+  color: #86efac;
+  background: rgba(16, 185, 129, 0.18);
+}
+
+.vesper-call-overlay-control-danger {
+  color: #fca5a5;
+  background: rgba(127, 29, 29, 0.18);
+}
+
+.vesper-call-overlay-control-hangup {
+  color: #fff;
+  background: #d22c39;
+}
+
+.vesper-call-overlay-control-hangup:hover:not(:disabled) {
+  background: #b91f2c;
+}
+
+.vesper-call-overlay-control-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.vesper-call-overlay-share-audio {
+  margin-top: 0.7rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--color-text-faint);
+  font-size: 0.72rem;
+}
+
+.vesper-call-overlay-share-audio input {
+  accent-color: var(--color-accent);
+}
+
+.vesper-incoming-call-shell {
+  position: fixed;
+  top: 1.25rem;
+  right: 1.25rem;
+  z-index: 70;
+  pointer-events: none;
+}
+
+.vesper-incoming-call-card {
+  width: min(24rem, calc(100vw - 2rem));
+  padding: 1rem;
+  border-radius: 1.4rem;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.95rem;
+  pointer-events: auto;
+}
+
+.vesper-incoming-call-avatar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.vesper-incoming-call-avatar-ring {
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  color: var(--color-accent-text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  font-weight: 700;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 24%, transparent);
+}
+
+.vesper-incoming-call-copy {
+  min-width: 0;
+}
+
+.vesper-incoming-call-kicker {
+  color: var(--color-accent-text);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.vesper-incoming-call-title {
+  margin-top: 0.18rem;
+  color: var(--color-text-primary);
+  font-size: 1.08rem;
+  font-weight: 700;
+}
+
+.vesper-incoming-call-subtitle {
+  margin-top: 0.2rem;
+  color: var(--color-text-secondary);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.vesper-incoming-call-timer {
+  margin-top: 0.45rem;
+  color: var(--color-text-faint);
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
+.vesper-incoming-call-actions {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
+.vesper-incoming-call-button {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  padding: 0.78rem 0.95rem;
+  border: 1px solid transparent;
+  border-radius: 0.95rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.vesper-incoming-call-button-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.vesper-incoming-call-button-decline {
+  background: rgba(220, 38, 38, 0.14);
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, 0.18);
+}
+
+.vesper-incoming-call-button-decline:hover {
+  background: rgba(220, 38, 38, 0.22);
+}
+
+.vesper-incoming-call-button-accept {
+  background: rgba(16, 185, 129, 0.14);
+  color: #86efac;
+  border-color: rgba(74, 222, 128, 0.18);
+}
+
+.vesper-incoming-call-button-accept:hover {
+  background: rgba(16, 185, 129, 0.22);
+}
+
+.vesper-voice-room-publish-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.vesper-voice-profile-card {
+  padding: 1rem 1.05rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  border-radius: 1.3rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent),
+    color-mix(in srgb, var(--color-bg-secondary) 78%, transparent);
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.12);
+}
+
+.vesper-voice-profile-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.vesper-voice-profile-title {
+  color: var(--color-text-primary);
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.vesper-voice-profile-description {
+  margin-top: 0.22rem;
+  color: var(--color-text-faint);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.vesper-voice-profile-apply {
+  min-height: 2rem;
+  padding: 0 0.8rem;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  color: var(--color-accent-text);
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.vesper-voice-profile-body {
+  margin-top: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.vesper-voice-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
+.vesper-voice-profile-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  color: var(--color-text-faint);
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+
+.vesper-voice-profile-select,
+.vesper-voice-profile-input {
+  width: 100%;
+  min-height: 2.45rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  border-radius: 0.95rem;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 68%, transparent);
+  color: var(--color-text-primary);
+  font-size: 0.84rem;
+  padding: 0 0.8rem;
+}
+
+.vesper-voice-profile-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  color: var(--color-text-secondary);
+  font-size: 0.8rem;
+}
+
+.vesper-voice-profile-toggle input {
+  accent-color: var(--color-accent);
+}
+
+.vesper-voice-room-stage-layout {
+  margin-top: 1rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(18rem, 0.9fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.vesper-voice-room-stage {
+  min-height: 28rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  padding: 1rem;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 20%, var(--color-border) 80%);
+  border-radius: 1.45rem;
+  background:
+    radial-gradient(circle at top left, color-mix(in srgb, var(--color-accent) 14%, transparent), transparent 40%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent),
+    color-mix(in srgb, var(--color-bg-secondary) 82%, transparent);
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.16);
+}
+
+.vesper-voice-room-stage-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.vesper-voice-room-stage-slider {
+  min-width: 12rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  color: var(--color-text-faint);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.vesper-voice-room-stage-slider input {
+  appearance: none;
+  width: 100%;
+  height: 0.34rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 86%, transparent);
+}
+
+.vesper-voice-room-stage-slider input::-webkit-slider-thumb {
+  appearance: none;
+  width: 0.84rem;
+  height: 0.84rem;
+  border-radius: 999px;
+  background: var(--color-text-primary);
+}
+
+.vesper-voice-room-stage-slider input::-moz-range-thumb {
+  width: 0.84rem;
+  height: 0.84rem;
+  border: 0;
+  border-radius: 999px;
+  background: var(--color-text-primary);
+}
+
+.vesper-voice-room-stage-video {
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+  aspect-ratio: 16 / 9;
+  border-radius: 1.15rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  object-fit: contain;
+  background:
+    radial-gradient(circle at center, rgba(255, 255, 255, 0.06), transparent 45%),
+    #05070f;
+}
+
+.vesper-voice-video-surface {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.vesper-voice-video-surface-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #05070f;
+  z-index: 1;
+}
+
+.vesper-voice-video-surface-preview {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: blur(16px) brightness(0.68);
+}
+
+.vesper-voice-video-surface-fallback {
+  position: relative;
+  z-index: 1;
+  width: 3rem;
+  height: 3rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-secondary) 90%, transparent);
+  color: var(--color-text-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.vesper-voice-video-surface-mirror {
+  transform: scaleX(-1);
+}
+
+.vesper-voice-video-surface-contain {
+  object-fit: contain;
+}
+
+.vesper-voice-room-streams {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-height: 0;
+  padding: 0.95rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  border-radius: 1.35rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent),
+    color-mix(in srgb, var(--color-bg-secondary) 76%, transparent);
+}
+
+.vesper-voice-room-streams-title {
+  color: var(--color-text-primary);
+  font-size: 0.86rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.vesper-voice-room-stream-card {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  width: 100%;
+  padding: 0.65rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 52%, transparent);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.16s ease, border-color 0.16s ease, background-color 0.16s ease;
+}
+
+.vesper-voice-room-stream-card:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--color-accent) 20%, var(--color-border) 80%);
+}
+
+.vesper-voice-room-stream-card-active {
+  border-color: color-mix(in srgb, var(--color-accent) 35%, var(--color-border) 65%);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--color-accent) 14%, transparent), transparent 75%),
+    color-mix(in srgb, var(--color-bg-tertiary) 64%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
+.vesper-voice-room-stream-card-media {
+  width: 7rem;
+  flex: 0 0 7rem;
+  position: relative;
+}
+
+.vesper-voice-room-stream-card-video {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 0.8rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 86%, transparent);
+  object-fit: cover;
+  background: #05070f;
+}
+
+.vesper-voice-room-stream-card-badges {
+  position: absolute;
+  top: 0.45rem;
+  left: 0.45rem;
+  right: 0.45rem;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  z-index: 2;
+}
+
+.vesper-voice-room-stream-badge {
+  padding: 0.18rem 0.46rem;
+  border-radius: 999px;
+  background: rgba(3, 5, 10, 0.62);
+  color: white;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  backdrop-filter: blur(8px);
+}
+
+.vesper-voice-room-stream-card-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.16rem;
+}
+
+.vesper-voice-room-stream-card-copy span:first-child {
+  color: var(--color-text-primary);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.vesper-voice-room-stream-card-copy span:last-child {
+  color: var(--color-text-faint);
+  font-size: 0.75rem;
+}
+
+.vesper-voice-room-streams-empty {
+  padding: 1rem;
+  border: 1px dashed color-mix(in srgb, var(--color-border) 78%, transparent);
+  border-radius: 1rem;
+  color: var(--color-text-faint);
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.vesper-voice-room-roster {
+  margin-top: 1rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 0.85rem;
+}
+
+.vesper-voice-roster-card {
+  padding: 0.95rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  border-radius: 1.2rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent),
+    color-mix(in srgb, var(--color-bg-secondary) 76%, transparent);
+}
+
+.vesper-voice-roster-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.vesper-voice-roster-card-user {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.vesper-voice-roster-card-name {
+  color: var(--color-text-primary);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.vesper-voice-roster-card-meta {
+  margin-top: 0.14rem;
+  color: var(--color-text-faint);
+  font-size: 0.75rem;
+}
+
+.vesper-voice-roster-card-badges {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.35rem;
+}
+
+.vesper-voice-roster-badge {
+  padding: 0.22rem 0.5rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 76%, transparent);
+  color: var(--color-text-secondary);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.vesper-voice-roster-sliders {
+  margin-top: 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+@media (max-width: 980px) {
+  .vesper-voice-room-stage-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .vesper-voice-room-stage {
+    min-height: 22rem;
+  }
+
+  .vesper-voice-room-streams {
+    order: 2;
+  }
+}
+
+@media (max-width: 720px) {
+  .vesper-voice-room {
+    padding: 0.9rem 0.9rem 1.1rem;
+  }
+
+  .vesper-voice-room-hero {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .vesper-voice-room-actions {
+    justify-content: flex-start;
+  }
+
+  .vesper-voice-room-presence-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .vesper-voice-profile-grid,
+  .vesper-voice-room-roster {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .vesper-voice-room-stage {
+    min-height: 18rem;
+    padding: 0.85rem;
+  }
+
+  .vesper-voice-room-stage-header {
+    flex-direction: column;
+  }
+
+  .vesper-voice-room-stage-slider {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .vesper-voice-room-stream-card {
+    padding: 0.58rem;
+  }
+
+  .vesper-voice-room-stream-card-media {
+    width: 5.5rem;
+    flex-basis: 5.5rem;
+  }
 }
 
 .vesper-channel-unread-badge {
@@ -4248,6 +5498,8 @@
     width: 100%;
     height: 100%;
     min-height: 100%;
+    max-width: none;
+    max-height: none;
     border-radius: 0;
     border: 0;
   }
@@ -4260,6 +5512,11 @@
 
   .vesper-settings-sidebar-scroll {
     padding: calc(env(safe-area-inset-top, 0px) + 0.9rem) 0.9rem 0.8rem;
+  }
+
+  .vesper-settings-close-cluster {
+    top: calc(env(safe-area-inset-top, 0px) + 0.85rem);
+    right: 0.85rem;
   }
 
   .vesper-settings-nav {
@@ -4285,6 +5542,41 @@
 
   .vesper-settings-content-inner {
     max-width: none;
+  }
+
+  .vesper-call-overlay {
+    left: 0.8rem;
+    right: 0.8rem;
+    bottom: calc(0.8rem + env(safe-area-inset-bottom, 0px));
+    width: auto;
+  }
+
+  .vesper-call-overlay-shell {
+    border-radius: 1.25rem;
+    padding: 0.78rem;
+  }
+
+  .vesper-call-overlay-metrics-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .vesper-call-overlay-video-shell {
+    flex-basis: 8.8rem;
+  }
+
+  .vesper-call-overlay-controls {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .vesper-incoming-call-shell {
+    top: auto;
+    right: 0.8rem;
+    left: 0.8rem;
+    bottom: calc(0.8rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .vesper-incoming-call-card {
+    width: 100%;
   }
 
   .vesper-settings-target-row {

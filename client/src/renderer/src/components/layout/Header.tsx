@@ -72,9 +72,8 @@ export default function Header({ mobile = false }: Props): React.JSX.Element {
             <button
               type="button"
               onClick={() => startDmCall(activeConversation.id)}
-              disabled={voiceState !== 'idle'}
               className="vesper-mobile-header-button"
-              title="Start voice call"
+              title={voiceState === 'idle' ? 'Start voice call' : 'Switch to this call'}
             >
               <Phone className="w-5 h-5" />
             </button>
@@ -136,9 +135,8 @@ export default function Header({ mobile = false }: Props): React.JSX.Element {
           />
           <button
             onClick={() => startDmCall(activeConversation.id)}
-            disabled={voiceState !== 'idle'}
-            className="text-text-muted hover:text-text-primary disabled:text-text-disabled transition-colors p-1.5 rounded hover:bg-bg-tertiary/50"
-            title="Start voice call"
+            className="text-text-muted hover:text-text-primary transition-colors p-1.5 rounded hover:bg-bg-tertiary/50"
+            title={voiceState === 'idle' ? 'Start voice call' : 'Switch to this call'}
           >
             <Phone className="w-4 h-4" />
           </button>
