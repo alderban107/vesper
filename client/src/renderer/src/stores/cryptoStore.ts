@@ -62,6 +62,8 @@ interface CryptoState {
   decryptForChannel: (channelId: string, ciphertext: string) => Promise<string | null>
   /** Check if a channel has an active MLS group */
   hasGroup: (channelId: string) => boolean
+  /** Count current MLS members for a channel */
+  getMemberCount: (channelId: string) => number
   /** Clear local group state and trigger rejoin */
   resetGroup: (channelId: string) => Promise<void>
   /** Derive a 128-bit voice encryption key from the MLS group's epoch secret */
@@ -424,6 +426,17 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
 
   hasGroup: (channelId) => {
     return !!get().groupStates[channelId]
+  },
+
+  getMemberCount: (channelId) => {
+    const state = get().groupStates[channelId]
+    if (!state) {
+      return 0
+    }
+
+    return state.ratchetTree.reduce((count, node) => {
+      return node && node.nodeType === 'leaf' ? count + 1 : count
+    }, 0)
   },
 
   resetGroup: async (channelId) => {

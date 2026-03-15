@@ -123,6 +123,40 @@ function maybeRequestMlsJoin(targetId: string, topic: string): void {
   pushToChannel(topic, 'mls_request_join', {})
 }
 
+async function waitForChannelBootstrap(
+  channelId: string,
+  initialMemberCount: number
+): Promise<void> {
+  const deadline = Date.now() + 1500
+
+  while (Date.now() < deadline) {
+    if (useCryptoStore.getState().getMemberCount(channelId) > initialMemberCount) {
+      return
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+}
+
+export async function ensureChannelGroupReady(channelId: string): Promise<boolean> {
+  const crypto = useCryptoStore.getState()
+  if (crypto.hasGroup(channelId)) {
+    return true
+  }
+
+  await crypto.createGroup(channelId)
+  if (!useCryptoStore.getState().hasGroup(channelId)) {
+    return false
+  }
+
+  const topic = `chat:channel:${channelId}`
+  const initialMemberCount = useCryptoStore.getState().getMemberCount(channelId)
+  pushToChannel(topic, 'mls_request_join_all', {})
+  await waitForChannelBootstrap(channelId, initialMemberCount)
+
+  return useCryptoStore.getState().hasGroup(channelId)
+}
+
 async function refreshChannelMessagesIfNeeded(
   channelId: string,
   getState: () => MessageState
@@ -461,10 +495,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const topic = `chat:channel:${channelId}`
 
     if (!crypto.hasGroup(channelId)) {
-      await crypto.createGroup(channelId)
-      if (crypto.hasGroup(channelId)) {
-        pushToChannel(topic, 'mls_request_join_all', {})
-        await new Promise((resolve) => setTimeout(resolve, 250))
+      const ready = await ensureChannelGroupReady(channelId)
+      if (!ready) {
+        set({ encryptionError: 'Message could not be encrypted. Please try again.' })
+        return
       }
     }
 

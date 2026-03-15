@@ -1,7 +1,11 @@
 import { useState, useRef, useCallback } from 'react'
 import { Paperclip, SendHorizonal, Smile, Loader2 } from 'lucide-react'
 import { useServerStore } from '../../stores/serverStore'
-import { useMessageStore, cacheSentPlaintext } from '../../stores/messageStore'
+import {
+  useMessageStore,
+  cacheSentPlaintext,
+  ensureChannelGroupReady
+} from '../../stores/messageStore'
 import { apiUpload } from '../../api/client'
 import { encryptFile } from '../../crypto/fileEncryption'
 import { encodePayload } from '../../crypto/payload'
@@ -148,10 +152,12 @@ export default function MessageInput(): React.JSX.Element {
       const replyTo = useMessageStore.getState().replyingTo
       const parentId = replyTo?.id || undefined
       if (!crypto.hasGroup(activeChannelId)) {
-        await crypto.createGroup(activeChannelId)
-        if (crypto.hasGroup(activeChannelId)) {
-          pushToChannel(topic, 'mls_request_join_all', {})
-          await new Promise((resolve) => setTimeout(resolve, 250))
+        const ready = await ensureChannelGroupReady(activeChannelId)
+        if (!ready) {
+          useMessageStore.setState({
+            encryptionError: 'File could not be encrypted. Please try again.'
+          })
+          return
         }
       }
 
