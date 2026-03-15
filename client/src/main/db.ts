@@ -87,7 +87,9 @@ const SCHEMA_SQL = `
 
   CREATE TABLE IF NOT EXISTS message_cache (
     id TEXT PRIMARY KEY,
-    channel_id TEXT NOT NULL,
+    channel_id TEXT,
+    conversation_id TEXT,
+    server_id TEXT,
     sender_id TEXT,
     sender_username TEXT,
     ciphertext BLOB,
@@ -96,6 +98,8 @@ const SCHEMA_SQL = `
   );
 
   CREATE INDEX IF NOT EXISTS idx_message_cache_channel ON message_cache(channel_id);
+  CREATE INDEX IF NOT EXISTS idx_message_cache_conversation ON message_cache(conversation_id);
+  CREATE INDEX IF NOT EXISTS idx_message_cache_inserted_at ON message_cache(inserted_at DESC);
 
   CREATE VIRTUAL TABLE IF NOT EXISTS message_fts USING fts5(
     message_id,
@@ -247,6 +251,8 @@ export function initDb(): void {
   }
 
   db.exec(SCHEMA_SQL)
+  ensureMessageCacheColumns()
+  ensureMessageCacheIndexes()
 }
 
 export function closeDb(): void {
@@ -259,6 +265,26 @@ export function closeDb(): void {
 function getDb(): Database.Database {
   if (!db) throw new Error('Database not initialized')
   return db
+}
+
+function ensureColumn(tableName: string, columnName: string, columnType: string): void {
+  const row = getDb()
+    .prepare(`SELECT name FROM pragma_table_info('${tableName}') WHERE name = ?`)
+    .get(columnName) as { name: string } | undefined
+
+  if (!row) {
+    getDb().exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnType}`)
+  }
+}
+
+function ensureMessageCacheColumns(): void {
+  ensureColumn('message_cache', 'conversation_id', 'TEXT')
+  ensureColumn('message_cache', 'server_id', 'TEXT')
+}
+
+function ensureMessageCacheIndexes(): void {
+  getDb().exec('CREATE INDEX IF NOT EXISTS idx_message_cache_conversation ON message_cache(conversation_id)')
+  getDb().exec('CREATE INDEX IF NOT EXISTS idx_message_cache_inserted_at ON message_cache(inserted_at DESC)')
 }
 
 // --- Identity Keys ---
@@ -369,7 +395,9 @@ export function countLocalKeyPackages(): number {
 
 export function cacheMessage(msg: {
   id: string
-  channel_id: string
+  channel_id: string | null
+  conversation_id: string | null
+  server_id: string | null
   sender_id: string | null
   sender_username: string | null
   ciphertext: Buffer | null
@@ -378,14 +406,26 @@ export function cacheMessage(msg: {
 }): void {
   getDb()
     .prepare(
-      'INSERT OR REPLACE INTO message_cache (id, channel_id, sender_id, sender_username, ciphertext, mls_epoch, inserted_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      'INSERT OR REPLACE INTO message_cache (id, channel_id, conversation_id, server_id, sender_id, sender_username, ciphertext, mls_epoch, inserted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
     )
-    .run(msg.id, msg.channel_id, msg.sender_id, msg.sender_username, msg.ciphertext, msg.mls_epoch, msg.inserted_at)
+    .run(
+      msg.id,
+      msg.channel_id,
+      msg.conversation_id,
+      msg.server_id,
+      msg.sender_id,
+      msg.sender_username,
+      msg.ciphertext,
+      msg.mls_epoch,
+      msg.inserted_at
+    )
 }
 
 export function getCachedMessages(channelId: string): Array<{
   id: string
-  channel_id: string
+  channel_id: string | null
+  conversation_id: string | null
+  server_id: string | null
   sender_id: string | null
   sender_username: string | null
   ciphertext: Buffer | null
@@ -394,13 +434,15 @@ export function getCachedMessages(channelId: string): Array<{
 }> {
   return getDb()
     .prepare(
-      'SELECT * FROM message_cache WHERE channel_id = ? ORDER BY inserted_at ASC'
+      'SELECT * FROM message_cache WHERE channel_id = ? OR conversation_id = ? ORDER BY inserted_at ASC'
     )
-    .all(channelId) as ReturnType<typeof getCachedMessages>
+    .all(channelId, channelId) as ReturnType<typeof getCachedMessages>
 }
 
 export function clearMessageCache(channelId: string): void {
-  getDb().prepare('DELETE FROM message_cache WHERE channel_id = ?').run(channelId)
+  getDb()
+    .prepare('DELETE FROM message_cache WHERE channel_id = ? OR conversation_id = ?')
+    .run(channelId, channelId)
 }
 
 // --- Full-Text Search (FTS5) ---
@@ -435,7 +477,12 @@ export function searchMessages(
 ): Array<{
   message_id: string
   channel_id: string
-  content: string
+  conversation_id: string | null
+  server_id: string | null
+  sender_id: string | null
+  sender_username: string | null
+  inserted_at: string | null
+  preview: string
 }> {
   if (!query.trim()) return []
 
@@ -446,26 +493,67 @@ export function searchMessages(
     .split(/\s+/)
     .map((t) => `"${t.replace(/"/g, '""')}"`)
   const ftsQuery = tokens.join(' ')
+  const previewExpr = `snippet(message_fts, 2, '[[[', ']]]', ' ... ', 12)`
 
   if (channelId) {
     return getDb()
       .prepare(
-        'SELECT message_id, channel_id, content FROM message_fts WHERE channel_id = ? AND message_fts MATCH ? ORDER BY rank'
+        `
+        SELECT
+          message_fts.message_id,
+          message_fts.channel_id,
+          message_cache.conversation_id,
+          message_cache.server_id,
+          message_cache.sender_id,
+          message_cache.sender_username,
+          message_cache.inserted_at,
+          ${previewExpr} AS preview
+        FROM message_fts
+        LEFT JOIN message_cache ON message_cache.id = message_fts.message_id
+        WHERE message_fts.channel_id = ? AND message_fts MATCH ?
+        ORDER BY bm25(message_fts), message_cache.inserted_at DESC
+        LIMIT 50
+        `
       )
       .all(channelId, ftsQuery) as Array<{
       message_id: string
       channel_id: string
-      content: string
+      conversation_id: string | null
+      server_id: string | null
+      sender_id: string | null
+      sender_username: string | null
+      inserted_at: string | null
+      preview: string
     }>
   }
 
   return getDb()
     .prepare(
-      'SELECT message_id, channel_id, content FROM message_fts WHERE message_fts MATCH ? ORDER BY rank'
+      `
+      SELECT
+        message_fts.message_id,
+        message_fts.channel_id,
+        message_cache.conversation_id,
+        message_cache.server_id,
+        message_cache.sender_id,
+        message_cache.sender_username,
+        message_cache.inserted_at,
+        ${previewExpr} AS preview
+      FROM message_fts
+      LEFT JOIN message_cache ON message_cache.id = message_fts.message_id
+      WHERE message_fts MATCH ?
+      ORDER BY bm25(message_fts), message_cache.inserted_at DESC
+      LIMIT 50
+      `
     )
     .all(ftsQuery) as Array<{
     message_id: string
     channel_id: string
-    content: string
+    conversation_id: string | null
+    server_id: string | null
+    sender_id: string | null
+    sender_username: string | null
+    inserted_at: string | null
+    preview: string
   }>
 }

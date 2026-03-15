@@ -49,7 +49,15 @@ export function resetAllStores(): void {
     hasMore: {},
     replyingTo: null,
     editingMessage: null,
-    encryptionError: null
+    encryptionError: null,
+    activeThreadParentId: null,
+    activeThreadParent: null,
+    threadRepliesByParent: {},
+    threadLoading: false,
+    threadError: null,
+    pendingJumpTarget: null,
+    focusedMessageId: null,
+    pinnedByChannel: {}
   })
 
   useCryptoStore.setState({

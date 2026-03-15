@@ -1,4 +1,5 @@
 import { app, shell, BrowserWindow, ipcMain, Notification, dialog } from 'electron'
+import { lookup } from 'node:dns/promises'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { autoUpdater } from 'electron-updater'
@@ -22,6 +23,98 @@ import {
   indexDecryptedMessage,
   removeFromFtsIndex
 } from './db'
+import {
+  isBlockedLinkPreviewUrl,
+  parseLinkPreview,
+  type LinkPreviewData
+} from '../shared/linkPreview'
+
+const LINK_PREVIEW_TIMEOUT_MS = 5_000
+const MAX_LINK_PREVIEW_HTML_LENGTH = 524_288
+
+function isPrivateIpAddress(address: string): boolean {
+  if (address === '::1') {
+    return true
+  }
+
+  if (address.startsWith('fe80:') || address.startsWith('fc') || address.startsWith('fd')) {
+    return true
+  }
+
+  const match = address.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (!match) {
+    return false
+  }
+
+  const [a, b] = match.slice(1).map(Number)
+  if ([a, b].some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return true
+  }
+
+  if (a === 10 || a === 127 || a === 0) {
+    return true
+  }
+
+  if (a === 169 && b === 254) {
+    return true
+  }
+
+  if (a === 172 && b >= 16 && b <= 31) {
+    return true
+  }
+
+  if (a === 192 && b === 168) {
+    return true
+  }
+
+  return false
+}
+
+async function isSafeLinkPreviewUrl(rawUrl: string): Promise<boolean> {
+  if (isBlockedLinkPreviewUrl(rawUrl)) {
+    return false
+  }
+
+  try {
+    const url = new URL(rawUrl)
+    const addresses = await lookup(url.hostname, { all: true })
+    return addresses.every((entry) => !isPrivateIpAddress(entry.address))
+  } catch {
+    return false
+  }
+}
+
+async function fetchLinkPreviewMetadata(rawUrl: string): Promise<LinkPreviewData | null> {
+  if (!(await isSafeLinkPreviewUrl(rawUrl))) {
+    return null
+  }
+
+  try {
+    const response = await fetch(rawUrl, {
+      signal: AbortSignal.timeout(LINK_PREVIEW_TIMEOUT_MS),
+      redirect: 'follow'
+    })
+
+    if (!response.ok) {
+      return null
+    }
+
+    const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
+    if (!contentType.includes('text/html') && !contentType.includes('application/xhtml+xml')) {
+      return null
+    }
+
+    const finalUrl = response.url || rawUrl
+    if (!(await isSafeLinkPreviewUrl(finalUrl))) {
+      return null
+    }
+
+    const html = (await response.text()).slice(0, MAX_LINK_PREVIEW_HTML_LENGTH)
+    return parseLinkPreview(html, finalUrl)
+  } catch {
+    return null
+  }
+}
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -163,7 +256,9 @@ function registerIpcHandlers(): void {
       _,
       msg: {
         id: string
-        channel_id: string
+        channel_id: string | null
+        conversation_id: string | null
+        server_id: string | null
         sender_id: string | null
         sender_username: string | null
         ciphertext: Uint8Array | null
@@ -195,6 +290,10 @@ function registerIpcHandlers(): void {
   )
   ipcMain.handle('cryptoDb:removeFromFtsIndex', (_, messageId: string) =>
     removeFromFtsIndex(messageId)
+  )
+
+  ipcMain.handle('linkPreview:fetchMetadata', (_, url: string) =>
+    fetchLinkPreviewMetadata(url)
   )
 }
 

@@ -164,6 +164,15 @@ defmodule Vesper.Chat do
     Repo.get(Message, id)
   end
 
+  def get_message_with_details(id) do
+    Message
+    |> Repo.get(id)
+    |> case do
+      nil -> nil
+      message -> Repo.preload(message, [:sender, :attachments])
+    end
+  end
+
   def update_message(%Message{} = message, attrs) do
     message
     |> Message.encrypted_changeset(attrs)
@@ -498,4 +507,5 @@ defmodule Vesper.Chat do
       attrs
     end
   end
+
 end

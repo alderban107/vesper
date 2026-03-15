@@ -3,6 +3,7 @@ defmodule VesperWeb.DmChannel do
 
   alias Vesper.Chat
   alias Vesper.Encryption
+  alias Vesper.Voice
   import VesperWeb.ChannelHelpers
 
   @impl true
@@ -37,51 +38,61 @@ defmodule VesperWeb.DmChannel do
         %{"ciphertext" => ciphertext, "mls_epoch" => epoch} = params,
         socket
       ) do
-    case safe_decode64(ciphertext) do
-      {:ok, decoded} ->
-        attrs =
-          %{
-            ciphertext: decoded,
-            mls_epoch: epoch,
-            conversation_id: socket.assigns.conversation_id,
-            sender_id: socket.assigns.user_id
-          }
-          |> maybe_add_parent(params)
+    with {:ok, decoded} <- safe_decode64(ciphertext),
+         {:ok, parent_message_id} <-
+           resolve_parent_message_id(params, :conversation_id, socket.assigns.conversation_id) do
+      attrs =
+        %{
+          ciphertext: decoded,
+          mls_epoch: epoch,
+          conversation_id: socket.assigns.conversation_id,
+          sender_id: socket.assigns.user_id
+        }
+        |> maybe_add_parent_id(parent_message_id)
 
-        case Chat.create_message(attrs) do
-          {:ok, message} ->
-            message = maybe_link_attachments(message, params)
+      case Chat.create_message(attrs) do
+        {:ok, message} ->
+          message = maybe_link_attachments(message, params)
 
-            broadcast!(
-              socket,
-              "new_message",
-              encrypted_message_payload(message, :conversation_id)
+          broadcast!(
+            socket,
+            "new_message",
+            encrypted_message_payload(message, :conversation_id)
+          )
+
+          # Run notifications async to avoid blocking the channel process
+          conversation_id = socket.assigns.conversation_id
+          sender_id = socket.assigns.user_id
+          participant_ids = socket.assigns.participant_ids
+          sender_info = socket.assigns.sender_info
+
+          Task.Supervisor.start_child(Vesper.NotificationSupervisor, fn ->
+            notify_participants(
+              conversation_id,
+              sender_id,
+              participant_ids,
+              sender_info,
+              message
             )
+          end)
 
-            # Run notifications async to avoid blocking the channel process
-            conversation_id = socket.assigns.conversation_id
-            sender_id = socket.assigns.user_id
-            participant_ids = socket.assigns.participant_ids
-            sender_info = socket.assigns.sender_info
+          {:reply, :ok, socket}
 
-            Task.Supervisor.start_child(Vesper.NotificationSupervisor, fn ->
-              notify_participants(
-                conversation_id,
-                sender_id,
-                participant_ids,
-                sender_info,
-                message
-              )
-            end)
-
-            {:reply, :ok, socket}
-
-          {:error, _changeset} ->
-            {:reply, {:error, %{reason: "could not send message"}}, socket}
-        end
-
-      {:error, _} ->
+        {:error, _changeset} ->
+          {:reply, {:error, %{reason: "could not send message"}}, socket}
+      end
+    else
+      {:error, :missing} ->
         {:reply, {:error, %{reason: "invalid encoding"}}, socket}
+
+      {:error, :invalid_base64} ->
+        {:reply, {:error, %{reason: "invalid encoding"}}, socket}
+
+      {:error, :invalid_type} ->
+        {:reply, {:error, %{reason: "invalid encoding"}}, socket}
+
+      {:error, reason} when is_binary(reason) ->
+        {:reply, {:error, %{reason: reason}}, socket}
     end
   end
 
@@ -244,6 +255,25 @@ defmodule VesperWeb.DmChannel do
 
   def handle_in("typing_stop", _payload, socket) do
     broadcast_from!(socket, "typing_stop", %{user_id: socket.assigns.user_id})
+    {:noreply, socket}
+  end
+
+  def handle_in("call_reject", _payload, socket) do
+    conversation_id = socket.assigns.conversation_id
+    user_id = socket.assigns.user_id
+
+    Voice.call_reject(conversation_id, user_id)
+
+    broadcast!(socket, "call_rejected", %{
+      conversation_id: conversation_id,
+      user_id: user_id
+    })
+
+    VesperWeb.Endpoint.broadcast("voice:dm:#{conversation_id}", "call_rejected", %{
+      conversation_id: conversation_id,
+      user_id: user_id
+    })
+
     {:noreply, socket}
   end
 

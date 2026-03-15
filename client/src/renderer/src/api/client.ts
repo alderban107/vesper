@@ -1,8 +1,43 @@
 const DEFAULT_SERVER_URL =
   (window as any).VESPER_API_URL || 'http://localhost:4000'
 
+let refreshRequest: Promise<string | null> | null = null
+
 function getServerUrl(): string {
   return localStorage.getItem('serverUrl') || DEFAULT_SERVER_URL
+}
+
+function isNetworkError(error: unknown): error is Error {
+  return (
+    error instanceof Error &&
+    /failed to fetch|networkerror|load failed/i.test(error.message)
+  )
+}
+
+function normalizeFetchError(error: unknown, url: string): Error {
+  if (isNetworkError(error)) {
+    const origin = (() => {
+      try {
+        return new URL(url).origin
+      } catch {
+        return url
+      }
+    })()
+
+    return new Error(
+      `Could not reach the Vesper server at ${origin}. Check that the backend is running and your server URL is correct.`
+    )
+  }
+
+  return error instanceof Error ? error : new Error('Request failed')
+}
+
+async function performFetch(url: string, options: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, options)
+  } catch (error) {
+    throw normalizeFetchError(error, url)
+  }
 }
 
 function getAccessToken(): string | null {
@@ -24,28 +59,39 @@ function clearTokens(): void {
 }
 
 async function refreshAccessToken(): Promise<string | null> {
+  if (refreshRequest) {
+    return refreshRequest
+  }
+
   const refreshToken = getRefreshToken()
   if (!refreshToken) return null
 
-  try {
-    const res = await fetch(`${getServerUrl()}/api/v1/auth/refresh`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: refreshToken })
-    })
+  refreshRequest = (async () => {
+    try {
+      const url = `${getServerUrl()}/api/v1/auth/refresh`
+      const res = await performFetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refreshToken })
+      })
 
-    if (!res.ok) {
+      if (!res.ok) {
+        clearTokens()
+        return null
+      }
+
+      const data = await res.json()
+      setTokens(data.access_token, data.refresh_token)
+      return data.access_token
+    } catch {
       clearTokens()
       return null
+    } finally {
+      refreshRequest = null
     }
+  })()
 
-    const data = await res.json()
-    setTokens(data.access_token, data.refresh_token)
-    return data.access_token
-  } catch {
-    clearTokens()
-    return null
-  }
+  return refreshRequest
 }
 
 export async function apiFetch(
@@ -64,14 +110,14 @@ export async function apiFetch(
     headers['Authorization'] = `Bearer ${token}`
   }
 
-  let res = await fetch(url, { ...options, headers })
+  let res = await performFetch(url, { ...options, headers })
 
   // If 401, try refreshing the token
   if (res.status === 401 && token) {
     const newToken = await refreshAccessToken()
     if (newToken) {
       headers['Authorization'] = `Bearer ${newToken}`
-      res = await fetch(url, { ...options, headers })
+      res = await performFetch(url, { ...options, headers })
     }
   }
 
@@ -90,14 +136,14 @@ export async function apiUpload(
     headers['Authorization'] = `Bearer ${token}`
   }
 
-  let res = await fetch(url, { method: 'POST', headers, body: formData })
+  let res = await performFetch(url, { method: 'POST', headers, body: formData })
 
   if (res.status === 401 && token) {
     const newToken = await refreshAccessToken()
     if (newToken) {
       headers['Authorization'] = `Bearer ${newToken}`
-      res = await fetch(url, { method: 'POST', headers, body: formData })
-    }
+      res = await performFetch(url, { method: 'POST', headers, body: formData })
+  }
   }
 
   return res

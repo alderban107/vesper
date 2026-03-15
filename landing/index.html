@@ -1,0 +1,1086 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VESPER</title>
+<meta name="description" content="End-to-end encrypted messaging and voice. Self-hosted. Open source.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Barlow+Condensed:wght@300;400;600;700&family=Barlow:wght@300;400&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+/* ═══════════════════════════════════════
+   PALETTE — Vesper × Vectorheart
+   Chromatic hues: gold + violet (2 only)
+   Neutrals: navy, cream, greys
+   ═══════════════════════════════════════ */
+:root {
+  --gold: #c8a24e;
+  --gold-bright: #dbb85e;
+  --gold-dim: #9a7a3a;
+  --violet: #8b7ec8;
+  --violet-dim: #6b5fa8;
+  --navy: #0a0c16;
+  --navy-mid: #12152a;
+  --navy-light: #1c2040;
+  --cream: #F0EDE6;
+  --cream-dark: #D8D4CA;
+  --warm-grey: #8A857A;
+  --mid-grey: #555555;
+  --dark-grey: #2A2A2A;
+  --display: 'Bebas Neue', 'Impact', sans-serif;
+  --condensed: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  --body: 'Barlow', 'Helvetica Neue', sans-serif;
+  --mono: 'Space Mono', 'Courier New', monospace;
+}
+
+/* ═══════════════════════════════════════
+   RESET + BASE
+   ═══════════════════════════════════════ */
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  scroll-snap-type: y mandatory;
+}
+
+body {
+  overflow-x: hidden;
+  background: var(--navy);
+  cursor: crosshair;
+}
+
+::selection {
+  background: var(--gold);
+  color: var(--navy);
+}
+
+/* ═══════════════════════════════════════
+   LOADER
+   ═══════════════════════════════════════ */
+.loader {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: var(--navy);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2em;
+  transition: opacity 0.5s ease;
+}
+
+.loaded .loader {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.loader__star {
+  width: 48px;
+  height: 48px;
+  color: var(--gold);
+  animation: spin 10s linear infinite;
+}
+
+.loader__text {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--gold);
+  opacity: 0.4;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 0%,100% { opacity: 0.25; } 50% { opacity: 0.55; } }
+
+/* ═══════════════════════════════════════
+   SIDE NAV
+   ═══════════════════════════════════════ */
+.side {
+  position: fixed;
+  right: 2.5vw;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: flex-end;
+  opacity: 0;
+  transition: opacity 0.5s ease 1s;
+}
+
+.loaded .side { opacity: 1; }
+
+.side__tick {
+  display: block;
+  width: 14px;
+  height: 1px;
+  background: rgba(200, 162, 78, 0.15);
+  transition: width 0.3s ease, background 0.3s ease;
+  text-decoration: none;
+}
+
+.side__tick.on {
+  width: 32px;
+  background: var(--gold);
+}
+
+.side--cream .side__tick { background: rgba(58, 58, 58, 0.12); }
+.side--cream .side__tick.on { background: var(--dark-grey); }
+
+/* ═══════════════════════════════════════
+   SPREAD — full viewport canvas
+   ═══════════════════════════════════════ */
+.sp {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  scroll-snap-align: start;
+}
+
+.sp--dark { background: var(--navy); }
+
+.sp--cream {
+  background: var(--cream);
+}
+
+/* Dot-grid texture (Layer 1 texture) */
+.sp--dark::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(circle, rgba(200,162,78,0.12) 0.5px, transparent 0.5px);
+  background-size: 24px 24px;
+  opacity: 0.3;
+  pointer-events: none;
+}
+
+.sp--cream::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(circle, var(--warm-grey) 0.4px, transparent 0.4px);
+  background-size: 20px 20px;
+  opacity: 0.08;
+  pointer-events: none;
+}
+
+/* ═══════════════════════════════════════
+   CONSTRUCTION ELEMENTS (Layer 1)
+   ═══════════════════════════════════════ */
+.hl {
+  position: absolute;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.hl--h { height: 1px; width: 100%; left: 0; }
+.hl--v { width: 1px; height: 100%; top: 0; }
+.hl--gold { background: var(--gold); opacity: 0.06; }
+.hl--grey { background: var(--warm-grey); opacity: 0.06; }
+.hl--dark { background: var(--dark-grey); opacity: 0.06; }
+
+/* Annotation register */
+.an {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  line-height: 1.4;
+  position: absolute;
+  z-index: 5;
+  white-space: nowrap;
+}
+
+/* ═══════════════════════════════════════
+   REVEAL ANIMATIONS
+   ═══════════════════════════════════════ */
+.rv {
+  opacity: 0;
+  transition: opacity 0.7s ease, transform 0.7s ease;
+}
+
+.rv--l { transform: translateX(-40px); }
+.rv--r { transform: translateX(40px); }
+.rv--u { transform: translateY(30px); }
+.rv--s { transform: scale(0.95); }
+.rv--f { } /* pure fade */
+
+.rv.on {
+  opacity: 1;
+  transform: none;
+}
+
+.d1 { transition-delay: 0.08s; }
+.d2 { transition-delay: 0.16s; }
+.d3 { transition-delay: 0.24s; }
+.d4 { transition-delay: 0.32s; }
+.d5 { transition-delay: 0.40s; }
+.d6 { transition-delay: 0.50s; }
+.d7 { transition-delay: 0.60s; }
+.d8 { transition-delay: 0.72s; }
+.d9 { transition-delay: 0.84s; }
+.d10 { transition-delay: 1.0s; }
+
+/* ═══════════════════════════════════════
+   SPREAD 0: HERO — The Detonation
+   Template: angular forms radiate from title
+   Palette: gold + violet on navy
+   ═══════════════════════════════════════ */
+.s0__title {
+  position: absolute;
+  top: 13vh;
+  left: 5vw;
+  font-family: var(--display);
+  font-size: clamp(90px, 20vw, 300px);
+  line-height: 0.85;
+  letter-spacing: -0.02em;
+  color: var(--gold);
+  z-index: 4;
+}
+
+.s0__sub {
+  position: absolute;
+  top: calc(13vh + clamp(80px, 17vw, 260px));
+  left: 5.5vw;
+  z-index: 4;
+}
+
+.s0__sub-main {
+  font-family: var(--condensed);
+  font-weight: 600;
+  font-size: clamp(16px, 2.6vw, 40px);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cream);
+  opacity: 0.55;
+  display: block;
+  margin-bottom: 0.4em;
+}
+
+.s0__sub-tech {
+  font-family: var(--mono);
+  font-size: clamp(8px, 0.7vw, 11px);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--gold-dim);
+  opacity: 0.5;
+  display: block;
+}
+
+/* Giant wireframe star — focal element behind title */
+.s0__star {
+  position: absolute;
+  top: 50%;
+  right: -6vw;
+  transform: translateY(-50%);
+  width: clamp(350px, 52vw, 750px);
+  height: auto;
+  z-index: 2;
+  opacity: 0.1;
+  color: var(--gold);
+  animation: drift 200s linear infinite;
+}
+
+@keyframes drift {
+  from { transform: translateY(-50%) rotate(0deg); }
+  to { transform: translateY(-50%) rotate(360deg); }
+}
+
+/* Angular shards (Layer 2 — primary forms) */
+.s0__shard {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.s0__shard--1 {
+  top: 18vh;
+  right: 28vw;
+  width: 120px;
+  height: 200px;
+  opacity: 0.12;
+}
+
+.s0__shard--2 {
+  top: 55vh;
+  right: 15vw;
+  width: 80px;
+  height: 160px;
+  opacity: 0.08;
+}
+
+.s0__shard--3 {
+  bottom: 20vh;
+  left: 35vw;
+  width: 60px;
+  height: 120px;
+  opacity: 0.1;
+}
+
+.s0__shard--4 {
+  top: 30vh;
+  left: 55vw;
+  width: 180px;
+  height: 100px;
+  opacity: 0.06;
+}
+
+/* Scroll hint */
+.s0__scroll {
+  position: absolute;
+  bottom: 4vh;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.s0__scroll-line {
+  width: 1px;
+  height: 28px;
+  background: var(--gold);
+  opacity: 0.2;
+  animation: scrollpulse 2s ease-in-out infinite;
+}
+
+@keyframes scrollpulse {
+  0%, 100% { opacity: 0.1; transform: scaleY(0.6); }
+  50% { opacity: 0.3; transform: scaleY(1); }
+}
+
+/* ═══════════════════════════════════════
+   SPREAD 1: ARCHITECTURE — The Technical Specimen
+   Template: central subject (E2E diagram) with
+   annotation callouts and surrounding void
+   Palette: dark-grey/gold on cream
+   ═══════════════════════════════════════ */
+.s1__label {
+  color: var(--warm-grey);
+  top: 5vh;
+  left: 5vw;
+}
+
+.s1__quote {
+  position: absolute;
+  top: 12vh;
+  left: 5vw;
+  max-width: 60vw;
+  z-index: 4;
+}
+
+.s1__quote-text {
+  font-family: var(--condensed);
+  font-weight: 600;
+  font-size: clamp(16px, 2.2vw, 34px);
+  line-height: 1.3;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--dark-grey);
+}
+
+.s1__quote-text em {
+  font-style: normal;
+  color: var(--gold);
+}
+
+/* E2E Illustration */
+.s1__diagram {
+  position: absolute;
+  top: 38vh;
+  left: 50%;
+  transform: translateX(-50%);
+  width: clamp(500px, 70vw, 900px);
+  height: auto;
+  z-index: 3;
+}
+
+.s1__specs {
+  color: var(--warm-grey);
+  opacity: 0.6;
+  bottom: 6vh;
+  left: 5vw;
+  max-width: 70vw;
+  white-space: normal;
+  line-height: 1.8;
+}
+
+/* ═══════════════════════════════════════
+   SPREAD 2: SYSTEM — Grid Interference
+   Template: visible grid + capability words
+   breaking through grid boundaries
+   Palette: gold + violet on navy
+   ═══════════════════════════════════════ */
+.s2__label {
+  color: rgba(200,162,78,0.3);
+  top: 5vh;
+  left: 5vw;
+}
+
+/* Visible construction grid */
+.s2__grid {
+  position: absolute;
+  inset: 8vh 5vw;
+  background-image:
+    linear-gradient(to right, rgba(200,162,78,0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(200,162,78,0.035) 1px, transparent 1px);
+  background-size: calc(90vw / 6) calc(84vh / 4);
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Capability words — structural typography breaking the grid */
+.s2__cap {
+  position: absolute;
+  z-index: 4;
+  line-height: 0.85;
+}
+
+.s2__cap-word {
+  font-family: var(--display);
+  display: block;
+  letter-spacing: -0.02em;
+}
+
+.s2__cap-anno {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  display: block;
+  margin-top: 0.8em;
+  line-height: 1.6;
+}
+
+.cap--text {
+  top: 18vh;
+  left: 5vw;
+}
+
+.cap--text .s2__cap-word {
+  font-size: clamp(70px, 17vw, 260px);
+  color: var(--gold);
+}
+
+.cap--text .s2__cap-anno {
+  color: var(--gold-dim);
+  opacity: 0.5;
+}
+
+.cap--voice {
+  top: 12vh;
+  right: 5vw;
+  text-align: right;
+}
+
+.cap--voice .s2__cap-word {
+  font-size: clamp(50px, 10vw, 150px);
+  color: var(--cream);
+  opacity: 0.25;
+}
+
+.cap--voice .s2__cap-anno {
+  color: var(--violet-dim);
+  opacity: 0.4;
+}
+
+.cap--files {
+  bottom: 22vh;
+  left: 8vw;
+}
+
+.cap--files .s2__cap-word {
+  font-size: clamp(45px, 9vw, 130px);
+  color: var(--violet);
+  opacity: 0.35;
+}
+
+.cap--files .s2__cap-anno {
+  color: var(--violet-dim);
+  opacity: 0.35;
+}
+
+.cap--servers {
+  bottom: 12vh;
+  right: 5vw;
+  text-align: right;
+}
+
+.cap--servers .s2__cap-word {
+  font-size: clamp(55px, 11vw, 170px);
+  color: var(--cream);
+  opacity: 0.15;
+}
+
+.cap--servers .s2__cap-anno {
+  color: var(--gold-dim);
+  opacity: 0.35;
+}
+
+/* Connecting angular lines between capabilities */
+.s2__connector {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+}
+
+/* Shard accents in system spread */
+.s2__shard {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+}
+
+/* ═══════════════════════════════════════
+   SPREAD 3: ACQUIRE — The Horizon Slice
+   Template: horizontal band anchoring CTA,
+   open space above and below
+   Palette: gold + dark on cream
+   ═══════════════════════════════════════ */
+.s3__label {
+  color: var(--warm-grey);
+  top: 5vh;
+  left: 5vw;
+}
+
+.s3__star {
+  position: absolute;
+  top: 18vh;
+  left: 50%;
+  transform: translateX(-50%);
+  width: clamp(80px, 12vw, 160px);
+  height: auto;
+  color: var(--gold);
+  z-index: 3;
+  opacity: 0.25;
+}
+
+.s3__title {
+  position: absolute;
+  top: 38vh;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--display);
+  font-size: clamp(60px, 14vw, 220px);
+  letter-spacing: -0.02em;
+  color: var(--gold);
+  z-index: 4;
+  white-space: nowrap;
+}
+
+/* Horizontal band — the horizon slice */
+.s3__band {
+  position: absolute;
+  top: calc(38vh + clamp(55px, 12vw, 190px) + 2vh);
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--dark-grey);
+  opacity: 0.12;
+  z-index: 2;
+}
+
+.s3__actions {
+  position: absolute;
+  top: calc(38vh + clamp(55px, 12vw, 190px) + 5vh);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 4vw;
+  z-index: 4;
+  white-space: nowrap;
+}
+
+.s3__link {
+  font-family: var(--mono);
+  font-size: clamp(10px, 0.9vw, 13px);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-decoration: none;
+  color: var(--dark-grey);
+  padding: 0.8em 1.6em;
+  border: 1px solid var(--dark-grey);
+  opacity: 0.5;
+  transition: opacity 0.3s, border-color 0.3s, color 0.3s;
+}
+
+.s3__link:hover {
+  opacity: 1;
+  border-color: var(--gold);
+  color: var(--gold);
+}
+
+.s3__link--primary {
+  opacity: 0.8;
+  border-color: var(--gold-dim);
+  color: var(--gold);
+}
+
+.s3__link--primary:hover {
+  opacity: 1;
+  background: var(--gold);
+  color: var(--cream);
+}
+
+/* Deploy steps — annotation register */
+.s3__steps {
+  position: absolute;
+  top: calc(38vh + clamp(55px, 12vw, 190px) + 16vh);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4;
+  text-align: center;
+}
+
+.s3__steps-line {
+  font-family: var(--mono);
+  font-size: clamp(8px, 0.65vw, 10px);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--warm-grey);
+  opacity: 0.45;
+}
+
+/* Colophon */
+.s3__colophon {
+  position: absolute;
+  bottom: 5vh;
+  left: 5vw;
+  right: 5vw;
+  display: flex;
+  justify-content: space-between;
+  z-index: 4;
+}
+
+.s3__col-left,
+.s3__col-right {
+  font-family: var(--mono);
+  font-size: 8px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--warm-grey);
+  opacity: 0.35;
+  line-height: 1.8;
+}
+
+.s3__col-right {
+  text-align: right;
+}
+
+/* ═══════════════════════════════════════
+   RESPONSIVE
+   ═══════════════════════════════════════ */
+@media (max-width: 768px) {
+  .side { display: none; }
+
+  .s0__sub {
+    top: calc(13vh + clamp(80px, 17vw, 260px) - 1vh);
+  }
+
+  .s1__quote { max-width: 85vw; }
+  .s1__diagram { width: 95vw; top: 42vh; }
+
+  .cap--voice { top: auto; bottom: 50vh; right: 5vw; }
+  .cap--servers { bottom: 6vh; }
+
+  .s3__actions { gap: 3vw; }
+  .s3__colophon { flex-direction: column; gap: 1em; }
+  .s3__col-right { text-align: left; }
+}
+
+@media (max-width: 480px) {
+  html { scroll-snap-type: y proximity; }
+  .sp { min-height: 100vh; height: auto; }
+}
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════
+     LOADER
+     ═══════════════════════════════════════ -->
+<div class="loader" id="loader">
+  <svg class="loader__star" viewBox="0 0 400 400" fill="none">
+    <polygon points="200,20 241,144 371,144 266,221 306,346 200,269 94,346 134,221 29,144 159,144" stroke="currentColor" stroke-width="1" fill="none"/>
+    <line x1="200" y1="200" x2="200" y2="20" stroke="currentColor" stroke-width="0.4" opacity="0.4"/>
+    <line x1="200" y1="200" x2="371" y2="144" stroke="currentColor" stroke-width="0.4" opacity="0.4"/>
+    <line x1="200" y1="200" x2="306" y2="346" stroke="currentColor" stroke-width="0.4" opacity="0.4"/>
+    <line x1="200" y1="200" x2="94" y2="346" stroke="currentColor" stroke-width="0.4" opacity="0.4"/>
+    <line x1="200" y1="200" x2="29" y2="144" stroke="currentColor" stroke-width="0.4" opacity="0.4"/>
+    <circle cx="200" cy="200" r="3" stroke="currentColor" stroke-width="0.6" fill="none"/>
+  </svg>
+  <span class="loader__text">INITIALIZING SYSTEM</span>
+</div>
+
+<!-- ═══════════════════════════════════════
+     SIDE NAV
+     ═══════════════════════════════════════ -->
+<nav class="side" id="sidenav">
+  <a href="#s0" class="side__tick on"></a>
+  <a href="#s1" class="side__tick"></a>
+  <a href="#s2" class="side__tick"></a>
+  <a href="#s3" class="side__tick"></a>
+</nav>
+
+<!-- ═══════════════════════════════════════
+     SPREAD 0: HERO — The Detonation
+     Focal: VESPER title + star, upper-left cluster
+     Void: lower-right open navy
+     Axis: diagonal, upper-left to center-right
+     ═══════════════════════════════════════ -->
+<section class="sp sp--dark" id="s0">
+  <!-- Layer 1: Construction hairlines -->
+  <div class="hl hl--h hl--gold" style="top: 35vh;" data-parallax="0.03"></div>
+  <div class="hl hl--h hl--gold" style="top: 72vh;" data-parallax="-0.02"></div>
+  <div class="hl hl--v hl--gold" style="left: 62vw;" data-parallax="0.02"></div>
+
+  <!-- Layer 2: Giant wireframe star -->
+  <svg class="s0__star rv rv--s d3" viewBox="0 0 400 400" fill="none">
+    <polygon points="200,20 241,144 371,144 266,221 306,346 200,269 94,346 134,221 29,144 159,144" stroke="currentColor" stroke-width="0.8" fill="none"/>
+    <line x1="200" y1="200" x2="200" y2="20" stroke="currentColor" stroke-width="0.3" opacity="0.5"/>
+    <line x1="200" y1="200" x2="371" y2="144" stroke="currentColor" stroke-width="0.3" opacity="0.5"/>
+    <line x1="200" y1="200" x2="306" y2="346" stroke="currentColor" stroke-width="0.3" opacity="0.5"/>
+    <line x1="200" y1="200" x2="94" y2="346" stroke="currentColor" stroke-width="0.3" opacity="0.5"/>
+    <line x1="200" y1="200" x2="29" y2="144" stroke="currentColor" stroke-width="0.3" opacity="0.5"/>
+    <circle cx="200" cy="200" r="180" stroke="currentColor" stroke-width="0.2" stroke-dasharray="3 6" opacity="0.3"/>
+    <circle cx="200" cy="200" r="69" stroke="currentColor" stroke-width="0.2" stroke-dasharray="2 5" opacity="0.25"/>
+    <circle cx="200" cy="200" r="4" stroke="currentColor" stroke-width="0.5" fill="none" opacity="0.4"/>
+  </svg>
+
+  <!-- Layer 2: Angular shards -->
+  <svg class="s0__shard s0__shard--1" viewBox="0 0 120 200" fill="none">
+    <polygon points="10,200 60,0 110,180" fill="#c8a24e" opacity="0.8"/>
+  </svg>
+  <svg class="s0__shard s0__shard--2" viewBox="0 0 80 160" fill="none">
+    <polygon points="0,160 40,0 80,140" fill="#8b7ec8" opacity="0.7"/>
+  </svg>
+  <svg class="s0__shard s0__shard--3" viewBox="0 0 60 120" fill="none">
+    <polygon points="0,0 60,30 15,120" fill="#c8a24e" opacity="0.8"/>
+  </svg>
+  <svg class="s0__shard s0__shard--4" viewBox="0 0 180 100" fill="none">
+    <polygon points="0,20 180,0 160,100" fill="#8b7ec8" opacity="0.5"/>
+  </svg>
+
+  <!-- Layer 3: Display typography — structural placement -->
+  <h1 class="s0__title rv rv--l d1">VESPER</h1>
+
+  <div class="s0__sub rv rv--l d4">
+    <span class="s0__sub-main">SPEAK FREELY</span>
+    <span class="s0__sub-tech">ENCRYPTED MESSAGING + VOICE // EVERYTHING JUST WORKS // SELF-HOSTED</span>
+  </div>
+
+  <!-- Layer 1: Annotation text — scattered technical labels -->
+  <span class="an rv rv--f d6" style="top: 8vh; right: 5vw; color: rgba(200,162,78,0.25);">NO ADS // NO TRACKING // NO SURVEILLANCE</span>
+  <span class="an rv rv--f d7" style="bottom: 12vh; left: 5vw; color: rgba(200,162,78,0.2);">MLS PROTOCOL // RFC 9420</span>
+  <span class="an rv rv--f d8" style="bottom: 8vh; right: 5vw; color: rgba(139,126,200,0.2);">SYSTEM V.01</span>
+  <span class="an rv rv--f d9" style="bottom: 12vh; left: 35vw; color: rgba(200,162,78,0.15);">FREE + OPEN SOURCE</span>
+  <span class="an rv rv--f d7" style="top: 40vh; right: 8vw; color: rgba(139,126,200,0.15);">YOUR SERVER // YOUR DATA</span>
+
+  <!-- Scroll indicator -->
+  <div class="s0__scroll rv rv--f d10">
+    <div class="s0__scroll-line"></div>
+    <span class="an" style="position: static; color: rgba(200,162,78,0.2); font-size: 7px;">SCROLL</span>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════
+     SPREAD 1: ARCHITECTURE — The Technical Specimen
+     Focal: E2E diagram centered with surrounding annotation
+     Void: upper-right and lower-left corners
+     Axis: horizontal, anchored by pull quote
+     ═══════════════════════════════════════ -->
+<section class="sp sp--cream" id="s1">
+  <!-- Layer 1: Construction hairlines -->
+  <div class="hl hl--h hl--dark" style="top: 35vh;"></div>
+  <div class="hl hl--v hl--dark" style="left: 32vw;"></div>
+
+  <!-- Section label -->
+  <span class="an s1__label rv rv--f d1">01 // ARCHITECTURE</span>
+
+  <!-- Pull quote — structural typography anchored to hairline -->
+  <div class="s1__quote rv rv--l d2">
+    <span class="s1__quote-text">
+      SERVERS. CHANNELS. VOICE CALLS. DMS. REACTIONS. FILE SHARING.
+      <em>EVERYTHING YOU ALREADY KNOW</em> — BUILT FROM THE GROUND UP TO BE PRIVATE.
+    </span>
+  </div>
+
+  <!-- E2E Technical Illustration (Layer 2) -->
+  <svg class="s1__diagram rv rv--u d4" viewBox="0 0 800 280" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <!-- Angular connecting paths (gold — encrypted data flow) -->
+    <polyline points="155,135 248,55 365,135" stroke="#c8a24e" stroke-width="1.2" fill="none"/>
+    <polyline points="435,135 548,55 645,135" stroke="#c8a24e" stroke-width="1.2" fill="none"/>
+
+    <!-- Path labels -->
+    <text x="240" y="42" font-family="Space Mono, monospace" font-size="7" fill="#c8a24e" opacity="0.55" letter-spacing="0.12em">CIPHERTEXT</text>
+    <text x="535" y="42" font-family="Space Mono, monospace" font-size="7" fill="#c8a24e" opacity="0.55" letter-spacing="0.12em">CIPHERTEXT</text>
+
+    <!-- Arrow vectors on paths -->
+    <polygon points="248,51 256,55 248,59" fill="#c8a24e" opacity="0.55"/>
+    <polygon points="548,51 556,55 548,59" fill="#c8a24e" opacity="0.55"/>
+
+    <!-- Animated packets flowing along the encrypted path -->
+    <circle r="3" fill="#c8a24e" opacity="0.5">
+      <animateMotion dur="3.5s" repeatCount="indefinite" begin="0s" path="M 155,135 L 248,55 L 365,135 L 435,135 L 548,55 L 645,135"/>
+    </circle>
+    <circle r="3" fill="#c8a24e" opacity="0.5">
+      <animateMotion dur="3.5s" repeatCount="indefinite" begin="1.2s" path="M 155,135 L 248,55 L 365,135 L 435,135 L 548,55 L 645,135"/>
+    </circle>
+    <circle r="3" fill="#c8a24e" opacity="0.5">
+      <animateMotion dur="3.5s" repeatCount="indefinite" begin="2.3s" path="M 155,135 L 248,55 L 365,135 L 435,135 L 548,55 L 645,135"/>
+    </circle>
+
+    <!-- Left node: YOUR DEVICE — ENCRYPT -->
+    <rect x="85" y="105" width="70" height="60" stroke="#c8a24e" stroke-width="1.5" fill="none"/>
+    <rect x="95" y="115" width="50" height="20" stroke="#c8a24e" stroke-width="0.4" fill="none" opacity="0.3"/>
+    <text x="120" y="142" text-anchor="middle" font-family="Space Mono, monospace" font-size="8" fill="#2A2A2A" letter-spacing="0.08em">ENCRYPT</text>
+
+    <!-- Target arcs around left node -->
+    <path d="M 85,95 A 20,20 0 0 1 105,95" stroke="#c8a24e" stroke-width="0.5" fill="none" opacity="0.25"/>
+    <path d="M 80,88 A 30,30 0 0 1 110,88" stroke="#c8a24e" stroke-width="0.4" fill="none" opacity="0.15"/>
+
+    <!-- Center node: VESPER SERVER — RELAY (with void X) -->
+    <rect x="365" y="105" width="70" height="60" stroke="#8A857A" stroke-width="1" fill="none"/>
+    <line x1="370" y1="110" x2="430" y2="160" stroke="#8A857A" stroke-width="0.4" opacity="0.25"/>
+    <line x1="430" y1="110" x2="370" y2="160" stroke="#8A857A" stroke-width="0.4" opacity="0.25"/>
+    <text x="400" y="142" text-anchor="middle" font-family="Space Mono, monospace" font-size="8" fill="#8A857A" letter-spacing="0.08em">RELAY</text>
+
+    <!-- Right node: THEIR DEVICE — DECRYPT -->
+    <rect x="645" y="105" width="70" height="60" stroke="#8b7ec8" stroke-width="1.5" fill="none"/>
+    <rect x="655" y="115" width="50" height="20" stroke="#8b7ec8" stroke-width="0.4" fill="none" opacity="0.3"/>
+    <text x="680" y="142" text-anchor="middle" font-family="Space Mono, monospace" font-size="8" fill="#2A2A2A" letter-spacing="0.08em">DECRYPT</text>
+
+    <!-- Target arcs around right node -->
+    <path d="M 695,175 A 20,20 0 0 1 715,175" stroke="#8b7ec8" stroke-width="0.5" fill="none" opacity="0.25"/>
+    <path d="M 700,182 A 30,30 0 0 1 720,182" stroke="#8b7ec8" stroke-width="0.4" fill="none" opacity="0.15"/>
+
+    <!-- Node labels below -->
+    <text x="120" y="188" text-anchor="middle" font-family="Space Mono, monospace" font-size="7" fill="#8A857A" letter-spacing="0.1em">YOUR DEVICE</text>
+    <text x="400" y="188" text-anchor="middle" font-family="Space Mono, monospace" font-size="7" fill="#8A857A" letter-spacing="0.1em">VESPER SERVER</text>
+    <text x="680" y="188" text-anchor="middle" font-family="Space Mono, monospace" font-size="7" fill="#8A857A" letter-spacing="0.1em">THEIR DEVICE</text>
+
+    <!-- Zero knowledge annotation -->
+    <text x="400" y="218" text-anchor="middle" font-family="Space Mono, monospace" font-size="8" fill="#c8a24e" opacity="0.45" letter-spacing="0.14em">ZERO KNOWLEDGE</text>
+
+    <!-- Bottom rule -->
+    <line x1="85" y1="248" x2="715" y2="248" stroke="#8A857A" stroke-width="0.4" opacity="0.15"/>
+
+    <!-- Bottom spec annotations -->
+    <text x="400" y="268" text-anchor="middle" font-family="Space Mono, monospace" font-size="7" fill="#8A857A" opacity="0.4" letter-spacing="0.1em">FORWARD SECRECY // POST-COMPROMISE SECURITY // TREE-KEM</text>
+  </svg>
+
+  <!-- Corner annotations -->
+  <span class="an rv rv--f d6" style="bottom: 12vh; right: 5vw; color: rgba(138,133,122,0.45);">NO ADS // NO TRACKING // NO DATA MINING</span>
+  <span class="an rv rv--f d7" style="top: 8vh; right: 5vw; color: rgba(138,133,122,0.35);">OPEN SOURCE // VERIFY EVERY LINE // AGPL-3.0</span>
+
+  <!-- Shard accent -->
+  <svg style="position: absolute; bottom: 15vh; right: 18vw; width: 60px; height: 140px; z-index: 2; opacity: 0.06; pointer-events: none;" viewBox="0 0 60 140" fill="none">
+    <polygon points="5,140 30,0 55,120" fill="#c8a24e"/>
+  </svg>
+</section>
+
+<!-- ═══════════════════════════════════════
+     SPREAD 2: SYSTEM — Grid Interference
+     Template: visible grid with capability words
+     breaking through the grid boundaries
+     Axis: no single axis — multi-directional tension
+     ═══════════════════════════════════════ -->
+<section class="sp sp--dark" id="s2">
+  <!-- Layer 1: Visible construction grid -->
+  <div class="s2__grid"></div>
+
+  <!-- Construction hairlines -->
+  <div class="hl hl--h hl--gold" style="top: 50vh;" data-parallax="0.02"></div>
+  <div class="hl hl--v hl--gold" style="left: 40vw;" data-parallax="-0.015"></div>
+
+  <!-- Section label -->
+  <span class="an s2__label rv rv--f d1">02 // SYSTEM</span>
+
+  <!-- Capability: TEXT — largest, gold, primary focal -->
+  <div class="s2__cap cap--text rv rv--l d2">
+    <span class="s2__cap-word">TEXT</span>
+    <span class="s2__cap-anno">CHANNELS + DMS + THREADS<br>REACTIONS // MARKDOWN // THE FULL EXPERIENCE</span>
+  </div>
+
+  <!-- Capability: VOICE — upper right, recessive -->
+  <div class="s2__cap cap--voice rv rv--r d3">
+    <span class="s2__cap-word">VOICE</span>
+    <span class="s2__cap-anno">DROP IN. TALK. LISTEN.<br>ENCRYPTED END TO END // EVERY CALL</span>
+  </div>
+
+  <!-- Capability: FILES — lower left, violet accent -->
+  <div class="s2__cap cap--files rv rv--l d4">
+    <span class="s2__cap-word">FILES</span>
+    <span class="s2__cap-anno">DRAG. DROP. SHARE.<br>ENCRYPTED BEFORE IT LEAVES YOUR DEVICE</span>
+  </div>
+
+  <!-- Capability: SERVERS — lower right, ghosted -->
+  <div class="s2__cap cap--servers rv rv--r d5">
+    <span class="s2__cap-word">SERVERS</span>
+    <span class="s2__cap-anno">YOUR COMMUNITY. YOUR RULES.<br>INVITE WHO YOU WANT // SET THE ROLES</span>
+  </div>
+
+  <!-- Angular connecting line -->
+  <svg class="s2__connector" style="top: 0; left: 0; width: 100%; height: 100%;" viewBox="0 0 1000 1000" fill="none" preserveAspectRatio="none">
+    <line x1="180" y1="420" x2="780" y2="180" stroke="#c8a24e" stroke-width="0.4" opacity="0.08"/>
+    <line x1="120" y1="680" x2="850" y2="750" stroke="#8b7ec8" stroke-width="0.3" opacity="0.06"/>
+  </svg>
+
+  <!-- Shard accents -->
+  <svg class="s2__shard" style="top: 35vh; left: 48vw; width: 40px; height: 90px; opacity: 0.08;" viewBox="0 0 40 90" fill="none">
+    <polygon points="5,90 20,0 35,80" fill="#c8a24e"/>
+  </svg>
+  <svg class="s2__shard" style="bottom: 30vh; right: 35vw; width: 30px; height: 70px; opacity: 0.06;" viewBox="0 0 30 70" fill="none">
+    <polygon points="0,70 15,0 30,60" fill="#8b7ec8"/>
+  </svg>
+
+  <!-- Arrow vector motif — compositional element -->
+  <svg style="position: absolute; bottom: 8vh; left: 50%; transform: translateX(-50%); width: 80px; height: 30px; z-index: 3; opacity: 0.08; pointer-events: none;" viewBox="0 0 80 30" fill="none">
+    <polygon points="0,15 60,0 60,30" fill="#c8a24e"/>
+    <line x1="60" y1="15" x2="80" y2="15" stroke="#c8a24e" stroke-width="1"/>
+  </svg>
+
+  <!-- Annotation: platform spec -->
+  <span class="an rv rv--f d7" style="bottom: 5vh; left: 5vw; color: rgba(200,162,78,0.18);">DESKTOP + WEB // WINDOWS + MACOS + LINUX // WORKS EVERYWHERE</span>
+  <span class="an rv rv--f d8" style="bottom: 5vh; right: 5vw; color: rgba(139,126,200,0.18);">PRESENCE // READ RECEIPTS // PUSH NOTIFICATIONS</span>
+</section>
+
+<!-- ═══════════════════════════════════════
+     SPREAD 3: ACQUIRE — The Horizon Slice
+     Template: horizontal band at ~40% divides canvas
+     CTA anchored to band edge
+     Maximum negative space — 60%+
+     ═══════════════════════════════════════ -->
+<section class="sp sp--cream" id="s3">
+  <!-- Layer 1: Construction hairlines -->
+  <div class="hl hl--h hl--dark" style="top: 25vh;"></div>
+  <div class="hl hl--v hl--dark" style="left: 50vw;"></div>
+
+  <!-- Section label -->
+  <span class="an s3__label rv rv--f d1">03 // ACQUIRE</span>
+
+  <!-- Star motif — medium size, centered above title -->
+  <svg class="s3__star rv rv--s d2" viewBox="0 0 400 400" fill="none">
+    <polygon points="200,20 241,144 371,144 266,221 306,346 200,269 94,346 134,221 29,144 159,144" stroke="currentColor" stroke-width="1" fill="none"/>
+    <line x1="200" y1="200" x2="200" y2="20" stroke="currentColor" stroke-width="0.4" opacity="0.4"/>
+    <line x1="200" y1="200" x2="371" y2="144" stroke="currentColor" stroke-width="0.4" opacity="0.4"/>
+    <line x1="200" y1="200" x2="306" y2="346" stroke="currentColor" stroke-width="0.4" opacity="0.4"/>
+    <line x1="200" y1="200" x2="94" y2="346" stroke="currentColor" stroke-width="0.4" opacity="0.4"/>
+    <line x1="200" y1="200" x2="29" y2="144" stroke="currentColor" stroke-width="0.4" opacity="0.4"/>
+    <circle cx="200" cy="200" r="4" stroke="currentColor" stroke-width="0.6" fill="none" opacity="0.5"/>
+  </svg>
+
+  <!-- Title — structural, anchored to horizontal band -->
+  <h2 class="s3__title rv rv--s d3">GET VESPER</h2>
+
+  <!-- Horizon band -->
+  <div class="s3__band"></div>
+
+  <!-- Action links — annotation register -->
+  <div class="s3__actions rv rv--u d5">
+    <a href="https://github.com/vesper-chat/vesper" target="_blank" class="s3__link s3__link--primary">SELF-HOST</a>
+    <a href="https://github.com/vesper-chat/vesper" target="_blank" class="s3__link">VIEW SOURCE</a>
+  </div>
+
+  <!-- Deploy steps — minimal annotation -->
+  <div class="s3__steps rv rv--f d7">
+    <span class="s3__steps-line">CLONE &nbsp;/&nbsp; CONFIGURE &nbsp;/&nbsp; DEPLOY</span>
+    <span class="s3__steps-line" style="display: block; margin-top: 0.6em; opacity: 0.7;">FIVE MINUTES TO YOUR OWN INSTANCE</span>
+  </div>
+
+  <!-- Colophon — bottom annotation layer -->
+  <div class="s3__colophon rv rv--f d8">
+    <div class="s3__col-left">
+      ELIXIR // PHOENIX // REACT // ELECTRON<br>
+      WEBRTC // POSTGRESQL // DOCKER
+    </div>
+    <div class="s3__col-right">
+      MULTI-ARCH: AMD64 + ARM64<br>
+      AGPL-3.0 // OPEN SOURCE // V.01
+    </div>
+  </div>
+
+  <!-- Shard accent — bottom right -->
+  <svg style="position: absolute; bottom: 20vh; right: 12vw; width: 35px; height: 80px; z-index: 2; opacity: 0.05; pointer-events: none;" viewBox="0 0 35 80" fill="none">
+    <polygon points="3,80 18,0 32,70" fill="#c8a24e"/>
+  </svg>
+</section>
+
+<!-- ═══════════════════════════════════════
+     SCRIPT — loader, reveal, parallax, nav
+     ═══════════════════════════════════════ -->
+<script>
+(function() {
+  // --- Loader: dismiss after fonts load ---
+  Promise.race([
+    document.fonts.ready,
+    new Promise(function(r) { setTimeout(r, 3000); })
+  ]).then(function() {
+    setTimeout(function() {
+      document.body.classList.add('loaded');
+    }, 300);
+  });
+
+  // --- IntersectionObserver: reveal animations ---
+  var revealEls = document.querySelectorAll('.rv');
+  var revealObs = new IntersectionObserver(function(entries) {
+    entries.forEach(function(e) {
+      if (e.isIntersecting) {
+        e.target.classList.add('on');
+      }
+    });
+  }, { threshold: 0.05, rootMargin: '0px 0px -20px 0px' });
+  revealEls.forEach(function(el) { revealObs.observe(el); });
+
+  // --- Side nav: track current spread ---
+  var spreads = document.querySelectorAll('.sp');
+  var ticks = document.querySelectorAll('.side__tick');
+  var sidenav = document.getElementById('sidenav');
+  var spreadThemes = ['dark', 'cream', 'dark', 'cream'];
+
+  var navObs = new IntersectionObserver(function(entries) {
+    entries.forEach(function(e) {
+      if (e.isIntersecting && e.intersectionRatio > 0.4) {
+        var idx = Array.prototype.indexOf.call(spreads, e.target);
+        ticks.forEach(function(t, i) {
+          t.classList.toggle('on', i === idx);
+        });
+        // Update side nav theme for contrast
+        sidenav.className = 'side' + (spreadThemes[idx] === 'cream' ? ' side--cream' : '');
+      }
+    });
+  }, { threshold: 0.5 });
+  spreads.forEach(function(sp) { navObs.observe(sp); });
+
+  // --- Subtle parallax on construction hairlines ---
+  var parallaxEls = document.querySelectorAll('[data-parallax]');
+  if (parallaxEls.length > 0) {
+    var ticking = false;
+    window.addEventListener('scroll', function() {
+      if (!ticking) {
+        requestAnimationFrame(function() {
+          var y = window.scrollY;
+          parallaxEls.forEach(function(el) {
+            var rate = parseFloat(el.getAttribute('data-parallax'));
+            el.style.transform = 'translateY(' + (y * rate) + 'px)';
+          });
+          ticking = false;
+        });
+        ticking = true;
+      }
+    });
+  }
+})();
+</script>
+
+</body>
+</html>

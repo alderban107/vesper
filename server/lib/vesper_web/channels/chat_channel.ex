@@ -14,16 +14,20 @@ defmodule VesperWeb.ChatChannel do
         {:error, %{reason: "channel not found or not a member"}}
 
       channel ->
-        # Subscribe to TTL changes so cached value stays in sync
-        Phoenix.PubSub.subscribe(Vesper.PubSub, "channel:settings:#{channel_id}")
+        if Servers.user_can_view_channel?(socket.assigns.user_id, channel) do
+          # Subscribe to TTL changes so cached value stays in sync
+          Phoenix.PubSub.subscribe(Vesper.PubSub, "channel:settings:#{channel_id}")
 
-        socket =
-          socket
-          |> assign(:channel_id, channel_id)
-          |> assign(:server_id, channel.server_id)
-          |> assign(:disappearing_ttl, channel.disappearing_ttl)
+          socket =
+            socket
+            |> assign(:channel_id, channel_id)
+            |> assign(:server_id, channel.server_id)
+            |> assign(:disappearing_ttl, channel.disappearing_ttl)
 
-        {:ok, socket}
+          {:ok, socket}
+        else
+          {:error, %{reason: "insufficient permissions"}}
+        end
     end
   end
 
@@ -35,8 +39,13 @@ defmodule VesperWeb.ChatChannel do
       ) do
     start_time = System.monotonic_time()
 
-    case safe_decode64(ciphertext) do
-      {:ok, decoded} ->
+    if Servers.user_can_send_messages_in_channel?(
+         socket.assigns.user_id,
+         socket.assigns.channel_id
+       ) do
+      with {:ok, decoded} <- safe_decode64(ciphertext),
+           {:ok, parent_message_id} <-
+             resolve_parent_message_id(params, :channel_id, socket.assigns.channel_id) do
         attrs =
           %{
             ciphertext: decoded,
@@ -44,7 +53,7 @@ defmodule VesperWeb.ChatChannel do
             channel_id: socket.assigns.channel_id,
             sender_id: socket.assigns.user_id
           }
-          |> maybe_add_parent(params)
+          |> maybe_add_parent_id(parent_message_id)
           |> maybe_add_expires_at(socket.assigns.disappearing_ttl)
 
         case Chat.create_message(attrs) do
@@ -75,9 +84,21 @@ defmodule VesperWeb.ChatChannel do
           {:error, _changeset} ->
             {:reply, {:error, %{reason: "could not send message"}}, socket}
         end
+      else
+        {:error, :missing} ->
+          {:reply, {:error, %{reason: "invalid encoding"}}, socket}
 
-      {:error, _} ->
-        {:reply, {:error, %{reason: "invalid encoding"}}, socket}
+        {:error, :invalid_base64} ->
+          {:reply, {:error, %{reason: "invalid encoding"}}, socket}
+
+        {:error, :invalid_type} ->
+          {:reply, {:error, %{reason: "invalid encoding"}}, socket}
+
+        {:error, reason} when is_binary(reason) ->
+          {:reply, {:error, %{reason: reason}}, socket}
+      end
+    else
+      {:reply, {:error, %{reason: "insufficient permissions"}}, socket}
     end
   end
 

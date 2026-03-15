@@ -67,6 +67,6 @@ config :swoosh, :api_client, false
 
 # CORS — allow Electron dev server
 config :cors_plug,
-  origin: ~r/^http:\/\/localhost:\d+$/,
+  origin: ~r/^http:\/\/(localhost|127\.0\.0\.1):\d+$/,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   headers: ["authorization", "content-type"]

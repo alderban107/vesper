@@ -8,6 +8,10 @@ let previousKey: CryptoKey | null = null
 let previousKeyTimeout: ReturnType<typeof setTimeout> | null = null
 let frameCounter = 0
 
+interface RTCEncodedFrameLike {
+  data: ArrayBuffer
+}
+
 async function importKey(rawKey: Uint8Array): Promise<CryptoKey> {
   return crypto.subtle.importKey(
     'raw',
@@ -31,8 +35,8 @@ function generateIv(): Uint8Array {
 }
 
 async function encryptFrame(
-  frame: RTCEncodedAudioFrame,
-  controller: TransformStreamDefaultController<RTCEncodedAudioFrame>
+  frame: RTCEncodedFrameLike,
+  controller: TransformStreamDefaultController<RTCEncodedFrameLike>
 ): Promise<void> {
   if (!currentKey) {
     controller.enqueue(frame)
@@ -63,8 +67,8 @@ async function encryptFrame(
 }
 
 async function decryptFrame(
-  frame: RTCEncodedAudioFrame,
-  controller: TransformStreamDefaultController<RTCEncodedAudioFrame>
+  frame: RTCEncodedFrameLike,
+  controller: TransformStreamDefaultController<RTCEncodedFrameLike>
 ): Promise<void> {
   if (!currentKey) {
     controller.enqueue(frame)
@@ -117,7 +121,10 @@ self.onrtctransform = (event: Event) => {
   const transformer = (event as RTCTransformEvent).transformer
   const readable = transformer.readable
   const writable = transformer.writable
-  const options = transformer.options as { operation: 'encrypt' | 'decrypt' }
+  const options = transformer.options as {
+    operation: 'encrypt' | 'decrypt'
+    mediaKind?: 'audio' | 'video'
+  }
 
   const transform =
     options.operation === 'encrypt'
@@ -128,8 +135,8 @@ self.onrtctransform = (event: Event) => {
     .pipeThrough(
       new TransformStream({
         transform: transform as unknown as TransformStreamTransformer<
-          RTCEncodedAudioFrame,
-          RTCEncodedAudioFrame
+          RTCEncodedFrameLike,
+          RTCEncodedFrameLike
         >['transform']
       })
     )
@@ -167,8 +174,8 @@ self.onmessage = async (event: MessageEvent) => {
 declare global {
   interface RTCTransformEvent extends Event {
     transformer: {
-      readable: ReadableStream<RTCEncodedAudioFrame>
-      writable: WritableStream<RTCEncodedAudioFrame>
+      readable: ReadableStream<RTCEncodedFrameLike>
+      writable: WritableStream<RTCEncodedFrameLike>
       options: unknown
     }
   }

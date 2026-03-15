@@ -1,7 +1,7 @@
 defmodule Vesper.Accounts do
   import Ecto.Query
   alias Vesper.Repo
-  alias Vesper.Accounts.{User, UserToken, Token}
+  alias Vesper.Accounts.{SearchIndexSnapshot, User, UserToken, Token}
 
   def get_user(id), do: Repo.get(User, id)
 
@@ -137,5 +137,87 @@ defmodule Vesper.Accounts do
       error ->
         error
     end
+  end
+
+  def get_search_index_snapshot(user_id) do
+    Repo.get_by(SearchIndexSnapshot, user_id: user_id)
+  end
+
+  def upsert_search_index_snapshot(user_id, attrs) do
+    expected_version = attrs["expected_version"] || attrs[:expected_version]
+
+    case get_search_index_snapshot(user_id) do
+      nil ->
+        %SearchIndexSnapshot{}
+        |> SearchIndexSnapshot.changeset(%{
+          user_id: user_id,
+          device_id: attrs["device_id"] || attrs[:device_id],
+          version: 1,
+          ciphertext: attrs["ciphertext"] || attrs[:ciphertext],
+          nonce: attrs["nonce"] || attrs[:nonce]
+        })
+        |> Repo.insert()
+        |> case do
+          {:ok, snapshot} ->
+            {:ok, snapshot}
+
+          {:error, %Ecto.Changeset{} = changeset} ->
+            if unique_user_snapshot_conflict?(changeset) do
+              case get_search_index_snapshot(user_id) do
+                nil -> {:error, changeset}
+                snapshot -> {:error, :conflict, snapshot}
+              end
+            else
+              {:error, changeset}
+            end
+        end
+
+      %SearchIndexSnapshot{} = snapshot ->
+        version_to_match =
+          if is_integer(expected_version), do: expected_version, else: snapshot.version
+
+        cond do
+          version_to_match != snapshot.version ->
+            {:error, :conflict, snapshot}
+
+          true ->
+            {updated_count, _} =
+              from(s in SearchIndexSnapshot,
+                where: s.id == ^snapshot.id and s.version == ^version_to_match
+              )
+              |> Repo.update_all(
+                set: [
+                  device_id: attrs["device_id"] || attrs[:device_id],
+                  ciphertext: attrs["ciphertext"] || attrs[:ciphertext],
+                  nonce: attrs["nonce"] || attrs[:nonce],
+                  updated_at: DateTime.utc_now() |> DateTime.truncate(:second)
+                ],
+                inc: [version: 1]
+              )
+
+            if updated_count == 1 do
+              {:ok, get_search_index_snapshot(user_id)}
+            else
+              case get_search_index_snapshot(user_id) do
+                nil -> {:error, :conflict, snapshot}
+                latest -> {:error, :conflict, latest}
+              end
+            end
+        end
+    end
+  end
+
+  def delete_search_index_snapshot(user_id) do
+    from(snapshot in SearchIndexSnapshot, where: snapshot.user_id == ^user_id)
+    |> Repo.delete_all()
+
+    :ok
+  end
+
+  defp unique_user_snapshot_conflict?(%Ecto.Changeset{} = changeset) do
+    Enum.any?(changeset.errors, fn
+      {:user_id, {_message, meta}} -> meta[:constraint] == :unique
+      _ -> false
+    end)
   end
 end

@@ -65,6 +65,7 @@ config :vesper, Oban,
 config :vesper, :ice_servers, [
   %{urls: "stun:stun.l.google.com:19302"}
 ]
+config :vesper, :ice_transport_policy, "all"
 
 # Import environment specific config. This must remain at the bottom
 # of this file so it overrides the configuration defined above.

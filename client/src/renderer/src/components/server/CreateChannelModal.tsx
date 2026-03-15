@@ -1,23 +1,79 @@
-import { useState } from 'react'
-import { Hash, Volume2, Loader2 } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { Folder, Hash, Volume2, Loader2 } from 'lucide-react'
 import { useServerStore } from '../../stores/serverStore'
 import { useUIStore } from '../../stores/uiStore'
 
+const CHANNEL_TYPE_OPTIONS = [
+  {
+    id: 'text',
+    label: 'Text Channel',
+    description: 'Post messages, images, links, and updates for everyone in the server.',
+    icon: Hash
+  },
+  {
+    id: 'voice',
+    label: 'Voice Channel',
+    description: 'Hang out with voice and screen sharing when people want to jump in live.',
+    icon: Volume2
+  },
+  {
+    id: 'category',
+    label: 'Category',
+    description: 'Organize text and voice channels into a cleaner, easier-to-scan sidebar.',
+    icon: Folder
+  }
+] as const
+
 export default function CreateChannelModal(): React.JSX.Element {
   const [name, setName] = useState('')
-  const [type, setType] = useState<'text' | 'voice'>('text')
+  const [type, setType] = useState<'text' | 'voice' | 'category'>('text')
+  const [categoryId, setCategoryId] = useState<string>('')
   const [loading, setLoading] = useState(false)
   const activeServerId = useServerStore((s) => s.activeServerId)
+  const activeServer = useServerStore((s) => s.servers.find((server) => server.id === s.activeServerId))
   const createChannel = useServerStore((s) => s.createChannel)
   const setActiveChannel = useServerStore((s) => s.setActiveChannel)
   const closeModal = useUIStore((s) => s.closeCreateChannelModal)
+  const draft = useUIStore((s) => s.createChannelDraft)
+  const categories = (activeServer?.channels ?? []).filter((channel) => channel.type === 'category')
+
+  useEffect(() => {
+    setName('')
+    setType(draft?.type ?? 'text')
+    setCategoryId(draft?.categoryId ?? '')
+  }, [draft?.categoryId, draft?.type])
+
+  useEffect(() => {
+    if (type === 'category') {
+      setCategoryId('')
+    }
+  }, [type])
+
+  const contextualSubtitle = useMemo(() => {
+    if (type === 'category') {
+      return 'Add a clean grouping for channels in the sidebar.'
+    }
+
+    if (draft?.categoryId && draft.scopeLabel) {
+      return `This new ${type} channel will land in ${draft.scopeLabel}.`
+    }
+
+    return 'Choose how people will use this space.'
+  }, [draft?.categoryId, draft?.scopeLabel, type])
+
+  const submitLabel = type === 'category' ? 'Create Category' : 'Create Channel'
 
   const handleSubmit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault()
     if (!name.trim() || !activeServerId) return
 
     setLoading(true)
-    const channel = await createChannel(activeServerId, name.trim(), type)
+    const channel = await createChannel(
+      activeServerId,
+      name.trim(),
+      type,
+      type === 'category' ? null : categoryId || null
+    )
     setLoading(false)
 
     if (channel) {
@@ -29,58 +85,114 @@ export default function CreateChannelModal(): React.JSX.Element {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
+    <div
+      className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          closeModal()
+        }
+      }}
+    >
       <form
         onSubmit={handleSubmit}
-        className="glass-card rounded-2xl p-6 w-96 max-w-[calc(100vw-2rem)] animate-scale-in"
+        className="glass-card rounded-2xl p-6 w-[30rem] max-w-[calc(100vw-2rem)] animate-scale-in"
       >
-        <div className="flex items-center gap-3 mb-4">
-          <div className="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center">
-            <Hash className="w-5 h-5 text-accent" />
+        <div className="flex items-center gap-3 mb-2">
+          <div className="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center shrink-0">
+            {type === 'category' ? (
+              <Folder className="w-5 h-5 text-accent" />
+            ) : type === 'voice' ? (
+              <Volume2 className="w-5 h-5 text-accent" />
+            ) : (
+              <Hash className="w-5 h-5 text-accent" />
+            )}
           </div>
-          <h2 className="text-lg font-semibold text-text-primary">Create Channel</h2>
+          <div>
+            <h2 className="text-lg font-semibold text-text-primary">
+              {type === 'category' ? 'Create Category' : 'Create Channel'}
+            </h2>
+            <p className="text-sm text-text-faint">
+              {contextualSubtitle}
+            </p>
+          </div>
         </div>
 
-        <label className="block mb-4">
+        {type !== 'category' && draft?.categoryId && draft.scopeLabel && (
+          <div className="vesper-channel-create-scope">
+            <span className="vesper-channel-create-scope-label">Location</span>
+            <span className="vesper-channel-create-scope-value">{draft.scopeLabel}</span>
+          </div>
+        )}
+
+        <div className="mb-5">
+          <span className="text-text-muted text-sm font-medium block mb-2">Channel Type</span>
+          <div className="grid gap-3">
+            {CHANNEL_TYPE_OPTIONS.map((option) => {
+              const Icon = option.icon
+              const selected = type === option.id
+
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => setType(option.id)}
+                  className={selected ? 'vesper-channel-type-card vesper-channel-type-card-active' : 'vesper-channel-type-card'}
+                >
+                  <span className="vesper-channel-type-card-icon">
+                    <Icon className="w-4 h-4" />
+                  </span>
+                  <span className="vesper-channel-type-card-copy">
+                    <span className="vesper-channel-type-card-title">{option.label}</span>
+                    <span className="vesper-channel-type-card-description">{option.description}</span>
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        <label className="block mb-5">
           <span className="text-text-muted text-sm font-medium">Channel Name</span>
           <input
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
+            placeholder={
+              type === 'voice'
+                ? 'general voice'
+                : type === 'category'
+                  ? 'Project Space'
+                  : 'general'
+            }
             className="mt-1 block w-full rounded-lg bg-bg-base/50 border border-border text-text-primary px-3 py-2.5 input-focus"
             autoFocus
           />
+          <span className="mt-2 block text-xs text-text-faint">
+            {type === 'category'
+              ? 'Categories let you group channels together and reorder larger sections of the sidebar.'
+              : type === 'voice'
+              ? 'Good for drop-ins, live conversation, and quick calls.'
+              : 'Good for async updates, files, links, and searchable discussion.'}
+          </span>
         </label>
 
-        <div className="mb-4">
-          <span className="text-text-muted text-sm font-medium block mb-2">Type</span>
-          <div className="flex gap-3">
-            <button
-              type="button"
-              onClick={() => setType('text')}
-              className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2 ${
-                type === 'text'
-                  ? 'bg-accent text-bg-base'
-                  : 'bg-bg-base/50 text-text-muted hover:text-text-primary border border-border'
-              }`}
+        {type !== 'category' && categories.length > 0 && (
+          <label className="block mb-5">
+            <span className="text-text-muted text-sm font-medium">Category</span>
+            <select
+              value={categoryId}
+              onChange={(event) => setCategoryId(event.target.value)}
+              className="mt-1 block w-full rounded-lg bg-bg-base/50 border border-border text-text-primary px-3 py-2.5 input-focus"
             >
-              <Hash className="w-4 h-4" />
-              Text
-            </button>
-            <button
-              type="button"
-              onClick={() => setType('voice')}
-              className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2 ${
-                type === 'voice'
-                  ? 'bg-accent text-bg-base'
-                  : 'bg-bg-base/50 text-text-muted hover:text-text-primary border border-border'
-              }`}
-            >
-              <Volume2 className="w-4 h-4" />
-              Voice
-            </button>
-          </div>
-        </div>
+              <option value="">No category</option>
+              {categories.map((category) => (
+                <option key={category.id} value={category.id}>
+                  {category.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
 
         <div className="flex gap-3 justify-end">
           <button
@@ -101,7 +213,7 @@ export default function CreateChannelModal(): React.JSX.Element {
                 Creating...
               </>
             ) : (
-              'Create'
+              submitLabel
             )}
           </button>
         </div>

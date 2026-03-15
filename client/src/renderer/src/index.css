@@ -164,3 +164,5513 @@
   background: rgba(200, 162, 78, 0.3);
   color: #e8e6f0;
 }
+
+.vesper-message-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 3rem minmax(0, 1fr);
+  gap: 0.75rem;
+  margin-inline: -0.5rem;
+  padding: 0.2rem 0.5rem 0.3rem;
+  border-radius: 1rem;
+  transition: background-color 0.16s ease;
+}
+
+.vesper-avatar-shell {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.vesper-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.vesper-avatar-sm {
+  width: 2rem;
+  height: 2rem;
+}
+
+.vesper-avatar-md {
+  width: 2.5rem;
+  height: 2.5rem;
+}
+
+.vesper-avatar-lg {
+  width: 4rem;
+  height: 4rem;
+}
+
+.vesper-avatar-status {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  border-radius: 999px;
+  border: 2px solid var(--color-bg-secondary);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+
+.vesper-avatar-shell-sm .vesper-avatar-status {
+  width: 0.72rem;
+  height: 0.72rem;
+}
+
+.vesper-avatar-shell-md .vesper-avatar-status {
+  width: 0.82rem;
+  height: 0.82rem;
+}
+
+.vesper-avatar-shell-lg .vesper-avatar-status {
+  width: 0.98rem;
+  height: 0.98rem;
+  border-width: 3px;
+}
+
+.vesper-avatar-status-online {
+  background: #22c55e;
+}
+
+.vesper-avatar-status-idle {
+  background: #f59e0b;
+}
+
+.vesper-avatar-status-dnd {
+  background: #ef4444;
+}
+
+.vesper-avatar-status-offline {
+  background: #6b7280;
+}
+
+.vesper-avatar-speaking::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  border: 1px solid rgba(34, 197, 94, 0.75);
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.12);
+  pointer-events: none;
+}
+
+.vesper-chat-header {
+  height: 3.5rem;
+  display: flex;
+  align-items: center;
+  padding: 0 1.1rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent),
+    color-mix(in srgb, var(--color-bg-secondary) 78%, transparent);
+  backdrop-filter: blur(18px);
+  flex-shrink: 0;
+}
+
+.vesper-chat-header-mobile {
+  height: calc(3.85rem + env(safe-area-inset-top, 0px));
+  padding: calc(env(safe-area-inset-top, 0px) + 0.5rem) 0.9rem 0.65rem;
+  gap: 0.8rem;
+}
+
+.vesper-mobile-header-button {
+  width: 2.35rem;
+  height: 2.35rem;
+  border: 0;
+  border-radius: 0.85rem;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 72%, transparent);
+  color: var(--color-text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.vesper-mobile-header-button-active {
+  color: var(--color-accent-text);
+}
+
+.vesper-mobile-header-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.vesper-mobile-header-title {
+  color: var(--color-text-primary);
+  font-size: 0.98rem;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vesper-mobile-header-subtitle {
+  color: var(--color-text-faint);
+  font-size: 0.74rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vesper-mobile-header-spacer {
+  width: 2.35rem;
+  flex: 0 0 auto;
+}
+
+.vesper-message-feed {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.8rem 0.9rem 0.4rem;
+  min-height: 0;
+}
+
+.vesper-message-feed-inner {
+  padding-bottom: 0.5rem;
+}
+
+.vesper-message-empty-state {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-faintest);
+}
+
+.vesper-date-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 1rem 0 0.85rem;
+  padding: 0 0.25rem;
+}
+
+.vesper-date-divider-line {
+  flex: 1;
+  height: 1px;
+  background: color-mix(in srgb, var(--color-border) 88%, transparent);
+}
+
+.vesper-date-divider-label {
+  padding: 0.3rem 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-secondary) 80%, transparent);
+  color: var(--color-text-faint);
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+}
+
+.vesper-message-row:hover {
+  background: color-mix(in srgb, var(--color-bg-secondary) 72%, transparent);
+}
+
+.vesper-message-jump-target .vesper-message-row {
+  background: color-mix(in srgb, var(--color-accent) 16%, var(--color-bg-secondary));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 42%, transparent);
+  animation: vesper-message-jump-highlight 2.2s ease;
+}
+
+@keyframes vesper-message-jump-highlight {
+  0% {
+    background: color-mix(in srgb, var(--color-accent) 32%, var(--color-bg-secondary));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 52%, transparent);
+  }
+
+  100% {
+    background: color-mix(in srgb, var(--color-accent) 8%, var(--color-bg-secondary));
+    box-shadow: 0 0 0 1px transparent;
+  }
+}
+
+.vesper-message-row-start {
+  margin-top: 0.65rem;
+  padding-top: 0.55rem;
+}
+
+.vesper-message-row-grouped {
+  padding-top: 0.05rem;
+  padding-bottom: 0.18rem;
+}
+
+.vesper-message-avatar-column {
+  display: flex;
+  min-height: 2.5rem;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.vesper-message-row-grouped .vesper-message-avatar-column {
+  min-height: 1.35rem;
+  padding-top: 0.05rem;
+}
+
+.vesper-message-inline-time {
+  font-size: 0.68rem;
+  color: var(--color-text-faintest);
+  line-height: 1;
+  display: block;
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity 0.16s ease;
+}
+
+.vesper-message-row:hover .vesper-message-inline-time {
+  opacity: 1;
+}
+
+.vesper-message-body {
+  min-width: 0;
+  position: relative;
+}
+
+.vesper-message-toolbar-slot {
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+  top: -1.1rem;
+  z-index: 10;
+}
+
+.vesper-message-toolbar-anchor {
+  position: relative;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.vesper-message-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.1rem;
+  padding: 0.2rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 90%, transparent);
+  border-radius: 0.9rem;
+  background: color-mix(in srgb, var(--color-bg-primary) 88%, transparent);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.group:hover .vesper-message-actions,
+.vesper-message-actions:focus-within,
+.vesper-message-toolbar-anchor-active .vesper-message-actions {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.vesper-message-action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  border: 0;
+  border-radius: 0.7rem;
+  color: var(--color-text-muted);
+  background: transparent;
+  cursor: pointer;
+  transition: background-color 0.16s ease, color 0.16s ease;
+}
+
+.vesper-message-action-button:hover {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 72%, transparent);
+  color: var(--color-text-primary);
+}
+
+.vesper-message-action-button-danger:hover {
+  color: #fca5a5;
+}
+
+.vesper-message-action-meta {
+  display: inline-flex;
+  align-items: center;
+  max-width: 11rem;
+  padding: 0 0.45rem 0 0.15rem;
+  color: var(--color-text-faint);
+  font-size: 0.68rem;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vesper-message-emoji-popout {
+  position: absolute;
+  top: -0.15rem;
+  right: calc(100% + 0.7rem);
+  z-index: 30;
+  pointer-events: auto;
+}
+
+.vesper-message-header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.55rem;
+  margin-bottom: 0.1rem;
+}
+
+.vesper-message-author {
+  font-size: 0.94rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.vesper-message-time {
+  font-size: 0.72rem;
+  color: var(--color-text-faintest);
+}
+
+.vesper-message-content {
+  line-height: 1.45;
+}
+
+.vesper-message-reply {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  margin-bottom: 0.2rem;
+  color: var(--color-text-faint);
+  font-size: 0.76rem;
+}
+
+.vesper-message-reply-spine {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  color: var(--color-text-disabled);
+}
+
+.vesper-message-reply-author {
+  color: var(--color-text-muted);
+  font-weight: 600;
+}
+
+.vesper-message-reply-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vesper-message-reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.55rem;
+}
+
+.vesper-message-reaction {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-secondary) 74%, transparent);
+  padding: 0.26rem 0.6rem;
+  font-size: 0.74rem;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease;
+}
+
+.vesper-message-reaction:hover {
+  border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
+  color: var(--color-text-primary);
+}
+
+.vesper-message-reaction-active {
+  border-color: color-mix(in srgb, var(--color-accent) 58%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  color: var(--color-accent-text);
+  box-shadow: 0 0 16px rgba(200, 162, 78, 0.16);
+}
+
+.vesper-message-row-thread-active {
+  background: color-mix(in srgb, var(--color-accent) 10%, var(--color-bg-secondary));
+}
+
+.vesper-message-thread-meta {
+  margin-top: 0.38rem;
+}
+
+.vesper-message-thread-link {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--color-text-faint);
+  font-size: 0.74rem;
+  cursor: pointer;
+  transition: color 0.16s ease;
+}
+
+.vesper-message-thread-link:hover {
+  color: var(--color-text-secondary);
+}
+
+.vesper-message-thread-link-active {
+  color: var(--color-accent-text);
+}
+
+.vesper-panel-shell {
+  position: relative;
+  flex: 0 0 auto;
+  min-width: 0;
+  height: 100%;
+}
+
+.vesper-thread-panel {
+  width: min(24rem, 34vw);
+  min-width: 19rem;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0)),
+    color-mix(in srgb, var(--color-bg-base) 90%, transparent);
+}
+
+.vesper-thread-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.9rem;
+  padding: 0.9rem 0.9rem 0.7rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+}
+
+.vesper-thread-header-copy {
+  min-width: 0;
+}
+
+.vesper-thread-title {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  margin: 0;
+}
+
+.vesper-thread-subtitle {
+  margin: 0.1rem 0 0;
+  color: var(--color-text-faint);
+  font-size: 0.72rem;
+}
+
+.vesper-thread-close {
+  width: 2rem;
+  height: 2rem;
+  border: 0;
+  border-radius: 0.7rem;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 66%, transparent);
+  color: var(--color-text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 0.16s ease, color 0.16s ease;
+}
+
+.vesper-thread-close:hover {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 86%, transparent);
+  color: var(--color-text-primary);
+}
+
+.vesper-thread-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.vesper-thread-parent {
+  padding: 0.55rem 0.8rem 0.15rem;
+}
+
+.vesper-thread-divider {
+  padding: 0.25rem 1rem 0.45rem;
+  color: var(--color-text-faint);
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.vesper-thread-feed {
+  flex: 1;
+  min-height: 0;
+}
+
+.vesper-thread-feed .vesper-message-feed {
+  padding: 0.3rem 0.8rem 0.2rem;
+}
+
+.vesper-thread-state {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  color: var(--color-text-faint);
+  text-align: center;
+}
+
+.vesper-thread-composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.6rem;
+  padding: 0.8rem;
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+  background: color-mix(in srgb, var(--color-bg-secondary) 70%, transparent);
+}
+
+.vesper-thread-composer-textarea {
+  flex: 1;
+  resize: none;
+  border: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
+  border-radius: 0.9rem;
+  background: color-mix(in srgb, var(--color-bg-secondary) 86%, transparent);
+  color: var(--color-text-primary);
+  font-size: 0.86rem;
+  line-height: 1.4;
+  min-height: 2.55rem;
+  max-height: 8rem;
+  padding: 0.6rem 0.72rem;
+  outline: none;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.vesper-thread-composer-textarea:focus {
+  border-color: color-mix(in srgb, var(--color-accent) 54%, var(--color-border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
+.vesper-thread-composer-textarea::placeholder {
+  color: var(--color-text-faintest);
+}
+
+.vesper-thread-composer-send {
+  width: 2.45rem;
+  height: 2.45rem;
+  border: 0;
+  border-radius: 0.85rem;
+  background: color-mix(in srgb, var(--color-accent) 78%, transparent);
+  color: var(--color-bg-base);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 0.16s ease, transform 0.16s ease;
+}
+
+.vesper-thread-composer-send:hover {
+  background: var(--color-accent);
+  transform: translateY(-1px);
+}
+
+.vesper-thread-composer-send:disabled {
+  opacity: 0.46;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.vesper-thread-panel-mobile {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  min-width: 0;
+  z-index: 40;
+  border-left: 0;
+}
+
+.vesper-panel-shell-left {
+  border-left: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+}
+
+.vesper-panel-shell-right {
+  border-right: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+}
+
+.vesper-member-list-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0)),
+    color-mix(in srgb, var(--color-bg-base) 84%, transparent);
+}
+
+.vesper-member-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.95rem 1rem 0.75rem;
+}
+
+.vesper-member-list-title {
+  color: var(--color-text-faint);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.vesper-member-list-count {
+  color: var(--color-text-muted);
+  font-size: 0.72rem;
+}
+
+.vesper-member-list-scroller {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 0.55rem 1rem;
+}
+
+.vesper-member-group + .vesper-member-group {
+  margin-top: 0.5rem;
+}
+
+.vesper-member-group-header {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.7rem 0.55rem 0.35rem;
+  color: var(--color-text-faintest);
+  font-size: 0.63rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.vesper-member-group-name {
+  color: var(--color-text-faint);
+}
+
+.vesper-member-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.52rem 0.6rem;
+  border: 0;
+  border-radius: 0.95rem;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 0.16s ease, opacity 0.16s ease;
+}
+
+.vesper-member-row:hover {
+  background: color-mix(in srgb, var(--color-bg-secondary) 72%, transparent);
+}
+
+.vesper-member-row-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.vesper-member-row-self {
+  cursor: default;
+}
+
+.vesper-member-row-offline {
+  opacity: 0.58;
+}
+
+.vesper-member-row-offline:hover {
+  opacity: 1;
+}
+
+.vesper-member-avatar-wrap {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.vesper-member-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.vesper-member-name-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.vesper-member-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+  font-size: 0.88rem;
+  font-weight: 500;
+}
+
+.vesper-member-subcopy {
+  display: flex;
+  gap: 0.45rem;
+  margin-top: 0.08rem;
+  color: var(--color-text-faint);
+  font-size: 0.71rem;
+}
+
+.vesper-member-role-icon {
+  width: 0.85rem;
+  height: 0.85rem;
+  flex: 0 0 auto;
+  color: var(--color-text-faint);
+}
+
+.vesper-member-role-icon-owner {
+  color: #f5c55a;
+}
+
+.vesper-member-role-icon-admin {
+  color: var(--color-accent-text);
+}
+
+.vesper-member-action-hint {
+  width: 0.85rem;
+  height: 0.85rem;
+  flex: 0 0 auto;
+  color: var(--color-text-disabled);
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+
+.vesper-member-row:hover .vesper-member-action-hint {
+  opacity: 1;
+}
+
+.vesper-member-action-hint-visible {
+  opacity: 1;
+}
+
+.vesper-member-message-button {
+  width: 1.9rem;
+  height: 1.9rem;
+  border: 0;
+  border-radius: 0.75rem;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.vesper-member-message-button:hover {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 72%, transparent);
+}
+
+.vesper-typing-indicator {
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  min-height: 1.7rem;
+  padding: 0.2rem 1rem 0.35rem;
+  overflow: hidden;
+  opacity: 1;
+  transition: min-height 0.12s ease, opacity 0.12s ease, padding 0.12s ease;
+}
+
+.vesper-typing-indicator-hidden {
+  min-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.vesper-typing-indicator-inner {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.vesper-typing-indicator-dots {
+  width: 1.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.12rem;
+  flex: 0 0 auto;
+}
+
+.vesper-typing-indicator-dot {
+  width: 0.36rem;
+  height: 0.36rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-text-faint) 88%, white 12%);
+  opacity: 0.36;
+}
+
+.vesper-typing-indicator-dots-focused:not(.vesper-typing-indicator-dots-reduced) .vesper-typing-indicator-dot {
+  animation: vesper-typing-pulse 1.4s ease-in-out infinite;
+}
+
+.vesper-typing-indicator-dots-focused.vesper-typing-indicator-dots-reduced .vesper-typing-indicator-dot {
+  animation: vesper-typing-fade 1.4s ease-in-out infinite;
+}
+
+.vesper-typing-indicator-dot:nth-of-type(2) {
+  animation-delay: 0.2s;
+}
+
+.vesper-typing-indicator-dot:nth-of-type(3) {
+  animation-delay: 0.4s;
+}
+
+.vesper-typing-indicator-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-faint);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.vesper-typing-indicator-username {
+  color: var(--color-text-secondary);
+  font-weight: 700;
+}
+
+.vesper-composer-form {
+  position: relative;
+  flex-shrink: 0;
+  padding: 0.5rem 0.9rem 0.95rem;
+}
+
+.vesper-settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(8, 10, 20, 0.82);
+  backdrop-filter: blur(18px);
+}
+
+.vesper-settings-shell {
+  position: relative;
+  display: flex;
+  width: calc(100vw - 8rem);
+  height: calc(100vh - 8rem);
+  min-height: 0;
+  max-width: 1440px;
+  max-height: 960px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+  border-radius: 1.6rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent),
+    color-mix(in srgb, var(--color-bg-secondary) 94%, transparent);
+  box-shadow: 0 36px 90px rgba(0, 0, 0, 0.34);
+}
+
+.vesper-settings-sidebar {
+  flex: 0 0 264px;
+  width: 264px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent),
+    color-mix(in srgb, var(--color-bg-base) 96%, transparent);
+}
+
+.vesper-settings-sidebar-scroll {
+  height: 100%;
+  overflow-y: auto;
+  padding: 1.25rem 1rem 1.25rem 1.1rem;
+}
+
+.vesper-settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.vesper-settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.14rem;
+}
+
+.vesper-settings-group-title {
+  padding: 0.35rem 0.7rem;
+  color: var(--color-text-faint);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.vesper-settings-nav-item {
+  position: relative;
+  border: 0;
+  border-radius: 0.7rem;
+  background: transparent;
+  padding: 0.58rem 0.7rem;
+  color: var(--color-text-muted);
+  text-align: left;
+  font-size: 0.93rem;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  cursor: pointer;
+  transition: background-color 0.16s ease, color 0.16s ease;
+}
+
+.vesper-settings-nav-item-icon {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+  color: var(--color-text-faint);
+}
+
+.vesper-settings-nav-item:hover {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 68%, transparent);
+  color: var(--color-text-primary);
+}
+
+.vesper-settings-nav-item-active {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 92%, transparent);
+  color: var(--color-text-primary);
+  box-shadow: inset 2px 0 0 var(--color-accent);
+}
+
+.vesper-settings-nav-item:hover .vesper-settings-nav-item-icon,
+.vesper-settings-nav-item-active .vesper-settings-nav-item-icon {
+  color: inherit;
+}
+
+.vesper-settings-nav-item-danger {
+  color: #fca5a5;
+}
+
+.vesper-settings-content-region {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent),
+    color-mix(in srgb, var(--color-bg-primary) 78%, transparent);
+}
+
+.vesper-settings-content-scroll {
+  width: min(920px, 100%);
+  overflow-y: auto;
+  padding: 2.2rem 1.75rem 3rem;
+}
+
+.vesper-settings-content-inner {
+  min-width: 0;
+  max-width: 740px;
+}
+
+.vesper-settings-close-cluster {
+  position: absolute;
+  top: 1.05rem;
+  right: 1.05rem;
+  width: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.55rem;
+  padding-top: 0;
+  z-index: 3;
+}
+
+.vesper-settings-close {
+  width: 2.5rem;
+  height: 2.5rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 86%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-secondary) 88%, transparent);
+  color: var(--color-text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease;
+}
+
+.vesper-settings-close:hover {
+  color: var(--color-text-primary);
+  border-color: color-mix(in srgb, var(--color-border) 98%, transparent);
+  background: color-mix(in srgb, var(--color-bg-tertiary) 92%, transparent);
+}
+
+.vesper-settings-close-hint {
+  color: var(--color-text-faint);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.vesper-settings-page-header {
+  margin-bottom: 1.4rem;
+}
+
+.vesper-settings-page-title {
+  color: var(--color-text-primary);
+  font-size: 1.45rem;
+  font-weight: 700;
+}
+
+.vesper-settings-page-description {
+  margin-top: 0.35rem;
+  color: var(--color-text-faint);
+  font-size: 0.92rem;
+}
+
+.vesper-settings-card {
+  border: 1px solid color-mix(in srgb, var(--color-border) 90%, transparent);
+  border-radius: 1.35rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent),
+    color-mix(in srgb, var(--color-bg-secondary) 92%, transparent);
+  padding: 1.2rem;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.18);
+}
+
+.vesper-settings-card + .vesper-settings-card {
+  margin-top: 1rem;
+}
+
+.vesper-settings-card-header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.vesper-settings-card-danger {
+  border-color: rgba(248, 113, 113, 0.26);
+  background: rgba(96, 17, 17, 0.18);
+}
+
+.vesper-settings-profile-hero {
+  overflow: hidden;
+  border-radius: 1rem;
+  margin-bottom: 1rem;
+  background: color-mix(in srgb, var(--color-bg-base) 80%, transparent);
+}
+
+.vesper-settings-profile-banner {
+  height: 7.5rem;
+  background:
+    radial-gradient(circle at 20% 20%, rgba(200, 162, 78, 0.45), transparent 38%),
+    linear-gradient(135deg, rgba(84, 92, 180, 0.55), rgba(21, 25, 42, 0.25));
+}
+
+.vesper-settings-profile-banner-image {
+  background-size: cover;
+  background-position: center;
+}
+
+.vesper-settings-profile-avatar-row {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-end;
+  margin-top: -2rem;
+  padding: 0 1.2rem 1.1rem;
+}
+
+.vesper-settings-profile-avatar-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  align-items: center;
+}
+
+.vesper-settings-profile-summary {
+  padding-bottom: 0.2rem;
+}
+
+.vesper-settings-profile-name {
+  color: var(--color-text-primary);
+  font-size: 1.15rem;
+  font-weight: 700;
+}
+
+.vesper-settings-profile-handle,
+.vesper-settings-profile-note,
+.vesper-settings-helper {
+  color: var(--color-text-faint);
+  font-size: 0.83rem;
+}
+
+.vesper-settings-server-hero {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.vesper-settings-server-glyph {
+  width: 4rem;
+  height: 4rem;
+  border-radius: 1.2rem;
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  color: var(--color-accent-text);
+  font-size: 1rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.vesper-settings-channel-glyph {
+  color: var(--color-accent-text);
+}
+
+.vesper-settings-form-grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.vesper-settings-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.vesper-settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.vesper-settings-label {
+  color: var(--color-text-faint);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.vesper-settings-input,
+.vesper-settings-select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--color-border) 92%, transparent);
+  border-radius: 0.95rem;
+  background: color-mix(in srgb, var(--color-bg-base) 72%, transparent);
+  padding: 0.85rem 0.95rem;
+  color: var(--color-text-primary);
+  font-size: 0.92rem;
+  outline: none;
+}
+
+.vesper-settings-input:focus,
+.vesper-settings-select:focus {
+  border-color: color-mix(in srgb, var(--color-accent) 58%, var(--color-border));
+}
+
+.vesper-settings-textarea {
+  min-height: 6.5rem;
+  resize: vertical;
+  line-height: 1.45;
+}
+
+.vesper-settings-range {
+  width: 100%;
+  appearance: none;
+  height: 0.45rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 85%, transparent);
+  cursor: pointer;
+}
+
+.vesper-settings-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid color-mix(in srgb, white 22%, var(--color-accent));
+  border-radius: 999px;
+  background: var(--color-text-primary);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.24);
+}
+
+.vesper-settings-range::-moz-range-thumb {
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid color-mix(in srgb, white 22%, var(--color-accent));
+  border-radius: 999px;
+  background: var(--color-text-primary);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.24);
+}
+
+.vesper-settings-input-disabled {
+  color: var(--color-text-faint);
+}
+
+.vesper-settings-input-with-icon,
+.vesper-settings-inline-row {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.vesper-settings-input-with-icon svg {
+  flex: 0 0 auto;
+  color: var(--color-text-faint);
+}
+
+.vesper-settings-input-with-icon .vesper-settings-input,
+.vesper-settings-input-with-icon .vesper-settings-select,
+.vesper-settings-inline-row .vesper-settings-input {
+  flex: 1;
+}
+
+.vesper-settings-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin-top: 1rem;
+}
+
+.vesper-settings-profile-preview-shell {
+  margin-top: 1rem;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.vesper-settings-profile-preview {
+  width: min(100%, 20rem);
+  overflow: hidden;
+  border-radius: 1.1rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+  background: color-mix(in srgb, var(--color-bg-base) 78%, transparent);
+}
+
+.vesper-settings-profile-preview-banner {
+  height: 5.8rem;
+  background:
+    radial-gradient(circle at 18% 20%, rgba(200, 162, 78, 0.45), transparent 38%),
+    linear-gradient(140deg, rgba(76, 87, 163, 0.72), rgba(20, 24, 39, 0.24));
+}
+
+.vesper-settings-profile-preview-banner-image {
+  background-size: cover;
+  background-position: center;
+}
+
+.vesper-settings-profile-preview-body {
+  position: relative;
+  padding: 2.6rem 1rem 1rem;
+}
+
+.vesper-settings-profile-preview-avatar {
+  position: absolute;
+  top: -2rem;
+  left: 1rem;
+  padding: 0.22rem;
+  border-radius: 999px;
+  background: var(--color-bg-base);
+}
+
+.vesper-settings-profile-preview-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.vesper-settings-profile-preview-name {
+  color: var(--color-text-primary);
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.vesper-settings-profile-preview-handle {
+  margin-top: -0.45rem;
+  color: var(--color-text-faint);
+  font-size: 0.8rem;
+}
+
+.vesper-settings-profile-preview-tabs {
+  display: flex;
+  gap: 0.9rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+}
+
+.vesper-settings-profile-preview-tab {
+  padding-bottom: 0.6rem;
+  color: var(--color-text-faint);
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.vesper-settings-profile-preview-tab-active {
+  color: var(--color-text-primary);
+  box-shadow: inset 0 -2px 0 var(--color-accent);
+}
+
+.vesper-settings-profile-preview-panel {
+  padding: 0.85rem 0.9rem;
+  border-radius: 0.95rem;
+  background: color-mix(in srgb, var(--color-bg-secondary) 70%, transparent);
+}
+
+.vesper-settings-profile-preview-label {
+  margin-bottom: 0.4rem;
+  color: var(--color-text-faint);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.vesper-settings-profile-preview-text {
+  color: var(--color-text-secondary);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.vesper-settings-voice-diagnostics {
+  padding: 0.95rem 1rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+  border-radius: 1rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.028), transparent),
+    color-mix(in srgb, var(--color-bg-base) 74%, transparent);
+}
+
+.vesper-settings-voice-diagnostics-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.85rem;
+}
+
+.vesper-settings-voice-quality-badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 1.8rem;
+  padding: 0 0.7rem;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.vesper-settings-voice-quality-badge-good {
+  background: rgba(34, 197, 94, 0.14);
+  color: #86efac;
+}
+
+.vesper-settings-voice-quality-badge-fair {
+  background: rgba(245, 158, 11, 0.14);
+  color: #fcd34d;
+}
+
+.vesper-settings-voice-quality-badge-poor {
+  background: rgba(239, 68, 68, 0.14);
+  color: #fda4af;
+}
+
+.vesper-settings-voice-quality-badge-unknown {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 72%, transparent);
+  color: var(--color-text-faint);
+}
+
+.vesper-settings-voice-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7.1rem, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.95rem;
+}
+
+.vesper-settings-voice-metric {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.8rem 0.85rem;
+  border-radius: 0.95rem;
+  background: color-mix(in srgb, var(--color-bg-secondary) 72%, transparent);
+}
+
+.vesper-settings-voice-metric-label {
+  color: var(--color-text-faint);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.vesper-settings-voice-metric-value {
+  color: var(--color-text-primary);
+  font-size: 0.95rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.vesper-settings-primary-button,
+.vesper-settings-secondary-button,
+.vesper-settings-danger-button,
+.vesper-settings-icon-button {
+  border: 0;
+  border-radius: 0.9rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  cursor: pointer;
+  transition: opacity 0.16s ease, transform 0.16s ease, background-color 0.16s ease, color 0.16s ease;
+}
+
+.vesper-settings-primary-button,
+.vesper-settings-secondary-button,
+.vesper-settings-danger-button {
+  min-height: 2.7rem;
+  padding: 0 1rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.vesper-settings-primary-button {
+  background: var(--color-accent);
+  color: #121318;
+}
+
+.vesper-settings-secondary-button,
+.vesper-settings-icon-button {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 72%, transparent);
+  color: var(--color-text-secondary);
+}
+
+.vesper-settings-danger-button {
+  background: #b91c1c;
+  color: white;
+}
+
+.vesper-settings-icon-button {
+  width: 2.7rem;
+  height: 2.7rem;
+}
+
+.vesper-settings-icon-button-danger {
+  color: #fca5a5;
+}
+
+.vesper-settings-primary-button:disabled,
+.vesper-settings-secondary-button:disabled,
+.vesper-settings-danger-button:disabled,
+.vesper-settings-icon-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.vesper-settings-radio-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.vesper-settings-choice {
+  border: 1px solid color-mix(in srgb, var(--color-border) 90%, transparent);
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--color-bg-base) 68%, transparent);
+  color: var(--color-text-secondary);
+  min-height: 7rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.vesper-settings-choice-active {
+  border-color: color-mix(in srgb, var(--color-accent) 52%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 34%, transparent);
+  color: var(--color-text-primary);
+}
+
+.vesper-settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.vesper-settings-row-title {
+  color: var(--color-text-primary);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.vesper-settings-row-copy {
+  margin-top: 0.2rem;
+  color: var(--color-text-faint);
+  font-size: 0.83rem;
+}
+
+.vesper-settings-toggle {
+  width: 3rem;
+  height: 1.7rem;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 86%, transparent);
+  padding: 0.18rem;
+  cursor: pointer;
+}
+
+.vesper-settings-toggle-on {
+  background: color-mix(in srgb, var(--color-accent) 90%, transparent);
+}
+
+.vesper-settings-toggle-knob {
+  width: 1.35rem;
+  height: 1.35rem;
+  display: block;
+  border-radius: 999px;
+  background: white;
+  transition: transform 0.16s ease;
+}
+
+.vesper-settings-toggle-on .vesper-settings-toggle-knob {
+  transform: translateX(1.3rem);
+}
+
+.vesper-settings-note-pill,
+.vesper-settings-feedback {
+  margin-top: 0.95rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  border-radius: 999px;
+  padding: 0.45rem 0.7rem;
+  font-size: 0.78rem;
+}
+
+.vesper-settings-note-pill {
+  background: color-mix(in srgb, var(--color-bg-base) 72%, transparent);
+  color: var(--color-text-faint);
+}
+
+.vesper-settings-feedback-success {
+  background: rgba(34, 197, 94, 0.14);
+  color: #86efac;
+}
+
+.vesper-settings-feedback-error {
+  background: rgba(239, 68, 68, 0.14);
+  color: #fda4af;
+}
+
+.vesper-settings-meter-shell {
+  position: relative;
+  width: 100%;
+  height: 0.75rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 80%, transparent);
+}
+
+.vesper-settings-meter-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #34d399 0%, #fbbf24 70%, #fb7185 100%);
+  transition: width 0.08s linear;
+}
+
+.vesper-settings-meter-threshold {
+  position: absolute;
+  top: -0.12rem;
+  bottom: -0.12rem;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.2);
+}
+
+.vesper-settings-member-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.vesper-settings-member-row {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--color-bg-base) 46%, transparent);
+}
+
+.vesper-settings-member-avatar {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  color: var(--color-accent-text);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.vesper-settings-member-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.vesper-settings-member-name {
+  color: var(--color-text-primary);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.vesper-settings-member-meta {
+  color: var(--color-text-faint);
+  font-size: 0.78rem;
+}
+
+.vesper-settings-member-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.vesper-settings-ban-list,
+.vesper-settings-audit-list,
+.vesper-settings-permission-list {
+  margin-top: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.vesper-settings-ban-row,
+.vesper-settings-audit-row,
+.vesper-settings-permission-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.8rem;
+  padding: 0.7rem 0.75rem;
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--color-bg-base) 46%, transparent);
+}
+
+.vesper-settings-ban-meta {
+  margin-left: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.45rem;
+  color: var(--color-text-faint);
+  font-size: 0.72rem;
+}
+
+.vesper-settings-audit-row {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.vesper-settings-audit-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.vesper-settings-audit-action {
+  color: var(--color-text-primary);
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
+.vesper-settings-audit-time {
+  color: var(--color-text-faint);
+  font-size: 0.72rem;
+}
+
+.vesper-settings-audit-copy {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.9rem;
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+}
+
+.vesper-settings-audit-meta {
+  margin: 0;
+  padding: 0.45rem 0.55rem;
+  border-radius: 0.75rem;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 62%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border) 86%, transparent);
+  color: var(--color-text-faint);
+  font-size: 0.7rem;
+  overflow-x: auto;
+}
+
+.vesper-settings-target-row {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.4fr) auto;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.vesper-settings-permission-row {
+  align-items: center;
+}
+
+.vesper-settings-permission-target {
+  min-width: 0;
+  width: min(12rem, 38%);
+}
+
+.vesper-settings-permission-controls {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.vesper-settings-permission-toggle {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.vesper-settings-permission-buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.vesper-settings-permission-button {
+  border: 1px solid color-mix(in srgb, var(--color-border) 86%, transparent);
+  border-radius: 0.68rem;
+  padding: 0.28rem 0.55rem;
+  background: color-mix(in srgb, var(--color-bg-secondary) 72%, transparent);
+  color: var(--color-text-muted);
+  font-size: 0.72rem;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease;
+}
+
+.vesper-settings-permission-button:hover {
+  color: var(--color-text-primary);
+}
+
+.vesper-settings-permission-button-allow.vesper-settings-permission-button-active {
+  border-color: rgba(34, 197, 94, 0.4);
+  background: rgba(34, 197, 94, 0.16);
+  color: #86efac;
+}
+
+.vesper-settings-permission-button-deny.vesper-settings-permission-button-active {
+  border-color: rgba(239, 68, 68, 0.45);
+  background: rgba(239, 68, 68, 0.16);
+  color: #fda4af;
+}
+
+.vesper-settings-permission-button-active {
+  border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-accent-text);
+}
+
+.vesper-settings-emoji-list {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.vesper-settings-emoji-row {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--color-bg-base) 46%, transparent);
+}
+
+.vesper-settings-emoji-preview {
+  width: 2rem;
+  height: 2rem;
+  object-fit: contain;
+}
+
+.vesper-settings-emoji-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.vesper-settings-danger-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #fca5a5;
+  font-weight: 700;
+}
+
+.vesper-account-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.7rem;
+  align-items: center;
+  padding: 0.75rem;
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 90%, transparent);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent),
+    color-mix(in srgb, var(--color-bg-base) 82%, transparent);
+}
+
+.vesper-account-panel-identity {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.25rem;
+  border: 0;
+  border-radius: 0.9rem;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.vesper-account-panel-identity-shell {
+  position: relative;
+}
+
+.vesper-account-panel-identity:hover {
+  background: color-mix(in srgb, var(--color-bg-secondary) 72%, transparent);
+}
+
+.vesper-account-panel-avatar-wrap {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.vesper-account-panel-status {
+  position: absolute;
+  left: 1.9rem;
+  bottom: -0.05rem;
+  width: 0.9rem;
+  height: 0.9rem;
+  border: 2px solid var(--color-bg-base);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.vesper-account-panel-status-online {
+  background: #22c55e;
+}
+
+.vesper-account-panel-status-idle {
+  background: #f59e0b;
+}
+
+.vesper-account-panel-status-dnd {
+  background: #ef4444;
+}
+
+.vesper-account-panel-status-offline {
+  background: #6b7280;
+}
+
+.vesper-account-panel-copy {
+  min-width: 0;
+}
+
+.vesper-account-panel-name {
+  color: var(--color-text-primary);
+  font-size: 0.9rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vesper-account-panel-subcopy {
+  color: var(--color-text-faint);
+  font-size: 0.74rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vesper-account-panel-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.vesper-account-panel-button {
+  width: 2rem;
+  height: 2rem;
+  border: 0;
+  border-radius: 0.7rem;
+  background: transparent;
+  color: var(--color-text-faint);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.vesper-account-panel-button:hover {
+  background: color-mix(in srgb, var(--color-bg-secondary) 72%, transparent);
+  color: var(--color-text-primary);
+}
+
+.vesper-account-panel-button-danger {
+  color: #fca5a5;
+}
+
+.vesper-profile-popout-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  pointer-events: none;
+}
+
+.vesper-profile-popout {
+  position: fixed;
+  width: 320px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--color-border) 92%, transparent);
+  border-radius: 1.1rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent),
+    color-mix(in srgb, var(--color-bg-secondary) 96%, transparent);
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.3);
+  pointer-events: auto;
+  backdrop-filter: blur(18px);
+}
+
+.vesper-profile-popout-banner {
+  height: 6.4rem;
+  background:
+    radial-gradient(circle at 18% 20%, rgba(200, 162, 78, 0.45), transparent 42%),
+    linear-gradient(140deg, rgba(76, 87, 163, 0.75), rgba(20, 24, 39, 0.24));
+}
+
+.vesper-profile-popout-banner-image {
+  background-size: cover;
+  background-position: center;
+}
+
+.vesper-profile-popout-topbar {
+  position: absolute;
+  inset: 0 0 auto 0;
+  display: flex;
+  justify-content: flex-end;
+  padding: 0.7rem;
+}
+
+.vesper-profile-popout-close {
+  width: 1.9rem;
+  height: 1.9rem;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(12, 14, 24, 0.4);
+  color: white;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.vesper-profile-popout-avatar-wrap {
+  position: absolute;
+  top: 3.2rem;
+  left: 1rem;
+}
+
+.vesper-profile-popout-avatar-ring {
+  padding: 0.22rem;
+  border-radius: 999px;
+  background: var(--color-bg-secondary);
+}
+
+.vesper-profile-popout-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 3.5rem 1rem 1rem;
+}
+
+.vesper-profile-popout-name {
+  color: var(--color-text-primary);
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.vesper-profile-popout-handle,
+.vesper-profile-popout-meta-row,
+.vesper-profile-popout-section-copy {
+  color: var(--color-text-faint);
+  font-size: 0.84rem;
+}
+
+.vesper-profile-popout-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.vesper-profile-status-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 999px;
+}
+
+.vesper-profile-status-online {
+  background: #22c55e;
+}
+
+.vesper-profile-status-idle {
+  background: #f59e0b;
+}
+
+.vesper-profile-status-dnd {
+  background: #ef4444;
+}
+
+.vesper-profile-status-offline {
+  background: #6b7280;
+}
+
+.vesper-profile-popout-separator {
+  width: 0.2rem;
+  height: 0.2rem;
+  border-radius: 999px;
+  background: var(--color-text-disabled);
+}
+
+.vesper-profile-popout-section {
+  padding: 0.8rem 0.9rem;
+  border-radius: 0.95rem;
+  background: color-mix(in srgb, var(--color-bg-base) 72%, transparent);
+}
+
+.vesper-profile-popout-section-title {
+  margin-bottom: 0.35rem;
+  color: var(--color-text-faint);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.vesper-profile-popout-tabs {
+  display: flex;
+  gap: 0.9rem;
+  padding: 0 0.1rem 0.2rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+}
+
+.vesper-profile-popout-tab {
+  padding: 0 0 0.7rem;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-faint);
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.vesper-profile-popout-tab:hover {
+  color: var(--color-text-primary);
+}
+
+.vesper-profile-popout-tab-active {
+  color: var(--color-text-primary);
+  box-shadow: inset 0 -2px 0 var(--color-accent);
+}
+
+.vesper-profile-popout-facts {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.vesper-profile-popout-fact {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.vesper-profile-popout-fact-label {
+  color: var(--color-text-faintest);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.vesper-profile-popout-fact-value {
+  color: var(--color-text-secondary);
+  font-size: 0.84rem;
+}
+
+.vesper-profile-popout-actions {
+  display: flex;
+}
+
+.vesper-profile-popout-primary {
+  width: 100%;
+  min-height: 2.7rem;
+  border: 0;
+  border-radius: 0.95rem;
+  background: var(--color-accent);
+  color: #11141c;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  font-size: 0.9rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.vesper-context-menu-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.25rem 0.75rem 0.45rem;
+}
+
+.vesper-context-menu-header-copy {
+  min-width: 0;
+}
+
+.vesper-context-menu-header-title {
+  color: var(--color-text-primary);
+  font-size: 0.86rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vesper-context-menu-header-subtitle {
+  color: var(--color-text-faint);
+  font-size: 0.74rem;
+}
+
+.vesper-mobile-main {
+  height: 100vh;
+  height: 100dvh;
+  background: var(--color-bg-primary);
+  overflow: hidden;
+  position: relative;
+}
+
+.vesper-mobile-nav-shell,
+.vesper-mobile-chat-shell {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  position: relative;
+}
+
+.vesper-mobile-chat-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.vesper-mobile-empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.8rem;
+  padding: 1.5rem;
+  color: var(--color-text-faint);
+  text-align: center;
+}
+
+.vesper-composer-wrap {
+  position: relative;
+}
+
+.vesper-composer-form-dragging .vesper-composer {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 42%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
+.vesper-composer-drop-overlay {
+  position: absolute;
+  inset: 0.25rem 1rem 1rem;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed color-mix(in srgb, var(--color-accent) 48%, transparent);
+  border-radius: 1.25rem;
+  background: rgba(8, 12, 22, 0.72);
+  backdrop-filter: blur(10px);
+  pointer-events: none;
+}
+
+.vesper-composer-drop-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.9rem 1.15rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-secondary) 90%, transparent);
+  color: var(--color-text-primary);
+  font-size: 0.88rem;
+  font-weight: 600;
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.24);
+}
+
+.vesper-composer-alert {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid rgba(248, 113, 113, 0.24);
+  border-radius: 0.95rem;
+  background: rgba(153, 27, 27, 0.16);
+  color: #fca5a5;
+  font-size: 0.77rem;
+}
+
+.vesper-composer-alert-close {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.vesper-composer {
+  border: 1px solid color-mix(in srgb, var(--color-border) 92%, transparent);
+  border-radius: 1.2rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent),
+    color-mix(in srgb, var(--color-bg-secondary) 90%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.vesper-composer-has-reply {
+  border-top-left-radius: 1.1rem;
+  border-top-right-radius: 1.1rem;
+}
+
+.vesper-composer-reply {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 0.9rem 0.55rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+
+.vesper-composer-reply-copy {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  font-size: 0.76rem;
+}
+
+.vesper-composer-reply-label {
+  color: var(--color-text-faint);
+}
+
+.vesper-composer-reply-author {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.vesper-composer-reply-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-faint);
+}
+
+.vesper-composer-reply-close {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-faint);
+  cursor: pointer;
+}
+
+.vesper-composer-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.15rem;
+  padding: 0.35rem;
+}
+
+.vesper-composer-icon-button,
+.vesper-composer-send {
+  width: 2.65rem;
+  height: 2.65rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 0.95rem;
+  background: transparent;
+  color: var(--color-text-faint);
+  cursor: pointer;
+  transition: background-color 0.16s ease, color 0.16s ease, transform 0.16s ease;
+}
+
+.vesper-composer-icon-button:hover,
+.vesper-composer-send:hover {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 78%, transparent);
+  color: var(--color-text-primary);
+}
+
+.vesper-composer-send {
+  color: var(--color-accent);
+}
+
+.vesper-composer-send:hover {
+  color: var(--color-accent-text-hover);
+}
+
+.vesper-composer-send:disabled,
+.vesper-composer-icon-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.vesper-composer-textarea {
+  flex: 1;
+  max-height: 9rem;
+  border: 0;
+  background: transparent;
+  padding: 0.7rem 0.6rem 0.7rem 0.4rem;
+  color: var(--color-text-primary);
+  resize: none;
+  outline: none;
+  font-size: 0.92rem;
+  line-height: 1.4;
+}
+
+.vesper-composer-textarea::placeholder {
+  color: var(--color-text-faintest);
+}
+
+.vesper-inline-custom-emoji {
+  display: inline-block;
+  width: 1.35rem;
+  height: 1.35rem;
+  margin: 0 0.08rem;
+  vertical-align: -0.28rem;
+  object-fit: contain;
+}
+
+.vesper-message-reaction-emoji {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1rem;
+  min-height: 1rem;
+  font-size: 1rem;
+}
+
+.vesper-inline-image-shell {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  align-items: flex-start;
+}
+
+.vesper-inline-image-download {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+  min-height: 2rem;
+  padding: 0 0.8rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-secondary) 84%, transparent);
+  color: var(--color-text-secondary);
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.16s ease, color 0.16s ease, border-color 0.16s ease;
+}
+
+.vesper-inline-image-download:hover {
+  border-color: color-mix(in srgb, var(--color-accent) 38%, var(--color-border));
+  background: color-mix(in srgb, var(--color-bg-tertiary) 78%, transparent);
+  color: var(--color-text-primary);
+}
+
+.vesper-audio-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  width: min(100%, 28rem);
+  margin-top: 0.5rem;
+  padding: 0.8rem 0.85rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--color-bg-secondary) 70%, transparent);
+}
+
+.vesper-audio-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.vesper-audio-preview-meta {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.vesper-audio-preview-icon {
+  width: 2rem;
+  height: 2rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.8rem;
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  color: var(--color-accent-text);
+  flex: 0 0 auto;
+}
+
+.vesper-audio-preview-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.08rem;
+}
+
+.vesper-audio-preview-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.vesper-audio-preview-size {
+  color: var(--color-text-faint);
+  font-size: 0.74rem;
+}
+
+.vesper-audio-preview-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  color: var(--color-text-faint);
+  font-size: 0.78rem;
+}
+
+.vesper-audio-player {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.vesper-audio-player-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.vesper-audio-play-button {
+  width: 2.35rem;
+  height: 2.35rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  color: var(--color-accent-text);
+  cursor: pointer;
+  transition: transform 0.16s ease, background-color 0.16s ease, color 0.16s ease;
+  flex: 0 0 auto;
+}
+
+.vesper-audio-play-button:hover {
+  transform: translateY(-1px);
+  background: color-mix(in srgb, var(--color-accent) 26%, transparent);
+  color: var(--color-text-primary);
+}
+
+.vesper-audio-play-button-active {
+  background: color-mix(in srgb, var(--color-accent) 32%, transparent);
+}
+
+.vesper-audio-player-track {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.42rem;
+}
+
+.vesper-audio-scrubber {
+  --vesper-audio-progress: 0%;
+  width: 100%;
+  height: 0.45rem;
+  appearance: none;
+  border: 0;
+  border-radius: 999px;
+  background:
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--color-accent) 82%, white) 0%,
+      color-mix(in srgb, var(--color-accent) 82%, white) var(--vesper-audio-progress),
+      color-mix(in srgb, var(--color-bg-tertiary) 85%, transparent) var(--vesper-audio-progress),
+      color-mix(in srgb, var(--color-bg-tertiary) 85%, transparent) 100%
+    );
+  cursor: pointer;
+}
+
+.vesper-audio-scrubber::-webkit-slider-thumb {
+  appearance: none;
+  width: 0.9rem;
+  height: 0.9rem;
+  border: 2px solid color-mix(in srgb, white 20%, var(--color-accent));
+  border-radius: 999px;
+  background: var(--color-text-primary);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.24);
+}
+
+.vesper-audio-scrubber::-moz-range-thumb {
+  width: 0.9rem;
+  height: 0.9rem;
+  border: 2px solid color-mix(in srgb, white 20%, var(--color-accent));
+  border-radius: 999px;
+  background: var(--color-text-primary);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.24);
+}
+
+.vesper-audio-player-times {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  color: var(--color-text-faint);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.vesper-audio-icon-button {
+  width: 1.9rem;
+  height: 1.9rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-faint);
+  cursor: pointer;
+  transition: color 0.16s ease, background-color 0.16s ease;
+}
+
+.vesper-audio-icon-button:hover {
+  color: var(--color-text-primary);
+  background: color-mix(in srgb, var(--color-bg-tertiary) 65%, transparent);
+}
+
+.vesper-file-card {
+  width: min(100%, 26rem);
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin-top: 0.5rem;
+  padding: 0.85rem 0.95rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+  border-radius: 1rem;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.035), transparent 60%),
+    color-mix(in srgb, var(--color-bg-secondary) 76%, transparent);
+  text-align: left;
+  color: var(--color-text-secondary);
+  transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.vesper-file-card:hover {
+  border-color: color-mix(in srgb, var(--color-accent) 26%, var(--color-border));
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.05), transparent 60%),
+    color-mix(in srgb, var(--color-bg-tertiary) 82%, transparent);
+  color: var(--color-text-primary);
+}
+
+.vesper-file-card-icon {
+  width: 2.25rem;
+  height: 2.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.85rem;
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  color: var(--color-accent-text);
+  flex: 0 0 auto;
+}
+
+.vesper-file-card-copy {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.12rem;
+}
+
+.vesper-file-card-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: inherit;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.vesper-file-card-meta {
+  color: var(--color-text-faint);
+  font-size: 0.74rem;
+}
+
+.vesper-file-card-download {
+  width: 1.9rem;
+  height: 1.9rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  color: var(--color-text-faint);
+  flex: 0 0 auto;
+  opacity: 0.82;
+  transition: background-color 0.16s ease, color 0.16s ease, opacity 0.16s ease;
+}
+
+.vesper-file-card:hover .vesper-file-card-download {
+  background: color-mix(in srgb, var(--color-bg-base) 55%, transparent);
+  color: var(--color-text-primary);
+  opacity: 1;
+}
+
+.vesper-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  flex-direction: column;
+  padding: 1rem;
+  background: rgba(8, 10, 20, 0.92);
+  backdrop-filter: blur(16px);
+}
+
+.vesper-lightbox-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.25rem 0 1rem;
+}
+
+.vesper-lightbox-meta {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 0.7rem;
+}
+
+.vesper-lightbox-title {
+  max-width: min(42rem, 60vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.vesper-lightbox-zoom {
+  color: var(--color-text-faint);
+  font-size: 0.8rem;
+}
+
+.vesper-lightbox-size {
+  color: var(--color-text-faint);
+  font-size: 0.8rem;
+}
+
+.vesper-lightbox-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.vesper-lightbox-button {
+  width: 2.35rem;
+  height: 2.35rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+  border-radius: 0.85rem;
+  background: color-mix(in srgb, var(--color-bg-secondary) 84%, transparent);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background-color 0.16s ease, color 0.16s ease, border-color 0.16s ease;
+}
+
+.vesper-lightbox-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.vesper-lightbox-button:hover {
+  border-color: color-mix(in srgb, var(--color-accent) 38%, var(--color-border));
+  background: color-mix(in srgb, var(--color-bg-tertiary) 78%, transparent);
+  color: var(--color-text-primary);
+}
+
+.vesper-lightbox-button-close {
+  color: #fca5a5;
+}
+
+.vesper-lightbox-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  padding: 0.5rem;
+}
+
+.vesper-lightbox-image {
+  max-width: min(92vw, 1200px);
+  max-height: calc(100vh - 7rem);
+  object-fit: contain;
+  transform-origin: center center;
+  transition: transform 0.14s ease;
+  user-select: none;
+}
+
+.vesper-lightbox-image-fit {
+  transform: none !important;
+}
+
+.vesper-emoji-picker {
+  width: 28.5rem;
+  height: 31rem;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--color-border) 92%, transparent);
+  border-radius: 1rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0)),
+    color-mix(in srgb, var(--color-bg-secondary) 94%, transparent);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.34);
+  backdrop-filter: blur(18px);
+}
+
+.vesper-emoji-picker-header {
+  padding: 0.85rem 0.75rem 0.65rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
+}
+
+.vesper-emoji-picker-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 2.4rem;
+  padding: 0 0.65rem 0 2.2rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-base) 78%, transparent);
+}
+
+.vesper-emoji-picker-search-icon {
+  position: absolute;
+  left: 0.8rem;
+  width: 0.95rem;
+  height: 0.95rem;
+  color: var(--color-text-faintest);
+}
+
+.vesper-emoji-picker-search-input {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-primary);
+  outline: none;
+  font-size: 0.9rem;
+}
+
+.vesper-emoji-picker-search-input::placeholder {
+  color: var(--color-text-faint);
+}
+
+.vesper-emoji-picker-clear {
+  border: 0;
+  background: transparent;
+  color: var(--color-text-faint);
+  cursor: pointer;
+}
+
+.vesper-emoji-picker-grid {
+  display: grid;
+  grid-template-columns: 3.25rem minmax(0, 1fr);
+  min-height: 0;
+}
+
+.vesper-emoji-picker-categories {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.65rem 0.35rem;
+  border-right: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent);
+}
+
+.vesper-emoji-picker-category {
+  width: 2.2rem;
+  height: 2.2rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 0.7rem;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font-size: 1rem;
+  transition: background-color 0.16s ease, transform 0.16s ease;
+}
+
+.vesper-emoji-picker-category:hover,
+.vesper-emoji-picker-category-active {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 78%, transparent);
+}
+
+.vesper-emoji-picker-list {
+  overflow-y: auto;
+  padding: 0.55rem 0.35rem 0.75rem 0.75rem;
+}
+
+.vesper-emoji-picker-section + .vesper-emoji-picker-section {
+  margin-top: 0.75rem;
+}
+
+.vesper-emoji-picker-section-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 0.35rem 0.15rem 0.5rem;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--color-bg-secondary) 95%, transparent), rgba(28, 31, 51, 0));
+  color: var(--color-text-faint);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.vesper-emoji-picker-items {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 0.2rem;
+}
+
+.vesper-emoji-picker-item {
+  width: 2.45rem;
+  height: 2.45rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 0.7rem;
+  background: transparent;
+  cursor: pointer;
+  transition: background-color 0.16s ease, transform 0.16s ease;
+}
+
+.vesper-emoji-picker-item:hover {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 82%, transparent);
+  transform: translateY(-1px);
+}
+
+.vesper-emoji-picker-glyph {
+  font-size: 1.5rem;
+  line-height: 1;
+}
+
+.vesper-emoji-picker-custom-image,
+.vesper-emoji-picker-inspector-image {
+  width: 1.6rem;
+  height: 1.6rem;
+  object-fit: contain;
+}
+
+.vesper-emoji-picker-empty {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 0.4rem;
+  color: var(--color-text-faint);
+}
+
+.vesper-emoji-picker-empty-glyph {
+  font-size: 1.4rem;
+}
+
+.vesper-emoji-picker-inspector {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  min-height: 3.5rem;
+  padding: 0.7rem 0.85rem;
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
+  background: color-mix(in srgb, var(--color-bg-base) 28%, transparent);
+}
+
+.vesper-emoji-picker-inspector-preview {
+  width: 2.2rem;
+  height: 2.2rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.7rem;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 74%, transparent);
+}
+
+.vesper-emoji-picker-inspector-glyph {
+  font-size: 1.4rem;
+}
+
+.vesper-emoji-picker-inspector-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.vesper-emoji-picker-inspector-name {
+  color: var(--color-text-primary);
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.vesper-emoji-picker-inspector-meta,
+.vesper-emoji-picker-inspector-placeholder {
+  color: var(--color-text-faint);
+  font-size: 0.74rem;
+}
+
+.vesper-channel-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0)),
+    color-mix(in srgb, var(--color-bg-secondary) 94%, transparent);
+}
+
+.vesper-channel-sidebar-header {
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  padding: 0.9rem 1rem 0.85rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent),
+    color-mix(in srgb, var(--color-bg-base) 34%, transparent);
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.02);
+}
+
+.vesper-guild-header-button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+  padding: 0.25rem 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.vesper-guild-header-button-open .vesper-channel-sidebar-title,
+.vesper-guild-header-button:hover .vesper-channel-sidebar-title {
+  color: var(--color-accent-text-hover);
+}
+
+.vesper-channel-sidebar-header-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.vesper-guild-header-chevron {
+  width: 1rem;
+  height: 1rem;
+  color: var(--color-text-faint);
+  flex: 0 0 auto;
+  transition: transform 0.16s ease, color 0.16s ease;
+}
+
+.vesper-guild-header-chevron-open {
+  transform: rotate(180deg);
+  color: var(--color-text-primary);
+}
+
+.vesper-guild-header-menu {
+  position: absolute;
+  top: calc(100% - 0.15rem);
+  left: 0.75rem;
+  right: 0.75rem;
+  padding: 0.45rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 92%, transparent);
+  border-radius: 1rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent),
+    color-mix(in srgb, var(--color-bg-secondary) 96%, transparent);
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(18px);
+}
+
+.vesper-guild-header-menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.72rem 0.78rem;
+  border: 0;
+  border-radius: 0.8rem;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  text-align: left;
+  font-size: 0.88rem;
+  font-weight: 500;
+  transition: background-color 0.16s ease, color 0.16s ease;
+}
+
+.vesper-guild-header-menu-item:hover {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 72%, transparent);
+  color: var(--color-text-primary);
+}
+
+.vesper-guild-header-menu-item:disabled {
+  color: var(--color-text-disabled);
+  cursor: default;
+}
+
+.vesper-guild-header-menu-item-danger {
+  color: #fca5a5;
+}
+
+.vesper-guild-header-menu-divider {
+  height: 1px;
+  margin: 0.35rem 0;
+  background: color-mix(in srgb, var(--color-border) 88%, transparent);
+}
+
+.vesper-channel-sidebar-kicker {
+  display: block;
+  margin-bottom: 0.18rem;
+  color: var(--color-text-faint);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.vesper-channel-sidebar-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+  font-size: 0.96rem;
+  font-weight: 700;
+}
+
+.vesper-channel-sidebar-scroller {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.75rem 0.65rem 0.9rem;
+}
+
+.vesper-channel-group + .vesper-channel-group {
+  margin-top: 0.9rem;
+}
+
+.vesper-channel-category-block {
+  border-radius: 1rem;
+}
+
+.vesper-channel-category-block-dragging {
+  opacity: 0.6;
+}
+
+.vesper-channel-group-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 0.35rem 0.35rem;
+}
+
+.vesper-channel-category-grip {
+  width: 1.55rem;
+  height: 1.55rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.55rem;
+  color: var(--color-text-faint);
+  cursor: grab;
+  flex: 0 0 auto;
+  transition: background-color 0.16s ease, color 0.16s ease;
+}
+
+.vesper-channel-category-grip:hover {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 72%, transparent);
+  color: var(--color-text-primary);
+}
+
+.vesper-channel-category-grip:active {
+  cursor: grabbing;
+}
+
+.vesper-channel-group-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+.vesper-channel-drag-handle,
+.vesper-channel-category-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-faint);
+  flex: 0 0 auto;
+}
+
+.vesper-channel-category-toggle {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.vesper-channel-category-chevron {
+  width: 0.85rem;
+  height: 0.85rem;
+  color: var(--color-text-faint);
+  flex: 0 0 auto;
+  transition: transform 0.16s ease, color 0.16s ease;
+}
+
+.vesper-channel-category-chevron-collapsed {
+  transform: rotate(-90deg);
+}
+
+.vesper-channel-group-label {
+  color: var(--color-text-faint);
+  font-size: 0.67rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.vesper-channel-category-toggle:hover .vesper-channel-category-chevron,
+.vesper-channel-category-toggle:hover .vesper-channel-group-label {
+  color: var(--color-text-primary);
+}
+
+.vesper-channel-category-count {
+  margin-left: auto;
+  color: var(--color-text-disabled);
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.vesper-channel-group-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.55rem;
+  height: 1.55rem;
+  border: 0;
+  border-radius: 0.55rem;
+  background: transparent;
+  color: var(--color-text-faint);
+  cursor: pointer;
+  transition: background-color 0.16s ease, color 0.16s ease;
+}
+
+.vesper-channel-group-action:hover {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 72%, transparent);
+  color: var(--color-text-primary);
+}
+
+.vesper-category-drop-zone {
+  height: 0.42rem;
+  margin: 0.12rem 0 0.32rem;
+  border-radius: 999px;
+  background: transparent;
+  transition: background-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.vesper-category-drop-zone-active {
+  background: color-mix(in srgb, var(--color-accent) 52%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 40%, transparent);
+}
+
+.vesper-channel-group-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.12rem;
+}
+
+.vesper-channel-drop-zone {
+  height: 0.38rem;
+  margin: 0.02rem 0;
+  border-radius: 999px;
+  background: transparent;
+  transition: background-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.vesper-channel-drop-zone-active {
+  background: color-mix(in srgb, var(--color-accent) 46%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 34%, transparent);
+}
+
+.vesper-channel-row {
+  position: relative;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-width: 0;
+  padding: 0.6rem 0.72rem;
+  border: 0;
+  border-radius: 0.9rem;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 0.16s ease, color 0.16s ease, transform 0.16s ease;
+}
+
+.vesper-channel-row:hover {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 58%, transparent);
+  color: var(--color-text-primary);
+}
+
+.vesper-channel-row-shell-dragging {
+  opacity: 0.58;
+}
+
+.vesper-channel-row-active {
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--color-accent) 16%, transparent), transparent 70%),
+    color-mix(in srgb, var(--color-bg-tertiary) 78%, transparent);
+  color: var(--color-text-primary);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
+.vesper-channel-row-unread::before {
+  content: '';
+  position: absolute;
+  left: 0.28rem;
+  top: 50%;
+  width: 0.34rem;
+  height: 0.34rem;
+  border-radius: 999px;
+  background: var(--color-accent);
+  transform: translateY(-50%);
+  box-shadow: 0 0 12px rgba(200, 162, 78, 0.35);
+}
+
+.vesper-channel-row-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-faint);
+  flex: 0 0 auto;
+}
+
+.vesper-channel-row-active .vesper-channel-row-icon,
+.vesper-channel-row-unread .vesper-channel-row-icon,
+.vesper-channel-row:hover .vesper-channel-row-icon {
+  color: inherit;
+}
+
+.vesper-channel-row-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  font-size: 0.9rem;
+}
+
+.vesper-channel-row-action {
+  width: 1.8rem;
+  height: 1.8rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  color: var(--color-text-faint);
+  opacity: 0;
+  transition: opacity 0.16s ease, background-color 0.16s ease, color 0.16s ease;
+  flex: 0 0 auto;
+}
+
+.vesper-channel-row:hover .vesper-channel-row-action,
+.vesper-channel-row:focus-visible .vesper-channel-row-action,
+.vesper-channel-row-active .vesper-channel-row-action {
+  opacity: 1;
+}
+
+.vesper-channel-row-action:hover {
+  background: color-mix(in srgb, var(--color-bg-base) 52%, transparent);
+  color: var(--color-text-primary);
+}
+
+.vesper-channel-row-unread .vesper-channel-row-label {
+  font-weight: 600;
+}
+
+.vesper-channel-create-scope {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-bottom: 1rem;
+  padding: 0.8rem 0.95rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  border-radius: 0.95rem;
+  background: color-mix(in srgb, var(--color-bg-base) 68%, transparent);
+}
+
+.vesper-channel-create-scope-label {
+  color: var(--color-text-faint);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.vesper-channel-create-scope-value {
+  color: var(--color-text-primary);
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.vesper-channel-row-voice {
+  color: var(--color-text-secondary);
+}
+
+.vesper-channel-voice-block + .vesper-channel-voice-block {
+  margin-top: 0.12rem;
+}
+
+.vesper-channel-empty-state {
+  padding: 0.7rem 0.75rem;
+  color: var(--color-text-faint);
+  font-size: 0.76rem;
+}
+
+.vesper-voice-participant {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.1rem 0;
+}
+
+.vesper-voice-participant-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.vesper-voice-participant-row-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.28rem 0.45rem;
+  border-radius: 0.75rem;
+  transition: background-color 0.16s ease;
+}
+
+.vesper-voice-participant-avatar {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.vesper-voice-participant-avatar-ring {
+  position: absolute;
+  inset: -0.18rem;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.vesper-voice-participant-avatar-speaking .vesper-voice-participant-avatar-ring {
+  border-color: rgba(59, 165, 92, 0.34);
+  box-shadow: 0 0 0 3px rgba(59, 165, 92, 0.14);
+}
+
+.vesper-voice-participant-row:hover .vesper-voice-participant-row-content {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 62%, transparent);
+}
+
+.vesper-voice-participant-name {
+  flex: 1;
+  min-width: 0;
+  color: var(--color-text-muted);
+  font-size: 0.76rem;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vesper-voice-participant-name-speaking {
+  color: var(--color-text-primary);
+}
+
+.vesper-voice-participant-icons {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.22rem;
+  color: var(--color-text-faint);
+  flex: 0 0 auto;
+}
+
+.vesper-voice-participant-state-icon {
+  width: 0.8rem;
+  height: 0.8rem;
+}
+
+.vesper-voice-participant-state-icon-muted {
+  color: #fca5a5;
+}
+
+.vesper-voice-participant-volume-button {
+  width: 1.55rem;
+  height: 1.55rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-faint);
+  cursor: pointer;
+  transition: background-color 0.16s ease, color 0.16s ease;
+  flex: 0 0 auto;
+}
+
+.vesper-voice-participant-volume-button:hover {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 74%, transparent);
+  color: var(--color-text-primary);
+}
+
+.vesper-voice-participant-volume-panel {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-left: 1.8rem;
+  padding: 0.45rem 0.55rem;
+  border-radius: 0.85rem;
+  background: color-mix(in srgb, var(--color-bg-base) 58%, transparent);
+}
+
+.vesper-voice-participant-slider {
+  flex: 1;
+  appearance: none;
+  height: 0.35rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 86%, transparent);
+  cursor: pointer;
+}
+
+.vesper-voice-participant-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 0.82rem;
+  height: 0.82rem;
+  border-radius: 999px;
+  background: var(--color-text-primary);
+}
+
+.vesper-voice-participant-slider::-moz-range-thumb {
+  width: 0.82rem;
+  height: 0.82rem;
+  border-radius: 999px;
+  border: 0;
+  background: var(--color-text-primary);
+}
+
+.vesper-voice-participant-volume-copy {
+  color: var(--color-text-faint);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  min-width: 2.4rem;
+  text-align: right;
+}
+
+.vesper-voice-room {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1.2rem 1.2rem 1.35rem;
+  background:
+    radial-gradient(circle at top left, rgba(200, 162, 78, 0.08), transparent 30%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent),
+    color-mix(in srgb, var(--color-bg-primary) 94%, transparent);
+}
+
+.vesper-voice-room-hero {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.2rem 1.25rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+  border-radius: 1.5rem;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.035), transparent 60%),
+    color-mix(in srgb, var(--color-bg-secondary) 80%, transparent);
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.16);
+}
+
+.vesper-voice-room-hero-copy {
+  min-width: 0;
+}
+
+.vesper-voice-room-kicker {
+  margin-bottom: 0.3rem;
+  color: var(--color-text-faint);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.vesper-voice-room-title {
+  color: var(--color-text-primary);
+  font-size: 1.6rem;
+  font-weight: 800;
+}
+
+.vesper-voice-room-description {
+  margin-top: 0.45rem;
+  max-width: 42rem;
+  color: var(--color-text-faint);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.vesper-voice-room-health {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.7rem;
+  color: var(--color-text-faint);
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
+.vesper-voice-room-transport {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.vesper-voice-room-transport-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+  min-height: 1.9rem;
+  padding: 0 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 74%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 64%, transparent);
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.vesper-voice-room-transport-label {
+  color: var(--color-text-faint);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.vesper-voice-room-quality {
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.vesper-voice-room-quality-good {
+  color: #86efac;
+  background: rgba(34, 197, 94, 0.16);
+}
+
+.vesper-voice-room-quality-fair {
+  color: #fcd34d;
+  background: rgba(245, 158, 11, 0.16);
+}
+
+.vesper-voice-room-quality-poor {
+  color: #fda4af;
+  background: rgba(239, 68, 68, 0.16);
+}
+
+.vesper-voice-room-quality-unknown {
+  color: var(--color-text-faint);
+  background: color-mix(in srgb, var(--color-bg-tertiary) 70%, transparent);
+}
+
+.vesper-voice-room-error {
+  margin-top: 0.55rem;
+  color: #fda4af;
+  font-size: 0.78rem;
+}
+
+.vesper-voice-room-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.vesper-voice-room-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.5rem;
+  padding: 0 0.95rem;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 74%, transparent);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+  transition: transform 0.16s ease, background-color 0.16s ease, color 0.16s ease;
+}
+
+.vesper-voice-room-button:hover {
+  transform: translateY(-1px);
+  background: color-mix(in srgb, var(--color-bg-tertiary) 88%, transparent);
+}
+
+.vesper-voice-room-button-primary {
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  color: var(--color-accent-text);
+}
+
+.vesper-voice-room-button-danger {
+  color: #fca5a5;
+  background: rgba(127, 29, 29, 0.16);
+}
+
+.vesper-voice-room-button-active {
+  color: #6ee7b7;
+  background: color-mix(in srgb, #10b981 22%, transparent);
+}
+
+.vesper-voice-room-presence-strip {
+  margin-top: 1rem;
+  padding: 0.95rem 1rem 1rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  border-radius: 1.35rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent),
+    color-mix(in srgb, var(--color-bg-secondary) 78%, transparent);
+}
+
+.vesper-voice-room-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.85rem;
+}
+
+.vesper-voice-room-section-title {
+  color: var(--color-text-primary);
+  font-size: 0.86rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.vesper-voice-room-section-meta {
+  color: var(--color-text-faint);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.vesper-voice-room-presence-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8.8rem, 1fr));
+  gap: 0.75rem;
+}
+
+.vesper-voice-presence-tile {
+  position: relative;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.9rem 0.75rem 0.8rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
+  border-radius: 1.1rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent),
+    color-mix(in srgb, var(--color-bg-tertiary) 54%, transparent);
+  text-align: center;
+  transition: transform 0.16s ease, border-color 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.vesper-voice-presence-tile:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--color-accent) 20%, var(--color-border) 80%);
+}
+
+.vesper-voice-presence-tile:disabled {
+  cursor: default;
+}
+
+.vesper-voice-presence-tile-active {
+  border-color: color-mix(in srgb, var(--color-accent) 34%, var(--color-border) 66%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 20%, transparent);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--color-accent) 12%, transparent), transparent 75%),
+    color-mix(in srgb, var(--color-bg-tertiary) 64%, transparent);
+}
+
+.vesper-voice-presence-avatar-shell {
+  position: relative;
+}
+
+.vesper-voice-presence-avatar-ring {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.vesper-voice-presence-avatar-ring-speaking {
+  border-color: rgba(59, 165, 92, 0.35);
+  box-shadow: 0 0 0 3px rgba(59, 165, 92, 0.14);
+}
+
+.vesper-voice-presence-avatar {
+  width: 3.8rem;
+  height: 3.8rem;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--color-bg-base) 78%, transparent);
+  color: var(--color-text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.98rem;
+  font-weight: 700;
+}
+
+.vesper-voice-presence-avatar-speaking {
+  box-shadow: 0 0 0 3px rgba(59, 165, 92, 0.8);
+}
+
+.vesper-voice-presence-avatar-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.vesper-voice-presence-avatar-fallback {
+  user-select: none;
+}
+
+.vesper-voice-presence-status-badge {
+  position: absolute;
+  right: -0.1rem;
+  bottom: -0.05rem;
+  width: 1.2rem;
+  height: 1.2rem;
+  border-radius: 999px;
+  background: rgba(127, 29, 29, 0.9);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-bg-secondary) 90%, transparent);
+}
+
+.vesper-voice-presence-live-badge {
+  position: absolute;
+  left: -0.15rem;
+  top: -0.15rem;
+  padding: 0.18rem 0.38rem;
+  border-radius: 0.45rem;
+  background: #d22c39;
+  color: #fff;
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.vesper-voice-presence-name {
+  width: 100%;
+  color: var(--color-text-primary);
+  font-size: 0.82rem;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vesper-voice-presence-meta {
+  color: var(--color-text-faint);
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.vesper-voice-room-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.95rem;
+  margin-top: 1rem;
+}
+
+.vesper-voice-room-featured {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 1rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 28%, var(--color-border) 72%);
+  border-radius: 1.2rem;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--color-accent) 12%, transparent), transparent 65%),
+    color-mix(in srgb, var(--color-bg-secondary) 82%, transparent);
+}
+
+.vesper-voice-room-featured-header {
+  min-width: 0;
+}
+
+.vesper-voice-room-featured-kicker {
+  color: var(--color-text-faint);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.vesper-voice-room-featured-name {
+  margin-top: 0.22rem;
+  color: var(--color-text-primary);
+  font-size: 1.15rem;
+  font-weight: 800;
+}
+
+.vesper-voice-room-featured-meta {
+  margin-top: 0.2rem;
+  color: var(--color-text-faint);
+  font-size: 0.8rem;
+}
+
+.vesper-voice-room-featured-video {
+  width: min(22rem, 44vw);
+  max-height: 12.5rem;
+  border-radius: 1rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  object-fit: cover;
+  background: #05070f;
+}
+
+.vesper-voice-room-featured-clear {
+  margin-top: 0.58rem;
+  border: 0;
+  border-radius: 999px;
+  padding: 0.35rem 0.75rem;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 74%, transparent);
+  color: var(--color-text-secondary);
+  font-size: 0.74rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.vesper-voice-room-card-pinned {
+  border-color: color-mix(in srgb, var(--color-accent) 35%, var(--color-border) 65%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 20%, transparent);
+}
+
+.vesper-voice-room-card-pin {
+  border: 0;
+  border-radius: 999px;
+  padding: 0.28rem 0.65rem;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 74%, transparent);
+  color: var(--color-text-faint);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.vesper-voice-room-card-pin-active {
+  color: var(--color-accent-text);
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
+.vesper-voice-room-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.65rem;
+  min-height: 11rem;
+  padding: 1rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  border-radius: 1.35rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent),
+    color-mix(in srgb, var(--color-bg-secondary) 74%, transparent);
+  text-align: center;
+}
+
+.vesper-voice-room-card-media {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 5.5rem;
+}
+
+.vesper-voice-room-card-video {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 0.95rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 86%, transparent);
+  object-fit: cover;
+  background: #05070f;
+}
+
+.vesper-voice-room-card-name {
+  color: var(--color-text-primary);
+  font-size: 0.94rem;
+  font-weight: 700;
+}
+
+.vesper-voice-room-card-meta {
+  color: var(--color-text-faint);
+  font-size: 0.78rem;
+}
+
+.vesper-voice-room-volume {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+  margin-top: 0.35rem;
+  color: var(--color-text-faint);
+  font-size: 0.68rem;
+  text-align: left;
+}
+
+.vesper-voice-room-volume input {
+  appearance: none;
+  width: 100%;
+  height: 0.3rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 84%, transparent);
+  cursor: pointer;
+}
+
+.vesper-voice-room-volume input::-webkit-slider-thumb {
+  appearance: none;
+  width: 0.78rem;
+  height: 0.78rem;
+  border-radius: 999px;
+  background: var(--color-text-primary);
+}
+
+.vesper-voice-room-volume input::-moz-range-thumb {
+  width: 0.78rem;
+  height: 0.78rem;
+  border: 0;
+  border-radius: 999px;
+  background: var(--color-text-primary);
+}
+
+.vesper-voice-room-empty {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 2.2rem 1rem;
+  border: 1px dashed color-mix(in srgb, var(--color-border) 78%, transparent);
+  border-radius: 1.4rem;
+  color: var(--color-text-faint);
+  text-align: center;
+}
+
+.vesper-voice-room-empty p {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.vesper-voice-room-empty span {
+  max-width: 28rem;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.vesper-call-overlay {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 40;
+  width: min(22rem, calc(100vw - 2rem));
+}
+
+.vesper-call-overlay-shell {
+  overflow: hidden;
+  padding: 0.85rem;
+  border-radius: 1.4rem;
+  box-shadow: 0 22px 40px rgba(0, 0, 0, 0.26);
+}
+
+.vesper-call-overlay-status-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.vesper-call-overlay-status-copy {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+}
+
+.vesper-call-overlay-status-dot {
+  width: 0.62rem;
+  height: 0.62rem;
+  margin-top: 0.34rem;
+  border-radius: 999px;
+  flex: 0 0 auto;
+  background: currentColor;
+  box-shadow: 0 0 0 5px color-mix(in srgb, currentColor 18%, transparent);
+}
+
+.vesper-call-overlay-header-copy {
+  min-width: 0;
+}
+
+.vesper-call-overlay-title {
+  color: var(--color-text-primary);
+  font-size: 0.92rem;
+  font-weight: 800;
+  line-height: 1.15;
+}
+
+.vesper-call-overlay-subtitle {
+  margin-top: 0.18rem;
+  color: var(--color-text-faint);
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+
+.vesper-call-overlay-error {
+  margin-top: 0.18rem;
+  max-width: 14rem;
+  color: #fca5a5;
+  font-size: 0.74rem;
+  line-height: 1.45;
+}
+
+.vesper-call-overlay-connection {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.16rem;
+}
+
+.vesper-call-overlay-quality {
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+}
+
+.vesper-call-overlay-quality-good {
+  color: #86efac;
+}
+
+.vesper-call-overlay-quality-fair {
+  color: #fcd34d;
+}
+
+.vesper-call-overlay-quality-poor {
+  color: #fca5a5;
+}
+
+.vesper-call-overlay-quality-unknown {
+  color: var(--color-text-faint);
+}
+
+.vesper-call-overlay-count {
+  color: var(--color-text-faint);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.vesper-call-overlay-metrics-row {
+  margin-top: 0.72rem;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.vesper-call-overlay-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.08rem;
+  padding: 0.48rem 0.58rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  border-radius: 0.9rem;
+  background: color-mix(in srgb, var(--color-bg-base) 58%, transparent);
+  color: var(--color-text-faint);
+  font-size: 0.66rem;
+  font-weight: 700;
+}
+
+.vesper-call-overlay-media-rail {
+  margin-top: 0.75rem;
+  display: flex;
+  gap: 0.5rem;
+  overflow-x: auto;
+  padding-bottom: 0.12rem;
+  scrollbar-width: thin;
+}
+
+.vesper-call-overlay-video-shell {
+  position: relative;
+  flex: 0 0 10rem;
+  overflow: hidden;
+  border-radius: 0.95rem;
+  background: #05070f;
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  transition: border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
+}
+
+.vesper-call-overlay-video-shell-speaking {
+  border-color: rgba(59, 165, 92, 0.42);
+  box-shadow: inset 0 0 0 1px rgba(59, 165, 92, 0.18);
+}
+
+.vesper-call-overlay-video {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  background: #05070f;
+}
+
+.vesper-call-overlay-video-mirror {
+  transform: scaleX(-1);
+}
+
+.vesper-call-overlay-video-local {
+  border-color: color-mix(in srgb, var(--color-accent) 26%, var(--color-border) 74%);
+}
+
+.vesper-call-overlay-video-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #05070f;
+  z-index: 1;
+}
+
+.vesper-call-overlay-video-preview {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: blur(12px) brightness(0.7);
+}
+
+.vesper-call-overlay-video-fallback {
+  position: relative;
+  z-index: 1;
+  width: 2.2rem;
+  height: 2.2rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-secondary) 88%, transparent);
+  color: var(--color-text-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.vesper-call-overlay-video-topline {
+  position: absolute;
+  inset: 0 0 auto;
+  padding: 0.42rem;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.vesper-call-overlay-video-chips {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.26rem;
+}
+
+.vesper-call-overlay-video-kind,
+.vesper-call-overlay-video-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.16rem 0.38rem;
+  border-radius: 999px;
+  background: rgba(3, 5, 10, 0.62);
+  color: white;
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  backdrop-filter: blur(8px);
+}
+
+.vesper-call-overlay-video-meta {
+  position: absolute;
+  inset: auto 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+  padding: 0.46rem 0.5rem;
+  background: linear-gradient(180deg, transparent, rgba(3, 5, 10, 0.9));
+  z-index: 2;
+}
+
+.vesper-call-overlay-video-label {
+  min-width: 0;
+  color: white;
+  font-size: 0.7rem;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vesper-call-overlay-video-state {
+  flex: 0 0 auto;
+  color: rgba(255, 255, 255, 0.84);
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.vesper-call-overlay-presence-row {
+  margin-top: 0.72rem;
+  display: flex;
+  gap: 0.45rem;
+  overflow-x: auto;
+  padding-bottom: 0.12rem;
+}
+
+.vesper-call-overlay-presence-pill {
+  min-width: 0;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+  padding: 0.34rem 0.48rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 62%, transparent);
+}
+
+.vesper-call-overlay-presence-pill-speaking {
+  border-color: rgba(59, 165, 92, 0.38);
+  box-shadow: inset 0 0 0 1px rgba(59, 165, 92, 0.14);
+}
+
+.vesper-call-overlay-presence-avatar {
+  position: relative;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--color-bg-base) 84%, transparent);
+  color: var(--color-text-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+}
+
+.vesper-call-overlay-presence-avatar-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.vesper-call-overlay-presence-avatar-fallback {
+  font-size: 0.64rem;
+  font-weight: 700;
+}
+
+.vesper-call-overlay-presence-muted {
+  position: absolute;
+  right: -0.05rem;
+  bottom: -0.05rem;
+  width: 0.82rem;
+  height: 0.82rem;
+  border-radius: 999px;
+  background: rgba(127, 29, 29, 0.92);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-bg-secondary) 92%, transparent);
+}
+
+.vesper-call-overlay-presence-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.04rem;
+  min-width: 0;
+}
+
+.vesper-call-overlay-presence-name {
+  max-width: 4.8rem;
+  color: var(--color-text-primary);
+  font-size: 0.68rem;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vesper-call-overlay-presence-meta {
+  color: var(--color-text-faint);
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.vesper-call-overlay-controls {
+  margin-top: 0.75rem;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.42rem;
+  padding: 0.42rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--color-bg-base) 56%, transparent);
+}
+
+.vesper-call-overlay-control {
+  width: 100%;
+  min-height: 2.5rem;
+  border: 0;
+  border-radius: 0.8rem;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 74%, transparent);
+  color: var(--color-text-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.16s ease, color 0.16s ease, transform 0.16s ease;
+}
+
+.vesper-call-overlay-control:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: color-mix(in srgb, var(--color-bg-tertiary) 88%, transparent);
+}
+
+.vesper-call-overlay-control-active {
+  color: #86efac;
+  background: rgba(16, 185, 129, 0.18);
+}
+
+.vesper-call-overlay-control-danger {
+  color: #fca5a5;
+  background: rgba(127, 29, 29, 0.18);
+}
+
+.vesper-call-overlay-control-hangup {
+  color: #fff;
+  background: #d22c39;
+}
+
+.vesper-call-overlay-control-hangup:hover:not(:disabled) {
+  background: #b91f2c;
+}
+
+.vesper-call-overlay-control-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.vesper-call-overlay-share-audio {
+  margin-top: 0.7rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--color-text-faint);
+  font-size: 0.72rem;
+}
+
+.vesper-call-overlay-share-audio input {
+  accent-color: var(--color-accent);
+}
+
+.vesper-incoming-call-shell {
+  position: fixed;
+  top: 1.25rem;
+  right: 1.25rem;
+  z-index: 70;
+  pointer-events: none;
+}
+
+.vesper-incoming-call-card {
+  width: min(24rem, calc(100vw - 2rem));
+  padding: 1rem;
+  border-radius: 1.4rem;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.95rem;
+  pointer-events: auto;
+}
+
+.vesper-incoming-call-avatar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.vesper-incoming-call-avatar-ring {
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  color: var(--color-accent-text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  font-weight: 700;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 24%, transparent);
+}
+
+.vesper-incoming-call-copy {
+  min-width: 0;
+}
+
+.vesper-incoming-call-kicker {
+  color: var(--color-accent-text);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.vesper-incoming-call-title {
+  margin-top: 0.18rem;
+  color: var(--color-text-primary);
+  font-size: 1.08rem;
+  font-weight: 700;
+}
+
+.vesper-incoming-call-subtitle {
+  margin-top: 0.2rem;
+  color: var(--color-text-secondary);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.vesper-incoming-call-timer {
+  margin-top: 0.45rem;
+  color: var(--color-text-faint);
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
+.vesper-incoming-call-actions {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
+.vesper-incoming-call-button {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  padding: 0.78rem 0.95rem;
+  border: 1px solid transparent;
+  border-radius: 0.95rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.vesper-incoming-call-button-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.vesper-incoming-call-button-decline {
+  background: rgba(220, 38, 38, 0.14);
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, 0.18);
+}
+
+.vesper-incoming-call-button-decline:hover {
+  background: rgba(220, 38, 38, 0.22);
+}
+
+.vesper-incoming-call-button-accept {
+  background: rgba(16, 185, 129, 0.14);
+  color: #86efac;
+  border-color: rgba(74, 222, 128, 0.18);
+}
+
+.vesper-incoming-call-button-accept:hover {
+  background: rgba(16, 185, 129, 0.22);
+}
+
+.vesper-voice-room-publish-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.vesper-voice-profile-card {
+  padding: 1rem 1.05rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  border-radius: 1.3rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent),
+    color-mix(in srgb, var(--color-bg-secondary) 78%, transparent);
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.12);
+}
+
+.vesper-voice-profile-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.vesper-voice-profile-title {
+  color: var(--color-text-primary);
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.vesper-voice-profile-description {
+  margin-top: 0.22rem;
+  color: var(--color-text-faint);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.vesper-voice-profile-apply {
+  min-height: 2rem;
+  padding: 0 0.8rem;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  color: var(--color-accent-text);
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.vesper-voice-profile-body {
+  margin-top: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.vesper-voice-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
+.vesper-voice-profile-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  color: var(--color-text-faint);
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+
+.vesper-voice-profile-select,
+.vesper-voice-profile-input {
+  width: 100%;
+  min-height: 2.45rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  border-radius: 0.95rem;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 68%, transparent);
+  color: var(--color-text-primary);
+  font-size: 0.84rem;
+  padding: 0 0.8rem;
+}
+
+.vesper-voice-profile-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  color: var(--color-text-secondary);
+  font-size: 0.8rem;
+}
+
+.vesper-voice-profile-toggle input {
+  accent-color: var(--color-accent);
+}
+
+.vesper-voice-room-stage-layout {
+  margin-top: 1rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(18rem, 0.9fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.vesper-voice-room-stage {
+  min-height: 28rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  padding: 1rem;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 20%, var(--color-border) 80%);
+  border-radius: 1.45rem;
+  background:
+    radial-gradient(circle at top left, color-mix(in srgb, var(--color-accent) 14%, transparent), transparent 40%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent),
+    color-mix(in srgb, var(--color-bg-secondary) 82%, transparent);
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.16);
+}
+
+.vesper-voice-room-stage-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.vesper-voice-room-stage-slider {
+  min-width: 12rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  color: var(--color-text-faint);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.vesper-voice-room-stage-slider input {
+  appearance: none;
+  width: 100%;
+  height: 0.34rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 86%, transparent);
+}
+
+.vesper-voice-room-stage-slider input::-webkit-slider-thumb {
+  appearance: none;
+  width: 0.84rem;
+  height: 0.84rem;
+  border-radius: 999px;
+  background: var(--color-text-primary);
+}
+
+.vesper-voice-room-stage-slider input::-moz-range-thumb {
+  width: 0.84rem;
+  height: 0.84rem;
+  border: 0;
+  border-radius: 999px;
+  background: var(--color-text-primary);
+}
+
+.vesper-voice-room-stage-video {
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+  aspect-ratio: 16 / 9;
+  border-radius: 1.15rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  object-fit: contain;
+  background:
+    radial-gradient(circle at center, rgba(255, 255, 255, 0.06), transparent 45%),
+    #05070f;
+}
+
+.vesper-voice-video-surface {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.vesper-voice-video-surface-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #05070f;
+  z-index: 1;
+}
+
+.vesper-voice-video-surface-preview {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: blur(16px) brightness(0.68);
+}
+
+.vesper-voice-video-surface-fallback {
+  position: relative;
+  z-index: 1;
+  width: 3rem;
+  height: 3rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-secondary) 90%, transparent);
+  color: var(--color-text-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.vesper-voice-video-surface-mirror {
+  transform: scaleX(-1);
+}
+
+.vesper-voice-video-surface-contain {
+  object-fit: contain;
+}
+
+.vesper-voice-room-streams {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-height: 0;
+  padding: 0.95rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  border-radius: 1.35rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent),
+    color-mix(in srgb, var(--color-bg-secondary) 76%, transparent);
+}
+
+.vesper-voice-room-streams-title {
+  color: var(--color-text-primary);
+  font-size: 0.86rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.vesper-voice-room-stream-card {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  width: 100%;
+  padding: 0.65rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 52%, transparent);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.16s ease, border-color 0.16s ease, background-color 0.16s ease;
+}
+
+.vesper-voice-room-stream-card:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--color-accent) 20%, var(--color-border) 80%);
+}
+
+.vesper-voice-room-stream-card-active {
+  border-color: color-mix(in srgb, var(--color-accent) 35%, var(--color-border) 65%);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--color-accent) 14%, transparent), transparent 75%),
+    color-mix(in srgb, var(--color-bg-tertiary) 64%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
+.vesper-voice-room-stream-card-media {
+  width: 7rem;
+  flex: 0 0 7rem;
+  position: relative;
+}
+
+.vesper-voice-room-stream-card-video {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 0.8rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 86%, transparent);
+  object-fit: cover;
+  background: #05070f;
+}
+
+.vesper-voice-room-stream-card-badges {
+  position: absolute;
+  top: 0.45rem;
+  left: 0.45rem;
+  right: 0.45rem;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  z-index: 2;
+}
+
+.vesper-voice-room-stream-badge {
+  padding: 0.18rem 0.46rem;
+  border-radius: 999px;
+  background: rgba(3, 5, 10, 0.62);
+  color: white;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  backdrop-filter: blur(8px);
+}
+
+.vesper-voice-room-stream-card-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.16rem;
+}
+
+.vesper-voice-room-stream-card-copy span:first-child {
+  color: var(--color-text-primary);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.vesper-voice-room-stream-card-copy span:last-child {
+  color: var(--color-text-faint);
+  font-size: 0.75rem;
+}
+
+.vesper-voice-room-streams-empty {
+  padding: 1rem;
+  border: 1px dashed color-mix(in srgb, var(--color-border) 78%, transparent);
+  border-radius: 1rem;
+  color: var(--color-text-faint);
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.vesper-voice-room-roster {
+  margin-top: 1rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 0.85rem;
+}
+
+.vesper-voice-roster-card {
+  padding: 0.95rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  border-radius: 1.2rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent),
+    color-mix(in srgb, var(--color-bg-secondary) 76%, transparent);
+}
+
+.vesper-voice-roster-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.vesper-voice-roster-card-user {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.vesper-voice-roster-card-name {
+  color: var(--color-text-primary);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.vesper-voice-roster-card-meta {
+  margin-top: 0.14rem;
+  color: var(--color-text-faint);
+  font-size: 0.75rem;
+}
+
+.vesper-voice-roster-card-badges {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.35rem;
+}
+
+.vesper-voice-roster-badge {
+  padding: 0.22rem 0.5rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 76%, transparent);
+  color: var(--color-text-secondary);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.vesper-voice-roster-sliders {
+  margin-top: 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+@media (max-width: 980px) {
+  .vesper-voice-room-stage-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .vesper-voice-room-stage {
+    min-height: 22rem;
+  }
+
+  .vesper-voice-room-streams {
+    order: 2;
+  }
+}
+
+@media (max-width: 720px) {
+  .vesper-voice-room {
+    padding: 0.9rem 0.9rem 1.1rem;
+  }
+
+  .vesper-voice-room-hero {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .vesper-voice-room-actions {
+    justify-content: flex-start;
+  }
+
+  .vesper-voice-room-presence-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .vesper-voice-profile-grid,
+  .vesper-voice-room-roster {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .vesper-voice-room-stage {
+    min-height: 18rem;
+    padding: 0.85rem;
+  }
+
+  .vesper-voice-room-stage-header {
+    flex-direction: column;
+  }
+
+  .vesper-voice-room-stage-slider {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .vesper-voice-room-stream-card {
+    padding: 0.58rem;
+  }
+
+  .vesper-voice-room-stream-card-media {
+    width: 5.5rem;
+    flex-basis: 5.5rem;
+  }
+}
+
+.vesper-channel-unread-badge {
+  min-width: 1.2rem;
+  height: 1.2rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 0.32rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, #ef4444 88%, transparent);
+  color: white;
+  font-size: 0.63rem;
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+
+.vesper-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: col-resize;
+  z-index: 20;
+}
+
+.vesper-resize-handle::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  border-radius: 999px;
+  background: transparent;
+  transition: background-color 0.16s ease;
+}
+
+.vesper-resize-handle:hover::before,
+.vesper-resize-handle-dragging::before {
+  background: color-mix(in srgb, var(--color-accent) 78%, white 10%);
+}
+
+.vesper-resize-handle-right {
+  right: -4px;
+}
+
+.vesper-resize-handle-right::before {
+  right: 3px;
+}
+
+.vesper-resize-handle-left {
+  left: -4px;
+}
+
+.vesper-resize-handle-left::before {
+  left: 3px;
+}
+
+@keyframes vesper-typing-pulse {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 0.28;
+    transform: scale(0.82);
+  }
+
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes vesper-typing-fade {
+  0% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.52;
+  }
+
+  100% {
+    opacity: 1;
+  }
+}
+
+@media (max-width: 1024px) {
+  .vesper-resize-handle {
+    display: none;
+  }
+
+  .vesper-settings-sidebar {
+    flex-basis: 224px;
+    width: 224px;
+  }
+
+  .vesper-settings-sidebar-scroll {
+    padding-left: 1.25rem;
+  }
+}
+
+@media (max-width: 768px) {
+  .vesper-settings-overlay {
+    padding: 0;
+  }
+
+  .vesper-lightbox {
+    padding: calc(env(safe-area-inset-top, 0px) + 0.75rem) 0.75rem calc(env(safe-area-inset-bottom, 0px) + 0.75rem);
+  }
+
+  .vesper-lightbox-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .vesper-lightbox-meta {
+    justify-content: space-between;
+  }
+
+  .vesper-lightbox-title {
+    max-width: none;
+  }
+
+  .vesper-lightbox-actions {
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
+  .vesper-lightbox-button {
+    width: 2.6rem;
+    height: 2.6rem;
+  }
+
+  .vesper-lightbox-image {
+    max-width: 100%;
+    max-height: calc(100dvh - 10rem);
+  }
+
+  .vesper-mobile-nav-shell [data-testid="sidebar"] {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .vesper-mobile-nav-shell .vesper-panel-shell-right {
+    flex: 1 1 auto;
+    width: calc(100vw - 72px) !important;
+  }
+
+  .vesper-mobile-nav-shell .vesper-channel-sidebar,
+  .vesper-mobile-nav-shell .vesper-channel-sidebar-shell {
+    height: 100%;
+  }
+
+  .vesper-mobile-chat-shell .vesper-message-feed {
+    padding: 0.5rem 0.7rem 0.2rem;
+  }
+
+  .vesper-mobile-chat-shell .vesper-composer-form {
+    padding: 0.45rem 0.6rem calc(0.8rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .vesper-mobile-main .vesper-panel-shell-left {
+    position: fixed;
+    inset: 0;
+    width: 100% !important;
+    z-index: 75;
+    border-left: 0;
+    background: rgba(10, 11, 19, 0.4);
+    backdrop-filter: blur(8px);
+  }
+
+  .vesper-mobile-main .vesper-member-list-panel {
+    margin-top: auto;
+    height: min(78vh, 42rem);
+    border-radius: 1.4rem 1.4rem 0 0;
+    border-top: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent),
+      color-mix(in srgb, var(--color-bg-secondary) 96%, transparent);
+  }
+
+  .vesper-mobile-chat-shell .vesper-thread-panel-mobile {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent),
+      color-mix(in srgb, var(--color-bg-secondary) 96%, transparent);
+  }
+
+  .vesper-mobile-chat-shell .vesper-thread-composer {
+    padding: 0.7rem 0.7rem calc(0.8rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .vesper-settings-shell {
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    min-height: 100%;
+    max-width: none;
+    max-height: none;
+    border-radius: 0;
+    border: 0;
+  }
+
+  .vesper-settings-sidebar {
+    flex: 0 0 auto;
+    width: 100%;
+    border-bottom: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+  }
+
+  .vesper-settings-sidebar-scroll {
+    padding: calc(env(safe-area-inset-top, 0px) + 0.9rem) 0.9rem 0.8rem;
+  }
+
+  .vesper-settings-close-cluster {
+    top: calc(env(safe-area-inset-top, 0px) + 0.85rem);
+    right: 0.85rem;
+  }
+
+  .vesper-settings-nav {
+    gap: 0.65rem;
+  }
+
+  .vesper-settings-group {
+    gap: 0.3rem;
+  }
+
+  .vesper-settings-voice-diagnostics-header {
+    flex-direction: column;
+  }
+
+  .vesper-settings-voice-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .vesper-settings-content-scroll {
+    width: 100%;
+    padding: 1rem 0.9rem calc(1.4rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .vesper-settings-content-inner {
+    max-width: none;
+  }
+
+  .vesper-call-overlay {
+    left: 0.8rem;
+    right: 0.8rem;
+    bottom: calc(0.8rem + env(safe-area-inset-bottom, 0px));
+    width: auto;
+  }
+
+  .vesper-call-overlay-shell {
+    border-radius: 1.25rem;
+    padding: 0.78rem;
+  }
+
+  .vesper-call-overlay-metrics-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .vesper-call-overlay-video-shell {
+    flex-basis: 8.8rem;
+  }
+
+  .vesper-call-overlay-controls {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .vesper-incoming-call-shell {
+    top: auto;
+    right: 0.8rem;
+    left: 0.8rem;
+    bottom: calc(0.8rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .vesper-incoming-call-card {
+    width: 100%;
+  }
+
+  .vesper-settings-target-row {
+    grid-template-columns: 1fr;
+  }
+
+  .vesper-settings-permission-row,
+  .vesper-settings-ban-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .vesper-settings-permission-target {
+    width: 100%;
+  }
+
+  .vesper-settings-ban-meta {
+    margin-left: 0;
+    align-items: flex-start;
+  }
+
+  .vesper-settings-close-region {
+    position: absolute;
+    top: calc(env(safe-area-inset-top, 0px) + 0.7rem);
+    right: 0.7rem;
+    width: auto;
+    padding-top: 0;
+  }
+
+  .vesper-settings-close-hint {
+    display: none;
+  }
+
+  .vesper-profile-popout-layer {
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    padding: 0;
+    background: rgba(10, 11, 19, 0.35);
+    backdrop-filter: blur(8px);
+  }
+
+  .vesper-profile-popout {
+    position: relative;
+    left: auto !important;
+    top: auto !important;
+    width: 100%;
+    max-width: none;
+    border-radius: 1.4rem 1.4rem 0 0;
+    border-bottom: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vesper-typing-indicator {
+    transition: none;
+  }
+}
+
+[data-theme="light"] .vesper-message-row:hover {
+  background: color-mix(in srgb, var(--color-bg-secondary) 88%, white 12%);
+}
+
+[data-theme="light"] .vesper-message-row-thread-active {
+  background: color-mix(in srgb, var(--color-accent) 14%, var(--color-bg-secondary));
+}
+
+[data-theme="light"] .vesper-message-actions {
+  box-shadow: 0 10px 24px rgba(31, 24, 56, 0.08);
+}
+
+[data-theme="light"] .vesper-emoji-picker {
+  box-shadow: 0 18px 42px rgba(33, 22, 59, 0.12);
+}
+
+[data-theme="light"] .vesper-settings-overlay {
+  background: rgba(238, 240, 244, 0.82);
+}
+
+[data-theme="light"] .vesper-thread-panel {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.75), rgba(255, 255, 255, 0.25)),
+    color-mix(in srgb, var(--color-bg-primary) 92%, white 8%);
+}
+
+[data-theme="light"] .vesper-thread-composer {
+  background: color-mix(in srgb, var(--color-bg-secondary) 72%, white 28%);
+}
+
+[data-theme="light"] .vesper-settings-audit-meta {
+  background: color-mix(in srgb, var(--color-bg-secondary) 88%, white 12%);
+}
+
+[data-theme="light"] .vesper-settings-card,
+[data-theme="light"] .vesper-profile-popout {
+  box-shadow: 0 20px 38px rgba(24, 29, 37, 0.08);
+}

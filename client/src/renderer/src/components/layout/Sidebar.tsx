@@ -1,37 +1,170 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
-  MessageCircle, Plus, ArrowRightToLine, Hash, Volume2, Settings, LogOut,
-  Copy, Pencil, Trash2, Check, Link
+  ArrowRightToLine,
+  Check,
+  ChevronDown,
+  Copy,
+  Pencil,
+  Folder,
+  GripVertical,
+  Hash,
+  Link,
+  LogOut,
+  MessageCircle,
+  Plus,
+  Settings,
+  Trash2,
+  Volume2
 } from 'lucide-react'
 import { apiFetch } from '../../api/client'
-import { useServerStore } from '../../stores/serverStore'
 import { useAuthStore } from '../../stores/authStore'
 import { useDmStore } from '../../stores/dmStore'
+import { usePresenceStore } from '../../stores/presenceStore'
+import { type Channel, useServerStore } from '../../stores/serverStore'
 import { useUIStore } from '../../stores/uiStore'
-import { useVoiceStore } from '../../stores/voiceStore'
-import { usePresenceStore, type PresenceStatus } from '../../stores/presenceStore'
 import { useUnreadStore } from '../../stores/unreadStore'
-import DmSidebar from '../dm/DmSidebar'
-import VoiceControls from '../voice/VoiceControls'
-import VoiceParticipants from '../voice/VoiceParticipants'
-import ContextMenu, { type ContextMenuItem } from '../ui/ContextMenu'
+import { useVoiceStore } from '../../stores/voiceStore'
 import { useContextMenu } from '../../hooks/useContextMenu'
-
-const STATUS_COLORS: Record<PresenceStatus, string> = {
-  online: 'bg-emerald-500',
-  idle: 'bg-amber-500',
-  dnd: 'bg-red-500',
-  offline: 'bg-gray-500'
-}
-
-const STATUS_GLOW: Record<PresenceStatus, string> = {
-  online: 'shadow-[0_0_6px_rgba(52,211,153,0.5)]',
-  idle: 'shadow-[0_0_6px_rgba(251,191,36,0.5)]',
-  dnd: 'shadow-[0_0_6px_rgba(248,113,113,0.5)]',
-  offline: ''
-}
+import DmSidebar from '../dm/DmSidebar'
+import ProfilePopout from '../profile/ProfilePopout'
+import ContextMenu, { type ContextMenuItem } from '../ui/ContextMenu'
+import VoiceParticipants from '../voice/VoiceParticipants'
+import AccountPanel from './AccountPanel'
+import PanelShell from './PanelShell'
 
 type View = 'server' | 'dm'
+type DragState =
+  | { type: 'category'; id: string }
+  | { type: 'channel'; id: string; categoryId: string | null }
+type ChannelSection = {
+  id: string
+  label: string
+  category: Channel | null
+  channels: Channel[]
+}
+
+const CHANNEL_COLLAPSE_STORAGE_KEY = 'vesper:channelCollapseState'
+
+function readCollapsedSections(): Record<string, boolean> {
+  if (typeof window === 'undefined') {
+    return {}
+  }
+
+  try {
+    const raw = window.localStorage.getItem(CHANNEL_COLLAPSE_STORAGE_KEY)
+    const parsed = raw ? JSON.parse(raw) : null
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, boolean> : {}
+  } catch {
+    return {}
+  }
+}
+
+function sortChannels(channels: Channel[]): Channel[] {
+  return [...channels].sort(
+    (left, right) => left.position - right.position || left.name.localeCompare(right.name)
+  )
+}
+
+function isLegacyDefaultCategory(category: Channel, kind: 'text' | 'voice'): boolean {
+  const normalized = category.name.trim().toLowerCase()
+  return kind === 'text' ? normalized === 'text channels' : normalized === 'voice channels'
+}
+
+function buildSections(channels: Channel[]): ChannelSection[] {
+  const categories = sortChannels(channels.filter((channel) => channel.type === 'category'))
+  const regularChannels = sortChannels(channels.filter((channel) => channel.type !== 'category'))
+  const byCategory = new Map<string, Channel[]>()
+
+  for (const channel of regularChannels) {
+    if (!channel.category_id) {
+      continue
+    }
+
+    const existing = byCategory.get(channel.category_id) ?? []
+    existing.push(channel)
+    byCategory.set(channel.category_id, existing)
+  }
+
+  const sections = categories.map((category) => ({
+    id: category.id,
+    label: category.name,
+    category,
+    channels: byCategory.get(category.id) ?? []
+  }))
+
+  const uncategorizedText = regularChannels.filter(
+    (channel) => channel.type === 'text' && !channel.category_id
+  )
+  const uncategorizedVoice = regularChannels.filter(
+    (channel) => channel.type === 'voice' && !channel.category_id
+  )
+
+  const filteredSections = sections.filter((section) => {
+    if (!section.category || section.channels.length > 0) {
+      return true
+    }
+
+    if (uncategorizedText.length > 0 && isLegacyDefaultCategory(section.category, 'text')) {
+      return false
+    }
+
+    if (uncategorizedVoice.length > 0 && isLegacyDefaultCategory(section.category, 'voice')) {
+      return false
+    }
+
+    return true
+  })
+  const hasVisibleCategories = filteredSections.some((section) => section.category !== null)
+
+  if (uncategorizedText.length > 0) {
+    filteredSections.push({
+      id: 'root-text',
+      label: hasVisibleCategories ? 'Uncategorized Text' : 'Text Channels',
+      category: null,
+      channels: uncategorizedText
+    })
+  }
+
+  if (uncategorizedVoice.length > 0) {
+    filteredSections.push({
+      id: 'root-voice',
+      label: hasVisibleCategories ? 'Uncategorized Voice' : 'Voice Channels',
+      category: null,
+      channels: uncategorizedVoice
+    })
+  }
+
+  return filteredSections
+}
+
+function getScopedChannelDraft(section: ChannelSection): {
+  type: 'text' | 'voice' | 'category'
+  categoryId: string | null
+  scopeLabel: string | null
+} {
+  if (section.category) {
+    const firstChannel = section.channels[0]
+    return {
+      type: firstChannel?.type === 'voice' ? 'voice' : 'text',
+      categoryId: section.category.id,
+      scopeLabel: section.category.name
+    }
+  }
+
+  if (section.id === 'root-voice') {
+    return {
+      type: 'voice',
+      categoryId: null,
+      scopeLabel: 'Voice Channels'
+    }
+  }
+
+  return {
+    type: 'text',
+    categoryId: null,
+    scopeLabel: section.label
+  }
+}
 
 export default function Sidebar(): React.JSX.Element {
   const servers = useServerStore((s) => s.servers)
@@ -40,41 +173,173 @@ export default function Sidebar(): React.JSX.Element {
   const setActiveServer = useServerStore((s) => s.setActiveServer)
   const setActiveChannel = useServerStore((s) => s.setActiveChannel)
   const deleteChannel = useServerStore((s) => s.deleteChannel)
+  const updateChannel = useServerStore((s) => s.updateChannel)
   const openCreateServerModal = useUIStore((s) => s.openCreateServerModal)
   const openJoinServerModal = useUIStore((s) => s.openJoinServerModal)
   const openCreateChannelModal = useUIStore((s) => s.openCreateChannelModal)
   const openSettingsModal = useUIStore((s) => s.openSettingsModal)
   const openServerSettingsModal = useUIStore((s) => s.openServerSettingsModal)
+  const openChannelSettingsModal = useUIStore((s) => s.openChannelSettingsModal)
+  const closeMobileNav = useUIStore((s) => s.closeMobileNav)
+  const channelSidebarWidth = useUIStore((s) => s.channelSidebarWidth)
+  const setChannelSidebarWidth = useUIStore((s) => s.setChannelSidebarWidth)
   const logout = useAuthStore((s) => s.logout)
   const user = useAuthStore((s) => s.user)
-
   const leaveServer = useServerStore((s) => s.leaveServer)
   const selectedConversationId = useDmStore((s) => s.selectedConversationId)
   const selectConversation = useDmStore((s) => s.selectConversation)
   const fetchConversations = useDmStore((s) => s.fetchConversations)
   const channelUnreads = useUnreadStore((s) => s.channelUnreads)
   const dmUnreads = useUnreadStore((s) => s.dmUnreads)
-
   const serverMenu = useContextMenu<string>()
   const channelMenu = useContextMenu<{ channelId: string; serverId: string }>()
+  const [serverHeaderOpen, setServerHeaderOpen] = useState(false)
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>(
+    () => readCollapsedSections()
+  )
+  const [dragState, setDragState] = useState<DragState | null>(null)
+  const [dropTarget, setDropTarget] = useState<string | null>(null)
+  const serverHeaderRef = useRef<HTMLDivElement | null>(null)
 
   const currentView: View = !activeServerId ? 'dm' : 'server'
-  const activeServer = servers.find((s) => s.id === activeServerId)
+  const activeServer = servers.find((server) => server.id === activeServerId)
+  const isMobileLayout = typeof window !== 'undefined' && window.innerWidth <= 768
+  const isServerOwner = activeServer?.owner_id === user?.id
+  const sections = buildSections(activeServer?.channels ?? [])
+  const sortedCategories = sortChannels(
+    (activeServer?.channels ?? []).filter((channel) => channel.type === 'category')
+  )
+
+  useEffect(() => {
+    if (!serverHeaderOpen) {
+      return
+    }
+
+    const handlePointerDown = (event: MouseEvent): void => {
+      if (!serverHeaderRef.current?.contains(event.target as Node)) {
+        setServerHeaderOpen(false)
+      }
+    }
+
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        setServerHeaderOpen(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [serverHeaderOpen])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    window.localStorage.setItem(CHANNEL_COLLAPSE_STORAGE_KEY, JSON.stringify(collapsedSections))
+  }, [collapsedSections])
+
+  useEffect(() => {
+    if (!activeServer || !activeChannelId) {
+      return
+    }
+
+    const activeChannel = activeServer.channels.find((channel) => channel.id === activeChannelId)
+    if (!activeChannel?.category_id) {
+      return
+    }
+
+    setCollapsedSections((currentState) =>
+      currentState[activeChannel.category_id!]
+        ? { ...currentState, [activeChannel.category_id!]: false }
+        : currentState
+    )
+  }, [activeChannelId, activeServer])
 
   const handleServerClick = (serverId: string): void => {
     selectConversation(null)
     setActiveServer(serverId)
+    setServerHeaderOpen(false)
+    if (isMobileLayout) {
+      closeMobileNav()
+    }
   }
 
   const handleDmClick = (): void => {
     setActiveServer(null)
     setActiveChannel(null)
     fetchConversations()
+    setServerHeaderOpen(false)
+    if (isMobileLayout) {
+      closeMobileNav()
+    }
+  }
+
+  const handleChannelSelect = (channelId: string): void => {
+    setActiveChannel(channelId)
+    setServerHeaderOpen(false)
+    if (isMobileLayout) {
+      closeMobileNav()
+    }
+  }
+
+  const clearDragState = (): void => {
+    setDragState(null)
+    setDropTarget(null)
+  }
+
+  const moveCategory = async (categoryId: string, targetIndex: number): Promise<void> => {
+    if (!activeServer) {
+      return
+    }
+
+    const currentIndex = sortedCategories.findIndex((category) => category.id === categoryId)
+    if (currentIndex === -1) {
+      return
+    }
+
+    const boundedIndex = Math.max(0, Math.min(targetIndex, sortedCategories.length - 1))
+    if (boundedIndex === currentIndex) {
+      return
+    }
+
+    await updateChannel(activeServer.id, categoryId, { position: boundedIndex })
+  }
+
+  const moveChannel = async (
+    channelId: string,
+    categoryId: string | null,
+    targetIndex: number
+  ): Promise<void> => {
+    if (!activeServer) {
+      return
+    }
+
+    const destinationChannels = sortChannels(
+      activeServer.channels.filter(
+        (channel) =>
+          channel.type !== 'category' &&
+          channel.id !== channelId &&
+          (categoryId ? channel.category_id === categoryId : !channel.category_id)
+      )
+    )
+
+    const boundedIndex = Math.max(0, Math.min(targetIndex, destinationChannels.length))
+    await updateChannel(activeServer.id, channelId, {
+      category_id: categoryId,
+      position: boundedIndex
+    })
   }
 
   const getServerItems = (serverId: string): ContextMenuItem[] => {
-    const srv = servers.find((s) => s.id === serverId)
-    const isOwner = srv?.owner_id === user?.id
+    const server = servers.find((item) => item.id === serverId)
+    const isOwner = server?.owner_id === user?.id
+
     return [
       ...(isOwner
         ? [
@@ -105,21 +370,29 @@ export default function Sidebar(): React.JSX.Element {
   }
 
   const getChannelItems = (channelId: string, serverId: string): ContextMenuItem[] => {
-    const srv = servers.find((s) => s.id === serverId)
-    const isOwner = srv?.owner_id === user?.id
+    const server = servers.find((item) => item.id === serverId)
+    const channel = server?.channels.find((item) => item.id === channelId)
+    const isOwner = server?.owner_id === user?.id
+
     return [
       ...(isOwner
         ? [
             {
-              label: 'Delete Channel',
+              label: channel?.type === 'category' ? 'Edit Category' : 'Channel Settings',
+              icon: Pencil,
+              onClick: () => openChannelSettingsModal(channelId)
+            },
+            {
+              label: channel?.type === 'category' ? 'Delete Category' : 'Delete Channel',
               icon: Trash2,
               onClick: () => deleteChannel(serverId, channelId),
-              danger: true
+              danger: true,
+              divider: true
             }
           ]
         : []),
       {
-        label: 'Copy Channel ID',
+        label: 'Copy ID',
         icon: Copy,
         onClick: () => navigator.clipboard.writeText(channelId),
         divider: isOwner
@@ -127,14 +400,11 @@ export default function Sidebar(): React.JSX.Element {
     ]
   }
 
-  // Compute total DM unreads
-  const totalDmUnread = Object.values(dmUnreads).reduce((sum, n) => sum + n, 0)
+  const totalDmUnread = Object.values(dmUnreads).reduce((sum, count) => sum + count, 0)
 
   return (
     <div data-testid="sidebar" className="flex h-full">
-      {/* Server rail */}
       <div className="w-[72px] bg-bg-base flex flex-col items-center py-3 gap-2">
-        {/* DM button */}
         <div className="relative">
           {currentView === 'dm' && (
             <div className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1 w-1 h-8 bg-accent rounded-r-full" />
@@ -162,9 +432,10 @@ export default function Sidebar(): React.JSX.Element {
         {servers.map((server) => {
           const isActive = server.id === activeServerId && currentView === 'server'
           const serverUnread = server.channels.reduce(
-            (sum, c) => sum + (channelUnreads[c.id] || 0),
+            (sum, channel) => sum + (channelUnreads[channel.id] || 0),
             0
           )
+
           return (
             <div key={server.id} className="relative">
               {isActive && (
@@ -172,7 +443,7 @@ export default function Sidebar(): React.JSX.Element {
               )}
               <button
                 onClick={() => handleServerClick(server.id)}
-                onContextMenu={(e) => serverMenu.onContextMenu(e, server.id)}
+                onContextMenu={(event) => serverMenu.onContextMenu(event, server.id)}
                 title={server.name}
                 className={`relative w-12 h-12 flex items-center justify-center text-sm font-semibold transition-all duration-200 ${
                   isActive
@@ -209,112 +480,359 @@ export default function Sidebar(): React.JSX.Element {
         </button>
       </div>
 
-      {/* Channel / DM list */}
-      {currentView === 'dm' ? (
-        <DmSidebarContent />
-      ) : (
-        <div className="w-56 min-w-0 bg-bg-secondary flex flex-col">
-          {activeServer ? (
-            <>
-              <div className="px-4 py-3 border-b border-border">
-                <div className="flex items-center gap-2">
-                  <h2 className="text-text-primary font-semibold truncate flex-1 min-w-0">
-                    {activeServer.name}
-                  </h2>
-                  <InviteCodeButton serverId={activeServer.id} />
-                </div>
-              </div>
-
-              <div className="flex-1 overflow-y-auto py-2">
-                <div className="flex items-center px-3 mb-1">
-                  <span className="text-text-faint text-xs font-semibold uppercase tracking-wide flex-1">
-                    Text Channels
-                  </span>
+      <PanelShell
+        side="right"
+        width={channelSidebarWidth}
+        onWidthChange={setChannelSidebarWidth}
+      >
+        {currentView === 'dm' ? (
+          <DmSidebarContent />
+        ) : (
+          <div className="vesper-channel-sidebar">
+            {activeServer ? (
+              <>
+                <div className="vesper-channel-sidebar-header" ref={serverHeaderRef}>
                   <button
-                    onClick={openCreateChannelModal}
-                    className="text-text-faint hover:text-text-secondary transition-colors"
-                    title="Create Channel"
+                    type="button"
+                    className={`vesper-guild-header-button${serverHeaderOpen ? ' vesper-guild-header-button-open' : ''}`}
+                    onClick={() => setServerHeaderOpen((open) => !open)}
+                    aria-expanded={serverHeaderOpen}
+                    aria-haspopup="menu"
                   >
-                    <Plus className="w-4 h-4" />
+                    <div className="vesper-channel-sidebar-header-copy">
+                      <span className="vesper-channel-sidebar-kicker">Server</span>
+                      <h2 className="vesper-channel-sidebar-title">{activeServer.name}</h2>
+                    </div>
+                    <ChevronDown className={`vesper-guild-header-chevron${serverHeaderOpen ? ' vesper-guild-header-chevron-open' : ''}`} />
                   </button>
+                  <InviteCodeButton serverId={activeServer.id} />
+
+                  {serverHeaderOpen && (
+                    <div className="vesper-guild-header-menu" role="menu" aria-label={`${activeServer.name} actions`}>
+                      <button
+                        type="button"
+                        className="vesper-guild-header-menu-item"
+                        onClick={() => {
+                          navigator.clipboard.writeText(activeServer.id)
+                          setServerHeaderOpen(false)
+                        }}
+                        role="menuitem"
+                      >
+                        <Copy className="w-4 h-4" />
+                        <span>Copy Server ID</span>
+                      </button>
+                      {isServerOwner && (
+                        <>
+                          <button
+                            type="button"
+                            className="vesper-guild-header-menu-item"
+                            onClick={() => {
+                              setServerHeaderOpen(false)
+                              openServerSettingsModal()
+                            }}
+                            role="menuitem"
+                          >
+                            <Settings className="w-4 h-4" />
+                            <span>Server Settings</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="vesper-guild-header-menu-item"
+                            onClick={() => {
+                              setServerHeaderOpen(false)
+                              openCreateChannelModal()
+                            }}
+                            role="menuitem"
+                          >
+                            <Plus className="w-4 h-4" />
+                            <span>Create Channel</span>
+                          </button>
+                        </>
+                      )}
+                      <div className="vesper-guild-header-menu-divider" />
+                      <button
+                        type="button"
+                        className="vesper-guild-header-menu-item vesper-guild-header-menu-item-danger"
+                        onClick={() => {
+                          setServerHeaderOpen(false)
+                          void leaveServer(activeServer.id)
+                        }}
+                        disabled={isServerOwner}
+                        role="menuitem"
+                      >
+                        <LogOut className="w-4 h-4" />
+                        <span>{isServerOwner ? 'Owner cannot leave' : 'Leave Server'}</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
 
-                {activeServer.channels
-                  .filter((c) => c.type === 'text')
-                  .map((channel) => {
-                    const unread = channelUnreads[channel.id] || 0
-                    return (
-                      <button
-                        key={channel.id}
-                        onClick={() => setActiveChannel(channel.id)}
-                        onContextMenu={(e) =>
-                          channelMenu.onContextMenu(e, {
-                            channelId: channel.id,
-                            serverId: activeServer.id
-                          })
+                <div className="vesper-channel-sidebar-scroller">
+                  {isServerOwner && sortedCategories.length > 0 && (
+                    <CategoryDropZone
+                      active={dropTarget === 'category-zone-0'}
+                      onDragEnter={() => dragState?.type === 'category' && setDropTarget('category-zone-0')}
+                      onDragOver={(event) => {
+                        if (dragState?.type === 'category') {
+                          event.preventDefault()
                         }
-                        className={`w-full text-left px-3 py-1.5 text-sm flex items-center gap-1.5 transition-colors ${
-                          channel.id === activeChannelId
-                            ? 'bg-bg-tertiary/80 text-text-primary'
-                            : 'text-text-muted hover:text-text-primary hover:bg-bg-tertiary/30'
-                        }`}
+                      }}
+                      onDrop={async (event) => {
+                        event.preventDefault()
+                        if (dragState?.type === 'category') {
+                          await moveCategory(dragState.id, 0)
+                        }
+                        clearDragState()
+                      }}
+                    />
+                  )}
+
+                  {sections.map((section, sectionIndex) => {
+                    const isCollapsed = collapsedSections[section.id] === true
+                    const isRealCategory = !!section.category
+
+                    return (
+                      <div
+                        key={section.id}
+                        className={`vesper-channel-group${isRealCategory ? ' vesper-channel-category-block' : ''}${dragState?.type === 'category' && section.category?.id === dragState.id ? ' vesper-channel-category-block-dragging' : ''}`}
                       >
-                        <Hash className="w-4 h-4 text-text-faint shrink-0" />
-                        <span
-                          className={`truncate flex-1 ${
-                            unread > 0 && channel.id !== activeChannelId
-                              ? 'font-semibold text-text-primary'
-                              : ''
-                          }`}
+                        <div
+                          className="vesper-channel-group-header"
+                          onContextMenu={(event) => {
+                            if (section.category) {
+                              channelMenu.onContextMenu(event, {
+                                channelId: section.category.id,
+                                serverId: activeServer.id
+                              })
+                            }
+                          }}
                         >
-                          {channel.name}
-                        </span>
-                        {unread > 0 && channel.id !== activeChannelId && (
-                          <span className="min-w-[18px] h-[18px] bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center px-1 shrink-0">
-                            {unread > 99 ? '99+' : unread}
-                          </span>
+                          {isRealCategory && isServerOwner && section.category && (
+                            <span
+                              className="vesper-channel-category-grip"
+                              draggable
+                              onDragStart={() => {
+                                setDragState({ type: 'category', id: section.category!.id })
+                              }}
+                              onDragEnd={clearDragState}
+                              title="Drag category"
+                              aria-hidden="true"
+                            >
+                              <GripVertical className="w-3.5 h-3.5" />
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            className="vesper-channel-category-toggle"
+                            onClick={() =>
+                              setCollapsedSections((currentState) => ({
+                                ...currentState,
+                                [section.id]: !currentState[section.id]
+                              }))
+                            }
+                          >
+                            <ChevronDown
+                              className={`vesper-channel-category-chevron${isCollapsed ? ' vesper-channel-category-chevron-collapsed' : ''}`}
+                            />
+                            {isRealCategory && (
+                              <span className="vesper-channel-category-icon" aria-hidden="true">
+                                <Folder className="w-3.5 h-3.5" />
+                              </span>
+                            )}
+                            <span className="vesper-channel-group-label">{section.label}</span>
+                            <span className="vesper-channel-category-count">{section.channels.length}</span>
+                          </button>
+                          {isServerOwner && (
+                            <div className="vesper-channel-group-actions">
+                              {section.category && (
+                                <button
+                                  onClick={() => openChannelSettingsModal(section.category!.id)}
+                                  className="vesper-channel-group-action"
+                                  title="Edit Category"
+                                >
+                                  <Pencil className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                              <button
+                                onClick={() => openCreateChannelModal(getScopedChannelDraft(section))}
+                                className="vesper-channel-group-action"
+                                title={
+                                  section.category
+                                    ? `Create channel in ${section.category.name}`
+                                    : section.id === 'root-voice'
+                                      ? 'Create voice channel'
+                                      : 'Create text channel'
+                                }
+                              >
+                                <Plus className="w-4 h-4" />
+                              </button>
+                            </div>
+                          )}
+                        </div>
+
+                        {!isCollapsed && (
+                          <div
+                            className="vesper-channel-group-list"
+                            onDragOver={(event) => {
+                              if (dragState?.type === 'channel') {
+                                event.preventDefault()
+                              }
+                            }}
+                          >
+                            {isServerOwner && (
+                              <ChannelDropZone
+                                active={dropTarget === `${section.id}-channel-zone-0`}
+                                onDragEnter={() => dragState?.type === 'channel' && setDropTarget(`${section.id}-channel-zone-0`)}
+                                onDrop={async (event) => {
+                                  event.preventDefault()
+                                  if (dragState?.type === 'channel') {
+                                    await moveChannel(
+                                      dragState.id,
+                                      section.category?.id ?? null,
+                                      0
+                                    )
+                                  }
+                                  clearDragState()
+                                }}
+                              />
+                            )}
+
+                            {section.channels.map((channel, channelIndex) => {
+                              const unread = channelUnreads[channel.id] || 0
+                              const isActive = channel.id === activeChannelId
+                              const isVoice = channel.type === 'voice'
+
+                              return (
+                                <div
+                                  key={channel.id}
+                                  className={`${isVoice ? 'vesper-channel-voice-block' : ''}${dragState?.type === 'channel' && dragState.id === channel.id ? ' vesper-channel-row-shell-dragging' : ''}`}
+                                >
+                                  <button
+                                    draggable={isServerOwner}
+                                    onDragStart={() =>
+                                      isServerOwner &&
+                                      setDragState({
+                                        type: 'channel',
+                                        id: channel.id,
+                                        categoryId: channel.category_id ?? null
+                                      })
+                                    }
+                                    onDragEnd={clearDragState}
+                                    onContextMenu={(event) =>
+                                      channelMenu.onContextMenu(event, {
+                                        channelId: channel.id,
+                                        serverId: activeServer.id
+                                      })
+                                    }
+                                    onClick={() => {
+                                      handleChannelSelect(channel.id)
+                                      if (isVoice) {
+                                        void useVoiceStore.getState().joinVoiceChannel(channel.id)
+                                      }
+                                    }}
+                                    className={`vesper-channel-row${isActive ? ' vesper-channel-row-active' : ''}${unread > 0 && !isActive ? ' vesper-channel-row-unread' : ''}${isVoice ? ' vesper-channel-row-voice' : ''}`}
+                                  >
+                                    <span className="vesper-channel-row-icon">
+                                      {isVoice ? (
+                                        <Volume2 className="w-4 h-4 shrink-0" />
+                                      ) : (
+                                        <Hash className="w-4 h-4 shrink-0" />
+                                      )}
+                                    </span>
+                                    <span className="vesper-channel-row-label">{channel.name}</span>
+                                    {unread > 0 && !isActive && !isVoice && (
+                                      <span className="vesper-channel-unread-badge">
+                                        {unread > 99 ? '99+' : unread}
+                                      </span>
+                                    )}
+                                    {isServerOwner && (
+                                      <span
+                                        className="vesper-channel-row-action"
+                                        onClick={(event) => {
+                                          event.stopPropagation()
+                                          openChannelSettingsModal(channel.id)
+                                        }}
+                                        role="button"
+                                        tabIndex={0}
+                                        onKeyDown={(event) => {
+                                          if (event.key === 'Enter' || event.key === ' ') {
+                                            event.preventDefault()
+                                            openChannelSettingsModal(channel.id)
+                                          }
+                                        }}
+                                        title={isVoice ? 'Voice Channel Settings' : 'Channel Settings'}
+                                      >
+                                        <Pencil className="w-3.5 h-3.5" />
+                                      </span>
+                                    )}
+                                  </button>
+                                  {isVoice && !isActive && <VoiceParticipants channelId={channel.id} />}
+                                  {isServerOwner && (
+                                    <ChannelDropZone
+                                      active={dropTarget === `${section.id}-channel-zone-${channelIndex + 1}`}
+                                      onDragEnter={() =>
+                                        dragState?.type === 'channel' &&
+                                        setDropTarget(`${section.id}-channel-zone-${channelIndex + 1}`)
+                                      }
+                                      onDrop={async (event) => {
+                                        event.preventDefault()
+                                        if (dragState?.type === 'channel') {
+                                          await moveChannel(
+                                            dragState.id,
+                                            section.category?.id ?? null,
+                                            channelIndex + 1
+                                          )
+                                        }
+                                        clearDragState()
+                                      }}
+                                    />
+                                  )}
+                                </div>
+                              )
+                            })}
+
+                            {section.channels.length === 0 && section.category && (
+                              <div className="vesper-channel-empty-state">
+                                Drop channels here or create a new one.
+                              </div>
+                            )}
+                          </div>
                         )}
-                      </button>
+
+                        {isServerOwner && section.category && (
+                          <CategoryDropZone
+                            active={dropTarget === `category-zone-${sectionIndex + 1}`}
+                            onDragEnter={() => dragState?.type === 'category' && setDropTarget(`category-zone-${sectionIndex + 1}`)}
+                            onDragOver={(event) => {
+                              if (dragState?.type === 'category') {
+                                event.preventDefault()
+                              }
+                            }}
+                            onDrop={async (event) => {
+                              event.preventDefault()
+                              if (dragState?.type === 'category') {
+                                await moveCategory(dragState.id, sectionIndex + 1)
+                              }
+                              clearDragState()
+                            }}
+                          />
+                        )}
+                      </div>
                     )
                   })}
-
-                {activeServer.channels.some((c) => c.type === 'voice') && (
-                  <>
-                    <div className="px-3 mt-3 mb-1">
-                      <span className="text-text-faint text-xs font-semibold uppercase tracking-wide">
-                        Voice Channels
-                      </span>
-                    </div>
-                    {activeServer.channels
-                      .filter((c) => c.type === 'voice')
-                      .map((channel) => (
-                        <div key={channel.id}>
-                          <button
-                            onClick={() => useVoiceStore.getState().joinVoiceChannel(channel.id)}
-                            className="w-full text-left px-3 py-1.5 text-sm text-text-muted hover:text-text-primary hover:bg-bg-tertiary/30 flex items-center gap-1.5 transition-colors"
-                          >
-                            <Volume2 className="w-4 h-4 text-text-faint shrink-0" />
-                            <span className="truncate">{channel.name}</span>
-                          </button>
-                          <VoiceParticipants channelId={channel.id} />
-                        </div>
-                      ))}
-                  </>
-                )}
+                </div>
+              </>
+            ) : (
+              <div className="flex-1 flex items-center justify-center text-text-faintest text-sm px-4 text-center">
+                Select or create a server
               </div>
-            </>
-          ) : (
-            <div className="flex-1 flex items-center justify-center text-text-faintest text-sm px-4 text-center">
-              Select or create a server
-            </div>
-          )}
+            )}
 
-          <VoiceControls />
-          <UserBar user={user} logout={logout} openSettingsModal={openSettingsModal} />
-        </div>
-      )}
+            <SidebarFooter user={user} logout={logout} openSettingsModal={openSettingsModal} />
+          </div>
+        )}
+      </PanelShell>
 
-      {/* Context menus */}
       {serverMenu.menu && (
         <ContextMenu
           x={serverMenu.menu.x}
@@ -335,73 +853,6 @@ export default function Sidebar(): React.JSX.Element {
   )
 }
 
-function DmSidebarContent(): React.JSX.Element {
-  const user = useAuthStore((s) => s.user)
-  const logout = useAuthStore((s) => s.logout)
-  const openSettingsModal = useUIStore((s) => s.openSettingsModal)
-
-  return (
-    <div className="w-56 min-w-0 bg-bg-secondary flex flex-col">
-      <DmSidebar />
-      <UserBar user={user} logout={logout} openSettingsModal={openSettingsModal} />
-    </div>
-  )
-}
-
-function UserBar({
-  user,
-  logout,
-  openSettingsModal
-}: {
-  user: { id: string; username: string; display_name: string | null } | null
-  logout: () => void
-  openSettingsModal: () => void
-}): React.JSX.Element {
-  const myStatus = usePresenceStore((s) => s.myStatus)
-  const setStatus = usePresenceStore((s) => s.setStatus)
-
-  const cycleStatus = (): void => {
-    const cycle: PresenceStatus[] = ['online', 'idle', 'dnd']
-    const idx = cycle.indexOf(myStatus)
-    setStatus(cycle[(idx + 1) % cycle.length])
-  }
-
-  return (
-    <div className="px-3 py-2 bg-bg-base/50 border-t border-border flex items-center gap-2">
-      <div className="relative w-8 h-8 shrink-0">
-        <div className="w-8 h-8 rounded-full bg-accent/20 flex items-center justify-center text-xs text-accent font-medium">
-          {user?.username?.slice(0, 2).toUpperCase()}
-        </div>
-        <button
-          onClick={cycleStatus}
-          title={`Status: ${myStatus} (click to change)`}
-          className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-bg-secondary ${STATUS_COLORS[myStatus]} ${STATUS_GLOW[myStatus]} cursor-pointer transition-all`}
-        />
-      </div>
-      <div className="flex-1 min-w-0">
-        <p className="text-text-primary text-sm truncate">{user?.display_name || user?.username}</p>
-        {user?.display_name && (
-          <p className="text-text-faint text-xs truncate">{user.username}</p>
-        )}
-      </div>
-      <button
-        onClick={openSettingsModal}
-        className="text-text-faint hover:text-text-secondary transition-colors p-1 rounded hover:bg-bg-tertiary/50"
-        title="Settings"
-      >
-        <Settings className="w-4 h-4" />
-      </button>
-      <button
-        onClick={logout}
-        className="text-text-faint hover:text-text-secondary transition-colors p-1 rounded hover:bg-bg-tertiary/50"
-        title="Logout"
-      >
-        <LogOut className="w-4 h-4" />
-      </button>
-    </div>
-  )
-}
-
 function InviteCodeButton({ serverId }: { serverId: string }): React.JSX.Element | null {
   const [code, setCode] = useState<string | null>(null)
   const [visible, setVisible] = useState(false)
@@ -415,6 +866,7 @@ function InviteCodeButton({ serverId }: { serverId: string }): React.JSX.Element
       setCode(null)
       return
     }
+
     setLoading(true)
     try {
       const res = await apiFetch(`/api/v1/servers/${serverId}/invite-code`)
@@ -433,13 +885,15 @@ function InviteCodeButton({ serverId }: { serverId: string }): React.JSX.Element
   }
 
   const copyCode = (): void => {
-    if (!code) return
+    if (!code) {
+      return
+    }
+
     navigator.clipboard.writeText(code)
     setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+    window.setTimeout(() => setCopied(false), 2000)
   }
 
-  // Reset state when server changes
   useEffect(() => {
     setCode(null)
     setVisible(false)
@@ -447,12 +901,15 @@ function InviteCodeButton({ serverId }: { serverId: string }): React.JSX.Element
     setDenied(false)
   }, [serverId])
 
-  if (denied) return null
+  if (denied) {
+    return null
+  }
 
   return (
     <div className="flex items-center gap-1 shrink-0">
       {visible && code ? (
         <button
+          type="button"
           onClick={copyCode}
           title={copied ? 'Copied!' : 'Copy invite code'}
           className="flex items-center gap-1 bg-bg-base/50 px-1.5 py-0.5 rounded border border-border hover:border-accent/50 transition-colors max-w-[100px]"
@@ -466,6 +923,7 @@ function InviteCodeButton({ serverId }: { serverId: string }): React.JSX.Element
         </button>
       ) : null}
       <button
+        type="button"
         onClick={fetchAndShow}
         disabled={loading}
         title={visible ? 'Hide invite code' : 'Show invite code'}
@@ -474,5 +932,101 @@ function InviteCodeButton({ serverId }: { serverId: string }): React.JSX.Element
         <Link className="w-3.5 h-3.5" />
       </button>
     </div>
+  )
+}
+
+function ChannelDropZone({
+  active,
+  onDragEnter,
+  onDrop
+}: {
+  active: boolean
+  onDragEnter: () => void
+  onDrop: (event: React.DragEvent<HTMLDivElement>) => void | Promise<void>
+}): React.JSX.Element {
+  return (
+    <div
+      className={`vesper-channel-drop-zone${active ? ' vesper-channel-drop-zone-active' : ''}`}
+      onDragEnter={onDragEnter}
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={onDrop}
+    />
+  )
+}
+
+function CategoryDropZone({
+  active,
+  onDragEnter,
+  onDragOver,
+  onDrop
+}: {
+  active: boolean
+  onDragEnter: () => void
+  onDragOver: (event: React.DragEvent<HTMLDivElement>) => void
+  onDrop: (event: React.DragEvent<HTMLDivElement>) => void | Promise<void>
+}): React.JSX.Element {
+  return (
+    <div
+      className={`vesper-category-drop-zone${active ? ' vesper-category-drop-zone-active' : ''}`}
+      onDragEnter={onDragEnter}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+    />
+  )
+}
+
+function DmSidebarContent(): React.JSX.Element {
+  const user = useAuthStore((s) => s.user)
+  const logout = useAuthStore((s) => s.logout)
+  const openSettingsModal = useUIStore((s) => s.openSettingsModal)
+
+  return (
+    <div className="vesper-channel-sidebar">
+      <DmSidebar />
+      <SidebarFooter user={user} logout={logout} openSettingsModal={openSettingsModal} />
+    </div>
+  )
+}
+
+function SidebarFooter({
+  user,
+  logout,
+  openSettingsModal
+}: {
+  user: { id: string; username: string; display_name: string | null; avatar_url?: string | null } | null
+  logout: () => void
+  openSettingsModal: () => void
+}): React.JSX.Element {
+  const [profileAnchor, setProfileAnchor] = useState<DOMRect | null>(null)
+  const myStatus = usePresenceStore((s) => s.myStatus)
+
+  return (
+    <>
+      <AccountPanel
+        user={user}
+        logout={logout}
+        openSettingsModal={openSettingsModal}
+        onOpenProfile={(event) => setProfileAnchor(event.currentTarget.getBoundingClientRect())}
+      />
+      {user && profileAnchor && (
+        <ProfilePopout
+          user={{
+            id: user.id,
+            username: user.username,
+            displayName: user.display_name || user.username,
+            avatarUrl: user.avatar_url,
+            status: myStatus,
+            isCurrentUser: true
+          }}
+          anchorRect={profileAnchor}
+          placement="top-right"
+          onClose={() => setProfileAnchor(null)}
+          onOpenSettings={() => {
+            setProfileAnchor(null)
+            openSettingsModal()
+          }}
+        />
+      )}
+    </>
   )
 }

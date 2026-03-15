@@ -9,9 +9,17 @@ import {
   createRecoveryData
 } from '../crypto/identity'
 import { initCipherSuite, createKeyPackageBatch, encodeKeyPackageBytes } from '../crypto/mls'
-import { saveIdentity, saveKeyPackages, loadIdentity, initStorage } from '../crypto/storage'
+import {
+  saveIdentity,
+  saveKeyPackages,
+  loadIdentity,
+  initStorage
+} from '../crypto/storage'
 import { uploadKeyPackages, getMyKeyPackageCount } from '../api/crypto'
 import { serializePrivatePackage } from '../crypto/keySerialization'
+import {
+  clearSearchIndexSyncCredentials
+} from '../crypto/searchIndexSync'
 import { resetAllStores } from './resetStores'
 
 interface User {
@@ -19,6 +27,7 @@ interface User {
   username: string
   display_name: string | null
   avatar_url: string | null
+  banner_url: string | null
   status: string
 }
 
@@ -35,8 +44,9 @@ interface AuthState {
   checkAuth: () => Promise<void>
   clearRecoveryMnemonic: () => void
   replenishKeyPackages: () => Promise<void>
-  updateProfile: (attrs: { display_name?: string | null; avatar_url?: string; status?: string }) => Promise<boolean>
+  updateProfile: (attrs: { display_name?: string | null; avatar_url?: string; banner_url?: string; status?: string }) => Promise<boolean>
   uploadAvatar: (file: File) => Promise<boolean>
+  uploadBanner: (file: File) => Promise<boolean>
 }
 
 const KEY_PACKAGE_TARGET = 20
@@ -100,10 +110,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       setTokens(data.access_token, data.refresh_token)
       connectSocket()
 
-      // Initialize user-scoped crypto storage before any DB operations
       initStorage(data.user.id)
 
-      // Store identity keys locally (including signature private key for key package replenishment)
+      // Store identity keys locally
       await saveIdentity(
         data.user.id,
         signaturePublicKey,
@@ -165,7 +174,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       setTokens(data.access_token, data.refresh_token)
       connectSocket()
 
-      // Initialize user-scoped crypto storage before any DB operations
       initStorage(data.user.id)
 
       // If user has encrypted key bundle, decrypt it and store locally
@@ -180,17 +188,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           }
 
           const privateKeys = await decryptEncryptedKeyBundle(bundle, password)
-
-          // Retrieve the actual public keys from the server response
           const publicIdentityKey = data.public_identity_key
             ? base64ToUint8(data.public_identity_key)
-            : bundle.ciphertext // fallback for legacy accounts without public keys in response
+            : bundle.ciphertext
           const publicKeyExchange = data.public_key_exchange
             ? base64ToUint8(data.public_key_exchange)
             : bundle.ciphertext
 
-          // Store identity locally with correct public keys and signature private key
-          // (signature private key stored in encrypted DB for key package replenishment)
+          // Store decrypted identity locally
           await saveIdentity(
             data.user.id,
             publicIdentityKey,
@@ -244,11 +249,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       // ignore
     }
 
-    // Clear all in-memory state before disconnecting
     resetAllStores()
-
     disconnectSocket()
     clearTokens()
+    clearSearchIndexSyncCredentials()
     set({ user: null, isAuthenticated: false, error: null, recoveryMnemonic: null })
   },
 
@@ -264,8 +268,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (res.ok) {
         const data = await res.json()
         connectSocket()
-
-        // Initialize user-scoped crypto storage
         initStorage(data.user.id)
 
         // Initialize cipher suite for later use
@@ -325,6 +327,24 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     return false
   },
 
+  uploadBanner: async (file) => {
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const res = await apiUpload('/api/v1/auth/banner', formData)
+      if (res.ok) {
+        const data = await res.json()
+        set({ user: data.user })
+        const serverId = useServerStore.getState().activeServerId
+        if (serverId) useServerStore.getState().fetchMembers(serverId)
+        return true
+      }
+    } catch {
+      // ignore
+    }
+    return false
+  },
+
   replenishKeyPackages: async () => {
     const user = get().user
     if (!user) return
@@ -334,8 +354,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (count >= KEY_PACKAGE_THRESHOLD) return
 
       await initCipherSuite()
-
-      // Load signature key pair from local encrypted DB
       const identity = await loadIdentity(user.id)
       if (!identity?.signaturePrivateKey) {
         console.warn('Cannot replenish key packages: no signature private key in local DB')

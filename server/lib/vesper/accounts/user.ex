@@ -21,6 +21,7 @@ defmodule Vesper.Accounts.User do
     field :encrypted_recovery_bundle, :binary
 
     field :avatar_url, :string
+    field :banner_url, :string
     field :status, :string, default: "offline"
 
     has_many :memberships, Vesper.Servers.Membership
@@ -73,7 +74,7 @@ defmodule Vesper.Accounts.User do
 
   def profile_changeset(user, attrs) do
     user
-    |> cast(attrs, [:display_name, :avatar_url, :status])
+    |> cast(attrs, [:display_name, :avatar_url, :banner_url, :status])
     |> validate_inclusion(:status, ~w(online idle dnd offline))
   end
 

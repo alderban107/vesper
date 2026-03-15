@@ -9,18 +9,23 @@ import { useDmStore } from './dmStore'
 import { usePresenceStore } from './presenceStore'
 import {
   cacheMessage as cacheMessageToDb,
-  loadCachedMessages,
+  searchDecryptedMessages,
   indexDecryptedMessage as indexToFts,
   removeFromFtsIndex
 } from '../crypto/storage'
 import { base64ToUint8 } from '../api/crypto'
 import { encodePayload, decodePayload } from '../crypto/payload'
 import {
+  cacheSentMessage,
   getCachedDecryption,
   setCachedDecryption,
   removeCachedDecryption,
   getSentMessage
 } from '../crypto/decryptionCache'
+
+export function cacheSentPlaintext(ciphertext: string, plaintext: string): void {
+  cacheSentMessage(ciphertext, plaintext)
+}
 
 export interface MessageSender {
   id: string
@@ -83,6 +88,18 @@ function extractMentionedUserIds(content: string): string[] {
   return [...new Set(ids)]
 }
 
+function getMessageSearchText(message: Message): string {
+  const parsed = parseMessageContent(message.content || '')
+  const parsedText = parsed.type === 'text' ? parsed.text : (parsed.text || '')
+  const parsedFileName = parsed.type === 'file' ? parsed.file.name : ''
+  const attachmentNames = [
+    ...(message.attachment_filenames || []),
+    ...(message.attachments?.map((attachment) => attachment.filename).filter(Boolean) || [])
+  ]
+
+  return [parsedText, parsedFileName, ...attachmentNames].join(' ').trim()
+}
+
 export interface ReactionGroup {
   emoji: string
   senderIds: string[]
@@ -93,16 +110,47 @@ export interface Message {
   content: string
   channel_id: string | null
   conversation_id: string | null
+  server_id?: string | null
   sender_id: string | null
   sender: MessageSender | null
   inserted_at: string
   expires_at: string | null
   parent_message_id: string | null
   attachments?: Attachment[]
+  attachment_filenames?: string[]
   reactions?: ReactionGroup[]
   encrypted?: boolean
   decryptionFailed?: boolean
   edited_at?: string
+}
+
+export interface RecallSearchResult {
+  id: string
+  content: string
+  channel_id: string | null
+  conversation_id: string | null
+  server_id?: string | null
+  sender_id: string | null
+  sender: MessageSender | null
+  inserted_at: string
+  attachment_filenames?: string[]
+  search_preview?: string
+}
+
+export interface PendingMessageJumpTarget {
+  requestId: number
+  messageId: string
+  targetId: string
+  channelId: string | null
+  conversationId: string | null
+  serverId: string | null
+}
+
+export interface PinnedMessageEntry {
+  id: string
+  message: Message
+  pinned_by_id: string
+  inserted_at: string
 }
 
 interface TypingUser {
@@ -117,12 +165,20 @@ interface MessageState {
   replyingTo: Message | null
   editingMessage: Message | null
   encryptionError: string | null
+  activeThreadParentId: string | null
+  activeThreadParent: Message | null
+  threadRepliesByParent: Record<string, Message[]>
+  threadLoading: boolean
+  threadError: string | null
+  pendingJumpTarget: PendingMessageJumpTarget | null
+  focusedMessageId: string | null
+  pinnedByChannel: Record<string, PinnedMessageEntry[]>
 
   joinChannelChat: (channelId: string) => void
   leaveChannelChat: (channelId: string) => void
   fetchMessages: (channelId: string) => Promise<void>
   fetchOlderMessages: (channelId: string) => Promise<void>
-  sendMessage: (channelId: string, content: string) => void
+  sendMessage: (channelId: string, content: string, parentMessageId?: string) => Promise<void>
   sendTypingStart: (channelId: string) => void
   sendTypingStop: (channelId: string) => void
 
@@ -131,12 +187,16 @@ interface MessageState {
   leaveDmChat: (conversationId: string) => void
   fetchDmMessages: (conversationId: string) => Promise<void>
   fetchOlderDmMessages: (conversationId: string) => Promise<void>
-  sendDmMessage: (conversationId: string, content: string) => void
+  sendDmMessage: (conversationId: string, content: string, parentMessageId?: string) => Promise<void>
   sendDmTypingStart: (conversationId: string) => void
   sendDmTypingStop: (conversationId: string) => void
 
   // Threads
   setReplyingTo: (message: Message | null) => void
+  openThread: (message: Message) => Promise<void>
+  closeThread: () => void
+  fetchThreadReplies: (parentMessageId: string) => Promise<void>
+  sendThreadReply: (content: string) => Promise<void>
 
   // Edit / Delete
   setEditingMessage: (message: Message | null) => void
@@ -144,16 +204,25 @@ interface MessageState {
   deleteMessage: (targetId: string, topic: string, messageId: string) => void
 
   // Reactions
-  addReaction: (targetId: string, topic: string, messageId: string, emoji: string) => Promise<void> | void
-  removeReaction: (targetId: string, topic: string, messageId: string, emoji: string) => Promise<void> | void
+  addReaction: (targetId: string, topic: string, messageId: string, emoji: string) => void
+  removeReaction: (targetId: string, topic: string, messageId: string, emoji: string) => void
 
   // Pinning
   pinMessage: (topic: string, messageId: string) => void
   unpinMessage: (topic: string, messageId: string) => void
+  fetchPinnedMessages: (channelId: string) => Promise<PinnedMessageEntry[]>
+  jumpToMessage: (channelId: string, messageId: string, insertedAt?: string) => Promise<boolean>
+  focusMessage: (messageId: string) => void
 
   // Search
-  searchMessages: (query: string) => Promise<Message[]>
+  searchMessages: (query: string) => Promise<RecallSearchResult[]>
+  setPendingJumpTarget: (
+    target: Omit<PendingMessageJumpTarget, 'requestId'> | null
+  ) => void
+  clearPendingJumpTarget: () => void
 }
+
+let jumpRequestCounter = 0
 
 export const useMessageStore = create<MessageState>((set, get) => ({
   messagesByChannel: {},
@@ -162,6 +231,14 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   replyingTo: null,
   editingMessage: null,
   encryptionError: null,
+  activeThreadParentId: null,
+  activeThreadParent: null,
+  threadRepliesByParent: {},
+  threadLoading: false,
+  threadError: null,
+  pendingJumpTarget: null,
+  focusedMessageId: null,
+  pinnedByChannel: {},
 
   // --- Channel messaging (existing) ---
 
@@ -225,6 +302,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         }
       } else if (event === 'reaction_update') {
         handleReactionUpdate(channelId, msg, set)
+      } else if (event === 'message_pinned') {
+        handlePinBroadcast(channelId, msg, set, 'pin')
+      } else if (event === 'message_unpinned') {
+        handlePinBroadcast(channelId, msg, set, 'unpin')
       } else if (event === 'message_edited') {
         handleMessageEdited(channelId, msg, set)
       } else if (event === 'message_deleted') {
@@ -244,9 +325,6 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         // Continue without encryption
       })
       .finally(() => {
-        // Fetch messages AFTER group state is loaded so decryption can succeed.
-        // Previously these ran concurrently, causing a race where messages
-        // arrived before the group state was restored from IndexedDB.
         get().fetchMessages(channelId)
       })
   },
@@ -312,39 +390,33 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     }
   },
 
-  sendMessage: async (channelId, content) => {
+  sendMessage: async (channelId, content, parentMessageId) => {
     const crypto = useCryptoStore.getState()
     const replyingTo = get().replyingTo
-    const parentId = replyingTo?.id || undefined
+    const parentId = parentMessageId ?? replyingTo?.id ?? undefined
+    const shouldClearInlineReply = !parentMessageId
     const mentionedUserIds = extractMentionedUserIds(content)
     const payloadStr = encodePayload({ v: 1, type: 'text', text: content })
+
+    if (!crypto.hasGroup(channelId)) {
+      await crypto.createGroup(channelId)
+    }
 
     if (crypto.hasGroup(channelId)) {
       const encrypted = await crypto.encryptForChannel(channelId, payloadStr)
       if (encrypted) {
+        cacheSentPlaintext(encrypted.ciphertext, content)
         pushToChannel(`chat:channel:${channelId}`, 'new_message', {
           ciphertext: encrypted.ciphertext,
           mls_epoch: encrypted.epoch,
           ...(parentId && { parent_message_id: parentId }),
           ...(mentionedUserIds.length > 0 && { mentioned_user_ids: mentionedUserIds })
         })
-        set({ replyingTo: null, encryptionError: null })
+        set({
+          ...(shouldClearInlineReply ? { replyingTo: null } : {}),
+          encryptionError: null
+        })
         return
-      }
-    } else {
-      await crypto.createGroup(channelId)
-      if (crypto.hasGroup(channelId)) {
-        const encrypted = await crypto.encryptForChannel(channelId, payloadStr)
-        if (encrypted) {
-          pushToChannel(`chat:channel:${channelId}`, 'new_message', {
-            ciphertext: encrypted.ciphertext,
-            mls_epoch: encrypted.epoch,
-            ...(parentId && { parent_message_id: parentId }),
-            ...(mentionedUserIds.length > 0 && { mentioned_user_ids: mentionedUserIds })
-          })
-          set({ replyingTo: null, encryptionError: null })
-          return
-        }
       }
     }
 
@@ -429,6 +501,8 @@ export const useMessageStore = create<MessageState>((set, get) => ({
             conversationId: msg.conversation_id as string
           })
         }
+      } else if (event === 'call_rejected') {
+        useVoiceStore.getState().handleDmCallRejected(msg.conversation_id as string)
       } else if (event === 'message_edited') {
         handleMessageEdited(conversationId, msg, set)
       } else if (event === 'message_deleted') {
@@ -515,11 +589,12 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     }
   },
 
-  sendDmMessage: async (conversationId, content) => {
+  sendDmMessage: async (conversationId, content, parentMessageId) => {
     const crypto = useCryptoStore.getState()
     const topic = `dm:${conversationId}`
     const replyingTo = get().replyingTo
-    const parentId = replyingTo?.id || undefined
+    const parentId = parentMessageId ?? replyingTo?.id ?? undefined
+    const shouldClearInlineReply = !parentMessageId
     const payloadStr = encodePayload({ v: 1, type: 'text', text: content })
 
     // Try encrypting with existing group, or create a new one
@@ -528,12 +603,15 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       : null
 
     if (encrypted) {
+      cacheSentPlaintext(encrypted.ciphertext, content)
       pushToChannel(topic, 'new_message', {
         ciphertext: encrypted.ciphertext,
         mls_epoch: encrypted.epoch,
         ...(parentId && { parent_message_id: parentId })
       })
-      set({ replyingTo: null })
+      if (shouldClearInlineReply) {
+        set({ replyingTo: null })
+      }
       return
     }
 
@@ -574,12 +652,15 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
       const freshEncrypted = await crypto.encryptForChannel(conversationId, payloadStr)
       if (freshEncrypted) {
+        cacheSentPlaintext(freshEncrypted.ciphertext, content)
         pushToChannel(topic, 'new_message', {
           ciphertext: freshEncrypted.ciphertext,
           mls_epoch: freshEncrypted.epoch,
           ...(parentId && { parent_message_id: parentId })
         })
-        set({ replyingTo: null })
+        if (shouldClearInlineReply) {
+          set({ replyingTo: null })
+        }
         return
       }
     }
@@ -597,6 +678,101 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
   // Threads
   setReplyingTo: (message) => set({ replyingTo: message }),
+  openThread: async (message) => {
+    const parentId = message.parent_message_id ?? message.id
+    set({
+      activeThreadParentId: parentId,
+      activeThreadParent: message.parent_message_id ? null : message,
+      threadError: null
+    })
+    await get().fetchThreadReplies(parentId)
+  },
+  closeThread: () =>
+    set({
+      activeThreadParentId: null,
+      activeThreadParent: null,
+      threadError: null,
+      threadLoading: false
+    }),
+  fetchThreadReplies: async (parentMessageId) => {
+    set({ threadLoading: true, threadError: null })
+    try {
+      const res = await apiFetch(`/api/v1/messages/${parentMessageId}/thread?limit=200`)
+      if (!res.ok) {
+        if (get().activeThreadParentId === parentMessageId) {
+          set({ threadLoading: false, threadError: 'Thread could not be loaded.' })
+        }
+        return
+      }
+
+      const data = (await res.json()) as {
+        parent?: Record<string, unknown>
+        messages?: Record<string, unknown>[]
+      }
+
+      const parentPayload = data.parent
+      if (!parentPayload) {
+        if (get().activeThreadParentId === parentMessageId) {
+          set({ threadLoading: false, threadError: 'Thread could not be loaded.' })
+        }
+        return
+      }
+
+      const targetId = (parentPayload.channel_id || parentPayload.conversation_id) as string | undefined
+      if (!targetId) {
+        if (get().activeThreadParentId === parentMessageId) {
+          set({ threadLoading: false, threadError: 'Thread could not be loaded.' })
+        }
+        return
+      }
+
+      const parent = await processIncomingMessage(targetId, parentPayload)
+      const replyPayloads = data.messages ?? []
+      const replies = await Promise.all(
+        replyPayloads.map((entry) => processIncomingMessage(targetId, entry))
+      )
+
+      if (get().activeThreadParentId !== parentMessageId) {
+        set({ threadLoading: false })
+        return
+      }
+
+      set((s) => ({
+        activeThreadParentId: parent.id,
+        activeThreadParent: parent,
+        threadRepliesByParent: {
+          ...s.threadRepliesByParent,
+          [parent.id]: replies
+        },
+        threadLoading: false,
+        threadError: null
+      }))
+    } catch {
+      if (get().activeThreadParentId === parentMessageId) {
+        set({ threadLoading: false, threadError: 'Thread could not be loaded.' })
+      }
+    }
+  },
+  sendThreadReply: async (content) => {
+    const parent = get().activeThreadParent
+    if (!parent) {
+      return
+    }
+
+    const trimmed = content.trim()
+    if (!trimmed) {
+      return
+    }
+
+    if (parent.channel_id) {
+      await get().sendMessage(parent.channel_id, trimmed, parent.id)
+      return
+    }
+
+    if (parent.conversation_id) {
+      await get().sendDmMessage(parent.conversation_id, trimmed, parent.id)
+    }
+  },
 
   // Edit / Delete
   setEditingMessage: (message) => set({ editingMessage: message }),
@@ -608,6 +784,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     if (crypto.hasGroup(targetId)) {
       const encrypted = await crypto.encryptForChannel(targetId, payloadStr)
       if (encrypted) {
+        cacheSentPlaintext(encrypted.ciphertext, newContent)
         pushToChannel(topic, 'edit_message', {
           message_id: messageId,
           ciphertext: encrypted.ciphertext,
@@ -627,9 +804,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     })
   },
 
-  // Reactions — emoji is encrypted with the channel's MLS group key so the
-  // server only learns "user X reacted to message Y", not which emoji.
-  // NOTE: each encrypt/decrypt advances the MLS key schedule (epoch ratchet).
+  // Reactions
   addReaction: async (_targetId, topic, messageId, emoji) => {
     const channelId = topic.replace(/^chat:channel:|^dm:/, '')
     const crypto = useCryptoStore.getState()
@@ -644,7 +819,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         return
       }
     }
-    // Fallback: unencrypted (no MLS group available)
+
     pushToChannel(topic, 'add_reaction', { message_id: messageId, emoji })
   },
 
@@ -662,7 +837,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         return
       }
     }
-    // Fallback: unencrypted
+
     pushToChannel(topic, 'remove_reaction', { message_id: messageId, emoji })
   },
 
@@ -675,26 +850,259 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     pushToChannel(topic, 'unpin_message', { message_id: messageId })
   },
 
-  // Search — disabled while message cache stores ciphertext.
-  // Will be reimplemented with FTS5 in Phase 5 of the E2EE refactor.
-  searchMessages: async (_query) => {
-    return []
+  fetchPinnedMessages: async (channelId) => {
+    try {
+      const res = await apiFetch(`/api/v1/channels/${channelId}/pins`)
+      if (!res.ok) {
+        return []
+      }
+
+      const data = (await res.json()) as {
+        pins?: Array<{
+          id: string
+          message: Record<string, unknown>
+          pinned_by_id: string
+          inserted_at: string
+        }>
+      }
+
+      const pinsRaw = data.pins ?? []
+      const pins = await Promise.all(
+        pinsRaw.map(async (pin) => ({
+          id: pin.id,
+          message: await processIncomingMessage(channelId, pin.message),
+          pinned_by_id: pin.pinned_by_id,
+          inserted_at: pin.inserted_at
+        }))
+      )
+
+      set((s) => ({
+        pinnedByChannel: {
+          ...s.pinnedByChannel,
+          [channelId]: pins
+        }
+      }))
+
+      return pins
+    } catch {
+      return []
+    }
+  },
+
+  jumpToMessage: async (channelId, messageId, insertedAt) => {
+    const hasMessage = (): boolean =>
+      (get().messagesByChannel[channelId] || []).some((message) => message.id === messageId)
+
+    if ((get().messagesByChannel[channelId] || []).length === 0) {
+      await get().fetchMessages(channelId)
+    }
+
+    if (hasMessage()) {
+      get().focusMessage(messageId)
+      return true
+    }
+
+    const targetMs = insertedAt ? Date.parse(insertedAt) : Number.NaN
+    let previousOldestId: string | null = null
+    let safetyCounter = 0
+
+    while ((get().hasMore[channelId] ?? true) && safetyCounter < 40) {
+      const current = get().messagesByChannel[channelId] || []
+      const oldest = current[0]
+      if (!oldest || oldest.id === previousOldestId) {
+        break
+      }
+      previousOldestId = oldest.id
+
+      try {
+        const res = await apiFetch(
+          `/api/v1/channels/${channelId}/messages?limit=50&before=${encodeURIComponent(oldest.inserted_at)}`
+        )
+
+        if (!res.ok) {
+          break
+        }
+
+        const data = await res.json()
+        const rawMessages = (data.messages as Record<string, unknown>[]).reverse()
+        const olderMessages = await Promise.all(
+          rawMessages.map((entry) => processIncomingMessage(channelId, entry))
+        )
+        scheduleExpiryTimers(channelId, olderMessages)
+
+        set((s) => {
+          const existing = s.messagesByChannel[channelId] || []
+          const merged = [...olderMessages, ...existing]
+          const deduped = merged.filter(
+            (message, index, arr) => arr.findIndex((entry) => entry.id === message.id) === index
+          )
+
+          return {
+            messagesByChannel: {
+              ...s.messagesByChannel,
+              [channelId]: deduped
+            },
+            hasMore: {
+              ...s.hasMore,
+              [channelId]: rawMessages.length === 50
+            }
+          }
+        })
+      } catch {
+        break
+      }
+
+      if (hasMessage()) {
+        get().focusMessage(messageId)
+        return true
+      }
+
+      const newestStateOldest = get().messagesByChannel[channelId]?.[0]
+      if (newestStateOldest && !Number.isNaN(targetMs)) {
+        const oldestMs = Date.parse(newestStateOldest.inserted_at)
+        if (!Number.isNaN(oldestMs) && oldestMs <= targetMs && !(get().hasMore[channelId] ?? false)) {
+          break
+        }
+      }
+
+      safetyCounter += 1
+    }
+
+    if (hasMessage()) {
+      get().focusMessage(messageId)
+      return true
+    }
+
+    return false
+  },
+
+  focusMessage: (messageId) => {
+    set({ focusedMessageId: messageId })
+
+    if (typeof window !== 'undefined') {
+      window.setTimeout(() => {
+        if (useMessageStore.getState().focusedMessageId === messageId) {
+          useMessageStore.setState({ focusedMessageId: null })
+        }
+      }, 3_500)
+    }
+  },
+
+  // Search only loaded client-side messages.
+  searchMessages: async (query) => {
+    const trimmed = query.trim()
+    if (trimmed.length < 2) return []
+
+    const needle = trimmed.toLowerCase()
+    const seen = new Map<string, RecallSearchResult>()
+    const loadedMessages = new Map<string, Message>()
+
+    for (const messages of Object.values(get().messagesByChannel)) {
+      for (const message of messages) {
+        loadedMessages.set(message.id, message)
+
+        if (!message || seen.has(message.id)) {
+          continue
+        }
+
+        const haystack = getMessageSearchText(message).toLowerCase()
+
+        if (!haystack.includes(needle)) {
+          continue
+        }
+
+        seen.set(message.id, {
+          id: message.id,
+          content: message.content,
+          channel_id: message.channel_id,
+          conversation_id: message.conversation_id,
+          server_id: message.server_id ?? null,
+          sender_id: message.sender_id,
+          sender: message.sender,
+          inserted_at: message.inserted_at,
+          attachment_filenames: [
+            ...(message.attachment_filenames || []),
+            ...(message.attachments?.map((attachment) => attachment.filename).filter(Boolean) || [])
+          ],
+          search_preview: getMessageSearchText(message)
+        })
+      }
+    }
+
+    const indexedResults = await searchDecryptedMessages(trimmed)
+    for (const result of indexedResults) {
+      if (seen.has(result.messageId)) {
+        continue
+      }
+
+      const loaded = loadedMessages.get(result.messageId)
+      if (loaded) {
+        seen.set(result.messageId, {
+          id: loaded.id,
+          content: loaded.content,
+          channel_id: loaded.channel_id,
+          conversation_id: loaded.conversation_id,
+          server_id: loaded.server_id ?? null,
+          sender_id: loaded.sender_id,
+          sender: loaded.sender,
+          inserted_at: loaded.inserted_at,
+          attachment_filenames: loaded.attachment_filenames,
+          search_preview: result.preview.replace(/\[\[\[|\]\]\]/g, '')
+        })
+        continue
+      }
+
+      seen.set(result.messageId, {
+        id: result.messageId,
+        content: result.preview.replace(/\[\[\[|\]\]\]/g, ''),
+        channel_id: result.conversationId ? null : result.channelId,
+        conversation_id: result.conversationId ?? null,
+        server_id: result.serverId ?? null,
+        sender_id: result.senderId ?? null,
+        sender: result.senderUsername
+          ? {
+              id: result.senderId ?? '',
+              username: result.senderUsername,
+              display_name: null,
+              avatar_url: null
+            }
+          : null,
+        inserted_at: result.insertedAt ?? new Date(0).toISOString(),
+        attachment_filenames: [],
+        search_preview: result.preview.replace(/\[\[\[|\]\]\]/g, '')
+      })
+    }
+
+    return [...seen.values()]
+      .sort(
+        (left, right) =>
+          new Date(right.inserted_at).getTime() - new Date(left.inserted_at).getTime()
+      )
+      .slice(0, 50)
+  },
+
+  setPendingJumpTarget: (target) => {
+    if (!target) {
+      set({ pendingJumpTarget: null })
+      return
+    }
+
+    jumpRequestCounter += 1
+    set({
+      pendingJumpTarget: {
+        ...target,
+        requestId: jumpRequestCounter
+      }
+    })
+  },
+
+  clearPendingJumpTarget: () => {
+    set({ pendingJumpTarget: null })
   }
 }))
 
 // Track expiry timers so we can clean them up
 const expiryTimers = new Map<string, ReturnType<typeof setTimeout>>()
-
-/**
- * Clear all pending message expiry timers.
- * Called during logout to prevent timers firing after store reset.
- */
-export function clearExpiryTimers(): void {
-  for (const timer of expiryTimers.values()) {
-    clearTimeout(timer)
-  }
-  expiryTimers.clear()
-}
 
 function scheduleExpiryTimers(targetId: string, messages: Message[]): void {
   for (const msg of messages) {
@@ -720,6 +1128,8 @@ function scheduleMessageExpiry(
         [targetId]: (s.messagesByChannel[targetId] || []).filter((m) => m.id !== messageId)
       }
     }))
+    removeCachedDecryption(messageId)
+    removeFromFtsIndex(messageId).catch(() => {})
     return
   }
 
@@ -731,14 +1141,67 @@ function scheduleMessageExpiry(
       }
     }))
     expiryTimers.delete(messageId)
+    removeCachedDecryption(messageId)
+    removeFromFtsIndex(messageId).catch(() => {})
   }, delay)
 
   expiryTimers.set(messageId, timer)
 }
 
+function patchThreadStateForMessage(
+  state: MessageState,
+  messageId: string,
+  updateMessage: (message: Message) => Message | null
+): Partial<MessageState> {
+  let threadsChanged = false
+  const nextRepliesByParent: Record<string, Message[]> = {}
+
+  for (const [parentId, replies] of Object.entries(state.threadRepliesByParent)) {
+    let changed = false
+    const nextReplies: Message[] = []
+
+    for (const reply of replies) {
+      if (reply.id === messageId) {
+        const updated = updateMessage(reply)
+        changed = true
+        if (updated) {
+          nextReplies.push(updated)
+        }
+      } else {
+        nextReplies.push(reply)
+      }
+    }
+
+    nextRepliesByParent[parentId] = changed ? nextReplies : replies
+    if (changed) {
+      threadsChanged = true
+    }
+  }
+
+  let nextActiveThreadParent = state.activeThreadParent
+  let activeParentChanged = false
+
+  if (state.activeThreadParent?.id === messageId) {
+    nextActiveThreadParent = updateMessage(state.activeThreadParent)
+    activeParentChanged = true
+  }
+
+  const patch: Partial<MessageState> = {}
+  if (threadsChanged) {
+    patch.threadRepliesByParent = nextRepliesByParent
+  }
+  if (activeParentChanged) {
+    patch.activeThreadParent = nextActiveThreadParent
+    if (!nextActiveThreadParent && state.activeThreadParentId === messageId) {
+      patch.activeThreadParentId = null
+    }
+  }
+
+  return patch
+}
+
 /**
  * Handle a reaction update event.
- * If the reaction carries encrypted ciphertext, decrypt it to recover the emoji.
  */
 async function handleReactionUpdate(
   targetId: string,
@@ -748,29 +1211,28 @@ async function handleReactionUpdate(
   const action = msg.action as string
   const messageId = msg.message_id as string
   const senderId = msg.sender_id as string
-
-  // Decrypt emoji from ciphertext if present, otherwise use plaintext fallback
   let emoji = msg.emoji as string | undefined
+
   if (msg.ciphertext && typeof msg.ciphertext === 'string') {
     try {
-      // Check sent cache first (sender can't MLS-decrypt their own messages)
-      const sentPlaintext = getSentMessage(msg.ciphertext as string)
+      const sentPlaintext = getSentMessage(msg.ciphertext)
       if (sentPlaintext) {
         emoji = sentPlaintext
       } else {
-        const crypto = useCryptoStore.getState()
-        const decrypted = await crypto.decryptForChannel(targetId, msg.ciphertext as string)
+        const decrypted = await useCryptoStore
+          .getState()
+          .decryptForChannel(targetId, msg.ciphertext)
         if (decrypted) {
           emoji = decrypted
         }
       }
-    } catch (e) {
-      console.warn('Failed to decrypt reaction emoji:', e)
+    } catch (error) {
+      console.warn('Failed to decrypt reaction emoji:', error)
     }
   }
 
   if (!emoji) {
-    console.warn('Reaction update with no emoji (decryption failed and no plaintext fallback)')
+    console.warn('Reaction update missing emoji content')
     return
   }
 
@@ -787,7 +1249,7 @@ async function handleReactionUpdate(
             existing.senderIds = [...existing.senderIds, senderId]
           }
         } else {
-          reactions.push({ emoji: emoji!, senderIds: [senderId] })
+          reactions.push({ emoji, senderIds: [senderId] })
         }
       } else if (action === 'remove') {
         const idx = reactions.findIndex((r) => r.emoji === emoji)
@@ -805,10 +1267,38 @@ async function handleReactionUpdate(
       return { ...m, reactions }
     })
 
+    const threadPatch = patchThreadStateForMessage(s, messageId, (message) => {
+      const reactions = [...(message.reactions || [])]
+      if (action === 'add') {
+        const existing = reactions.find((r) => r.emoji === emoji)
+        if (existing) {
+          if (!existing.senderIds.includes(senderId)) {
+            existing.senderIds = [...existing.senderIds, senderId]
+          }
+        } else {
+          reactions.push({ emoji, senderIds: [senderId] })
+        }
+      } else if (action === 'remove') {
+        const idx = reactions.findIndex((r) => r.emoji === emoji)
+        if (idx !== -1) {
+          reactions[idx] = {
+            ...reactions[idx],
+            senderIds: reactions[idx].senderIds.filter((id) => id !== senderId)
+          }
+          if (reactions[idx].senderIds.length === 0) {
+            reactions.splice(idx, 1)
+          }
+        }
+      }
+      return { ...message, reactions }
+    })
+
     return {
-      messagesByChannel: { ...s.messagesByChannel, [targetId]: updated }
+      messagesByChannel: { ...s.messagesByChannel, [targetId]: updated },
+      ...threadPatch
     }
   })
+
 }
 
 /**
@@ -864,8 +1354,6 @@ async function handleNewMessage(
 
 /**
  * Process an incoming message — decrypt if encrypted, pass through if plaintext.
- * Encrypted messages are cached as ciphertext in the local database so they can
- * be decrypted on demand later without storing plaintext on disk.
  */
 async function processIncomingMessage(
   targetId: string,
@@ -874,42 +1362,34 @@ async function processIncomingMessage(
   if (msg.ciphertext) {
     const messageId = msg.id as string
     const ciphertextB64 = msg.ciphertext as string
+    const senderId = (msg.sender_id as string) || null
     const mlsEpoch = (msg.mls_epoch as number) ?? null
+    const cachedPlaintext =
+      getCachedDecryption(messageId) ?? getSentMessage(ciphertextB64)
+    const plaintext =
+      cachedPlaintext ??
+      (await useCryptoStore.getState().decryptForChannel(targetId, ciphertextB64))
 
-    // Check caches before attempting MLS decryption:
-    // 1. Decryption cache (keyed by message ID) — for previously decrypted messages
-    // 2. Sent-message cache (keyed by ciphertext) — for our own messages echoed back
-    //    MLS senders can't decrypt their own messages (ratchet key consumed on encrypt)
-    const cachedPlaintext = getCachedDecryption(messageId) ?? getSentMessage(ciphertextB64)
-    const plaintext = cachedPlaintext ?? await useCryptoStore
-      .getState()
-      .decryptForChannel(targetId, ciphertextB64)
-
-    // Populate the decryption cache on successful decrypt
     if (plaintext && !cachedPlaintext) {
       setCachedDecryption(messageId, plaintext)
     }
 
-    // Cache the ciphertext (not plaintext) to the local DB
     try {
-      const ciphertextBytes = base64ToUint8(ciphertextB64)
       await cacheMessageToDb({
-        id: msg.id as string,
-        channelId: targetId,
-        senderId: (msg.sender_id as string) || null,
-        senderUsername: (msg.sender as MessageSender)?.username || null,
-        ciphertext: ciphertextBytes,
-        mlsEpoch: mlsEpoch,
+        id: messageId,
+        channelId: (msg.channel_id as string) || null,
+        conversationId: (msg.conversation_id as string) || null,
+        serverId: (msg.server_id as string) || null,
+        senderId,
+        senderUsername: (msg.sender as MessageSender)?.username ?? null,
+        ciphertext: base64ToUint8(ciphertextB64),
+        mlsEpoch,
         insertedAt: msg.inserted_at as string
       })
     } catch {
-      // Cache failure is non-fatal — message is still displayed from memory
+      // Keep rendering even if the local ciphertext cache write fails.
     }
 
-    // Decode structured payload — store the content that parseMessageContent expects.
-    // For v1 text payloads, extract the text string.
-    // For v1 file payloads, re-serialize to the JSON format that FilePreview consumes.
-    // For decryption failures, show an error placeholder.
     let displayContent = '[Message unavailable - decryption failed]'
     let searchableText = ''
     if (plaintext) {
@@ -918,17 +1398,15 @@ async function processIncomingMessage(
         displayContent = payload.text
         searchableText = payload.text
       } else {
-        // File payloads: store as JSON so parseMessageContent / FilePreview can consume them
         displayContent = JSON.stringify({
           type: payload.type,
           text: payload.text,
           file: payload.file
         })
-        searchableText = payload.text || ''
+        searchableText = [payload.text || '', payload.file.name].filter(Boolean).join(' ')
       }
     }
 
-    // Index decrypted content for FTS5 search (fire-and-forget)
     if (searchableText) {
       indexToFts(messageId, targetId, searchableText).catch(() => {})
     }
@@ -938,29 +1416,56 @@ async function processIncomingMessage(
       content: displayContent,
       channel_id: (msg.channel_id as string) || null,
       conversation_id: (msg.conversation_id as string) || null,
-      sender_id: (msg.sender_id as string) || null,
+      server_id: (msg.server_id as string) || null,
+      sender_id: senderId,
       sender: (msg.sender as MessageSender) || null,
       inserted_at: msg.inserted_at as string,
       expires_at: (msg.expires_at as string) || null,
       parent_message_id: (msg.parent_message_id as string) || null,
+      attachments: (msg.attachments as Attachment[] | undefined) ?? [],
       encrypted: true,
       decryptionFailed: !plaintext,
       edited_at: (msg.edited_at as string) || undefined
     }
   }
 
-  return {
+  const plaintextMessage: Message = {
     id: msg.id as string,
     content: msg.content as string,
     channel_id: (msg.channel_id as string) || null,
     conversation_id: (msg.conversation_id as string) || null,
+    server_id: (msg.server_id as string) || null,
     sender_id: (msg.sender_id as string) || null,
     sender: (msg.sender as MessageSender) || null,
     inserted_at: msg.inserted_at as string,
     expires_at: (msg.expires_at as string) || null,
     parent_message_id: (msg.parent_message_id as string) || null,
+    attachments: (msg.attachments as Attachment[] | undefined) ?? [],
     edited_at: (msg.edited_at as string) || undefined
   }
+
+  const plaintextSearchText = getMessageSearchText(plaintextMessage)
+  if (plaintextSearchText) {
+    indexToFts(plaintextMessage.id, targetId, plaintextSearchText).catch(() => {})
+  }
+
+  try {
+    await cacheMessageToDb({
+      id: plaintextMessage.id,
+      channelId: plaintextMessage.channel_id,
+      conversationId: plaintextMessage.conversation_id,
+      serverId: plaintextMessage.server_id ?? null,
+      senderId: plaintextMessage.sender_id,
+      senderUsername: plaintextMessage.sender?.username ?? null,
+      ciphertext: null,
+      mlsEpoch: null,
+      insertedAt: plaintextMessage.inserted_at
+    })
+  } catch {
+    // Metadata cache failure should not block message rendering.
+  }
+
+  return plaintextMessage
 }
 
 /**
@@ -1008,18 +1513,16 @@ async function handleMessageEdited(
 
   let newContent: string | undefined
   if (msg.ciphertext) {
-    // Check sent cache first (sender can't MLS-decrypt their own messages)
     const ciphertextB64 = msg.ciphertext as string
-    const plaintext = getSentMessage(ciphertextB64) ?? await useCryptoStore
-      .getState()
-      .decryptForChannel(targetId, ciphertextB64)
+    const plaintext =
+      getSentMessage(ciphertextB64) ??
+      (await useCryptoStore.getState().decryptForChannel(targetId, ciphertextB64))
+
     if (plaintext) {
-      // Update decryption cache with new content
       setCachedDecryption(messageId, plaintext)
       const payload = decodePayload(plaintext)
       if (payload.type === 'text') {
         newContent = payload.text
-        // Re-index for FTS search
         indexToFts(messageId, targetId, payload.text).catch(() => {})
       } else {
         newContent = JSON.stringify({
@@ -1027,9 +1530,9 @@ async function handleMessageEdited(
           text: payload.text,
           file: payload.file
         })
-        // Re-index caption text if present
-        if (payload.text) {
-          indexToFts(messageId, targetId, payload.text).catch(() => {})
+        const fileSearchText = [payload.text || '', payload.file.name].filter(Boolean).join(' ')
+        if (fileSearchText) {
+          indexToFts(messageId, targetId, fileSearchText).catch(() => {})
         }
       }
     } else {
@@ -1049,8 +1552,14 @@ async function handleMessageEdited(
         edited_at: editedAt
       }
     })
+    const threadPatch = patchThreadStateForMessage(s, messageId, (message) => ({
+      ...message,
+      ...(newContent !== undefined ? { content: newContent } : {}),
+      edited_at: editedAt
+    }))
     return {
-      messagesByChannel: { ...s.messagesByChannel, [targetId]: updated }
+      messagesByChannel: { ...s.messagesByChannel, [targetId]: updated },
+      ...threadPatch
     }
   })
 }
@@ -1065,7 +1574,6 @@ function handleMessageDeleted(
 ): void {
   const messageId = msg.message_id as string
 
-  // Remove from caches
   removeCachedDecryption(messageId)
   removeFromFtsIndex(messageId).catch(() => {})
 
@@ -1073,6 +1581,39 @@ function handleMessageDeleted(
     messagesByChannel: {
       ...s.messagesByChannel,
       [targetId]: (s.messagesByChannel[targetId] || []).filter((m) => m.id !== messageId)
-    }
+    },
+    pinnedByChannel: {
+      ...s.pinnedByChannel,
+      [targetId]: (s.pinnedByChannel[targetId] || []).filter((pin) => pin.message.id !== messageId)
+    },
+    ...patchThreadStateForMessage(s, messageId, () => null)
   }))
+}
+
+function emitPinUpdate(channelId: string): void {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  window.dispatchEvent(new CustomEvent('pin-update', { detail: { channelId } }))
+}
+
+function handlePinBroadcast(
+  channelId: string,
+  msg: Record<string, unknown>,
+  set: (fn: (s: MessageState) => Partial<MessageState>) => void,
+  action: 'pin' | 'unpin'
+): void {
+  const messageId = msg.message_id as string | undefined
+
+  if (action === 'unpin' && messageId) {
+    set((s) => ({
+      pinnedByChannel: {
+        ...s.pinnedByChannel,
+        [channelId]: (s.pinnedByChannel[channelId] || []).filter((pin) => pin.message.id !== messageId)
+      }
+    }))
+  }
+
+  emitPinUpdate(channelId)
 }

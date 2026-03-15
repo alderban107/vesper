@@ -39,8 +39,45 @@ defmodule Vesper.Chat.FileStorage do
     Path.join(upload_dir(), "avatars")
   end
 
+  def banner_dir do
+    Path.join(upload_dir(), "banners")
+  end
+
+  def emoji_dir(server_id) do
+    Path.join([upload_dir(), "emojis", server_id])
+  end
+
+  def emoji_path(server_id, storage_key) do
+    Path.join(emoji_dir(server_id), storage_key)
+  end
+
+  def store_server_emoji(source_path, server_id, storage_key) do
+    dir = emoji_dir(server_id)
+    File.mkdir_p!(dir)
+    File.cp!(source_path, Path.join(dir, storage_key))
+    :ok
+  rescue
+    e -> {:error, Exception.message(e)}
+  end
+
+  def delete_server_emoji(server_id, storage_key) do
+    path = emoji_path(server_id, storage_key)
+    if File.exists?(path), do: File.rm!(path)
+    :ok
+  end
+
   def delete_existing_avatar(user_id) do
     dir = avatar_dir()
+
+    ~w(.jpg .png .gif .webp)
+    |> Enum.each(fn ext ->
+      path = Path.join(dir, "#{user_id}#{ext}")
+      if File.exists?(path), do: File.rm!(path)
+    end)
+  end
+
+  def delete_existing_banner(user_id) do
+    dir = banner_dir()
 
     ~w(.jpg .png .gif .webp)
     |> Enum.each(fn ext ->

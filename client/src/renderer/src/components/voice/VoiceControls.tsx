@@ -1,4 +1,4 @@
-import { Mic, MicOff, Headphones, HeadphoneOff, PhoneOff } from 'lucide-react'
+import { Mic, MicOff, Headphones, HeadphoneOff, PhoneOff, Video, VideoOff, ScreenShare, ScreenShareOff } from 'lucide-react'
 import { useVoiceStore } from '../../stores/voiceStore'
 
 export default function VoiceControls(): React.JSX.Element | null {
@@ -8,6 +8,11 @@ export default function VoiceControls(): React.JSX.Element | null {
   const disconnect = useVoiceStore((s) => s.disconnect)
   const toggleMute = useVoiceStore((s) => s.toggleMute)
   const toggleDeafen = useVoiceStore((s) => s.toggleDeafen)
+  const cameraEnabled = useVoiceStore((s) => s.cameraEnabled)
+  const screenShareEnabled = useVoiceStore((s) => s.screenShareEnabled)
+  const toggleCamera = useVoiceStore((s) => s.toggleCamera)
+  const toggleScreenShare = useVoiceStore((s) => s.toggleScreenShare)
+  const canShareVideo = voiceState === 'connected' || voiceState === 'in_call'
 
   if (voiceState === 'idle') return null
 
@@ -43,6 +48,38 @@ export default function VoiceControls(): React.JSX.Element | null {
           title={deafened ? 'Undeafen' : 'Deafen'}
         >
           {deafened ? <HeadphoneOff className="w-3.5 h-3.5" /> : <Headphones className="w-3.5 h-3.5" />}
+        </button>
+
+        <button
+          onClick={() => {
+            void toggleCamera()
+          }}
+          disabled={!canShareVideo}
+          className={`flex-1 py-1.5 rounded-lg flex items-center justify-center gap-1.5 text-xs font-medium transition-all ${
+            cameraEnabled
+              ? 'bg-emerald-600/20 text-emerald-300'
+              : 'bg-bg-tertiary/50 text-text-muted hover:text-text-primary hover:bg-bg-tertiary'
+          } ${!canShareVideo ? 'opacity-45 cursor-not-allowed' : ''}`}
+          title={cameraEnabled ? 'Stop Camera' : 'Start Camera'}
+        >
+          {cameraEnabled ? <VideoOff className="w-3.5 h-3.5" /> : <Video className="w-3.5 h-3.5" />}
+        </button>
+
+        <button
+          onClick={() => {
+            void toggleScreenShare()
+          }}
+          disabled={!canShareVideo}
+          className={`flex-1 py-1.5 rounded-lg flex items-center justify-center gap-1.5 text-xs font-medium transition-all ${
+            screenShareEnabled
+              ? 'bg-emerald-600/20 text-emerald-300'
+              : 'bg-bg-tertiary/50 text-text-muted hover:text-text-primary hover:bg-bg-tertiary'
+          } ${!canShareVideo ? 'opacity-45 cursor-not-allowed' : ''}`}
+          title={screenShareEnabled ? 'Stop Screen Share' : 'Start Screen Share'}
+        >
+          {screenShareEnabled
+            ? <ScreenShareOff className="w-3.5 h-3.5" />
+            : <ScreenShare className="w-3.5 h-3.5" />}
         </button>
 
         <button

@@ -85,7 +85,10 @@ if config_env() == :prod do
       key_octet: jwt_secret
     ]
 
-  # ICE/TURN servers for WebRTC voice
+  # ICE/TURN servers for WebRTC voice.
+  # For proxied web deployments, prefer:
+  # TURN_SERVER_URL=turns:your-turn-host:443?transport=tcp
+  # VOICE_ICE_TRANSPORT_POLICY=relay
   ice_servers =
     case System.get_env("TURN_SERVER_URL") do
       nil ->
@@ -104,7 +107,20 @@ if config_env() == :prod do
         ]
     end
 
+  ice_transport_policy =
+    case System.get_env("VOICE_ICE_TRANSPORT_POLICY") do
+      nil ->
+        if System.get_env("TURN_SERVER_URL"), do: "relay", else: "all"
+
+      policy when policy in ["all", "relay"] ->
+        policy
+
+      other ->
+        raise("VOICE_ICE_TRANSPORT_POLICY must be 'all' or 'relay', got: #{inspect(other)}")
+    end
+
   config :vesper, :ice_servers, ice_servers
+  config :vesper, :ice_transport_policy, ice_transport_policy
 
   # Max upload size (default 25MB)
   config :vesper,

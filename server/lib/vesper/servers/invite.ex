@@ -13,13 +13,14 @@ defmodule Vesper.Servers.Invite do
 
     belongs_to :server, Vesper.Servers.Server
     belongs_to :creator, Vesper.Accounts.User
+    belongs_to :role, Vesper.Servers.Role
 
     timestamps(type: :utc_datetime)
   end
 
   def changeset(invite, attrs) do
     invite
-    |> cast(attrs, [:code, :max_uses, :expires_at, :server_id, :creator_id])
+    |> cast(attrs, [:code, :max_uses, :expires_at, :server_id, :creator_id, :role_id])
     |> validate_required([:code, :server_id, :creator_id])
     |> unique_constraint(:code)
   end

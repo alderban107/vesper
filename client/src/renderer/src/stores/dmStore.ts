@@ -1,6 +1,29 @@
 import { create } from 'zustand'
 import { apiFetch } from '../api/client'
 
+const LAST_CONVERSATION_KEY = 'vesper:lastConversationId'
+
+function readStoredConversationId(): string | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  return localStorage.getItem(LAST_CONVERSATION_KEY)
+}
+
+function writeStoredConversationId(conversationId: string | null): void {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  if (conversationId) {
+    localStorage.setItem(LAST_CONVERSATION_KEY, conversationId)
+    return
+  }
+
+  localStorage.removeItem(LAST_CONVERSATION_KEY)
+}
+
 interface DmUser {
   id: string
   username: string
@@ -49,14 +72,23 @@ interface DmState {
 
 export const useDmStore = create<DmState>((set, get) => ({
   conversations: [],
-  selectedConversationId: null,
+  selectedConversationId: readStoredConversationId(),
 
   fetchConversations: async () => {
     try {
       const res = await apiFetch('/api/v1/conversations')
       if (res.ok) {
         const data = await res.json()
-        set({ conversations: data.conversations })
+        const conversations = data.conversations as DmConversation[]
+        const selectedConversationId = get().selectedConversationId
+        const restoredConversation = conversations.find((conversation) => conversation.id === selectedConversationId)
+
+        set({
+          conversations,
+          selectedConversationId: restoredConversation?.id ?? null
+        })
+
+        writeStoredConversationId(restoredConversation?.id ?? null)
       }
     } catch {
       // ignore
@@ -78,6 +110,7 @@ export const useDmStore = create<DmState>((set, get) => ({
         // Add to list if not already present
         set((s) => {
           const exists = s.conversations.some((c) => c.id === conversation.id)
+          writeStoredConversationId(conversation.id)
           return exists
             ? { selectedConversationId: conversation.id }
             : {
@@ -101,6 +134,7 @@ export const useDmStore = create<DmState>((set, get) => ({
   },
 
   selectConversation: (id) => {
+    writeStoredConversationId(id)
     set({ selectedConversationId: id })
   },
 

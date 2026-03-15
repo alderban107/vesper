@@ -79,8 +79,8 @@ Removing the code that fixes them would reintroduce the vulnerability.
 | [R-FILE-1](#r-file-1-files-must-be-encrypted-client-side-before-upload) | Files must be encrypted client-side before upload | ✅ Met |
 | [R-FILE-2](#r-file-2-large-file-decryption-must-be-chunked) | Large file decryption must be chunked | ❌ Not met |
 | [R-FILE-3](#r-file-3-file-deduplication-is-not-possible-with-e2ee) | File deduplication is not possible with E2EE | ✅ Met |
-| [R-LINK-1](#r-link-1-server-side-link-preview-fetching-is-a-metadata-leak) | Server-side link preview fetching is a metadata leak | ❌ Not met |
-| [R-LINK-2](#r-link-2-link-preview-fetch-must-be-optional-and-auditable) | Link preview fetch must be optional and auditable | ❌ Not met |
+| [R-LINK-1](#r-link-1-server-side-link-preview-fetching-is-a-metadata-leak) | Server-side link preview fetching is a metadata leak | ✅ Met |
+| [R-LINK-2](#r-link-2-link-preview-fetch-must-be-optional-and-auditable) | Link preview fetch must be optional and auditable | ✅ Met |
 | [R-NOTIF-1](#r-notif-1-mention-user-ids-in-plaintext-accepted-metadata-leak) | Mention user IDs in plaintext (accepted metadata leak) | 📌 Decided |
 | [R-NOTIF-2](#r-notif-2-push-notifications-for-mobile-must-be-designed-before-adding-mobile-clients) | Push notifications for mobile must be designed before adding mobile clients | ❌ Not met |
 | [R-REACT-1](#r-react-1-reactions-are-encrypted) | Reactions are encrypted | ✅ Met |
@@ -738,22 +738,26 @@ to see. Inviting a bot must explicitly communicate that it gains decryption acce
 
 ### R-LINK-1: Server-side link preview fetching is a metadata leak
 
-> **Status: ❌ Not met**
+> **Status: ✅ Met**
 >
-> The server still has a `POST /link-preview` endpoint that fetches URLs on behalf
-> of clients. Sender-side preview generation (the recommended approach) is not yet
-> implemented. A TODO comment exists in `LinkPreview.tsx`.
+> The app no longer proxies link preview requests through the Vesper server.
+> Preview metadata is fetched on the client only, and the server route was removed.
+> Electron uses a local main-process fetch bridge; the web build falls back to
+> direct browser fetches when the site allows it. The server no longer learns which
+> shared URLs were previewed.
 >
-> **Future path:** Sender-side preview generation — the sender's client fetches
-> the URL, renders a preview, and includes it in the encrypted `MessagePayload`.
-> Recipients see the preview without making network requests. The server never
-> learns which URLs are shared.
+> **Remaining gap:** This is receiver-side preview generation, not sender-side
+> encrypted preview embedding. Recipients who enable previews still contact the
+> linked site from their own device.
 
 ### R-LINK-2: Link preview fetch must be optional and auditable
 
-> **Status: ❌ Not met**
+> **Status: ✅ Met**
 >
-> No user-facing setting to disable automatic link preview fetching.
+> A user-facing `Link Previews` toggle now controls whether the client may make
+> automatic external requests for shared links. It is disabled by default and the
+> settings copy explicitly states that preview fetches happen from the client device,
+> not via the Vesper server.
 
 ---
 

@@ -1,4 +1,6 @@
 import { useEffect, useRef } from 'react'
+import Avatar from './Avatar'
+import type { PresenceStatus } from '../../stores/presenceStore'
 
 export interface ContextMenuItem {
   label: string
@@ -7,6 +9,15 @@ export interface ContextMenuItem {
   danger?: boolean
   disabled?: boolean
   divider?: boolean
+  hint?: string
+}
+
+interface ContextMenuHeader {
+  userId: string
+  displayName: string
+  subtitle?: string
+  avatarUrl?: string | null
+  status?: PresenceStatus
 }
 
 interface ContextMenuProps {
@@ -14,9 +25,10 @@ interface ContextMenuProps {
   y: number
   items: ContextMenuItem[]
   onClose: () => void
+  header?: ContextMenuHeader
 }
 
-export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps): React.JSX.Element {
+export default function ContextMenu({ x, y, items, onClose, header }: ContextMenuProps): React.JSX.Element {
   const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -66,6 +78,24 @@ export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps):
       className="fixed z-50 min-w-[180px] py-1.5 glass-card rounded-lg border border-border shadow-lg"
       style={{ left: x, top: y, visibility: 'hidden' }}
     >
+      {header && (
+        <>
+          <div className="vesper-context-menu-header">
+            <Avatar
+              userId={header.userId}
+              avatarUrl={header.avatarUrl}
+              displayName={header.displayName}
+              size="sm"
+              status={header.status}
+            />
+            <div className="vesper-context-menu-header-copy">
+              <div className="vesper-context-menu-header-title">{header.displayName}</div>
+              {header.subtitle && <div className="vesper-context-menu-header-subtitle">{header.subtitle}</div>}
+            </div>
+          </div>
+          <div className="border-t border-border my-1" />
+        </>
+      )}
       {items.map((item, i) => (
         <div key={i}>
           {item.divider && <div className="border-t border-border my-1" />}
@@ -87,7 +117,8 @@ export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps):
             }`}
           >
             {item.icon && <item.icon className="w-4 h-4" />}
-            {item.label}
+            <span className="flex-1 min-w-0">{item.label}</span>
+            {item.hint && <span className="text-[11px] text-text-faint">{item.hint}</span>}
           </button>
         </div>
       ))}

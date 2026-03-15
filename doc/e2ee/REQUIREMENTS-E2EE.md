@@ -57,8 +57,8 @@
 | [R-FILE-1](#r-file-1-files-must-be-encrypted-client-side-before-upload) | Files must be encrypted client-side before upload | [✅ Met](./REQUIREMENTS-E2EE-AUDIT.md#r-file-1-files-must-be-encrypted-client-side-before-upload) |
 | [R-FILE-2](#r-file-2-large-file-decryption-must-be-chunked) | Large file decryption must be chunked | [❌ Not met](./REQUIREMENTS-E2EE-AUDIT.md#r-file-2-large-file-decryption-must-be-chunked) |
 | [R-FILE-3](#r-file-3-file-deduplication-is-not-possible-with-e2ee) | File deduplication is not possible with E2EE | [✅ Met](./REQUIREMENTS-E2EE-AUDIT.md#r-file-3-file-deduplication-is-not-possible-with-e2ee) |
-| [R-LINK-1](#r-link-1-server-side-link-preview-fetching-is-a-metadata-leak) | Server-side link preview fetching is a metadata leak | [❌ Not met](./REQUIREMENTS-E2EE-AUDIT.md#r-link-1-server-side-link-preview-fetching-is-a-metadata-leak) |
-| [R-LINK-2](#r-link-2-link-preview-fetch-must-be-optional-and-auditable) | Link preview fetch must be optional and auditable | [❌ Not met](./REQUIREMENTS-E2EE-AUDIT.md#r-link-2-link-preview-fetch-must-be-optional-and-auditable) |
+| [R-LINK-1](#r-link-1-server-side-link-preview-fetching-is-a-metadata-leak) | Server-side link preview fetching is a metadata leak | [✅ Met](./REQUIREMENTS-E2EE-AUDIT.md#r-link-1-server-side-link-preview-fetching-is-a-metadata-leak) |
+| [R-LINK-2](#r-link-2-link-preview-fetch-must-be-optional-and-auditable) | Link preview fetch must be optional and auditable | [✅ Met](./REQUIREMENTS-E2EE-AUDIT.md#r-link-2-link-preview-fetch-must-be-optional-and-auditable) |
 | [R-NOTIF-1](#r-notif-1-mention-user-ids-must-not-be-sent-in-plaintext-current-bug) | Mention user IDs must not be sent in plaintext | [📌 Decided](./REQUIREMENTS-E2EE-AUDIT.md#r-notif-1-mention-user-ids-in-plaintext-accepted-metadata-leak) |
 | [R-NOTIF-2](#r-notif-2-push-notifications-for-mobile-must-be-designed-before-adding-mobile-clients) | Push notifications for mobile must be designed before adding mobile clients | [❌ Not met](./REQUIREMENTS-E2EE-AUDIT.md#r-notif-2-push-notifications-for-mobile-must-be-designed-before-adding-mobile-clients) |
 | [R-REACT-1](#r-react-1-decide-whether-reactions-are-encrypted) | Decide whether reactions are encrypted | [✅ Met](./REQUIREMENTS-E2EE-AUDIT.md#r-react-1-reactions-are-encrypted) |
@@ -640,14 +640,15 @@ cost. Storage implications should be noted in the self-hosting documentation.
 
 ### R-LINK-1: Server-side link preview fetching is a metadata leak
 
-**Current implementation:** `POST /link-preview` — the client sends a URL to the server,
-which fetches it and returns preview metadata. The server now knows which URLs are being
-shared, by whom, and approximately when.
+**Current implementation:** Preview metadata is fetched on the client, not proxied
+through the Vesper server. Electron uses a local main-process fetch bridge and the
+web build falls back to direct browser fetches when allowed by the remote site.
+This keeps preview requests off the Vesper server.
 
 This is not a content privacy violation (the URL is in the encrypted message the server
 can't read), but it is a **deliberate metadata disclosure by the client**. The client
-is explicitly telling the server "this URL was just shared." This is a meaningful
-privacy regression compared to doing nothing.
+must still contact the linked site if previews are enabled, so recipients disclose
+their IP address to that site. That tradeoff is local to the client and user-controlled.
 
 **Options:**
 
@@ -659,7 +660,7 @@ privacy regression compared to doing nothing.
 - Downside: the sender's IP is exposed to the URL's host (but this happens when they
   visit the link anyway)
 
-**Option B: Receiver-side preview generation (current approach but honest)**
+**Option B: Receiver-side preview generation (current implementation)**
 - Each client fetches the URL when it displays the message
 - Server never learns the URL
 - Each recipient's IP is exposed to the URL's host
@@ -669,15 +670,16 @@ privacy regression compared to doing nothing.
 - Server protects recipient IPs but learns URLs
 - Acceptable for some deployments, unacceptable for others
 
-**Recommendation:** Implement Option A (sender-side) as default. It's the most
+**Recommendation:** Implement Option A (sender-side) as the long-term default. It's the most
 privacy-preserving and doesn't require server infrastructure. Receiver-side rendering
-(Option B) should be a client fallback for URLs that fail or for images the sender
-didn't preview.
+(Option B) is an acceptable interim design as long as it remains user-controlled and
+does not proxy through the Vesper server.
 
 ### R-LINK-2: Link preview fetch must be optional and auditable
 
 Whatever approach is chosen, link preview fetching must be opt-in or opt-out at the
 user level. A user should be able to disable automatic external URL requests entirely.
+The current client exposes a `Link Previews` toggle and keeps it off by default.
 
 ---
 

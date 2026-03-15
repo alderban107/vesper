@@ -42,6 +42,12 @@ export default function IncomingCallModal(): React.JSX.Element | null {
   if (!incomingCall) return null
 
   const conversation = conversations.find((c) => c.id === incomingCall.conversationId)
+  const conversationLabel = conversation?.name
+    || conversation?.participants
+      .filter((participant) => participant.user_id !== currentUserId)
+      .map((participant) => participant.user.display_name || participant.user.username)
+      .join(', ')
+    || 'Direct message'
   const callerName = (() => {
     if (!conversation) return 'Unknown'
     const caller = conversation.participants.find(
@@ -52,35 +58,41 @@ export default function IncomingCallModal(): React.JSX.Element | null {
   })()
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
-      <div className="glass-card rounded-2xl p-8 w-80 flex flex-col items-center gap-6 animate-scale-in">
-        {/* Avatar with pulse ring */}
-        <div className="relative">
-          <div className="w-16 h-16 rounded-full bg-accent/20 flex items-center justify-center text-2xl text-accent font-semibold animate-pulse-ring">
+    <div className="vesper-incoming-call-shell">
+      <div className="vesper-incoming-call-card glass-card animate-scale-in">
+        <div className="vesper-incoming-call-avatar">
+          <div className="vesper-incoming-call-avatar-ring">
             {callerName.slice(0, 2).toUpperCase()}
           </div>
         </div>
 
-        <div className="text-center">
-          <p className="text-text-primary text-lg font-semibold">{callerName}</p>
-          <p className="text-text-muted text-sm">Incoming voice call...</p>
-          <p className="text-text-faint text-xs mt-1">{countdown}s</p>
+        <div className="vesper-incoming-call-copy">
+          <p className="vesper-incoming-call-kicker">Incoming voice call</p>
+          <p className="vesper-incoming-call-title">{callerName}</p>
+          <p className="vesper-incoming-call-subtitle">{conversationLabel}</p>
+          <p className="vesper-incoming-call-timer">Ringing for {countdown}s</p>
         </div>
 
-        <div className="flex gap-4">
+        <div className="vesper-incoming-call-actions">
           <button
             onClick={() => rejectCall()}
-            className="w-14 h-14 rounded-full bg-red-600/20 hover:bg-red-600/30 text-red-400 flex items-center justify-center transition-colors"
-            title="Reject"
+            className="vesper-incoming-call-button vesper-incoming-call-button-decline"
+            title="Decline"
           >
-            <PhoneOff className="w-6 h-6" />
+            <span className="vesper-incoming-call-button-icon">
+              <PhoneOff className="w-5 h-5" />
+            </span>
+            <span>Decline</span>
           </button>
           <button
             onClick={() => acceptCall(incomingCall.conversationId)}
-            className="w-14 h-14 rounded-full bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 flex items-center justify-center transition-colors shadow-[0_0_16px_rgba(52,211,153,0.2)]"
+            className="vesper-incoming-call-button vesper-incoming-call-button-accept"
             title="Accept"
           >
-            <Phone className="w-6 h-6" />
+            <span className="vesper-incoming-call-button-icon">
+              <Phone className="w-5 h-5" />
+            </span>
+            <span>Accept</span>
           </button>
         </div>
       </div>

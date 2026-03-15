@@ -395,7 +395,7 @@ The Electron-specific code (SQLite, safeStorage, IPC) is not covered by the Play
 | Search | FTS5 infrastructure wired, UI not connected | Full search UI with results navigation | Index is populated on decrypt — only viewed messages are searchable |
 | Large files | Single-shot AES-256-GCM | Chunked encryption (256 KB chunks) for streaming decrypt | Each chunk independently authenticated with chunk index in AAD to prevent reordering |
 | Crypto thread | Runs on renderer main thread | Web Worker for symmetric crypto offload | Full `ClientState` likely won't survive `structuredClone`. Recommended fallback: keep MLS state in main thread, offload only AES-GCM encrypt/decrypt to Worker |
-| Link previews | Server-side fetching (metadata leak) | Sender-side generation with user opt-out | Sender fetches URL metadata, includes in `MessagePayload.previews`, recipients render without network requests |
+| Link previews | Receiver-side fetch with user opt-out, no server proxy | Sender-side generation with user opt-out | Current app keeps preview requests off the Vesper server; long-term target is encrypted sender-side preview data in the message payload |
 | Multi-device | Each device must independently join every MLS group | Shared identity with key sync | No "rejoin all channels" flow exists — each channel rejoins lazily on first visit |
 | Key package expiry | No server-side expiration | `expires_at` column + Oban purge job + server rejection of expired packages | |
 | Batch removes | Each member leave = separate Commit | Batch Commit with 100ms collection window | Design: start a timer on first leave event, collect additional leaves, issue single batched Remove Commit when timer fires |

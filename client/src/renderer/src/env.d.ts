@@ -46,7 +46,9 @@ interface CryptoDbApi {
   // Message cache (stores ciphertext, not plaintext)
   cacheMessage(msg: {
     id: string
-    channel_id: string
+    channel_id: string | null
+    conversation_id: string | null
+    server_id: string | null
     sender_id: string | null
     sender_username: string | null
     ciphertext: Uint8Array | null
@@ -56,7 +58,9 @@ interface CryptoDbApi {
   getCachedMessages(channelId: string): Promise<
     Array<{
       id: string
-      channel_id: string
+      channel_id: string | null
+      conversation_id: string | null
+      server_id: string | null
       sender_id: string | null
       sender_username: string | null
       ciphertext: ArrayBuffer | null
@@ -74,7 +78,12 @@ interface CryptoDbApi {
     Array<{
       message_id: string
       channel_id: string
-      content: string
+      conversation_id: string | null
+      server_id: string | null
+      sender_id: string | null
+      sender_username: string | null
+      inserted_at: string | null
+      preview: string
     }>
   >
   indexDecryptedMessage(
@@ -87,6 +96,15 @@ interface CryptoDbApi {
 
 interface Window {
   cryptoDb: CryptoDbApi
+  linkPreview?: {
+    fetchMetadata(url: string): Promise<{
+      url: string
+      title: string | null
+      description: string | null
+      image_url: string | null
+      site_name: string | null
+    } | null>
+  }
   electron: {
     ipcRenderer: {
       invoke(channel: string, ...args: unknown[]): Promise<unknown>

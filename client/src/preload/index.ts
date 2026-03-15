@@ -49,7 +49,9 @@ const cryptoDbApi = {
   // Message cache (stores ciphertext, not plaintext)
   cacheMessage: (msg: {
     id: string
-    channel_id: string
+    channel_id: string | null
+    conversation_id: string | null
+    server_id: string | null
     sender_id: string | null
     sender_username: string | null
     ciphertext: Uint8Array | null
@@ -83,6 +85,12 @@ const notificationApi = {
   }
 }
 
+const linkPreviewApi = {
+  fetchMetadata: (url: string) =>
+    ipcRenderer.invoke('linkPreview:fetchMetadata', url)
+}
+
 contextBridge.exposeInMainWorld('electron', electronAPI)
 contextBridge.exposeInMainWorld('cryptoDb', cryptoDbApi)
 contextBridge.exposeInMainWorld('notifications', notificationApi)
+contextBridge.exposeInMainWorld('linkPreview', linkPreviewApi)

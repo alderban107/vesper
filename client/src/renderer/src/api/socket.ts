@@ -43,6 +43,7 @@ export function joinChannel(
   const CHAT_EVENTS = [
     'new_message', 'typing_start', 'typing_stop', 'disappearing_ttl_updated',
     'mls_request_join', 'mls_commit', 'mls_welcome', 'mls_remove', 'incoming_call',
+    'call_rejected',
     'presence_state', 'presence_diff',
     'reaction_update',
     'message_edited', 'message_deleted',
