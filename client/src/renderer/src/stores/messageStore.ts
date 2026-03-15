@@ -13,7 +13,11 @@ import {
   indexDecryptedMessage as indexToFts,
   removeFromFtsIndex
 } from '../crypto/storage'
-import { base64ToUint8 } from '../api/crypto'
+import {
+  ackPendingResyncRequest,
+  base64ToUint8,
+  fetchPendingResyncRequests
+} from '../api/crypto'
 import { encodePayload, decodePayload } from '../crypto/payload'
 import {
   cacheSentMessage,
@@ -29,6 +33,8 @@ export function cacheSentPlaintext(ciphertext: string, plaintext: string): void 
 
 const MLS_JOIN_REQUEST_COOLDOWN_MS = 2000
 const recentMlsJoinRequests = new Map<string, number>()
+const MLS_RESYNC_REQUEST_COOLDOWN_MS = 5000
+const recentMlsResyncRequests = new Map<string, number>()
 
 export interface MessageSender {
   id: string
@@ -121,6 +127,97 @@ function maybeRequestMlsJoin(targetId: string, topic: string): void {
 
   recentMlsJoinRequests.set(topic, now)
   pushToChannel(topic, 'mls_request_join', {})
+}
+
+interface PendingMlsResyncRequest {
+  id?: string
+  requester_id: string
+  requester_username?: string | null
+  request_id?: string
+  last_known_epoch?: number | null
+  reason?: string | null
+}
+
+function maybeRequestMlsResync(
+  _targetId: string,
+  scopeId: string,
+  topic: string,
+  lastKnownEpoch: number | null,
+  reason: string
+): void {
+  const user = useAuthStore.getState().user
+  if (!user) {
+    return
+  }
+
+  const now = Date.now()
+  const lastRequestAt = recentMlsResyncRequests.get(scopeId) ?? 0
+  if (now - lastRequestAt < MLS_RESYNC_REQUEST_COOLDOWN_MS) {
+    return
+  }
+
+  recentMlsResyncRequests.set(scopeId, now)
+  pushToChannel(topic, 'mls_resync_request', {
+    request_id: crypto.randomUUID(),
+    last_known_epoch: lastKnownEpoch,
+    reason,
+    username: user.username
+  })
+}
+
+async function processMlsResyncRequest(
+  targetId: string,
+  topic: string,
+  request: PendingMlsResyncRequest
+): Promise<boolean> {
+  const requesterId = request.requester_id
+  const requesterUsername = request.requester_username ?? undefined
+  const userId = useAuthStore.getState().user?.id
+  const crypto = useCryptoStore.getState()
+
+  if (!requesterId || requesterId === userId || !crypto.hasGroup(targetId)) {
+    return false
+  }
+
+  const result = await crypto.handleResyncRequest(targetId, requesterId, requesterUsername)
+  if (!result) {
+    return false
+  }
+
+  if (result.removeCommitBytes) {
+    pushToChannel(topic, 'mls_remove', {
+      removed_user_id: requesterId,
+      commit_data: result.removeCommitBytes
+    })
+  }
+
+  pushToChannel(topic, 'mls_commit', {
+    commit_data: result.commitBytes
+  })
+
+  if (result.welcomeBytes) {
+    pushToChannel(topic, 'mls_welcome', {
+      recipient_id: requesterId,
+      welcome_data: result.welcomeBytes
+    })
+  }
+
+  if (request.id) {
+    await ackPendingResyncRequest(request.id)
+  }
+
+  return true
+}
+
+async function processPendingMlsResyncRequests(
+  targetId: string,
+  scopeId: string,
+  topic: string
+): Promise<void> {
+  const requests = await fetchPendingResyncRequests(scopeId)
+  for (const request of requests) {
+    await processMlsResyncRequest(targetId, topic, request)
+  }
 }
 
 async function waitForChannelBootstrap(
@@ -358,9 +455,19 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       } else if (event === 'mls_request_join_all') {
         if (!useCryptoStore.getState().hasGroup(channelId)) {
           maybeRequestMlsJoin(channelId, topic)
+          maybeRequestMlsResync(channelId, channelId, topic, null, 'missing_state')
         }
       } else if (event === 'mls_request_join') {
         handleMlsJoinRequest(channelId, msg, `chat:channel:${channelId}`)
+      } else if (event === 'mls_resync_request') {
+        void processMlsResyncRequest(channelId, topic, {
+          id: msg.id as string | undefined,
+          requester_id: msg.user_id as string,
+          requester_username: (msg.username as string | undefined) ?? undefined,
+          request_id: msg.request_id as string | undefined,
+          last_known_epoch: (msg.last_known_epoch as number | null | undefined) ?? null,
+          reason: (msg.reason as string | null | undefined) ?? null
+        }).catch(() => {})
       } else if (event === 'mls_commit') {
         const senderId = msg.sender_id as string
         const userId = useAuthStore.getState().user?.id
@@ -368,7 +475,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           void useCryptoStore
             .getState()
             .handleCommit(channelId, msg.commit_data as string)
-            .then(() => refreshChannelMessagesIfNeeded(channelId, get))
+            .then(async () => {
+              await refreshChannelMessagesIfNeeded(channelId, get)
+              await processPendingMlsResyncRequests(channelId, channelId, topic)
+            })
             .catch(() => {})
         }
       } else if (event === 'mls_welcome') {
@@ -378,9 +488,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           void useCryptoStore
             .getState()
             .handleWelcome(channelId, msg.welcome_data as string)
-            .then((processed) => {
+            .then(async (processed) => {
               if (processed) {
-                return refreshChannelMessagesIfNeeded(channelId, get)
+                await refreshChannelMessagesIfNeeded(channelId, get)
+                await processPendingMlsResyncRequests(channelId, channelId, topic)
               }
             })
             .catch(() => {})
@@ -414,6 +525,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       .then(() => {
         if (!useCryptoStore.getState().hasGroup(channelId)) {
           maybeRequestMlsJoin(channelId, topic)
+          maybeRequestMlsResync(channelId, channelId, topic, null, 'missing_state')
         }
       })
       .catch(() => {
@@ -421,6 +533,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       })
       .finally(() => {
         get().fetchMessages(channelId)
+        void processPendingMlsResyncRequests(channelId, channelId, topic).catch(() => {})
       })
   },
 
@@ -569,6 +682,15 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         )
       } else if (event === 'mls_request_join') {
         handleMlsJoinRequest(conversationId, msg, topic)
+      } else if (event === 'mls_resync_request') {
+        void processMlsResyncRequest(conversationId, topic, {
+          id: msg.id as string | undefined,
+          requester_id: msg.user_id as string,
+          requester_username: (msg.username as string | undefined) ?? undefined,
+          request_id: msg.request_id as string | undefined,
+          last_known_epoch: (msg.last_known_epoch as number | null | undefined) ?? null,
+          reason: (msg.reason as string | null | undefined) ?? null
+        }).catch(() => {})
       } else if (event === 'mls_commit') {
         const senderId = msg.sender_id as string
         const userId = useAuthStore.getState().user?.id
@@ -576,7 +698,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           void useCryptoStore
             .getState()
             .handleCommit(conversationId, msg.commit_data as string)
-            .then(() => refreshDmMessagesIfNeeded(conversationId, get))
+            .then(async () => {
+              await refreshDmMessagesIfNeeded(conversationId, get)
+              await processPendingMlsResyncRequests(conversationId, conversationId, topic)
+            })
             .catch(() => {})
         }
       } else if (event === 'mls_welcome') {
@@ -586,9 +711,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           void useCryptoStore
             .getState()
             .handleWelcome(conversationId, msg.welcome_data as string)
-            .then((processed) => {
+            .then(async (processed) => {
               if (processed) {
-                return refreshDmMessagesIfNeeded(conversationId, get)
+                await refreshDmMessagesIfNeeded(conversationId, get)
+                await processPendingMlsResyncRequests(conversationId, conversationId, topic)
               }
             })
             .catch(() => {})
@@ -628,6 +754,13 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       .then(() => {
         if (!useCryptoStore.getState().hasGroup(conversationId)) {
           maybeRequestMlsJoin(conversationId, topic)
+          maybeRequestMlsResync(
+            conversationId,
+            conversationId,
+            topic,
+            null,
+            'missing_state'
+          )
         }
       })
       .catch(() => {
@@ -635,6 +768,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       })
       .finally(() => {
         get().fetchDmMessages(conversationId)
+        void processPendingMlsResyncRequests(conversationId, conversationId, topic).catch(() => {})
       })
   },
 
@@ -1471,8 +1605,17 @@ async function handleNewMessage(
       : processed.conversation_id
         ? `dm:${processed.conversation_id}`
         : null
+    const scopeId = processed.channel_id ?? processed.conversation_id ?? null
+    const lastKnownEpoch = (msg.mls_epoch as number | null | undefined) ?? null
 
-    if (topic) {
+    if (topic && scopeId) {
+      if (useCryptoStore.getState().hasGroup(targetId)) {
+        maybeRequestMlsResync(targetId, scopeId, topic, lastKnownEpoch, 'decrypt_failed')
+      } else {
+        maybeRequestMlsJoin(targetId, topic)
+        maybeRequestMlsResync(targetId, scopeId, topic, lastKnownEpoch, 'decrypt_failed')
+      }
+    } else if (topic) {
       maybeRequestMlsJoin(targetId, topic)
     }
   }

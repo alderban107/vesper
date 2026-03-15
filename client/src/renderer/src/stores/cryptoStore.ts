@@ -4,6 +4,7 @@ import {
   initCipherSuite,
   createMLSGroup,
   addMemberToGroup,
+  removeMemberFromGroup,
   processWelcome,
   processCommitMessage,
   encryptMessage,
@@ -15,7 +16,8 @@ import {
   decodeKeyPackageBytes,
   deriveVoiceKey,
   groupHasMember,
-  getGroupMemberIdentities
+  getGroupMemberIdentities,
+  findMemberLeafIndex
 } from '../crypto/mls'
 import {
   saveGroupState,
@@ -36,6 +38,10 @@ export interface JoinRequestResult {
   welcomeBytes: string | null
 }
 
+export interface ResyncRequestResult extends JoinRequestResult {
+  removeCommitBytes: string | null
+}
+
 interface CryptoState {
   /** In-memory MLS group states keyed by channel ID */
   groupStates: Record<string, ClientState>
@@ -54,6 +60,12 @@ interface CryptoState {
     userId: string,
     username?: string
   ) => Promise<JoinRequestResult | null>
+  /** Remove and re-add a member to repair their local MLS state */
+  handleResyncRequest: (
+    channelId: string,
+    userId: string,
+    username?: string
+  ) => Promise<ResyncRequestResult | null>
   /** Process a Welcome message to join an existing group */
   handleWelcome: (channelId: string, welcomeData: string) => Promise<boolean>
   /** Process a Commit message to update group state */
@@ -259,6 +271,81 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
         }
       } catch (e) {
         console.error('Failed to handle join request:', e)
+        return null
+      }
+    })
+  },
+
+  handleResyncRequest: async (channelId, userId, username) => {
+    if (!get().groupStates[channelId]) return
+
+    return withGroupLock(channelId, async () => {
+      const state = get().groupStates[channelId]
+      if (!state) return
+
+      try {
+        await initCipherSuite()
+        const localUser = useAuthStore.getState().user
+        const memberIdentities = getGroupMemberIdentities(state)
+
+        if (
+          !localUser ||
+          !memberIdentities.some(
+            (identity) => identity === localUser.id || identity === localUser.username
+          ) ||
+          (memberIdentities[0] !== localUser.id && memberIdentities[0] !== localUser.username)
+        ) {
+          return null
+        }
+
+        const keyPackageBytes = await fetchKeyPackage(userId)
+        if (!keyPackageBytes) {
+          console.warn(`No key package available for user ${userId}`)
+          return null
+        }
+
+        const memberKeyPackage = decodeKeyPackageBytes(keyPackageBytes)
+        const requestedCredential = memberKeyPackage.leafNode.credential
+        const requestedIdentity =
+          requestedCredential.credentialType === 'basic'
+            ? new TextDecoder().decode(requestedCredential.identity)
+            : null
+
+        let workingState = state
+        let removeCommitBytes: string | null = null
+
+        const existingLeafIndex = findMemberLeafIndex(
+          workingState,
+          userId,
+          username,
+          requestedIdentity
+        )
+
+        if (existingLeafIndex !== null) {
+          const removed = await removeMemberFromGroup(workingState, existingLeafIndex)
+          workingState = removed.newState
+          removeCommitBytes = uint8ToBase64(removed.commitBytes)
+        }
+
+        if (requestedIdentity && groupHasMember(workingState, requestedIdentity)) {
+          return null
+        }
+
+        const added = await addMemberToGroup(workingState, memberKeyPackage)
+        const serialized = serializeGroupState(added.newState)
+        await saveGroupState(channelId, serialized, Number(added.newState.groupContext.epoch))
+
+        set((s) => ({
+          groupStates: { ...s.groupStates, [channelId]: added.newState }
+        }))
+
+        return {
+          removeCommitBytes,
+          commitBytes: uint8ToBase64(added.commitBytes),
+          welcomeBytes: added.welcomeBytes ? uint8ToBase64(added.welcomeBytes) : null
+        }
+      } catch (e) {
+        console.error('Failed to handle resync request:', e)
         return null
       }
     })

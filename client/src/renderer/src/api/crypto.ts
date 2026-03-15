@@ -74,6 +74,37 @@ export async function ackPendingWelcome(welcomeId: string): Promise<void> {
   })
 }
 
+/**
+ * Fetch pending MLS resync requests for an MLS scope.
+ */
+export async function fetchPendingResyncRequests(
+  scopeId: string
+): Promise<
+  Array<{
+    id: string
+    requester_id: string
+    requester_username: string | null
+    request_id: string
+    last_known_epoch: number | null
+    reason: string | null
+  }>
+> {
+  const res = await apiFetch(`/api/v1/pending-resync-requests/${encodeURIComponent(scopeId)}`)
+  if (!res.ok) return []
+
+  const data = await res.json()
+  return data.requests || []
+}
+
+/**
+ * Acknowledge (delete) a processed pending MLS resync request.
+ */
+export async function ackPendingResyncRequest(requestId: string): Promise<void> {
+  await apiFetch(`/api/v1/pending-resync-requests/${requestId}`, {
+    method: 'DELETE'
+  })
+}
+
 // --- Helpers ---
 
 function uint8ToBase64(arr: Uint8Array): string {

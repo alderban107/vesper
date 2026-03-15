@@ -97,7 +97,11 @@ defmodule VesperWeb.DmChannel do
   end
 
   # Encrypted reactions
-  def handle_in("add_reaction", %{"message_id" => message_id, "ciphertext" => ciphertext} = payload, socket) do
+  def handle_in(
+        "add_reaction",
+        %{"message_id" => message_id, "ciphertext" => ciphertext} = payload,
+        socket
+      ) do
     mls_epoch = Map.get(payload, "mls_epoch")
 
     case handle_reaction(
@@ -151,7 +155,11 @@ defmodule VesperWeb.DmChannel do
   end
 
   # Encrypted remove
-  def handle_in("remove_reaction", %{"message_id" => message_id, "ciphertext" => ciphertext} = payload, socket) do
+  def handle_in(
+        "remove_reaction",
+        %{"message_id" => message_id, "ciphertext" => ciphertext} = payload,
+        socket
+      ) do
     mls_epoch = Map.get(payload, "mls_epoch")
 
     case handle_reaction(
@@ -282,7 +290,43 @@ defmodule VesperWeb.DmChannel do
       user_id: socket.assigns.user_id,
       username: socket.assigns.username
     })
+
     {:noreply, socket}
+  end
+
+  def handle_in("mls_resync_request", payload, socket) when is_map(payload) do
+    case normalize_resync_request(payload) do
+      {:ok, attrs} ->
+        conversation_id = socket.assigns.conversation_id
+
+        case Encryption.store_pending_resync_request(%{
+               group_id: conversation_id,
+               request_id: attrs.request_id,
+               requester_id: socket.assigns.user_id,
+               requester_username: socket.assigns.username,
+               last_known_epoch: attrs.last_known_epoch,
+               reason: attrs.reason,
+               conversation_id: conversation_id
+             }) do
+          {:ok, request} ->
+            broadcast_from!(socket, "mls_resync_request", %{
+              id: request.id,
+              user_id: socket.assigns.user_id,
+              username: socket.assigns.username,
+              request_id: request.request_id,
+              last_known_epoch: request.last_known_epoch,
+              reason: request.reason
+            })
+
+            {:noreply, socket}
+
+          {:error, _changeset} ->
+            {:reply, {:error, %{reason: "could not store resync request"}}, socket}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, %{reason: reason}}, socket}
+    end
   end
 
   def handle_in("mls_commit", %{"commit_data" => commit_data}, socket)
@@ -348,6 +392,31 @@ defmodule VesperWeb.DmChannel do
 
   def handle_in(_event, _payload, socket),
     do: {:reply, {:error, %{reason: "unrecognized event"}}, socket}
+
+  defp normalize_resync_request(payload) do
+    request_id = Map.get(payload, "request_id")
+    last_known_epoch = Map.get(payload, "last_known_epoch")
+    reason = Map.get(payload, "reason")
+
+    cond do
+      not is_binary(request_id) ->
+        {:error, "missing request_id"}
+
+      not (is_nil(last_known_epoch) or is_integer(last_known_epoch)) ->
+        {:error, "invalid last_known_epoch"}
+
+      not (is_nil(reason) or is_binary(reason)) ->
+        {:error, "invalid reason"}
+
+      true ->
+        {:ok,
+         %{
+           request_id: request_id,
+           last_known_epoch: last_known_epoch,
+           reason: reason
+         }}
+    end
+  end
 
   defp notify_participants(conversation_id, sender_id, participant_ids, sender_info, message) do
     notification = %{

@@ -6,7 +6,7 @@ defmodule Vesper.Encryption do
 
   import Ecto.Query
   alias Vesper.Repo
-  alias Vesper.Encryption.{KeyPackage, PendingWelcome}
+  alias Vesper.Encryption.{KeyPackage, PendingResyncRequest, PendingWelcome}
 
   # --- Key Packages ---
 
@@ -147,6 +147,56 @@ defmodule Vesper.Encryption do
     from(pw in PendingWelcome,
       where: pw.inserted_at < ^cutoff
     )
+    |> Repo.delete_all()
+  end
+
+  # --- Pending Resync Requests ---
+
+  @doc """
+  Store or refresh a pending MLS resync request for a scope.
+  """
+  def store_pending_resync_request(attrs) do
+    %PendingResyncRequest{}
+    |> PendingResyncRequest.changeset(attrs)
+    |> Repo.insert(
+      on_conflict: [
+        set: [
+          request_id: Map.fetch!(attrs, :request_id),
+          requester_username: Map.get(attrs, :requester_username),
+          last_known_epoch: Map.get(attrs, :last_known_epoch),
+          reason: Map.get(attrs, :reason),
+          channel_id: Map.get(attrs, :channel_id),
+          conversation_id: Map.get(attrs, :conversation_id),
+          inserted_at: DateTime.utc_now() |> DateTime.truncate(:second)
+        ]
+      ],
+      conflict_target: [:group_id, :requester_id]
+    )
+  end
+
+  @doc """
+  Get all pending resync requests for a specific MLS group scope.
+  """
+  def get_pending_resync_requests(group_id) do
+    from(pr in PendingResyncRequest,
+      where: pr.group_id == ^group_id,
+      order_by: [asc: pr.inserted_at]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Get a single pending resync request by id.
+  """
+  def get_pending_resync_request(id) do
+    Repo.get(PendingResyncRequest, id)
+  end
+
+  @doc """
+  Delete a pending resync request after it has been handled.
+  """
+  def delete_pending_resync_request(id) do
+    from(pr in PendingResyncRequest, where: pr.id == ^id)
     |> Repo.delete_all()
   end
 end

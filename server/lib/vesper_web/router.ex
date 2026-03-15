@@ -113,6 +113,10 @@ defmodule VesperWeb.Router do
     # Pending welcomes
     get("/pending-welcomes/:channel_id", PendingWelcomeController, :index)
     delete("/pending-welcomes/:id", PendingWelcomeController, :delete)
+
+    # Pending MLS resync requests
+    get("/pending-resync-requests/:channel_id", PendingResyncRequestController, :index)
+    delete("/pending-resync-requests/:id", PendingResyncRequestController, :delete)
   end
 
   # Enable LiveDashboard in development

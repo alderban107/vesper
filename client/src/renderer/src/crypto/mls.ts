@@ -175,6 +175,86 @@ export function groupHasMember(
   })
 }
 
+export function getGroupMemberIdentities(state: ClientState): string[] {
+  const identities = new Set<string>()
+
+  for (const node of state.ratchetTree) {
+    if (!node || node.nodeType !== 'leaf') {
+      continue
+    }
+
+    const credential = node.leaf.credential
+    if (credential.credentialType !== 'basic') {
+      continue
+    }
+
+    identities.add(new TextDecoder().decode(credential.identity))
+  }
+
+  return [...identities]
+}
+
+export function findGroupMemberLeafIndex(
+  state: ClientState,
+  ...identities: Array<string | undefined | null>
+): number | null {
+  const candidates = new Set(
+    identities.filter((identity): identity is string => typeof identity === 'string' && identity.length > 0)
+  )
+  if (candidates.size === 0) {
+    return null
+  }
+
+  let leafIndex = 0
+  for (const node of state.ratchetTree) {
+    if (!node || node.nodeType !== 'leaf') {
+      continue
+    }
+
+    const credential = node.leaf.credential
+    if (
+      credential.credentialType === 'basic' &&
+      candidates.has(new TextDecoder().decode(credential.identity))
+    ) {
+      return leafIndex
+    }
+
+    leafIndex += 1
+  }
+
+  return null
+}
+
+export function findMemberLeafIndex(
+  state: ClientState,
+  ...identities: Array<string | undefined | null>
+): number | null {
+  const candidates = new Set(
+    identities.filter((identity): identity is string => typeof identity === 'string' && identity.length > 0)
+  )
+  if (candidates.size === 0) {
+    return null
+  }
+
+  for (let nodeIndex = 0; nodeIndex < state.ratchetTree.length; nodeIndex++) {
+    const node = state.ratchetTree[nodeIndex]
+    if (!node || node.nodeType !== 'leaf') {
+      continue
+    }
+
+    const credential = node.leaf.credential
+    if (credential.credentialType !== 'basic') {
+      continue
+    }
+
+    if (candidates.has(new TextDecoder().decode(credential.identity))) {
+      return nodeIndex / 2
+    }
+  }
+
+  return null
+}
+
 /**
  * Add a member to an existing MLS group.
  * Returns updated state, commit message, and welcome for the new member.

@@ -1,4 +1,8 @@
 import { create } from 'zustand'
+import {
+  ackPendingResyncRequest,
+  fetchPendingResyncRequests
+} from '../api/crypto'
 import { getVoiceRtcConfig } from '../api/voiceConfig'
 import { connectSocket, joinVoiceChannel, leaveChannel, pushToChannel } from '../api/socket'
 import {
@@ -25,8 +29,10 @@ const REMOTE_VOICE_VOLUMES_KEY = 'voice:remoteVoiceVolumes'
 const REMOTE_STREAM_VOLUMES_KEY = 'voice:remoteStreamVolumes'
 const SHARE_AUDIO_PREFERRED_KEY = 'voice:shareAudioPreferred'
 const MLS_JOIN_REQUEST_COOLDOWN_MS = 2000
+const MLS_RESYNC_REQUEST_COOLDOWN_MS = 5000
 
 const recentVoiceJoinRequests = new Map<string, number>()
+const recentVoiceResyncRequests = new Map<string, number>()
 
 function maybeRequestVoiceMlsJoin(topic: string): void {
   const now = Date.now()
@@ -37,6 +43,86 @@ function maybeRequestVoiceMlsJoin(topic: string): void {
 
   recentVoiceJoinRequests.set(topic, now)
   pushToChannel(topic, 'mls_request_join', {})
+}
+
+interface PendingVoiceMlsResyncRequest {
+  id?: string
+  requester_id: string
+  requester_username?: string | null
+  request_id?: string
+  last_known_epoch?: number | null
+  reason?: string | null
+}
+
+function maybeRequestVoiceMlsResync(topic: string, reason: string): void {
+  const user = useAuthStore.getState().user
+  if (!user) {
+    return
+  }
+
+  const now = Date.now()
+  const lastRequestAt = recentVoiceResyncRequests.get(topic) ?? 0
+  if (now - lastRequestAt < MLS_RESYNC_REQUEST_COOLDOWN_MS) {
+    return
+  }
+
+  recentVoiceResyncRequests.set(topic, now)
+  pushToChannel(topic, 'mls_resync_request', {
+    request_id: crypto.randomUUID(),
+    last_known_epoch: null,
+    reason,
+    username: user.username
+  })
+}
+
+async function processVoiceMlsResyncRequest(
+  topic: string,
+  request: PendingVoiceMlsResyncRequest
+): Promise<boolean> {
+  const requesterId = request.requester_id
+  const requesterUsername = request.requester_username ?? undefined
+  const userId = useAuthStore.getState().user?.id
+  const cryptoStore = useCryptoStore.getState()
+
+  if (!requesterId || requesterId === userId || !cryptoStore.hasGroup(topic)) {
+    return false
+  }
+
+  const result = await cryptoStore.handleResyncRequest(topic, requesterId, requesterUsername)
+  if (!result) {
+    return false
+  }
+
+  if (result.removeCommitBytes) {
+    pushToChannel(topic, 'mls_remove', {
+      removed_user_id: requesterId,
+      commit_data: result.removeCommitBytes
+    })
+  }
+
+  pushToChannel(topic, 'mls_commit', {
+    commit_data: result.commitBytes
+  })
+
+  if (result.welcomeBytes) {
+    pushToChannel(topic, 'mls_welcome', {
+      recipient_id: requesterId,
+      welcome_data: result.welcomeBytes
+    })
+  }
+
+  if (request.id) {
+    await ackPendingResyncRequest(request.id)
+  }
+
+  return true
+}
+
+async function processPendingVoiceMlsResyncRequests(topic: string): Promise<void> {
+  const requests = await fetchPendingResyncRequests(topic)
+  for (const request of requests) {
+    await processVoiceMlsResyncRequest(topic, request)
+  }
 }
 
 function readString(key: string): string | null {
@@ -1282,9 +1368,19 @@ async function initVoice(
     } else if (event === 'mls_request_join_all') {
       if (!useCryptoStore.getState().hasGroup(topic)) {
         maybeRequestVoiceMlsJoin(topic)
+        maybeRequestVoiceMlsResync(topic, 'missing_state')
       }
     } else if (event === 'mls_request_join') {
       handleVoiceMlsJoinRequest(roomId, data, topic)
+    } else if (event === 'mls_resync_request') {
+      await processVoiceMlsResyncRequest(topic, {
+        id: data.id as string | undefined,
+        requester_id: data.user_id as string,
+        requester_username: (data.username as string | undefined) ?? undefined,
+        request_id: data.request_id as string | undefined,
+        last_known_epoch: (data.last_known_epoch as number | null | undefined) ?? null,
+        reason: (data.reason as string | null | undefined) ?? null
+      })
     } else if (event === 'mls_commit') {
       const senderId = data.sender_id as string
       const userId = useAuthStore.getState().user?.id
@@ -1293,7 +1389,12 @@ async function initVoice(
         await crypto.handleCommit(topic, data.commit_data as string)
         // Key rotation — derive new voice key
         const newKey = await crypto.getVoiceKey(topic)
-        if (newKey) voiceEncryption?.setKey(newKey)
+        if (newKey) {
+          voiceEncryption?.setKey(newKey)
+          await processPendingVoiceMlsResyncRequests(topic)
+        } else if (crypto.hasGroup(topic)) {
+          maybeRequestVoiceMlsResync(topic, 'voice_key_missing')
+        }
       }
     } else if (event === 'mls_welcome') {
       const recipientId = data.recipient_id as string
@@ -1303,7 +1404,25 @@ async function initVoice(
         const processed = await crypto.handleWelcome(topic, data.welcome_data as string)
         if (processed) {
           const voiceKey = await crypto.getVoiceKey(topic)
-          if (voiceKey) voiceEncryption?.setKey(voiceKey)
+          if (voiceKey) {
+            voiceEncryption?.setKey(voiceKey)
+            await processPendingVoiceMlsResyncRequests(topic)
+          } else {
+            maybeRequestVoiceMlsResync(topic, 'voice_key_missing')
+          }
+        }
+      }
+    } else if (event === 'mls_remove') {
+      const userId = useAuthStore.getState().user?.id
+      const removedId = data.removed_user_id as string
+      if (removedId === userId) {
+        await useCryptoStore.getState().resetGroup(topic)
+      } else if (data.commit_data) {
+        const crypto = useCryptoStore.getState()
+        await crypto.handleCommit(topic, data.commit_data as string)
+        const voiceKey = await crypto.getVoiceKey(topic)
+        if (voiceKey) {
+          voiceEncryption?.setKey(voiceKey)
         }
       }
     } else if (event === 'join_error') {
@@ -1352,6 +1471,8 @@ async function setupVoiceE2EE(
       if (crypto.hasGroup(topic)) {
         pushToChannel(topic, 'mls_request_join_all', {})
       }
+    } else {
+      maybeRequestVoiceMlsResync(topic, 'missing_state')
     }
   }
 
@@ -1359,7 +1480,11 @@ async function setupVoiceE2EE(
   const voiceKey = await crypto.getVoiceKey(topic)
   if (voiceKey) {
     voiceEncryption?.setKey(voiceKey)
+  } else if (crypto.hasGroup(topic)) {
+    maybeRequestVoiceMlsResync(topic, 'voice_key_missing')
   }
+
+  await processPendingVoiceMlsResyncRequests(topic)
 }
 
 async function handleVoiceMlsJoinRequest(

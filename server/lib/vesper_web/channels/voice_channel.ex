@@ -127,9 +127,63 @@ defmodule VesperWeb.VoiceChannel do
     {:noreply, socket}
   end
 
+  def handle_in("mls_resync_request", payload, socket) when is_map(payload) do
+    case normalize_resync_request(payload) do
+      {:ok, attrs} ->
+        room_id = socket.assigns.room_id
+        room_type = socket.assigns.room_type
+        group_id = voice_group_id(room_id, room_type)
+
+        case Encryption.store_pending_resync_request(
+               %{
+                 group_id: group_id,
+                 request_id: attrs.request_id,
+                 requester_id: socket.assigns.user_id,
+                 requester_username: socket.assigns.username,
+                 last_known_epoch: attrs.last_known_epoch,
+                 reason: attrs.reason
+               }
+               |> put_voice_scope(room_id, room_type)
+             ) do
+          {:ok, request} ->
+            broadcast_from!(socket, "mls_resync_request", %{
+              id: request.id,
+              user_id: socket.assigns.user_id,
+              username: socket.assigns.username,
+              request_id: request.request_id,
+              last_known_epoch: request.last_known_epoch,
+              reason: request.reason
+            })
+
+            {:noreply, socket}
+
+          {:error, _changeset} ->
+            {:reply, {:error, %{reason: "could not store resync request"}}, socket}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, %{reason: reason}}, socket}
+    end
+  end
+
   def handle_in("mls_commit", %{"commit_data" => commit_data}, socket)
       when is_binary(commit_data) do
     broadcast!(socket, "mls_commit", %{
+      commit_data: commit_data,
+      sender_id: socket.assigns.user_id
+    })
+
+    {:noreply, socket}
+  end
+
+  def handle_in(
+        "mls_remove",
+        %{"removed_user_id" => removed_user_id, "commit_data" => commit_data},
+        socket
+      )
+      when is_binary(removed_user_id) and is_binary(commit_data) do
+    broadcast!(socket, "mls_remove", %{
+      removed_user_id: removed_user_id,
       commit_data: commit_data,
       sender_id: socket.assigns.user_id
     })
@@ -224,6 +278,7 @@ defmodule VesperWeb.VoiceChannel do
       publish_map: publish_map,
       e2ee_creator_id: preferred_creator_id(socket.assigns.room_id, socket.assigns.user_id)
     })
+
     {:noreply, socket}
   end
 
@@ -258,6 +313,31 @@ defmodule VesperWeb.VoiceChannel do
 
   defp put_voice_scope(attrs, room_id, :dm) do
     Map.put(attrs, :conversation_id, room_id)
+  end
+
+  defp normalize_resync_request(payload) do
+    request_id = Map.get(payload, "request_id")
+    last_known_epoch = Map.get(payload, "last_known_epoch")
+    reason = Map.get(payload, "reason")
+
+    cond do
+      not is_binary(request_id) ->
+        {:error, "missing request_id"}
+
+      not (is_nil(last_known_epoch) or is_integer(last_known_epoch)) ->
+        {:error, "invalid last_known_epoch"}
+
+      not (is_nil(reason) or is_binary(reason)) ->
+        {:error, "invalid reason"}
+
+      true ->
+        {:ok,
+         %{
+           request_id: request_id,
+           last_known_epoch: last_known_epoch,
+           reason: reason
+         }}
+    end
   end
 
   defp voice_group_id(room_id, room_type) do
