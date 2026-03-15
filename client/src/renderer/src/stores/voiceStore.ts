@@ -598,6 +598,20 @@ function startStatsPolling(
   }, 3000)
 }
 
+function ensureTrustedVoiceDevice(
+  set: (partial: Partial<VoiceState>) => void
+): boolean {
+  if (useAuthStore.getState().canUseE2EE) {
+    return true
+  }
+
+  set({
+    state: 'idle',
+    errorMessage: 'Approve this device to join encrypted calls.'
+  })
+  return false
+}
+
 export const useVoiceStore = create<VoiceState>((set, get) => ({
   state: 'idle',
   roomId: null,
@@ -634,6 +648,10 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   ...buildResetConnectionStats(),
 
   joinVoiceChannel: async (channelId) => {
+    if (!ensureTrustedVoiceDevice(set)) {
+      return
+    }
+
     // If already in voice, disconnect first
     if (get().state !== 'idle') {
       cleanup(get)
@@ -663,6 +681,10 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   },
 
   startDmCall: async (conversationId) => {
+    if (!ensureTrustedVoiceDevice(set)) {
+      return
+    }
+
     if (get().state !== 'idle') {
       cleanup(get)
     }
@@ -696,6 +718,10 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   },
 
   acceptCall: async (conversationId) => {
+    if (!ensureTrustedVoiceDevice(set)) {
+      return
+    }
+
     set({
       state: 'connecting',
       roomId: conversationId,
@@ -1540,6 +1566,10 @@ async function setupVoiceE2EE(
   topic: string,
   preferredCreatorId?: string
 ): Promise<void> {
+  if (!useAuthStore.getState().canUseE2EE) {
+    return
+  }
+
   await ensureVoiceGroupReady(topic, preferredCreatorId)
 
   if (await applyVoiceKeyIfAvailable(topic)) {

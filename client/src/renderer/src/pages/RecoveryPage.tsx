@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import { Star, KeyRound, Lock, Loader2, ArrowLeft } from 'lucide-react'
 import { apiFetch, setTokens } from '../api/client'
+import { getLocalDeviceIdentity } from '../auth/deviceIdentity'
 import { connectSocket } from '../api/socket'
 import { uint8ToBase64, base64ToUint8 } from '../api/crypto'
 import { decryptWithRecoveryKey, createEncryptedKeyBundle, recoveryKeyToBytes } from '../crypto/identity'
-import { saveIdentity } from '../crypto/storage'
+import { initStorage, saveIdentity } from '../crypto/storage'
 import { useAuthStore } from '../stores/authStore'
 
 interface Props {
@@ -79,12 +80,16 @@ export default function RecoveryPage({ onBack }: Props): React.JSX.Element {
 
     try {
       const newBundle = await createEncryptedKeyBundle(privateKeys, newPassword)
+      const device = getLocalDeviceIdentity()
 
       const res = await apiFetch('/api/v1/auth/recover/reset', {
         method: 'POST',
         body: JSON.stringify({
           recovery_key_hash: recoveryKeyHash,
           new_password: newPassword,
+          device_id: device.id,
+          device_name: device.name,
+          device_platform: device.platform,
           encrypted_key_bundle: uint8ToBase64(newBundle.ciphertext),
           key_bundle_nonce: uint8ToBase64(newBundle.nonce),
           key_bundle_salt: uint8ToBase64(newBundle.salt)
@@ -99,22 +104,29 @@ export default function RecoveryPage({ onBack }: Props): React.JSX.Element {
       }
 
       setTokens(data.access_token, data.refresh_token)
-      connectSocket(data.access_token)
+      connectSocket()
+      initStorage(data.user.id)
 
       await saveIdentity(
         data.user.id,
-        new Uint8Array(0),
-        new Uint8Array(0),
+        data.public_identity_key ? base64ToUint8(data.public_identity_key) : new Uint8Array(0),
+        data.public_key_exchange ? base64ToUint8(data.public_key_exchange) : new Uint8Array(0),
         newBundle.ciphertext,
         newBundle.nonce,
-        newBundle.salt
+        newBundle.salt,
+        privateKeys
       )
 
       useAuthStore.setState({
         user: data.user,
+        currentDevice: data.current_device ?? null,
+        devices: data.current_device ? [data.current_device] : [],
         isAuthenticated: true,
-        error: null
+        error: null,
+        canUseE2EE: true
       })
+      await useAuthStore.getState().fetchDevices()
+      await useAuthStore.getState().replenishKeyPackages()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to set new password')
     }

@@ -26,6 +26,7 @@ defmodule Vesper.Accounts.User do
 
     has_many :memberships, Vesper.Servers.Membership
     has_many :servers, through: [:memberships, :server]
+    has_many :devices, Vesper.Accounts.Device
 
     timestamps(type: :utc_datetime)
   end

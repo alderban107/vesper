@@ -6,6 +6,7 @@ import RegisterPage from './pages/RegisterPage'
 import RecoveryPage from './pages/RecoveryPage'
 import MainPage from './pages/MainPage'
 import RecoveryKeyModal from './components/auth/RecoveryKeyModal'
+import DeviceTrustGate from './components/auth/DeviceTrustGate'
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state: { error: Error | null } = { error: null }
@@ -82,6 +83,7 @@ function App(): React.JSX.Element {
   return (
     <>
       <MainPage />
+      <DeviceTrustGate />
       {recoveryMnemonic && (
         <RecoveryKeyModal
           mnemonic={recoveryMnemonic}

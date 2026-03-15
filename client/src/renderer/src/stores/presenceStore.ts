@@ -123,6 +123,27 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
             useUnreadStore.getState().incrementDm(data.conversation_id)
           }
         })
+      } else if (event === 'device_approval_requested' || event === 'device_updated') {
+        import('./authStore').then(({ useAuthStore }) => {
+          const data = payload as {
+            device?: {
+              id: string
+              client_id: string
+              name: string
+              platform: string | null
+              trust_state: 'pending' | 'trusted' | 'revoked'
+              approval_method: string | null
+              trusted_at: string | null
+              revoked_at: string | null
+              last_seen_at: string | null
+              inserted_at: string
+            }
+          }
+
+          if (data.device) {
+            void useAuthStore.getState().handleDeviceEvent(data.device)
+          }
+        })
       }
     })
 

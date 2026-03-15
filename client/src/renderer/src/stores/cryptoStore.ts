@@ -93,6 +93,10 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
   pendingCommits: {},
 
   ensureGroupMembership: async (channelId) => {
+    if (!useAuthStore.getState().canUseE2EE) {
+      return
+    }
+
     // Already have state in memory
     if (get().groupStates[channelId]) {
       const pending = get().pendingCommits[channelId] ?? []
@@ -152,6 +156,7 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
   },
 
   createGroup: async (channelId) => {
+    if (!useAuthStore.getState().canUseE2EE) return
     if (get().groupStates[channelId] || get().groupSetupInProgress[channelId]) return
 
     await withGroupLock(channelId, async () => {
@@ -206,6 +211,7 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
   },
 
   handleJoinRequest: async (channelId, userId, username) => {
+    if (!useAuthStore.getState().canUseE2EE) return null
     if (!get().groupStates[channelId]) return // We're not the group owner / don't have state
 
     return withGroupLock(channelId, async () => {
@@ -277,6 +283,7 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
   },
 
   handleResyncRequest: async (channelId, userId, username) => {
+    if (!useAuthStore.getState().canUseE2EE) return
     if (!get().groupStates[channelId]) return
 
     return withGroupLock(channelId, async () => {
@@ -352,6 +359,10 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
   },
 
   handleWelcome: async (channelId, welcomeData) => {
+    if (!useAuthStore.getState().canUseE2EE) {
+      return false
+    }
+
     return withGroupLock(channelId, async () => {
       try {
         await initCipherSuite()
@@ -407,6 +418,10 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
   },
 
   handleCommit: async (channelId, commitData) => {
+    if (!useAuthStore.getState().canUseE2EE) {
+      return
+    }
+
     if (!get().groupStates[channelId]) {
       const existing = get().pendingCommits[channelId] ?? []
       if (!existing.includes(commitData)) {
@@ -473,6 +488,7 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
   },
 
   encryptForChannel: async (channelId, plaintext) => {
+    if (!useAuthStore.getState().canUseE2EE) return null
     if (!get().groupStates[channelId]) return null
 
     return withGroupLock(channelId, async () => {
@@ -510,6 +526,7 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
   },
 
   decryptForChannel: async (channelId, ciphertext) => {
+    if (!useAuthStore.getState().canUseE2EE) return null
     if (!get().groupStates[channelId]) return null
 
     return withGroupLock(channelId, async () => {
@@ -570,6 +587,7 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
   },
 
   getVoiceKey: async (channelId) => {
+    if (!useAuthStore.getState().canUseE2EE) return null
     const state = get().groupStates[channelId]
     if (!state) return null
 

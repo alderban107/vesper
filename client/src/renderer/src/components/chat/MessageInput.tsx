@@ -11,6 +11,7 @@ import { encryptFile } from '../../crypto/fileEncryption'
 import { encodePayload } from '../../crypto/payload'
 import { useCryptoStore } from '../../stores/cryptoStore'
 import { pushToChannel } from '../../api/socket'
+import { useAuthStore } from '../../stores/authStore'
 import EmojiPicker from './EmojiPicker'
 import MentionAutocomplete from './MentionAutocomplete'
 import ComposerShell from './message/ComposerShell'
@@ -29,6 +30,7 @@ export default function MessageInput(): React.JSX.Element {
   const replyingTo = useMessageStore((s) => s.replyingTo)
   const setReplyingTo = useMessageStore((s) => s.setReplyingTo)
   const encryptionError = useMessageStore((s) => s.encryptionError)
+  const canUseE2EE = useAuthStore((s) => s.canUseE2EE)
 
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isTypingRef = useRef(false)
@@ -118,6 +120,13 @@ export default function MessageInput(): React.JSX.Element {
 
   const uploadFile = async (file: File): Promise<void> => {
     if (!activeChannelId) return
+    if (!canUseE2EE) {
+      useMessageStore.setState({
+        encryptionError: 'Approve this device to send encrypted messages.'
+      })
+      return
+    }
+
     setUploading(true)
     try {
       const fileData = await file.arrayBuffer()

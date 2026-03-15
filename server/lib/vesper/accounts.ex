@@ -1,12 +1,26 @@
 defmodule Vesper.Accounts do
   import Ecto.Query
   alias Vesper.Repo
-  alias Vesper.Accounts.{SearchIndexSnapshot, User, UserToken, Token}
+  alias Vesper.Accounts.{Device, SearchIndexSnapshot, Token, User, UserToken}
 
   def get_user(id), do: Repo.get(User, id)
 
+  def get_device(id), do: Repo.get(Device, id)
+
+  def get_user_device(user_id, device_id) do
+    Repo.get_by(Device, id: device_id, user_id: user_id)
+  end
+
   def get_user_by_username(username) do
     Repo.get_by(User, username: username)
+  end
+
+  def list_devices(user_id) do
+    from(d in Device,
+      where: d.user_id == ^user_id,
+      order_by: [desc: d.inserted_at]
+    )
+    |> Repo.all()
   end
 
   def register_user(attrs) do
@@ -25,16 +39,17 @@ defmodule Vesper.Accounts do
     end
   end
 
-  def create_tokens(user) do
-    with {:ok, access_token, _claims} <- Token.generate_access_token(user) do
-      refresh_token_record = UserToken.build_refresh_token(user)
+  def create_tokens(user, device) do
+    with {:ok, access_token, _claims} <- Token.generate_access_token(user, device) do
+      refresh_token_record = UserToken.build_refresh_token(user, device)
       Repo.insert!(refresh_token_record)
 
       {:ok,
        %{
          access_token: access_token,
          refresh_token: Base.url_encode64(refresh_token_record.token),
-         expires_in: Token.access_token_ttl()
+         expires_in: Token.access_token_ttl(),
+         current_device: device
        }}
     end
   end
@@ -43,10 +58,13 @@ defmodule Vesper.Accounts do
     with {:ok, raw_token} <- Base.url_decode64(refresh_token_b64),
          token_record when not is_nil(token_record) <-
            Repo.one(UserToken.valid_refresh_token_query(raw_token)),
-         user when not is_nil(user) <- get_user(token_record.user_id) do
+         user when not is_nil(user) <- get_user(token_record.user_id),
+         device when not is_nil(device) <- get_user_device(user.id, token_record.device_id),
+         false <- device_revoked?(device) do
       # Rotate: delete old token, create new pair
       Repo.delete!(token_record)
-      create_tokens(user)
+      touch_device(device)
+      create_tokens(user, device)
     else
       _ -> {:error, :invalid_token}
     end
@@ -70,6 +88,13 @@ defmodule Vesper.Accounts do
     :ok
   end
 
+  def revoke_device_tokens(device_id) do
+    from(t in UserToken, where: t.device_id == ^device_id)
+    |> Repo.delete_all()
+
+    :ok
+  end
+
   def update_profile(user, attrs) do
     user
     |> User.profile_changeset(attrs)
@@ -79,6 +104,101 @@ defmodule Vesper.Accounts do
   def update_key_bundle(user, attrs) do
     user
     |> User.crypto_changeset(attrs)
+    |> Repo.update()
+  end
+
+  def ensure_device(user, attrs, trust_state, approval_method \\ nil) do
+    client_id = attrs[:client_id]
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    case Repo.get_by(Device, user_id: user.id, client_id: client_id) do
+      nil ->
+        %Device{}
+        |> Device.changeset(%{
+          user_id: user.id,
+          client_id: client_id,
+          name: attrs[:name],
+          platform: attrs[:platform],
+          trust_state: trust_state,
+          approval_method: approval_method,
+          trusted_at: if(trust_state == "trusted", do: now),
+          revoked_at: if(trust_state == "revoked", do: now),
+          last_seen_at: now
+        })
+        |> Repo.insert()
+
+      %Device{} = device ->
+        device
+        |> Device.changeset(%{
+          name: attrs[:name] || device.name,
+          platform: attrs[:platform] || device.platform,
+          trust_state: normalize_existing_trust_state(device, trust_state),
+          approval_method: approval_method || device.approval_method,
+          trusted_at: trusted_at_for_update(device, trust_state, now),
+          revoked_at: revoked_at_for_update(device, trust_state, now),
+          last_seen_at: now
+        })
+        |> Repo.update()
+    end
+  end
+
+  def approve_device(user_id, device_id, approval_method \\ "trusted_device") do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    case get_user_device(user_id, device_id) do
+      nil ->
+        {:error, :not_found}
+
+      %Device{} = device ->
+        device
+        |> Device.changeset(%{
+          trust_state: "trusted",
+          approval_method: approval_method,
+          trusted_at: now,
+          revoked_at: nil,
+          last_seen_at: now
+        })
+        |> Repo.update()
+    end
+  end
+
+  def revoke_device(user_id, device_id) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    case get_user_device(user_id, device_id) do
+      nil ->
+        {:error, :not_found}
+
+      %Device{} = device ->
+        result =
+          device
+          |> Device.changeset(%{
+            trust_state: "revoked",
+            revoked_at: now
+          })
+          |> Repo.update()
+
+        if match?({:ok, _}, result) do
+          revoke_device_tokens(device_id)
+        end
+
+        result
+    end
+  end
+
+  def approve_current_device_with_recovery(user, device_id, recovery_key_hash) do
+    cond do
+      user.recovery_key_hash != recovery_key_hash ->
+        {:error, :not_found}
+
+      true ->
+        approve_device(user.id, device_id, "recovery_key")
+    end
+  end
+
+  def touch_device(%Device{} = device) do
+    device
+    |> Device.changeset(%{last_seen_at: DateTime.utc_now() |> DateTime.truncate(:second)})
     |> Repo.update()
   end
 
@@ -219,5 +339,43 @@ defmodule Vesper.Accounts do
       {:user_id, {_message, meta}} -> meta[:constraint] == :unique
       _ -> false
     end)
+  end
+
+  defp normalize_existing_trust_state(%Device{trust_state: "trusted"} = device, _trust_state)
+       when is_nil(device.revoked_at),
+       do: "trusted"
+
+  defp normalize_existing_trust_state(%Device{trust_state: "revoked"}, "trusted"), do: "trusted"
+  defp normalize_existing_trust_state(%Device{trust_state: "revoked"}, "pending"), do: "pending"
+
+  defp normalize_existing_trust_state(%Device{trust_state: "revoked"}, _trust_state),
+    do: "revoked"
+
+  defp normalize_existing_trust_state(_device, trust_state), do: trust_state
+
+  defp trusted_at_for_update(
+         %Device{trust_state: "trusted", trusted_at: trusted_at},
+         _trust_state,
+         _now
+       ),
+       do: trusted_at
+
+  defp trusted_at_for_update(_device, "trusted", now), do: now
+  defp trusted_at_for_update(%Device{trusted_at: trusted_at}, _trust_state, _now), do: trusted_at
+
+  defp revoked_at_for_update(%Device{trust_state: "revoked"}, "pending", _now), do: nil
+
+  defp revoked_at_for_update(
+         %Device{trust_state: "revoked", revoked_at: revoked_at},
+         _trust_state,
+         _now
+       ),
+       do: revoked_at
+
+  defp revoked_at_for_update(_device, "revoked", now), do: now
+  defp revoked_at_for_update(_device, _trust_state, _now), do: nil
+
+  defp device_revoked?(%Device{} = device) do
+    device.trust_state == "revoked" or not is_nil(device.revoked_at)
   end
 end

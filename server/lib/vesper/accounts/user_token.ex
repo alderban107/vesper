@@ -13,19 +13,22 @@ defmodule Vesper.Accounts.UserToken do
     field :sent_to, :string
 
     belongs_to :user, Vesper.Accounts.User
+    belongs_to :device, Vesper.Accounts.Device
 
     field :inserted_at, :utc_datetime
   end
 
   def refresh_token_validity_days, do: @refresh_token_validity_days
 
-  def build_refresh_token(user) do
+  def build_refresh_token(user, device) do
     token = :crypto.strong_rand_bytes(32)
 
     %__MODULE__{
       token: token,
       context: "refresh",
       user_id: user.id,
+      device_id: device.id,
+      device_name: device.name,
       inserted_at: DateTime.utc_now() |> DateTime.truncate(:second)
     }
   end

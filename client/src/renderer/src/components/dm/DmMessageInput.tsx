@@ -23,6 +23,7 @@ export default function DmMessageInput(): React.JSX.Element {
   const replyingTo = useMessageStore((s) => s.replyingTo)
   const setReplyingTo = useMessageStore((s) => s.setReplyingTo)
   const encryptionError = useMessageStore((s) => s.encryptionError)
+  const canUseE2EE = useAuthStore((s) => s.canUseE2EE)
 
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isTypingRef = useRef(false)
@@ -76,6 +77,13 @@ export default function DmMessageInput(): React.JSX.Element {
 
   const uploadFile = async (file: File): Promise<void> => {
     if (!file || !conversationId) return
+    if (!canUseE2EE) {
+      useMessageStore.setState({
+        encryptionError: 'Approve this device to send encrypted messages.'
+      })
+      return
+    }
+
     setUploading(true)
     try {
       const fileData = await file.arrayBuffer()

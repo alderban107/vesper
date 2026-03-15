@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Bell, Globe, Mic, Moon, Palette, RefreshCw, Shield, SlidersHorizontal, Sparkles, Sun, UserRound, Volume2 } from 'lucide-react'
+import { getLocalDeviceIdentity } from '../../auth/deviceIdentity'
 import { usePresenceStore } from '../../stores/presenceStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useSettingsStore } from '../../stores/settingsStore'
@@ -263,10 +264,18 @@ export default function SettingsModal(): React.JSX.Element {
   const setNoiseGateEnabled = useVoiceStore((s) => s.setNoiseGateEnabled)
   const setNoiseGateThresholdDb = useVoiceStore((s) => s.setNoiseGateThresholdDb)
   const user = useAuthStore((s) => s.user)
+  const currentDevice = useAuthStore((s) => s.currentDevice)
+  const devices = useAuthStore((s) => s.devices)
+  const canUseE2EE = useAuthStore((s) => s.canUseE2EE)
+  const authError = useAuthStore((s) => s.error)
   const updateProfile = useAuthStore((s) => s.updateProfile)
   const uploadAvatar = useAuthStore((s) => s.uploadAvatar)
   const uploadBanner = useAuthStore((s) => s.uploadBanner)
+  const fetchDevices = useAuthStore((s) => s.fetchDevices)
+  const approveDevice = useAuthStore((s) => s.approveDevice)
+  const revokeDevice = useAuthStore((s) => s.revokeDevice)
   const myStatus = usePresenceStore((s) => s.myStatus)
+  const localDevice = getLocalDeviceIdentity()
 
   const avatarInputRef = useRef<HTMLInputElement>(null)
   const bannerInputRef = useRef<HTMLInputElement>(null)
@@ -297,6 +306,10 @@ export default function SettingsModal(): React.JSX.Element {
   useEffect(() => {
     setDisplayName(user?.display_name || '')
   }, [user?.display_name])
+
+  useEffect(() => {
+    void fetchDevices().catch(() => {})
+  }, [fetchDevices])
 
   const sections: SettingsSectionGroup[] = [
     {
@@ -974,7 +987,99 @@ export default function SettingsModal(): React.JSX.Element {
           <div className="vesper-settings-page-header">
             <div>
               <h1 className="vesper-settings-page-title">Advanced</h1>
-              <p className="vesper-settings-page-description">Point the client at a different server environment.</p>
+              <p className="vesper-settings-page-description">Manage this device and point the client at a different server environment.</p>
+            </div>
+          </div>
+
+          <div className="vesper-settings-card">
+            <div className="vesper-settings-card-header-row">
+              <div>
+                <div className="vesper-settings-row-title">Your Devices</div>
+                <div className="vesper-settings-row-copy">Approve new devices here and keep track of where your encrypted chats are available.</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  void fetchDevices()
+                }}
+                className="vesper-settings-icon-button"
+                title="Refresh devices"
+              >
+                <RefreshCw className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="vesper-settings-note-pill">
+              <Shield className="w-4 h-4" />
+              <span>
+                {currentDevice?.trust_state === 'trusted'
+                  ? canUseE2EE
+                    ? 'Encrypted chats are ready on this device.'
+                    : 'This device is approved, but it still needs to be unlocked to open encrypted chats.'
+                  : 'This device still needs approval before it can open encrypted chats.'}
+              </span>
+            </div>
+
+            {authError && (
+              <div className="vesper-settings-feedback vesper-settings-feedback-error">
+                {authError}
+              </div>
+            )}
+
+            <div className="vesper-settings-stack">
+              {devices.length === 0 ? (
+                <div className="vesper-settings-helper">No devices yet.</div>
+              ) : (
+                devices.map((device) => (
+                  <div key={device.id} className="vesper-settings-row">
+                    <div>
+                      <div className="vesper-settings-row-title">
+                        {device.name}
+                        {device.client_id === localDevice.id ? ' • This device' : ''}
+                      </div>
+                      <div className="vesper-settings-row-copy">
+                        {[device.platform, device.trust_state === 'trusted'
+                          ? 'Approved'
+                          : device.trust_state === 'pending'
+                            ? 'Waiting for approval'
+                            : 'Removed']
+                          .filter(Boolean)
+                          .join(' • ')}
+                      </div>
+                    </div>
+                    {device.client_id === localDevice.id ? (
+                      <span className="vesper-settings-helper">
+                        {currentDevice?.trust_state === 'trusted' ? 'Current' : 'Needs approval'}
+                      </span>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        {device.trust_state === 'pending' && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void approveDevice(device.id)
+                            }}
+                            className="vesper-settings-secondary-button"
+                          >
+                            Approve
+                          </button>
+                        )}
+                        {device.trust_state !== 'revoked' && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void revokeDevice(device.id)
+                            }}
+                            className="vesper-settings-secondary-button"
+                          >
+                            Remove
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))
+              )}
             </div>
           </div>
 

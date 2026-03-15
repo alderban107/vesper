@@ -55,7 +55,8 @@ export function joinChannel(
     'message_pinned', 'message_unpinned',
     'mention',
     'new_conversation', 'dm_message',
-    'unread_update', 'dm_unread_update'
+    'unread_update', 'dm_unread_update',
+    'device_approval_requested', 'device_updated'
   ]
   for (const event of CHAT_EVENTS) {
     channel.on(event, (payload) => onMessage(event, payload))

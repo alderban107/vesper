@@ -15,16 +15,33 @@ defmodule VesperWeb.UserSocket do
     case Token.verify_access_token(token) do
       {:ok, claims} ->
         user_id = claims["sub"]
+        device_id = claims["device_id"]
         # Pre-load username for typing indicators so channels don't need per-event DB lookups
         user = Vesper.Accounts.get_user(user_id)
 
-        socket =
-          socket
-          |> assign(:user_id, user_id)
-          |> assign(:username, user && user.username)
-          |> assign(:display_name, user && user.display_name)
+        device =
+          if is_binary(device_id),
+            do: Vesper.Accounts.get_user_device(user_id, device_id),
+            else: nil
 
-        {:ok, socket}
+        cond do
+          is_nil(user) or is_nil(device) ->
+            :error
+
+          device.trust_state == "revoked" or not is_nil(device.revoked_at) ->
+            :error
+
+          true ->
+            socket =
+              socket
+              |> assign(:user_id, user_id)
+              |> assign(:device_id, device.id)
+              |> assign(:device_trust_state, device.trust_state)
+              |> assign(:username, user.username)
+              |> assign(:display_name, user.display_name)
+
+            {:ok, socket}
+        end
 
       {:error, _} ->
         :error
@@ -34,5 +51,5 @@ defmodule VesperWeb.UserSocket do
   def connect(_params, _socket, _connect_info), do: :error
 
   @impl true
-  def id(socket), do: "user_socket:#{socket.assigns.user_id}"
+  def id(socket), do: "user_socket:#{socket.assigns.user_id}:#{socket.assigns.device_id}"
 end

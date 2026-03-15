@@ -9,6 +9,10 @@ defmodule VesperWeb.Router do
     plug(VesperWeb.Plugs.Auth)
   end
 
+  pipeline :trusted_device do
+    plug(VesperWeb.Plugs.RequireTrustedDevice)
+  end
+
   # Health check — no auth, no pipeline
   scope "/", VesperWeb do
     get("/health", HealthController, :check)
@@ -39,6 +43,14 @@ defmodule VesperWeb.Router do
     pipe_through([:api, :authenticated])
 
     get("/auth/me", AuthController, :me)
+    get("/auth/devices", AuthController, :devices)
+
+    post(
+      "/auth/devices/approve-with-recovery",
+      AuthController,
+      :approve_current_device_with_recovery
+    )
+
     put("/auth/profile", AuthController, :update_profile)
     put("/auth/password", AuthController, :change_password)
     post("/auth/avatar", AvatarController, :create)
@@ -99,6 +111,13 @@ defmodule VesperWeb.Router do
 
     # Voice/WebRTC runtime config
     get("/voice/config", VoiceController, :config)
+  end
+
+  scope "/api/v1", VesperWeb do
+    pipe_through([:api, :authenticated, :trusted_device])
+
+    post("/auth/devices/:id/approve", AuthController, :approve_device)
+    post("/auth/devices/:id/revoke", AuthController, :revoke_device)
 
     # Encrypted search index snapshot sync
     get("/search-index", SearchIndexController, :show)

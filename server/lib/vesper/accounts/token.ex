@@ -11,9 +11,11 @@ defmodule Vesper.Accounts.Token do
     |> add_claim("type", fn -> "access" end, &(&1 == "access"))
   end
 
-  def generate_access_token(user) do
+  def generate_access_token(user, device) do
     claims = %{
       "sub" => user.id,
+      "device_id" => device.id,
+      "device_trust_state" => device.trust_state,
       "username" => user.username,
       "type" => "access"
     }

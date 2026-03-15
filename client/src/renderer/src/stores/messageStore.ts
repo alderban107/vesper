@@ -41,6 +41,7 @@ const MLS_RESYNC_REQUEST_COOLDOWN_MS = 5000
 const recentMlsResyncRequests = new Map<string, number>()
 const MLS_RECOVERY_BACKOFF_MS = [150, 500, 1500] as const
 const ENCRYPTED_MESSAGE_SYNCING_PLACEHOLDER = 'Encrypted message is syncing...'
+const ENCRYPTED_MESSAGE_APPROVAL_PLACEHOLDER = 'Approve this device to read encrypted messages.'
 const inFlightScopeRecoveries = new Map<string, Promise<void>>()
 
 export interface MessageSender {
@@ -114,6 +115,10 @@ function getMessageSearchText(message: Message): string {
   ]
 
   return [parsedText, parsedFileName, ...attachmentNames].join(' ').trim()
+}
+
+function canUseEncryptedFeatures(): boolean {
+  return useAuthStore.getState().canUseE2EE
 }
 
 function hasFailedEncryptedMessages(messages: Message[] | undefined): boolean {
@@ -381,6 +386,10 @@ function hasFailedMessagesInScope(
 async function ensureEncryptedScopeMembership(
   scope: EncryptedScopeDescriptor
 ): Promise<void> {
+  if (!canUseEncryptedFeatures()) {
+    return
+  }
+
   const crypto = useCryptoStore.getState()
 
   await crypto.ensureGroupMembership(scope.targetId)
@@ -403,6 +412,10 @@ function requestEncryptedScopeRecovery(
   lastKnownEpoch: number | null,
   reason: string
 ): void {
+  if (!canUseEncryptedFeatures()) {
+    return
+  }
+
   const crypto = useCryptoStore.getState()
 
   if (crypto.hasGroup(scope.targetId)) {
@@ -432,6 +445,10 @@ async function recoverEncryptedScope(
   lastKnownEpoch: number | null,
   reason: string
 ): Promise<void> {
+  if (!canUseEncryptedFeatures()) {
+    return
+  }
+
   const key = getScopeRecoveryKey(scope)
   const existing = inFlightScopeRecoveries.get(key)
   if (existing) {
@@ -487,6 +504,10 @@ function maybeRecoverEncryptedScope(
   lastKnownEpoch: number | null,
   reason: string
 ): void {
+  if (!canUseEncryptedFeatures()) {
+    return
+  }
+
   if (!hasFailedMessagesInScope(scope, getState)) {
     return
   }
@@ -756,22 +777,26 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       }
     })
 
-    useCryptoStore
-      .getState()
-      .ensureGroupMembership(channelId)
-      .then(() => {
-        if (!useCryptoStore.getState().hasGroup(channelId)) {
-          maybeRequestMlsJoin(channelId, topic)
-          maybeRequestMlsResync(channelId, channelId, topic, null, 'missing_state')
-        }
-      })
-      .catch(() => {
-        // Continue without encryption
-      })
-      .finally(() => {
-        get().fetchMessages(channelId)
-        void processPendingMlsResyncRequests(channelId, channelId, topic).catch(() => {})
-      })
+    if (canUseEncryptedFeatures()) {
+      useCryptoStore
+        .getState()
+        .ensureGroupMembership(channelId)
+        .then(() => {
+          if (!useCryptoStore.getState().hasGroup(channelId)) {
+            maybeRequestMlsJoin(channelId, topic)
+            maybeRequestMlsResync(channelId, channelId, topic, null, 'missing_state')
+          }
+        })
+        .catch(() => {
+          // Continue without encryption
+        })
+        .finally(() => {
+          get().fetchMessages(channelId)
+          void processPendingMlsResyncRequests(channelId, channelId, topic).catch(() => {})
+        })
+    } else {
+      void get().fetchMessages(channelId)
+    }
   },
 
   leaveChannelChat: (channelId) => {
@@ -858,6 +883,13 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   },
 
   sendMessage: async (channelId, content, parentMessageId) => {
+    if (!canUseEncryptedFeatures()) {
+      set({
+        encryptionError: 'Approve this device to send encrypted messages.'
+      })
+      return
+    }
+
     const crypto = useCryptoStore.getState()
     const replyingTo = get().replyingTo
     const parentId = parentMessageId ?? replyingTo?.id ?? undefined
@@ -1013,33 +1045,37 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       }
     })
 
-    useCryptoStore
-      .getState()
-      .ensureGroupMembership(conversationId)
-      .then(async () => {
-        if (!useCryptoStore.getState().hasGroup(conversationId)) {
-          const bootstrapped = await bootstrapDmGroupIfLeader(conversationId, topic)
-          if (bootstrapped || useCryptoStore.getState().hasGroup(conversationId)) {
-            return
-          }
+    if (canUseEncryptedFeatures()) {
+      useCryptoStore
+        .getState()
+        .ensureGroupMembership(conversationId)
+        .then(async () => {
+          if (!useCryptoStore.getState().hasGroup(conversationId)) {
+            const bootstrapped = await bootstrapDmGroupIfLeader(conversationId, topic)
+            if (bootstrapped || useCryptoStore.getState().hasGroup(conversationId)) {
+              return
+            }
 
-          maybeRequestMlsJoin(conversationId, topic)
-          maybeRequestMlsResync(
-            conversationId,
-            conversationId,
-            topic,
-            null,
-            'missing_state'
-          )
-        }
-      })
-      .catch(() => {
-        // Continue without encryption
-      })
-      .finally(() => {
-        get().fetchDmMessages(conversationId)
-        void processPendingMlsResyncRequests(conversationId, conversationId, topic).catch(() => {})
-      })
+            maybeRequestMlsJoin(conversationId, topic)
+            maybeRequestMlsResync(
+              conversationId,
+              conversationId,
+              topic,
+              null,
+              'missing_state'
+            )
+          }
+        })
+        .catch(() => {
+          // Continue without encryption
+        })
+        .finally(() => {
+          get().fetchDmMessages(conversationId)
+          void processPendingMlsResyncRequests(conversationId, conversationId, topic).catch(() => {})
+        })
+    } else {
+      void get().fetchDmMessages(conversationId)
+    }
   },
 
   leaveDmChat: (conversationId) => {
@@ -1128,6 +1164,13 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   },
 
   sendDmMessage: async (conversationId, content, parentMessageId) => {
+    if (!canUseEncryptedFeatures()) {
+      set({
+        encryptionError: 'Approve this device to send encrypted messages.'
+      })
+      return
+    }
+
     const crypto = useCryptoStore.getState()
     const topic = `dm:${conversationId}`
     const replyingTo = get().replyingTo
@@ -1329,6 +1372,11 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   setEditingMessage: (message) => set({ editingMessage: message }),
 
   editMessage: async (targetId, topic, messageId, newContent) => {
+    if (!canUseEncryptedFeatures()) {
+      set({ encryptionError: 'Approve this device to edit encrypted messages.' })
+      return
+    }
+
     const crypto = useCryptoStore.getState()
     const payloadStr = encodePayload({ v: 1, type: 'text', text: newContent })
 
@@ -1903,6 +1951,7 @@ async function handleNewMessage(
   }
 
   if (
+    useAuthStore.getState().canUseE2EE &&
     processed.encrypted &&
     processed.decryptionFailed &&
     processed.sender_id !== myId
@@ -1952,13 +2001,16 @@ async function processIncomingMessage(
     const ciphertextB64 = msg.ciphertext as string
     const senderId = (msg.sender_id as string) || null
     const mlsEpoch = (msg.mls_epoch as number) ?? null
+    const canUseE2EE = useAuthStore.getState().canUseE2EE
     const cachedPlaintext =
       getCachedDecryption(messageId) ??
       (await getStoredSentMessage(ciphertextB64)) ??
       (await loadCachedMessageDecryption(messageId))
     const plaintext =
       cachedPlaintext ??
-      (await useCryptoStore.getState().decryptForChannel(targetId, ciphertextB64))
+      (canUseE2EE
+        ? await useCryptoStore.getState().decryptForChannel(targetId, ciphertextB64)
+        : null)
 
     if (plaintext) {
       setCachedDecryption(messageId, plaintext)
@@ -1981,7 +2033,9 @@ async function processIncomingMessage(
       // Keep rendering even if the local ciphertext cache write fails.
     }
 
-    let displayContent = ENCRYPTED_MESSAGE_SYNCING_PLACEHOLDER
+    let displayContent = canUseEncryptedFeatures()
+      ? ENCRYPTED_MESSAGE_SYNCING_PLACEHOLDER
+      : ENCRYPTED_MESSAGE_APPROVAL_PLACEHOLDER
     let searchableText = ''
     if (plaintext) {
       const payload = decodePayload(plaintext)
@@ -2127,21 +2181,25 @@ async function handleMessageEdited(
         }
       }
     } else {
-      newContent = ENCRYPTED_MESSAGE_SYNCING_PLACEHOLDER
-      maybeRecoverEncryptedScope(
-        {
-          kind: typeof msg.channel_id === 'string' ? 'channel' : 'dm',
-          targetId,
-          scopeId: targetId,
-          topic:
-            typeof msg.channel_id === 'string'
-              ? `chat:channel:${targetId}`
-              : `dm:${targetId}`
-        },
-        useMessageStore.getState,
-        (msg.mls_epoch as number | null | undefined) ?? null,
-        'edited_message_decrypt_failed'
-      )
+      newContent = canUseEncryptedFeatures()
+        ? ENCRYPTED_MESSAGE_SYNCING_PLACEHOLDER
+        : ENCRYPTED_MESSAGE_APPROVAL_PLACEHOLDER
+      if (canUseEncryptedFeatures()) {
+        maybeRecoverEncryptedScope(
+          {
+            kind: typeof msg.channel_id === 'string' ? 'channel' : 'dm',
+            targetId,
+            scopeId: targetId,
+            topic:
+              typeof msg.channel_id === 'string'
+                ? `chat:channel:${targetId}`
+                : `dm:${targetId}`
+          },
+          useMessageStore.getState,
+          (msg.mls_epoch as number | null | undefined) ?? null,
+          'edited_message_decrypt_failed'
+        )
+      }
     }
   } else if (msg.content) {
     newContent = msg.content as string
