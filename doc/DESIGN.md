@@ -3,6 +3,13 @@
 > The authoritative reference for all build sessions. No decision should be re-researched
 > if it's covered here. Updated as the project evolves.
 
+Companion docs:
+
+- [E2EE implementation guide](./e2ee/E2EE-IMPLEMENTATION.md)
+- [E2EE requirements](./e2ee/REQUIREMENTS-E2EE.md)
+- [E2EE audit](./e2ee/REQUIREMENTS-E2EE-AUDIT.md)
+- [Matrix core evaluation](./MATRIX-CORE-ANALYSIS.md)
+
 ## 1. Vision & Goals
 
 ### What We're Building

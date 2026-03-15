@@ -62,10 +62,6 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
   const [auditLoading, setAuditLoading] = useState(false)
   const emojiFileInputRef = useRef<HTMLInputElement>(null)
 
-  if (!server || !activeServerId) {
-    return null
-  }
-
   const sections: SettingsSectionGroup[] = [
     {
       title: 'Server Settings',
@@ -87,27 +83,35 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
   }, [server?.id, server?.name])
 
   useEffect(() => {
+    if (!activeServerId) {
+      return
+    }
+
     void fetchMembers(activeServerId)
   }, [activeServerId, fetchMembers])
 
   useEffect(() => {
-    if (activeSection === 'emojis') {
+    if (activeServerId && activeSection === 'emojis') {
       void fetchServerEmojis(activeServerId)
     }
   }, [activeSection, activeServerId, fetchServerEmojis])
 
   useEffect(() => {
-    if (activeSection === 'moderation') {
+    if (activeServerId && activeSection === 'moderation') {
       void fetchBans(activeServerId)
     }
   }, [activeSection, activeServerId, fetchBans])
 
   useEffect(() => {
-    if (activeSection === 'audit') {
+    if (activeServerId && activeSection === 'audit') {
       setAuditLoading(true)
       void fetchAuditLog(activeServerId).finally(() => setAuditLoading(false))
     }
   }, [activeSection, activeServerId, fetchAuditLog])
+
+  if (!server || !activeServerId) {
+    return null
+  }
 
   const handleSaveName = async (): Promise<void> => {
     const trimmed = serverName.trim()

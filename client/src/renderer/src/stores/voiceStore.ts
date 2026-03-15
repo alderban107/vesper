@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import {
+  ackPendingWelcome,
   ackPendingResyncRequest,
   fetchPendingResyncRequests
 } from '../api/crypto'
@@ -1401,8 +1402,12 @@ async function initVoice(
       const userId = useAuthStore.getState().user?.id
       if (recipientId === userId) {
         const crypto = useCryptoStore.getState()
+        const welcomeId = typeof data.id === 'string' ? data.id : null
         const processed = await crypto.handleWelcome(topic, data.welcome_data as string)
         if (processed) {
+          if (welcomeId) {
+            await ackPendingWelcome(welcomeId).catch(() => {})
+          }
           const voiceKey = await crypto.getVoiceKey(topic)
           if (voiceKey) {
             voiceEncryption?.setKey(voiceKey)

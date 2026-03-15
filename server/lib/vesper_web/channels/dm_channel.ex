@@ -372,8 +372,9 @@ defmodule VesperWeb.DmChannel do
                welcome_data: decoded,
                sender_id: sender_id
              }) do
-          {:ok, _welcome} ->
+          {:ok, welcome} ->
             broadcast!(socket, "mls_welcome", %{
+              id: welcome.id,
               recipient_id: recipient_id,
               welcome_data: welcome_data,
               sender_id: sender_id

@@ -16,6 +16,7 @@ import {
   removeFromFtsIndex
 } from '../crypto/storage'
 import {
+  ackPendingWelcome,
   ackPendingResyncRequest,
   base64ToUint8,
   fetchPendingResyncRequests
@@ -236,6 +237,93 @@ async function waitForChannelBootstrap(
 
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
+}
+
+function getDmConversation(conversationId: string) {
+  return useDmStore
+    .getState()
+    .conversations.find((conversation) => conversation.id === conversationId) ?? null
+}
+
+function isDmBootstrapLeader(conversationId: string, userId: string): boolean {
+  const conversation = getDmConversation(conversationId)
+  if (!conversation) {
+    return false
+  }
+
+  const participantIds = conversation.participants
+    .map((participant) => participant.user_id)
+    .sort((left, right) => left.localeCompare(right))
+
+  return participantIds[0] === userId
+}
+
+async function bootstrapDmGroupIfLeader(
+  conversationId: string,
+  topic: string
+): Promise<boolean> {
+  const crypto = useCryptoStore.getState()
+  if (crypto.hasGroup(conversationId)) {
+    return true
+  }
+
+  const userId = useAuthStore.getState().user?.id
+  const conversation = getDmConversation(conversationId)
+
+  if (!userId || !conversation || !isDmBootstrapLeader(conversationId, userId)) {
+    return false
+  }
+
+  await crypto.createGroup(conversationId)
+  if (!useCryptoStore.getState().hasGroup(conversationId)) {
+    return false
+  }
+
+  for (const participant of conversation.participants) {
+    if (participant.user_id === userId) {
+      continue
+    }
+
+    const result = await crypto.handleJoinRequest(
+      conversationId,
+      participant.user_id,
+      participant.user.username
+    )
+
+    if (!result) {
+      continue
+    }
+
+    pushToChannel(topic, 'mls_commit', {
+      commit_data: result.commitBytes
+    })
+
+    if (result.welcomeBytes) {
+      pushToChannel(topic, 'mls_welcome', {
+        recipient_id: participant.user_id,
+        welcome_data: result.welcomeBytes
+      })
+    }
+  }
+
+  return useCryptoStore.getState().hasGroup(conversationId)
+}
+
+async function waitForDmBootstrap(
+  conversationId: string,
+  timeoutMs = 2000
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() < deadline) {
+    if (useCryptoStore.getState().hasGroup(conversationId)) {
+      return true
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+
+  return useCryptoStore.getState().hasGroup(conversationId)
 }
 
 export async function ensureChannelGroupReady(channelId: string): Promise<boolean> {
@@ -488,11 +576,15 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         const recipientId = msg.recipient_id as string
         const userId = useAuthStore.getState().user?.id
         if (recipientId === userId) {
+          const welcomeId = typeof msg.id === 'string' ? msg.id : null
           void useCryptoStore
             .getState()
             .handleWelcome(channelId, msg.welcome_data as string)
             .then(async (processed) => {
               if (processed) {
+                if (welcomeId) {
+                  await ackPendingWelcome(welcomeId).catch(() => {})
+                }
                 await refreshChannelMessagesIfNeeded(channelId, get)
                 await processPendingMlsResyncRequests(channelId, channelId, topic)
               }
@@ -711,11 +803,15 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         const recipientId = msg.recipient_id as string
         const userId = useAuthStore.getState().user?.id
         if (recipientId === userId) {
+          const welcomeId = typeof msg.id === 'string' ? msg.id : null
           void useCryptoStore
             .getState()
             .handleWelcome(conversationId, msg.welcome_data as string)
             .then(async (processed) => {
               if (processed) {
+                if (welcomeId) {
+                  await ackPendingWelcome(welcomeId).catch(() => {})
+                }
                 await refreshDmMessagesIfNeeded(conversationId, get)
                 await processPendingMlsResyncRequests(conversationId, conversationId, topic)
               }
@@ -754,8 +850,13 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     useCryptoStore
       .getState()
       .ensureGroupMembership(conversationId)
-      .then(() => {
+      .then(async () => {
         if (!useCryptoStore.getState().hasGroup(conversationId)) {
+          const bootstrapped = await bootstrapDmGroupIfLeader(conversationId, topic)
+          if (bootstrapped || useCryptoStore.getState().hasGroup(conversationId)) {
+            return
+          }
+
           maybeRequestMlsJoin(conversationId, topic)
           maybeRequestMlsResync(
             conversationId,
@@ -864,55 +965,44 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       return
     }
 
-    // Encryption failed or no group — reset stale state and create fresh group with all members
+    // Encryption failed or no group — reset stale state, then let the elected
+    // DM bootstrap leader recreate the group to avoid split-brain state.
     if (crypto.hasGroup(conversationId)) {
-      crypto.resetGroup(conversationId)
+      await crypto.resetGroup(conversationId)
     }
 
-    await crypto.createGroup(conversationId)
-    if (crypto.hasGroup(conversationId)) {
-      const conversation = useDmStore
-        .getState()
-        .conversations.find((c) => c.id === conversationId)
-      const myId = useAuthStore.getState().user?.id
-      if (conversation && myId) {
-        for (const participant of conversation.participants) {
-          if (participant.user_id === myId) continue
-          const result = await crypto.handleJoinRequest(
-            conversationId,
-            participant.user_id,
-            participant.user.username
-          )
-          if (result) {
-            pushToChannel(topic, 'mls_commit', {
-              commit_data: result.commitBytes
-            })
-            if (result.welcomeBytes) {
-              pushToChannel(topic, 'mls_welcome', {
-                recipient_id: participant.user_id,
-                welcome_data: result.welcomeBytes
-              })
-            }
-          }
-        }
-      }
-
-      const freshEncrypted = await crypto.encryptForChannel(conversationId, payloadStr)
-      if (freshEncrypted) {
-        cacheSentPlaintext(freshEncrypted.ciphertext, content)
-        pushToChannel(topic, 'new_message', {
-          ciphertext: freshEncrypted.ciphertext,
-          mls_epoch: freshEncrypted.epoch,
-          ...(parentId && { parent_message_id: parentId })
-        })
-        if (shouldClearInlineReply) {
-          set({ replyingTo: null })
-        }
-        return
-      }
+    const bootstrapped = await bootstrapDmGroupIfLeader(conversationId, topic)
+    if (!bootstrapped) {
+      maybeRequestMlsJoin(conversationId, topic)
+      maybeRequestMlsResync(
+        conversationId,
+        conversationId,
+        topic,
+        null,
+        'missing_state'
+      )
+      await waitForDmBootstrap(conversationId)
     }
 
-    set({ encryptionError: 'Message could not be encrypted. Please try again.' })
+    const freshEncrypted = useCryptoStore.getState().hasGroup(conversationId)
+      ? await useCryptoStore.getState().encryptForChannel(conversationId, payloadStr)
+      : null
+
+    if (freshEncrypted) {
+      cacheSentPlaintext(freshEncrypted.ciphertext, content)
+      pushToChannel(topic, 'new_message', {
+        ciphertext: freshEncrypted.ciphertext,
+        mls_epoch: freshEncrypted.epoch,
+        ...(parentId && { parent_message_id: parentId })
+      })
+      if (shouldClearInlineReply) {
+        set({ replyingTo: null })
+      }
+      set({ encryptionError: null })
+      return
+    }
+
+    set({ encryptionError: 'Conversation encryption is still syncing. Please try again.' })
   },
 
   sendDmTypingStart: (conversationId) => {

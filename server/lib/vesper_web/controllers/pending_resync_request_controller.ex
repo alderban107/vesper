@@ -30,7 +30,7 @@ defmodule VesperWeb.PendingResyncRequestController do
 
     cond do
       is_nil(request) ->
-        conn |> put_status(:not_found) |> json(%{error: "not found"})
+        json(conn, %{ok: true})
 
       match?({:error, _}, authorized_scope(user.id, request.group_id)) ->
         conn |> put_status(:forbidden) |> json(%{error: "forbidden"})

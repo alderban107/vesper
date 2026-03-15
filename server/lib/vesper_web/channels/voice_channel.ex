@@ -213,8 +213,9 @@ defmodule VesperWeb.VoiceChannel do
                }
                |> put_voice_scope(room_id, room_type)
              ) do
-          {:ok, _welcome} ->
+          {:ok, welcome} ->
             broadcast!(socket, "mls_welcome", %{
+              id: welcome.id,
               recipient_id: recipient_id,
               welcome_data: welcome_data,
               sender_id: sender_id

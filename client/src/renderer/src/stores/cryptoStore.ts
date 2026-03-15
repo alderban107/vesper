@@ -387,9 +387,6 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
                   [channelId]: []
                 }
               }))
-              for (const commitData of pending) {
-                await get().handleCommit(channelId, commitData)
-              }
             }
 
             // Replenish key packages after consuming the matched local package.

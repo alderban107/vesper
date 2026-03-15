@@ -1117,11 +1117,9 @@ defmodule Vesper.Servers do
       is_nil(membership) ->
         0
 
-      membership.role == "owner" ->
-        # Owners have all permissions
-        Permissions.administrator()
-
       true ->
+        base_permissions = default_permissions_for_membership_role(membership.role)
+
         roles =
           from(mr in MemberRole,
             where: mr.membership_id == ^membership.id,
@@ -1131,7 +1129,7 @@ defmodule Vesper.Servers do
           )
           |> Repo.all()
 
-        Permissions.compute_permissions(roles)
+        base_permissions ||| Permissions.compute_permissions(roles)
     end
   end
 
@@ -1459,4 +1457,19 @@ defmodule Vesper.Servers do
 
     :ok
   end
+
+  defp default_permissions_for_membership_role("owner"), do: Permissions.administrator()
+
+  defp default_permissions_for_membership_role("admin"), do: Permissions.administrator()
+
+  defp default_permissions_for_membership_role("moderator") do
+    Permissions.send_messages() |||
+      Permissions.manage_messages() |||
+      Permissions.kick_members() |||
+      Permissions.ban_members()
+  end
+
+  defp default_permissions_for_membership_role("member"), do: Permissions.send_messages()
+
+  defp default_permissions_for_membership_role(_role), do: 0
 end

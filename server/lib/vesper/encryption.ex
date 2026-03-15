@@ -93,9 +93,26 @@ defmodule Vesper.Encryption do
   Store a pending Welcome message for an offline user.
   """
   def store_pending_welcome(attrs) do
-    %PendingWelcome{}
-    |> PendingWelcome.changeset(attrs)
-    |> Repo.insert()
+    Repo.transaction(fn ->
+      recipient_id = Map.get(attrs, :recipient_id) || Map.get(attrs, "recipient_id")
+      group_id = Map.get(attrs, :group_id) || Map.get(attrs, "group_id")
+
+      if recipient_id && group_id do
+        from(
+          pw in PendingWelcome,
+          where: pw.recipient_id == ^recipient_id and pw.group_id == ^group_id
+        )
+        |> Repo.delete_all()
+      end
+
+      %PendingWelcome{}
+      |> PendingWelcome.changeset(attrs)
+      |> Repo.insert!()
+    end)
+    |> case do
+      {:ok, welcome} -> {:ok, welcome}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   @doc """
