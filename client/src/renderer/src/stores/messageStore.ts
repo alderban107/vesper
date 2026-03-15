@@ -7,6 +7,7 @@ import { useVoiceStore } from './voiceStore'
 import { useServerStore } from './serverStore'
 import { useDmStore } from './dmStore'
 import { usePresenceStore } from './presenceStore'
+import { replaceEmojiShortcodes } from '../utils/emoji'
 import {
   cacheMessage as cacheMessageToDb,
   loadCachedMessageDecryption,
@@ -243,10 +244,19 @@ async function waitForChannelBootstrap(
   channelId: string,
   initialMemberCount: number
 ): Promise<void> {
-  const deadline = Date.now() + 1500
+  const deadline = Date.now() + 5000
+  let lastCount = initialMemberCount
+  let lastChangeTime = Date.now()
 
   while (Date.now() < deadline) {
-    if (useCryptoStore.getState().getMemberCount(channelId) > initialMemberCount) {
+    const currentCount = useCryptoStore.getState().getMemberCount(channelId)
+    if (currentCount !== lastCount) {
+      lastCount = currentCount
+      lastChangeTime = Date.now()
+    }
+
+    // Wait for at least one join AND 500ms of stability (no new members)
+    if (currentCount > initialMemberCount && Date.now() - lastChangeTime > 500) {
       return
     }
 
@@ -341,18 +351,91 @@ async function waitForDmBootstrap(
   return useCryptoStore.getState().hasGroup(conversationId)
 }
 
+/**
+ * Force-create the MLS group for a DM conversation, skipping the leader check.
+ * Used as a fallback when the designated leader hasn't bootstrapped the group
+ * (e.g. because they haven't opened the conversation yet).
+ */
+async function forceBootstrapDmGroup(
+  conversationId: string,
+  topic: string
+): Promise<boolean> {
+  const crypto = useCryptoStore.getState()
+  if (crypto.hasGroup(conversationId)) return true
+
+  const userId = useAuthStore.getState().user?.id
+  const conversation = getDmConversation(conversationId)
+  if (!userId || !conversation) return false
+
+  await crypto.createGroup(conversationId)
+  if (!useCryptoStore.getState().hasGroup(conversationId)) return false
+
+  for (const participant of conversation.participants) {
+    if (participant.user_id === userId) continue
+
+    const result = await crypto.handleJoinRequest(
+      conversationId,
+      participant.user_id,
+      participant.user.username
+    )
+
+    if (!result) continue
+
+    pushToChannel(topic, 'mls_commit', {
+      commit_data: result.commitBytes
+    })
+
+    if (result.welcomeBytes) {
+      pushToChannel(topic, 'mls_welcome', {
+        recipient_id: participant.user_id,
+        welcome_data: result.welcomeBytes
+      })
+    }
+  }
+
+  return useCryptoStore.getState().hasGroup(conversationId)
+}
+
 export async function ensureChannelGroupReady(channelId: string): Promise<boolean> {
   const crypto = useCryptoStore.getState()
   if (crypto.hasGroup(channelId)) {
     return true
   }
 
+  // Try to join an existing group first — another member may have already
+  // created one. Check local DB, pending welcomes, etc.
+  await crypto.ensureGroupMembership(channelId)
+  if (useCryptoStore.getState().hasGroup(channelId)) {
+    return true
+  }
+
+  // Ask to join an existing group (bypass cooldown since we're about to send)
+  const topic = `chat:channel:${channelId}`
+  recentMlsJoinRequests.delete(topic)
+  pushToChannel(topic, 'mls_request_join', {})
+
+  // Wait for a welcome — if someone has the group, they'll add us
+  const joinDeadline = Date.now() + 2000
+  while (Date.now() < joinDeadline) {
+    if (useCryptoStore.getState().hasGroup(channelId)) {
+      return true
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+
+  // Last chance: check server-side pending welcomes — the WebSocket
+  // broadcast may have been missed but the server stores welcomes in DB.
+  await useCryptoStore.getState().ensureGroupMembership(channelId)
+  if (useCryptoStore.getState().hasGroup(channelId)) {
+    return true
+  }
+
+  // Nobody responded — create the group ourselves
   await crypto.createGroup(channelId)
   if (!useCryptoStore.getState().hasGroup(channelId)) {
     return false
   }
 
-  const topic = `chat:channel:${channelId}`
   const initialMemberCount = useCryptoStore.getState().getMemberCount(channelId)
   pushToChannel(topic, 'mls_request_join_all', {})
   await waitForChannelBootstrap(channelId, initialMemberCount)
@@ -712,8 +795,13 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         )
       } else if (event === 'mls_request_join_all') {
         if (!useCryptoStore.getState().hasGroup(channelId)) {
+          // mls_request_join_all is a direct invitation from the group creator.
+          // Bypass the cooldown — always respond so the creator can add us.
+          // NOTE: Do NOT send mls_resync_request here — the join request is
+          // sufficient. A resync would cause the leader to remove-then-re-add us,
+          // inflating the epoch and producing stale welcomes.
+          recentMlsJoinRequests.delete(topic)
           maybeRequestMlsJoin(channelId, topic)
-          maybeRequestMlsResync(channelId, channelId, topic, null, 'missing_state')
         }
       } else if (event === 'mls_request_join') {
         handleMlsJoinRequest(channelId, msg, `chat:channel:${channelId}`)
@@ -895,7 +983,11 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const parentId = parentMessageId ?? replyingTo?.id ?? undefined
     const shouldClearInlineReply = !parentMessageId
     const mentionedUserIds = extractMentionedUserIds(content)
-    const payloadStr = encodePayload({ v: 1, type: 'text', text: content })
+    const activeServer = useServerStore.getState().servers.find(
+      (s) => s.id === useServerStore.getState().activeServerId
+    )
+    const resolvedContent = replaceEmojiShortcodes(content, activeServer?.emojis ?? [])
+    const payloadStr = encodePayload({ v: 1, type: 'text', text: resolvedContent })
     const topic = `chat:channel:${channelId}`
 
     if (!crypto.hasGroup(channelId)) {
@@ -909,7 +1001,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     if (crypto.hasGroup(channelId)) {
       const encrypted = await crypto.encryptForChannel(channelId, payloadStr)
       if (encrypted) {
-        cacheSentPlaintext(encrypted.ciphertext, content)
+        cacheSentPlaintext(encrypted.ciphertext, resolvedContent)
         pushToChannel(topic, 'new_message', {
           ciphertext: encrypted.ciphertext,
           mls_epoch: encrypted.epoch,
@@ -1053,6 +1145,12 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           if (!useCryptoStore.getState().hasGroup(conversationId)) {
             const bootstrapped = await bootstrapDmGroupIfLeader(conversationId, topic)
             if (bootstrapped || useCryptoStore.getState().hasGroup(conversationId)) {
+              return
+            }
+
+            // Not the leader — try force-bootstrapping as fallback
+            const forced = await forceBootstrapDmGroup(conversationId, topic)
+            if (forced || useCryptoStore.getState().hasGroup(conversationId)) {
               return
             }
 
@@ -1213,6 +1311,13 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         'missing_state'
       )
       await waitForDmBootstrap(conversationId)
+
+      // If we're still without a group, force-bootstrap regardless of leader
+      // status. The other participant may not have opened the conversation yet
+      // so waiting for them to bootstrap would hang indefinitely.
+      if (!useCryptoStore.getState().hasGroup(conversationId)) {
+        await forceBootstrapDmGroup(conversationId, topic)
+      }
     }
 
     const freshEncrypted = useCryptoStore.getState().hasGroup(conversationId)
@@ -2114,6 +2219,9 @@ async function processIncomingMessage(
   return plaintextMessage
 }
 
+// Per-group lock to serialize MLS join requests — concurrent commits cause epoch conflicts
+const mlsJoinLocks = new Map<string, Promise<void>>()
+
 /**
  * Handle an MLS join request from another user.
  */
@@ -2128,20 +2236,26 @@ async function handleMlsJoinRequest(
 
   if (!crypto.hasGroup(targetId)) return
 
-  const result = await crypto.handleJoinRequest(targetId, userId, username)
+  // Serialize join requests per group to avoid concurrent epoch commits
+  const prev = mlsJoinLocks.get(targetId) ?? Promise.resolve()
+  const current = prev.then(async () => {
+    const result = await useCryptoStore.getState().handleJoinRequest(targetId, userId, username)
 
-  if (!result) return
+    if (!result) return
 
-  pushToChannel(topic, 'mls_commit', {
-    commit_data: result.commitBytes
-  })
-
-  if (result.welcomeBytes) {
-    pushToChannel(topic, 'mls_welcome', {
-      recipient_id: userId,
-      welcome_data: result.welcomeBytes
+    pushToChannel(topic, 'mls_commit', {
+      commit_data: result.commitBytes
     })
-  }
+
+    if (result.welcomeBytes) {
+      pushToChannel(topic, 'mls_welcome', {
+        recipient_id: userId,
+        welcome_data: result.welcomeBytes
+      })
+    }
+  }).catch(() => {})
+  mlsJoinLocks.set(targetId, current)
+  await current
 }
 
 /**

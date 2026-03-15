@@ -382,14 +382,29 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
             const publicPackage = decodeKeyPackageBytes(publicPackageBytes)
             const privatePackage = deserializePrivatePackage(new Uint8Array(pkg.privateData))
             const state = await processWelcome(welcomeBytes, publicPackage, privatePackage)
+            const newEpoch = Number(state.groupContext.epoch)
+
+            // Guard: never regress to a lower epoch if we already have state
+            const existing = get().groupStates[channelId]
+            if (existing) {
+              const existingEpoch = Number(existing.groupContext.epoch)
+              if (newEpoch <= existingEpoch) {
+                await consumeKeyPackage(pkg.id)
+                return false
+              }
+            }
+
             const serialized = serializeGroupState(state)
-            await saveGroupState(channelId, serialized, Number(state.groupContext.epoch))
+            await saveGroupState(channelId, serialized, newEpoch)
             await consumeKeyPackage(pkg.id)
 
             set((s) => ({
               groupStates: { ...s.groupStates, [channelId]: state }
             }))
 
+            // Process any pending commits that arrived before the welcome.
+            // We process them inline (without handleCommit) because we're
+            // already inside withGroupLock and re-acquiring it would deadlock.
             const pending = get().pendingCommits[channelId] ?? []
             if (pending.length > 0) {
               set((s) => ({
@@ -398,6 +413,21 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
                   [channelId]: []
                 }
               }))
+              for (const pendingCommitData of pending) {
+                try {
+                  const currentState = get().groupStates[channelId]
+                  if (!currentState) break
+                  const commitBytes = base64ToUint8(pendingCommitData)
+                  const newState = await processCommitMessage(currentState, commitBytes)
+                  const ser = serializeGroupState(newState)
+                  await saveGroupState(channelId, ser, Number(newState.groupContext.epoch))
+                  set((s) => ({
+                    groupStates: { ...s.groupStates, [channelId]: newState }
+                  }))
+                } catch {
+                  // Expected: commits for earlier epochs fail harmlessly
+                }
+              }
             }
 
             // Replenish key packages after consuming the matched local package.
@@ -468,7 +498,20 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
         }
       }
 
-      // All retries exhausted — reset group state so the next operation triggers a rejoin
+      // All retries exhausted. Only reset if the state is genuinely stale
+      // (epoch 0 with no real progress). If we have a valid group at a higher
+      // epoch, the commit was likely for an older epoch (e.g., already applied
+      // via Welcome) — just ignore it to avoid destroying good state.
+      const currentState = get().groupStates[channelId]
+      const currentEpoch = currentState ? Number(currentState.groupContext.epoch) : 0
+      if (currentEpoch > 0) {
+        console.warn(
+          `Commit processing failed for ${channelId} after ${RETRY_DELAYS.length} attempts at epoch ${currentEpoch}, ignoring stale commit:`,
+          lastError
+        )
+        return
+      }
+
       console.error(
         `Commit processing failed for ${channelId} after ${RETRY_DELAYS.length} attempts, resetting group state:`,
         lastError

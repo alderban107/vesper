@@ -39,3 +39,18 @@ export function findCustomEmoji(value: string, emojis: CustomEmoji[]): CustomEmo
 
   return emojis.find((emoji) => emoji.id === parsed.id || emoji.name === parsed.name) ?? null
 }
+
+/**
+ * Replace :name: shortcodes with full <:name:id> tokens before sending.
+ * Only matches standalone shortcodes — skips those already inside full tokens.
+ */
+export function replaceEmojiShortcodes(text: string, emojis: CustomEmoji[]): string {
+  if (emojis.length === 0) return text
+
+  // Match :name: but not when preceded by < or <a (already a full token)
+  return text.replace(/(?<!<a?):([\w~-]{2,32}):/g, (match, name: string) => {
+    const emoji = emojis.find((e) => e.name === name)
+    if (!emoji) return match
+    return formatCustomEmojiToken(emoji)
+  })
+}

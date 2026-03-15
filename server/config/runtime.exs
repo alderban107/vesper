@@ -23,6 +23,19 @@ end
 config :vesper, VesperWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
+# E2E test mode: use a real connection pool instead of Ecto.Sandbox so the
+# server can handle concurrent browser clients.  Activated by setting
+# VESPER_E2E=1 together with MIX_ENV=test.
+if System.get_env("VESPER_E2E") do
+  config :vesper, Vesper.Repo,
+    pool: DBConnection.ConnectionPool,
+    pool_size: 10
+
+  config :vesper, VesperWeb.Endpoint,
+    server: true,
+    check_origin: false
+end
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||

@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { joinChannel, leaveChannel, pushToChannel } from '../api/socket'
+import { useServerStore } from './serverStore'
 import type { DmConversation } from './dmStore'
 
 export type PresenceStatus = 'online' | 'idle' | 'dnd' | 'offline'
@@ -172,6 +173,7 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
     // Join new servers we haven't joined yet
     for (const topic of newTopics) {
       if (serverPresenceTopics.has(topic)) continue
+      const serverId = topic.replace('presence:server:', '')
 
       joinChannel(topic, (event, payload) => {
         if (event === 'presence_state') {
@@ -199,6 +201,24 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
             }
             return { statuses: newStatuses }
           })
+        } else if (event === 'emoji_created') {
+          const emoji = payload as { id: string; name: string; url: string; animated: boolean; server_id: string }
+          useServerStore.setState((s) => ({
+            servers: s.servers.map((srv) =>
+              srv.id === serverId
+                ? { ...srv, emojis: [...srv.emojis.filter((e) => e.id !== emoji.id), emoji].sort((a, b) => a.name.localeCompare(b.name)) }
+                : srv
+            )
+          }))
+        } else if (event === 'emoji_deleted') {
+          const { id } = payload as { id: string }
+          useServerStore.setState((s) => ({
+            servers: s.servers.map((srv) =>
+              srv.id === serverId
+                ? { ...srv, emojis: srv.emojis.filter((e) => e.id !== id) }
+                : srv
+            )
+          }))
         }
       })
     }

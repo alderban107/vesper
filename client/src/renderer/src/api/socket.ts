@@ -56,7 +56,8 @@ export function joinChannel(
     'mention',
     'new_conversation', 'dm_message',
     'unread_update', 'dm_unread_update',
-    'device_approval_requested', 'device_updated'
+    'device_approval_requested', 'device_updated',
+    'emoji_created', 'emoji_deleted'
   ]
   for (const event of CHAT_EVENTS) {
     channel.on(event, (payload) => onMessage(event, payload))

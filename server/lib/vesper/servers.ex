@@ -968,26 +968,29 @@ defmodule Vesper.Servers do
   defp sibling_query(server_id, %{kind: :categories}, exclude_id) do
     from(c in Channel,
       where: c.server_id == ^server_id and c.type == "category",
-      where: is_nil(^exclude_id) or c.id != ^exclude_id,
       order_by: [asc: c.position, asc: c.inserted_at]
     )
+    |> maybe_exclude(exclude_id)
   end
 
   defp sibling_query(server_id, %{kind: :channels, category_id: nil}, exclude_id) do
     from(c in Channel,
       where: c.server_id == ^server_id and c.type != "category" and is_nil(c.category_id),
-      where: is_nil(^exclude_id) or c.id != ^exclude_id,
       order_by: [asc: c.position, asc: c.inserted_at]
     )
+    |> maybe_exclude(exclude_id)
   end
 
   defp sibling_query(server_id, %{kind: :channels, category_id: category_id}, exclude_id) do
     from(c in Channel,
       where: c.server_id == ^server_id and c.type != "category" and c.category_id == ^category_id,
-      where: is_nil(^exclude_id) or c.id != ^exclude_id,
       order_by: [asc: c.position, asc: c.inserted_at]
     )
+    |> maybe_exclude(exclude_id)
   end
+
+  defp maybe_exclude(query, nil), do: query
+  defp maybe_exclude(query, id), do: where(query, [c], c.id != ^id)
 
   defp next_position(server_id, scope) do
     sibling_query(server_id, scope, nil)

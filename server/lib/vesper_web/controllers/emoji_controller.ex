@@ -70,6 +70,12 @@ defmodule VesperWeb.EmojiController do
 
                   case Servers.create_server_emoji(attrs) do
                     {:ok, emoji} ->
+                      VesperWeb.Endpoint.broadcast!(
+                        "presence:server:#{server_id}",
+                        "emoji_created",
+                        emoji_json(emoji)
+                      )
+
                       conn
                       |> put_status(:created)
                       |> json(%{emoji: emoji_json(emoji)})
@@ -116,6 +122,13 @@ defmodule VesperWeb.EmojiController do
           case Servers.delete_server_emoji(emoji) do
             {:ok, _} ->
               FileStorage.delete_server_emoji(server_id, emoji.storage_key)
+
+              VesperWeb.Endpoint.broadcast!(
+                "presence:server:#{server_id}",
+                "emoji_deleted",
+                %{id: emoji_id}
+              )
+
               json(conn, %{ok: true})
 
             {:error, _} ->
