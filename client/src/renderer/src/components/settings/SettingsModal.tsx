@@ -332,7 +332,18 @@ export default function SettingsModal(): React.JSX.Element {
   }
 
   const handleLinkPreviewToggle = (): void => {
-    setLinkPreviewsEnabled(!linkPreviewsEnabled)
+    if (linkPreviewsEnabled) {
+      setLinkPreviewsEnabled(false)
+      return
+    }
+
+    const confirmed = window.confirm(
+      'Link previews make external requests from your device. The linked site may see your IP address. Only enable this if that tradeoff is okay for you.'
+    )
+
+    if (confirmed) {
+      setLinkPreviewsEnabled(true)
+    }
   }
 
   const handleTestConnection = async (): Promise<void> => {
@@ -633,7 +644,7 @@ export default function SettingsModal(): React.JSX.Element {
             <div className="vesper-settings-row">
               <div>
                 <div className="vesper-settings-row-title">Link Previews</div>
-                <div className="vesper-settings-row-copy">When enabled, this device may contact linked sites to fetch title and description data.</div>
+                <div className="vesper-settings-row-copy">When enabled, your client may contact linked sites directly to fetch preview data. Those sites can see your IP address.</div>
               </div>
               <button
                 type="button"
@@ -649,7 +660,7 @@ export default function SettingsModal(): React.JSX.Element {
               <Shield className="w-4 h-4" />
               <span>
                 {linkPreviewsEnabled
-                  ? 'Preview fetches happen from this device only. URLs are no longer sent to the Vesper server for previews.'
+                  ? 'Previews are on for this device. Linked sites may see your IP address when Vesper fetches preview data.'
                   : 'Link previews are off. Vesper will not make automatic external requests for shared links.'}
               </span>
             </div>
