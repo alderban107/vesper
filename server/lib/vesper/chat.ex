@@ -188,7 +188,35 @@ defmodule Vesper.Chat do
   end
 
   def delete_message(%Message{} = message) do
-    Repo.delete(message)
+    # Collect attachment storage keys before deletion — the cascade will
+    # destroy attachment rows, so we need the keys up front.
+    storage_keys =
+      from(a in Attachment,
+        where: a.message_id == ^message.id,
+        select: a.storage_key
+      )
+      |> Repo.all()
+
+    case Repo.delete(message) do
+      {:ok, _} = result ->
+        # Remove blobs that have zero remaining attachment references.
+        # Storage keys are content-addressed (SHA256), so the same blob
+        # may be referenced by attachments on other messages.
+        for key <- Enum.uniq(storage_keys) do
+          remaining =
+            from(a in Attachment, where: a.storage_key == ^key)
+            |> Repo.aggregate(:count, :id)
+
+          if remaining == 0 do
+            Vesper.Chat.FileStorage.delete(key)
+          end
+        end
+
+        result
+
+      error ->
+        error
+    end
   end
 
   def create_message(attrs) do
