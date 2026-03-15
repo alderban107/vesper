@@ -2,11 +2,17 @@ name: Verify
 
 on:
   pull_request:
+    paths:
+      - "client/**"
+      - ".github/workflows/verify.yml"
   push:
     branches-ignore:
       - main
     tags-ignore:
       - "v*"
+    paths:
+      - "client/**"
+      - ".github/workflows/verify.yml"
 
 jobs:
   web-build:
