@@ -72,6 +72,7 @@ export class WebRTCManager {
 
   init(
     iceServers: RTCIceServer[],
+    iceTransportPolicy: RTCIceTransportPolicy,
     handlers: {
       onTrack: (event: RTCTrackEvent) => void
       onIceCandidate: (candidate: RTCIceCandidate) => void
@@ -82,7 +83,7 @@ export class WebRTCManager {
     this.onIceCandidate = handlers.onIceCandidate
     this.onConnectionStateChange = handlers.onConnectionStateChange
 
-    this.pc = new RTCPeerConnection({ iceServers })
+    this.pc = new RTCPeerConnection({ iceServers, iceTransportPolicy })
 
     this.pc.ontrack = (event) => {
       this.onTrack?.(event)

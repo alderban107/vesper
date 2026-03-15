@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { getVoiceRtcConfig } from '../api/voiceConfig'
 import { connectSocket, joinVoiceChannel, leaveChannel, pushToChannel } from '../api/socket'
 import {
   WebRTCManager,
@@ -179,10 +180,6 @@ const DEFAULT_SHARE_PROFILE: VideoPublishProfile = {
   frameRate: 30,
   bitrateKbps: 4000,
   contentHint: 'detail'
-}
-
-function getIceServers(): RTCIceServer[] {
-  return [{ urls: 'stun:stun.l.google.com:19302' }]
 }
 
 function streamKey(userId: string, slot: 'camera_video' | 'share_video'): string {
@@ -467,7 +464,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     })
 
     connectSocket()
-    initVoice(channelId, 'channel', set, get)
+    await initVoice(channelId, 'channel', set, get)
   },
 
   startDmCall: async (conversationId) => {
@@ -495,7 +492,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     })
 
     connectSocket()
-    initVoice(conversationId, 'dm', set, get)
+    await initVoice(conversationId, 'dm', set, get)
 
     // After joining, send call_ring
     const topic = `voice:dm:${conversationId}`
@@ -525,7 +522,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     })
 
     connectSocket()
-    initVoice(conversationId, 'dm', set, get)
+    await initVoice(conversationId, 'dm', set, get)
 
     const topic = `voice:dm:${conversationId}`
     pushToChannel(topic, 'call_accept', {})
@@ -856,12 +853,12 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   }
 }))
 
-function initVoice(
+async function initVoice(
   roomId: string,
   roomType: 'channel' | 'dm',
   set: (partial: Partial<VoiceState> | ((state: VoiceState) => Partial<VoiceState>)) => void,
   get: () => VoiceState
-): void {
+): Promise<void> {
   webrtcManager = new WebRTCManager()
   audioManager = new AudioManager()
   voiceEncryption = new VoiceEncryption()
@@ -870,8 +867,9 @@ function initVoice(
   audioManager.setSpeakingSensitivity(get().inputSensitivity)
 
   const topic = roomType === 'dm' ? `voice:dm:${roomId}` : `voice:channel:${roomId}`
+  const rtcConfig = await getVoiceRtcConfig(true)
 
-  webrtcManager.init(getIceServers(), {
+  webrtcManager.init(rtcConfig.iceServers, rtcConfig.iceTransportPolicy, {
     onTrack: (event) => {
       const track = event.track
       const mid = event.transceiver?.mid ?? null

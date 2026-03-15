@@ -97,6 +97,9 @@ defmodule VesperWeb.Router do
     # User search
     get("/users/search", UserController, :search)
 
+    # Voice/WebRTC runtime config
+    get("/voice/config", VoiceController, :config)
+
     # Encrypted search index snapshot sync
     get("/search-index", SearchIndexController, :show)
     put("/search-index", SearchIndexController, :upsert)
