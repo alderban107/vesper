@@ -152,6 +152,23 @@ export async function createMLSGroup(
 }
 
 /**
+ * Check whether a user ID already exists in the group's ratchet tree.
+ */
+export function groupHasMember(
+  state: ClientState,
+  userId: string
+): boolean {
+  return state.ratchetTree.some((node) => {
+    if (!node || node.nodeType !== 'leaf') return false
+
+    const credential = node.leaf.credential
+    if (credential.credentialType !== 'basic') return false
+
+    return new TextDecoder().decode(credential.identity) === userId
+  })
+}
+
+/**
  * Add a member to an existing MLS group.
  * Returns updated state, commit message, and welcome for the new member.
  */

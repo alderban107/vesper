@@ -27,6 +27,9 @@ export function cacheSentPlaintext(ciphertext: string, plaintext: string): void 
   cacheSentMessage(ciphertext, plaintext)
 }
 
+const MLS_JOIN_REQUEST_COOLDOWN_MS = 2000
+const recentMlsJoinRequests = new Map<string, number>()
+
 export interface MessageSender {
   id: string
   username: string
@@ -98,6 +101,48 @@ function getMessageSearchText(message: Message): string {
   ]
 
   return [parsedText, parsedFileName, ...attachmentNames].join(' ').trim()
+}
+
+function hasFailedEncryptedMessages(messages: Message[] | undefined): boolean {
+  return (messages || []).some((message) => message.encrypted && message.decryptionFailed)
+}
+
+function maybeRequestMlsJoin(targetId: string, topic: string): void {
+  const crypto = useCryptoStore.getState()
+  if (crypto.hasGroup(targetId)) {
+    return
+  }
+
+  const now = Date.now()
+  const lastRequestAt = recentMlsJoinRequests.get(topic) ?? 0
+  if (now - lastRequestAt < MLS_JOIN_REQUEST_COOLDOWN_MS) {
+    return
+  }
+
+  recentMlsJoinRequests.set(topic, now)
+  pushToChannel(topic, 'mls_request_join', {})
+}
+
+async function refreshChannelMessagesIfNeeded(
+  channelId: string,
+  getState: () => MessageState
+): Promise<void> {
+  if (!hasFailedEncryptedMessages(getState().messagesByChannel[channelId])) {
+    return
+  }
+
+  await getState().fetchMessages(channelId)
+}
+
+async function refreshDmMessagesIfNeeded(
+  conversationId: string,
+  getState: () => MessageState
+): Promise<void> {
+  if (!hasFailedEncryptedMessages(getState().messagesByChannel[conversationId])) {
+    return
+  }
+
+  await getState().fetchDmMessages(conversationId)
 }
 
 export interface ReactionGroup {
@@ -278,7 +323,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         )
       } else if (event === 'mls_request_join_all') {
         if (!useCryptoStore.getState().hasGroup(channelId)) {
-          pushToChannel(topic, 'mls_request_join', {})
+          maybeRequestMlsJoin(channelId, topic)
         }
       } else if (event === 'mls_request_join') {
         handleMlsJoinRequest(channelId, msg, `chat:channel:${channelId}`)
@@ -286,13 +331,25 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         const senderId = msg.sender_id as string
         const userId = useAuthStore.getState().user?.id
         if (senderId !== userId) {
-          useCryptoStore.getState().handleCommit(channelId, msg.commit_data as string)
+          void useCryptoStore
+            .getState()
+            .handleCommit(channelId, msg.commit_data as string)
+            .then(() => refreshChannelMessagesIfNeeded(channelId, get))
+            .catch(() => {})
         }
       } else if (event === 'mls_welcome') {
         const recipientId = msg.recipient_id as string
         const userId = useAuthStore.getState().user?.id
         if (recipientId === userId) {
-          useCryptoStore.getState().handleWelcome(channelId, msg.welcome_data as string)
+          void useCryptoStore
+            .getState()
+            .handleWelcome(channelId, msg.welcome_data as string)
+            .then((processed) => {
+              if (processed) {
+                return refreshChannelMessagesIfNeeded(channelId, get)
+              }
+            })
+            .catch(() => {})
         }
       } else if (event === 'mls_remove') {
         const userId = useAuthStore.getState().user?.id
@@ -322,7 +379,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       .ensureGroupMembership(channelId)
       .then(() => {
         if (!useCryptoStore.getState().hasGroup(channelId)) {
-          pushToChannel(topic, 'mls_request_join', {})
+          maybeRequestMlsJoin(channelId, topic)
         }
       })
       .catch(() => {
@@ -482,13 +539,25 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         const senderId = msg.sender_id as string
         const userId = useAuthStore.getState().user?.id
         if (senderId !== userId) {
-          useCryptoStore.getState().handleCommit(conversationId, msg.commit_data as string)
+          void useCryptoStore
+            .getState()
+            .handleCommit(conversationId, msg.commit_data as string)
+            .then(() => refreshDmMessagesIfNeeded(conversationId, get))
+            .catch(() => {})
         }
       } else if (event === 'mls_welcome') {
         const recipientId = msg.recipient_id as string
         const userId = useAuthStore.getState().user?.id
         if (recipientId === userId) {
-          useCryptoStore.getState().handleWelcome(conversationId, msg.welcome_data as string)
+          void useCryptoStore
+            .getState()
+            .handleWelcome(conversationId, msg.welcome_data as string)
+            .then((processed) => {
+              if (processed) {
+                return refreshDmMessagesIfNeeded(conversationId, get)
+              }
+            })
+            .catch(() => {})
         }
       } else if (event === 'mls_remove') {
         const userId = useAuthStore.getState().user?.id
@@ -524,7 +593,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       .ensureGroupMembership(conversationId)
       .then(() => {
         if (!useCryptoStore.getState().hasGroup(conversationId)) {
-          pushToChannel(topic, 'mls_request_join', {})
+          maybeRequestMlsJoin(conversationId, topic)
         }
       })
       .catch(() => {
@@ -1366,7 +1435,7 @@ async function handleNewMessage(
         : null
 
     if (topic) {
-      pushToChannel(topic, 'mls_request_join', {})
+      maybeRequestMlsJoin(targetId, topic)
     }
   }
 

@@ -13,7 +13,8 @@ import {
   createKeyPackageBatch,
   encodeKeyPackageBytes,
   decodeKeyPackageBytes,
-  deriveVoiceKey
+  deriveVoiceKey,
+  groupHasMember
 } from '../crypto/mls'
 import {
   saveGroupState,
@@ -194,6 +195,11 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
 
       try {
         await initCipherSuite()
+
+        if (groupHasMember(state, userId)) {
+          console.warn(`Skipping MLS join request for existing member ${userId} in ${channelId}`)
+          return null
+        }
 
         // Fetch the requesting user's key package from the directory
         const keyPackageBytes = await fetchKeyPackage(userId)
