@@ -496,7 +496,7 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
         // Cache plaintext so we can display our own message when the server
         // echoes it back. MLS senders can't decrypt their own messages because
         // the ratchet key is consumed during encryption.
-        cacheSentMessage(ciphertextB64, plaintext)
+        await cacheSentMessage(ciphertextB64, plaintext)
 
         return {
           ciphertext: ciphertextB64,

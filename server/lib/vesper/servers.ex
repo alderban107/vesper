@@ -18,6 +18,8 @@ defmodule Vesper.Servers do
     AuditLog
   }
 
+  alias Vesper.Runtime
+
   @channel_override_view_channel 1024
 
   # --- Servers ---
@@ -29,21 +31,33 @@ defmodule Vesper.Servers do
         |> Server.changeset(attrs)
         |> Repo.insert!()
 
-      %Channel{server_id: server.id}
-      |> Channel.changeset(%{
-        name: "general",
-        type: "text",
-        position: 0
-      })
-      |> Repo.insert!()
+      general_channel =
+        %Channel{server_id: server.id}
+        |> Channel.changeset(%{
+          name: "general",
+          type: "text",
+          position: 0
+        })
+        |> Repo.insert!()
 
-      %Channel{server_id: server.id}
-      |> Channel.changeset(%{
-        name: "General Voice",
-        type: "voice",
-        position: 1
-      })
-      |> Repo.insert!()
+      case Runtime.ensure_room_for_channel(general_channel) do
+        {:ok, _room} -> :ok
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+
+      voice_channel =
+        %Channel{server_id: server.id}
+        |> Channel.changeset(%{
+          name: "General Voice",
+          type: "voice",
+          position: 1
+        })
+        |> Repo.insert!()
+
+      case Runtime.ensure_room_for_channel(voice_channel) do
+        {:ok, _room} -> :ok
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
 
       # Auto-add owner as member with "owner" role
       membership =
@@ -354,9 +368,15 @@ defmodule Vesper.Servers do
       with :ok <-
              validate_category(server_id, normalized_attrs[:type], normalized_attrs[:category_id]),
            attrs_with_position <- put_channel_position(server_id, normalized_attrs) do
-        %Channel{server_id: server_id}
-        |> Channel.changeset(attrs_with_position)
-        |> Repo.insert!()
+        channel =
+          %Channel{server_id: server_id}
+          |> Channel.changeset(attrs_with_position)
+          |> Repo.insert!()
+
+        case Runtime.ensure_room_for_channel(channel) do
+          {:ok, _room} -> channel
+          {:error, changeset} -> Repo.rollback(changeset)
+        end
       else
         {:error, changeset} ->
           Repo.rollback(changeset)

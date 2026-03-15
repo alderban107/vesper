@@ -32,13 +32,16 @@ import {
 } from '../crypto/decryptionCache'
 
 export function cacheSentPlaintext(ciphertext: string, plaintext: string): void {
-  cacheSentMessage(ciphertext, plaintext)
+  void cacheSentMessage(ciphertext, plaintext)
 }
 
 const MLS_JOIN_REQUEST_COOLDOWN_MS = 2000
 const recentMlsJoinRequests = new Map<string, number>()
 const MLS_RESYNC_REQUEST_COOLDOWN_MS = 5000
 const recentMlsResyncRequests = new Map<string, number>()
+const MLS_RECOVERY_BACKOFF_MS = [150, 500, 1500] as const
+const ENCRYPTED_MESSAGE_SYNCING_PLACEHOLDER = 'Encrypted message is syncing...'
+const inFlightScopeRecoveries = new Map<string, Promise<void>>()
 
 export interface MessageSender {
   id: string
@@ -140,6 +143,13 @@ interface PendingMlsResyncRequest {
   request_id?: string
   last_known_epoch?: number | null
   reason?: string | null
+}
+
+interface EncryptedScopeDescriptor {
+  kind: 'channel' | 'dm'
+  targetId: string
+  scopeId: string
+  topic: string
 }
 
 function maybeRequestMlsResync(
@@ -345,26 +355,156 @@ export async function ensureChannelGroupReady(channelId: string): Promise<boolea
   return useCryptoStore.getState().hasGroup(channelId)
 }
 
-async function refreshChannelMessagesIfNeeded(
-  channelId: string,
-  getState: () => MessageState
-): Promise<void> {
-  if (!hasFailedEncryptedMessages(getState().messagesByChannel[channelId])) {
-    return
-  }
-
-  await getState().fetchMessages(channelId)
+function getScopeRecoveryKey(scope: EncryptedScopeDescriptor): string {
+  return `${scope.kind}:${scope.scopeId}`
 }
 
-async function refreshDmMessagesIfNeeded(
-  conversationId: string,
+async function refreshEncryptedScope(
+  scope: EncryptedScopeDescriptor,
   getState: () => MessageState
 ): Promise<void> {
-  if (!hasFailedEncryptedMessages(getState().messagesByChannel[conversationId])) {
+  if (scope.kind === 'channel') {
+    await getState().fetchMessages(scope.targetId)
     return
   }
 
-  await getState().fetchDmMessages(conversationId)
+  await getState().fetchDmMessages(scope.targetId)
+}
+
+function hasFailedMessagesInScope(
+  scope: EncryptedScopeDescriptor,
+  getState: () => MessageState
+): boolean {
+  return hasFailedEncryptedMessages(getState().messagesByChannel[scope.targetId])
+}
+
+async function ensureEncryptedScopeMembership(
+  scope: EncryptedScopeDescriptor
+): Promise<void> {
+  const crypto = useCryptoStore.getState()
+
+  await crypto.ensureGroupMembership(scope.targetId)
+  if (crypto.hasGroup(scope.targetId)) {
+    return
+  }
+
+  if (scope.kind === 'dm') {
+    const bootstrapped = await bootstrapDmGroupIfLeader(scope.targetId, scope.topic)
+    if (bootstrapped) {
+      return
+    }
+
+    await waitForDmBootstrap(scope.targetId)
+  }
+}
+
+function requestEncryptedScopeRecovery(
+  scope: EncryptedScopeDescriptor,
+  lastKnownEpoch: number | null,
+  reason: string
+): void {
+  const crypto = useCryptoStore.getState()
+
+  if (crypto.hasGroup(scope.targetId)) {
+    maybeRequestMlsResync(
+      scope.targetId,
+      scope.scopeId,
+      scope.topic,
+      lastKnownEpoch,
+      reason
+    )
+    return
+  }
+
+  maybeRequestMlsJoin(scope.targetId, scope.topic)
+  maybeRequestMlsResync(
+    scope.targetId,
+    scope.scopeId,
+    scope.topic,
+    lastKnownEpoch,
+    reason
+  )
+}
+
+async function recoverEncryptedScope(
+  scope: EncryptedScopeDescriptor,
+  getState: () => MessageState,
+  lastKnownEpoch: number | null,
+  reason: string
+): Promise<void> {
+  const key = getScopeRecoveryKey(scope)
+  const existing = inFlightScopeRecoveries.get(key)
+  if (existing) {
+    return existing
+  }
+
+  const run = (async () => {
+    const crypto = useCryptoStore.getState()
+
+    const tryRecoveryRound = async (roundReason: string): Promise<boolean> => {
+      requestEncryptedScopeRecovery(scope, lastKnownEpoch, roundReason)
+      await ensureEncryptedScopeMembership(scope).catch(() => {})
+      await refreshEncryptedScope(scope, getState).catch(() => {})
+
+      if (!hasFailedMessagesInScope(scope, getState)) {
+        return true
+      }
+
+      for (const delayMs of MLS_RECOVERY_BACKOFF_MS) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs))
+        requestEncryptedScopeRecovery(scope, lastKnownEpoch, roundReason)
+        await ensureEncryptedScopeMembership(scope).catch(() => {})
+        await refreshEncryptedScope(scope, getState).catch(() => {})
+
+        if (!hasFailedMessagesInScope(scope, getState)) {
+          return true
+        }
+      }
+
+      return false
+    }
+
+    if (await tryRecoveryRound(reason)) {
+      return
+    }
+
+    if (crypto.hasGroup(scope.targetId)) {
+      await crypto.resetGroup(scope.targetId).catch(() => {})
+    }
+
+    await tryRecoveryRound('local_state_reset')
+  })().finally(() => {
+    inFlightScopeRecoveries.delete(key)
+  })
+
+  inFlightScopeRecoveries.set(key, run)
+  return run
+}
+
+function maybeRecoverEncryptedScope(
+  scope: EncryptedScopeDescriptor,
+  getState: () => MessageState,
+  lastKnownEpoch: number | null,
+  reason: string
+): void {
+  if (!hasFailedMessagesInScope(scope, getState)) {
+    return
+  }
+
+  void recoverEncryptedScope(scope, getState, lastKnownEpoch, reason).catch(() => {})
+}
+
+async function refreshScopeAfterCryptoUpdate(
+  scope: EncryptedScopeDescriptor,
+  getState: () => MessageState
+): Promise<void> {
+  await refreshEncryptedScope(scope, getState).catch(() => {})
+
+  if (hasFailedMessagesInScope(scope, getState)) {
+    void recoverEncryptedScope(scope, getState, null, 'post_crypto_update').catch(() => {})
+  }
+
+  await processPendingMlsResyncRequests(scope.targetId, scope.scopeId, scope.topic).catch(() => {})
 }
 
 export interface ReactionGroup {
@@ -511,6 +651,12 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
   joinChannelChat: (channelId) => {
     const topic = `chat:channel:${channelId}`
+    const scope: EncryptedScopeDescriptor = {
+      kind: 'channel',
+      targetId: channelId,
+      scopeId: channelId,
+      topic
+    }
 
     joinChannel(topic, (event, payload) => {
       const msg = payload as Record<string, unknown>
@@ -566,10 +712,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           void useCryptoStore
             .getState()
             .handleCommit(channelId, msg.commit_data as string)
-            .then(async () => {
-              await refreshChannelMessagesIfNeeded(channelId, get)
-              await processPendingMlsResyncRequests(channelId, channelId, topic)
-            })
+            .then(async () => refreshScopeAfterCryptoUpdate(scope, get))
             .catch(() => {})
         }
       } else if (event === 'mls_welcome') {
@@ -585,8 +728,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
                 if (welcomeId) {
                   await ackPendingWelcome(welcomeId).catch(() => {})
                 }
-                await refreshChannelMessagesIfNeeded(channelId, get)
-                await processPendingMlsResyncRequests(channelId, channelId, topic)
+                await refreshScopeAfterCryptoUpdate(scope, get)
               }
             })
             .catch(() => {})
@@ -656,6 +798,17 @@ export const useMessageStore = create<MessageState>((set, get) => ({
             [channelId]: data.messages.length === 50
           }
         }))
+        maybeRecoverEncryptedScope(
+          {
+            kind: 'channel',
+            targetId: channelId,
+            scopeId: channelId,
+            topic: `chat:channel:${channelId}`
+          },
+          get,
+          null,
+          'message_fetch'
+        )
       }
     } catch {
       // ignore
@@ -687,6 +840,17 @@ export const useMessageStore = create<MessageState>((set, get) => ({
             [channelId]: data.messages.length === 50
           }
         }))
+        maybeRecoverEncryptedScope(
+          {
+            kind: 'channel',
+            targetId: channelId,
+            scopeId: channelId,
+            topic: `chat:channel:${channelId}`
+          },
+          get,
+          null,
+          'older_message_fetch'
+        )
       }
     } catch {
       // ignore
@@ -743,6 +907,12 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
   joinDmChat: (conversationId) => {
     const topic = `dm:${conversationId}`
+    const scope: EncryptedScopeDescriptor = {
+      kind: 'dm',
+      targetId: conversationId,
+      scopeId: conversationId,
+      topic
+    }
 
     joinChannel(topic, (event, payload) => {
       const msg = payload as Record<string, unknown>
@@ -793,10 +963,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           void useCryptoStore
             .getState()
             .handleCommit(conversationId, msg.commit_data as string)
-            .then(async () => {
-              await refreshDmMessagesIfNeeded(conversationId, get)
-              await processPendingMlsResyncRequests(conversationId, conversationId, topic)
-            })
+            .then(async () => refreshScopeAfterCryptoUpdate(scope, get))
             .catch(() => {})
         }
       } else if (event === 'mls_welcome') {
@@ -812,8 +979,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
                 if (welcomeId) {
                   await ackPendingWelcome(welcomeId).catch(() => {})
                 }
-                await refreshDmMessagesIfNeeded(conversationId, get)
-                await processPendingMlsResyncRequests(conversationId, conversationId, topic)
+                await refreshScopeAfterCryptoUpdate(scope, get)
               }
             })
             .catch(() => {})
@@ -902,6 +1068,17 @@ export const useMessageStore = create<MessageState>((set, get) => ({
             [conversationId]: data.messages.length === 50
           }
         }))
+        maybeRecoverEncryptedScope(
+          {
+            kind: 'dm',
+            targetId: conversationId,
+            scopeId: conversationId,
+            topic: `dm:${conversationId}`
+          },
+          get,
+          null,
+          'message_fetch'
+        )
       }
     } catch {
       // ignore
@@ -933,6 +1110,17 @@ export const useMessageStore = create<MessageState>((set, get) => ({
             [conversationId]: data.messages.length === 50
           }
         }))
+        maybeRecoverEncryptedScope(
+          {
+            kind: 'dm',
+            targetId: conversationId,
+            scopeId: conversationId,
+            topic: `dm:${conversationId}`
+          },
+          get,
+          null,
+          'older_message_fetch'
+        )
       }
     } catch {
       // ignore
@@ -1084,6 +1272,32 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         threadLoading: false,
         threadError: null
       }))
+
+      if (parent.encrypted && parent.decryptionFailed) {
+        maybeRecoverEncryptedScope(
+          {
+            kind: parent.channel_id ? 'channel' : 'dm',
+            targetId,
+            scopeId: targetId,
+            topic: parent.channel_id ? `chat:channel:${targetId}` : `dm:${targetId}`
+          },
+          get,
+          null,
+          'thread_fetch'
+        )
+      } else if (hasFailedEncryptedMessages(replies)) {
+        maybeRecoverEncryptedScope(
+          {
+            kind: parent.channel_id ? 'channel' : 'dm',
+            targetId,
+            scopeId: targetId,
+            topic: parent.channel_id ? `chat:channel:${targetId}` : `dm:${targetId}`
+          },
+          get,
+          null,
+          'thread_fetch'
+        )
+      }
     } catch {
       if (get().activeThreadParentId === parentMessageId) {
         set({ threadLoading: false, threadError: 'Thread could not be loaded.' })
@@ -1702,12 +1916,17 @@ async function handleNewMessage(
     const lastKnownEpoch = (msg.mls_epoch as number | null | undefined) ?? null
 
     if (topic && scopeId) {
-      if (useCryptoStore.getState().hasGroup(targetId)) {
-        maybeRequestMlsResync(targetId, scopeId, topic, lastKnownEpoch, 'decrypt_failed')
-      } else {
-        maybeRequestMlsJoin(targetId, topic)
-        maybeRequestMlsResync(targetId, scopeId, topic, lastKnownEpoch, 'decrypt_failed')
-      }
+      void recoverEncryptedScope(
+        {
+          kind: processed.channel_id ? 'channel' : 'dm',
+          targetId,
+          scopeId,
+          topic
+        },
+        useMessageStore.getState,
+        lastKnownEpoch,
+        'decrypt_failed'
+      ).catch(() => {})
     } else if (topic) {
       maybeRequestMlsJoin(targetId, topic)
     }
@@ -1762,7 +1981,7 @@ async function processIncomingMessage(
       // Keep rendering even if the local ciphertext cache write fails.
     }
 
-    let displayContent = '[Message unavailable - decryption failed]'
+    let displayContent = ENCRYPTED_MESSAGE_SYNCING_PLACEHOLDER
     let searchableText = ''
     if (plaintext) {
       const payload = decodePayload(plaintext)
@@ -1908,7 +2127,21 @@ async function handleMessageEdited(
         }
       }
     } else {
-      newContent = 'Message unavailable'
+      newContent = ENCRYPTED_MESSAGE_SYNCING_PLACEHOLDER
+      maybeRecoverEncryptedScope(
+        {
+          kind: typeof msg.channel_id === 'string' ? 'channel' : 'dm',
+          targetId,
+          scopeId: targetId,
+          topic:
+            typeof msg.channel_id === 'string'
+              ? `chat:channel:${targetId}`
+              : `dm:${targetId}`
+        },
+        useMessageStore.getState,
+        (msg.mls_epoch as number | null | undefined) ?? null,
+        'edited_message_decrypt_failed'
+      )
     }
   } else if (msg.content) {
     newContent = msg.content as string

@@ -31,9 +31,11 @@ const REMOTE_STREAM_VOLUMES_KEY = 'voice:remoteStreamVolumes'
 const SHARE_AUDIO_PREFERRED_KEY = 'voice:shareAudioPreferred'
 const MLS_JOIN_REQUEST_COOLDOWN_MS = 2000
 const MLS_RESYNC_REQUEST_COOLDOWN_MS = 5000
+const VOICE_MLS_RECOVERY_BACKOFF_MS = [150, 500, 1500] as const
 
 const recentVoiceJoinRequests = new Map<string, number>()
 const recentVoiceResyncRequests = new Map<string, number>()
+const inFlightVoiceRecoveries = new Map<string, Promise<void>>()
 
 function maybeRequestVoiceMlsJoin(topic: string): void {
   const now = Date.now()
@@ -124,6 +126,97 @@ async function processPendingVoiceMlsResyncRequests(topic: string): Promise<void
   for (const request of requests) {
     await processVoiceMlsResyncRequest(topic, request)
   }
+}
+
+async function applyVoiceKeyIfAvailable(topic: string): Promise<boolean> {
+  const voiceKey = await useCryptoStore.getState().getVoiceKey(topic)
+  if (!voiceKey) {
+    return false
+  }
+
+  voiceEncryption?.setKey(voiceKey)
+  await processPendingVoiceMlsResyncRequests(topic).catch(() => {})
+  return true
+}
+
+async function ensureVoiceGroupReady(
+  topic: string,
+  preferredCreatorId?: string
+): Promise<void> {
+  const crypto = useCryptoStore.getState()
+  const userId = useAuthStore.getState().user?.id
+
+  if (!userId) {
+    return
+  }
+
+  await crypto.ensureGroupMembership(topic)
+  if (crypto.hasGroup(topic)) {
+    return
+  }
+
+  const creatorId = preferredCreatorId ?? userId
+  if (creatorId === userId) {
+    await crypto.createGroup(topic)
+    if (crypto.hasGroup(topic)) {
+      pushToChannel(topic, 'mls_request_join_all', {})
+      return
+    }
+  }
+
+  maybeRequestVoiceMlsJoin(topic)
+  maybeRequestVoiceMlsResync(topic, 'missing_state')
+}
+
+async function recoverVoiceMlsState(
+  topic: string,
+  reason: string,
+  preferredCreatorId?: string
+): Promise<void> {
+  const existing = inFlightVoiceRecoveries.get(topic)
+  if (existing) {
+    return existing
+  }
+
+  const run = (async () => {
+    const crypto = useCryptoStore.getState()
+
+    const tryRecoveryRound = async (roundReason: string): Promise<boolean> => {
+      await ensureVoiceGroupReady(topic, preferredCreatorId).catch(() => {})
+      maybeRequestVoiceMlsResync(topic, roundReason)
+
+      if (await applyVoiceKeyIfAvailable(topic)) {
+        return true
+      }
+
+      for (const delayMs of VOICE_MLS_RECOVERY_BACKOFF_MS) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs))
+        await ensureVoiceGroupReady(topic, preferredCreatorId).catch(() => {})
+        maybeRequestVoiceMlsResync(topic, roundReason)
+
+        if (await applyVoiceKeyIfAvailable(topic)) {
+          return true
+        }
+      }
+
+      return false
+    }
+
+    if (await tryRecoveryRound(reason)) {
+      return
+    }
+
+    if (crypto.hasGroup(topic)) {
+      await crypto.resetGroup(topic).catch(() => {})
+    }
+
+    await tryRecoveryRound('local_state_reset')
+  })().finally(() => {
+    inFlightVoiceRecoveries.delete(topic)
+  })
+
+  inFlightVoiceRecoveries.set(topic, run)
+  return run
 }
 
 function readString(key: string): string | null {
@@ -1368,8 +1461,7 @@ async function initVoice(
       }
     } else if (event === 'mls_request_join_all') {
       if (!useCryptoStore.getState().hasGroup(topic)) {
-        maybeRequestVoiceMlsJoin(topic)
-        maybeRequestVoiceMlsResync(topic, 'missing_state')
+        void recoverVoiceMlsState(topic, 'missing_state', preferredCreatorId).catch(() => {})
       }
     } else if (event === 'mls_request_join') {
       handleVoiceMlsJoinRequest(roomId, data, topic)
@@ -1388,13 +1480,8 @@ async function initVoice(
       if (senderId !== userId) {
         const crypto = useCryptoStore.getState()
         await crypto.handleCommit(topic, data.commit_data as string)
-        // Key rotation — derive new voice key
-        const newKey = await crypto.getVoiceKey(topic)
-        if (newKey) {
-          voiceEncryption?.setKey(newKey)
-          await processPendingVoiceMlsResyncRequests(topic)
-        } else if (crypto.hasGroup(topic)) {
-          maybeRequestVoiceMlsResync(topic, 'voice_key_missing')
+        if (!(await applyVoiceKeyIfAvailable(topic))) {
+          void recoverVoiceMlsState(topic, 'voice_key_missing', preferredCreatorId).catch(() => {})
         }
       }
     } else if (event === 'mls_welcome') {
@@ -1408,12 +1495,8 @@ async function initVoice(
           if (welcomeId) {
             await ackPendingWelcome(welcomeId).catch(() => {})
           }
-          const voiceKey = await crypto.getVoiceKey(topic)
-          if (voiceKey) {
-            voiceEncryption?.setKey(voiceKey)
-            await processPendingVoiceMlsResyncRequests(topic)
-          } else {
-            maybeRequestVoiceMlsResync(topic, 'voice_key_missing')
+          if (!(await applyVoiceKeyIfAvailable(topic))) {
+            void recoverVoiceMlsState(topic, 'voice_key_missing', preferredCreatorId).catch(() => {})
           }
         }
       }
@@ -1422,12 +1505,12 @@ async function initVoice(
       const removedId = data.removed_user_id as string
       if (removedId === userId) {
         await useCryptoStore.getState().resetGroup(topic)
+        void recoverVoiceMlsState(topic, 'removed_from_group', preferredCreatorId).catch(() => {})
       } else if (data.commit_data) {
         const crypto = useCryptoStore.getState()
         await crypto.handleCommit(topic, data.commit_data as string)
-        const voiceKey = await crypto.getVoiceKey(topic)
-        if (voiceKey) {
-          voiceEncryption?.setKey(voiceKey)
+        if (!(await applyVoiceKeyIfAvailable(topic))) {
+          void recoverVoiceMlsState(topic, 'voice_key_missing', preferredCreatorId).catch(() => {})
         }
       }
     } else if (event === 'join_error') {
@@ -1457,39 +1540,13 @@ async function setupVoiceE2EE(
   topic: string,
   preferredCreatorId?: string
 ): Promise<void> {
-  const crypto = useCryptoStore.getState()
-  const userId = useAuthStore.getState().user?.id
-  if (!userId) {
+  await ensureVoiceGroupReady(topic, preferredCreatorId)
+
+  if (await applyVoiceKeyIfAvailable(topic)) {
     return
   }
 
-  // Try to join existing MLS group or create one
-  await crypto.ensureGroupMembership(topic)
-
-  if (!crypto.hasGroup(topic)) {
-    await new Promise((resolve) => setTimeout(resolve, 150))
-
-    const creatorId = preferredCreatorId ?? userId
-
-    if (creatorId === userId) {
-      await crypto.createGroup(topic)
-      if (crypto.hasGroup(topic)) {
-        pushToChannel(topic, 'mls_request_join_all', {})
-      }
-    } else {
-      maybeRequestVoiceMlsResync(topic, 'missing_state')
-    }
-  }
-
-  // Derive and set voice key
-  const voiceKey = await crypto.getVoiceKey(topic)
-  if (voiceKey) {
-    voiceEncryption?.setKey(voiceKey)
-  } else if (crypto.hasGroup(topic)) {
-    maybeRequestVoiceMlsResync(topic, 'voice_key_missing')
-  }
-
-  await processPendingVoiceMlsResyncRequests(topic)
+  await recoverVoiceMlsState(topic, 'voice_key_missing', preferredCreatorId)
 }
 
 async function handleVoiceMlsJoinRequest(

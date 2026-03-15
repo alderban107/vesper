@@ -33,6 +33,8 @@ import {
 } from 'ts-mls'
 import type { KeyPackagePair } from './types'
 
+type PublicCommitMessage = Extract<MLSMessage, { wireformat: 'mls_public_message' }>
+
 /**
  * Properly decode an MLS message from bytes.
  *
@@ -52,6 +54,26 @@ function decodeMlsMessageFromBytes(bytes: Uint8Array): MLSMessage {
   }
   // decodeMlsMessage returns [decodedValue, bytesConsumed]
   return result[0] as MLSMessage
+}
+
+function assertPublicCommitMessage(message: MLSMessage): PublicCommitMessage {
+  if (message.wireformat !== 'mls_public_message') {
+    throw new Error(`Expected mls_public_message, got ${message.wireformat}`)
+  }
+
+  return message
+}
+
+async function processPublicCommitWrapper(
+  message: PublicCommitMessage,
+  state: ClientState,
+  cs: CiphersuiteImpl
+) {
+  const pskIndex = makePskIndex(state, {})
+
+  // ts-mls expects the full MLSMessage wrapper here, not the nested
+  // `publicMessage` payload.
+  return processMessage(message, state, pskIndex, acceptAll, cs)
 }
 
 const CIPHERSUITE_NAME = 'MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519' as const
@@ -353,20 +375,14 @@ export async function processCommitMessage(
 ): Promise<ClientState> {
   const cs = getCs()
   const decoded = decodeMlsMessageFromBytes(commitBytes)
+  const publicCommit = assertPublicCommitMessage(decoded)
+  const result = await processPublicCommitWrapper(publicCommit, state, cs)
 
-  if (decoded.wireformat === 'mls_public_message') {
-    const pskIndex = makePskIndex(state, {})
-    // ts-mls@1.6.x expects the full decoded MLSMessage wrapper here, not the
-    // inner publicMessage payload. Passing the inner object makes the library
-    // treat it like a different shape and later crash while reading epoch.
-    const result = await processMessage(decoded, state, pskIndex, acceptAll, cs)
-    if (result.kind === 'newState') {
-      return result.newState
-    }
-    throw new Error(`Unexpected process result kind: ${result.kind}`)
+  if (result.kind === 'newState') {
+    return result.newState
   }
 
-  throw new Error(`Expected public message for commit, got ${decoded.wireformat}`)
+  throw new Error(`Unexpected process result kind: ${result.kind}`)
 }
 
 /**

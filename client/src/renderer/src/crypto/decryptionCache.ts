@@ -77,9 +77,9 @@ export function clearDecryptionCache(): void {
 
 // --- Sent-message cache (ciphertext → plaintext) ---
 
-export function cacheSentMessage(ciphertextB64: string, plaintext: string): void {
+export async function cacheSentMessage(ciphertextB64: string, plaintext: string): Promise<void> {
   sentMessageCache.set(ciphertextB64, plaintext)
-  saveSentMessagePlaintext(ciphertextB64, plaintext).catch(() => {})
+  await saveSentMessagePlaintext(ciphertextB64, plaintext).catch(() => {})
 }
 
 export function getSentMessage(ciphertextB64: string): string | undefined {

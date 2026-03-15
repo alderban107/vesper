@@ -22,22 +22,44 @@ export class VoiceEncryption {
       return
     }
 
-    // @ts-expect-error RTCRtpScriptTransform is not yet in TypeScript's lib
-    sender.transform = new RTCRtpScriptTransform(this.worker, {
-      operation: 'encrypt',
-      mediaKind
-    })
+    try {
+      // @ts-expect-error RTCRtpScriptTransform is not yet in TypeScript's lib
+      sender.transform = new RTCRtpScriptTransform(this.worker, {
+        operation: 'encrypt',
+        mediaKind
+      })
+    } catch (error) {
+      if (
+        error instanceof DOMException &&
+        (error.name === 'InvalidStateError' || error.name === 'AbortError')
+      ) {
+        return
+      }
+
+      console.error('Failed to apply voice sender transform', error)
+    }
   }
 
   applyReceiverTransform(receiver: RTCRtpReceiver, mediaKind: 'audio' | 'video' = 'audio'): void {
     if (!this.worker) return
     if (!('RTCRtpScriptTransform' in window)) return
 
-    // @ts-expect-error RTCRtpScriptTransform is not yet in TypeScript's lib
-    receiver.transform = new RTCRtpScriptTransform(this.worker, {
-      operation: 'decrypt',
-      mediaKind
-    })
+    try {
+      // @ts-expect-error RTCRtpScriptTransform is not yet in TypeScript's lib
+      receiver.transform = new RTCRtpScriptTransform(this.worker, {
+        operation: 'decrypt',
+        mediaKind
+      })
+    } catch (error) {
+      if (
+        error instanceof DOMException &&
+        (error.name === 'InvalidStateError' || error.name === 'AbortError')
+      ) {
+        return
+      }
+
+      console.error('Failed to apply voice receiver transform', error)
+    }
   }
 
   destroy(): void {

@@ -1,4 +1,5 @@
 defmodule Vesper.Chat do
+  require Logger
   import Ecto.Query
   alias Vesper.Repo
 
@@ -12,6 +13,8 @@ defmodule Vesper.Chat do
     DmReadPosition,
     PinnedMessage
   }
+
+  alias Vesper.Runtime
 
   # --- DM Conversations ---
 
@@ -49,6 +52,11 @@ defmodule Vesper.Chat do
         %DmConversation{}
         |> DmConversation.changeset(%{type: type, name: name})
         |> Repo.insert!()
+
+      case Runtime.ensure_room_for_conversation(conversation) do
+        {:ok, _room} -> :ok
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
 
       for user_id <- user_ids do
         %DmParticipant{}
@@ -190,8 +198,21 @@ defmodule Vesper.Chat do
     |> Message.encrypted_changeset(attrs)
     |> Repo.insert()
     |> case do
-      {:ok, message} -> {:ok, Repo.preload(message, [:sender, :attachments])}
-      error -> error
+      {:ok, message} ->
+        case Runtime.project_message(message) do
+          {:ok, _event} ->
+            :ok
+
+          {:error, reason} ->
+            Logger.warning(
+              "Failed to project message #{message.id} into room events: #{inspect(reason)}"
+            )
+        end
+
+        {:ok, Repo.preload(message, [:sender, :attachments])}
+
+      error ->
+        error
     end
   end
 
