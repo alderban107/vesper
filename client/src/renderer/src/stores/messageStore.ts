@@ -9,6 +9,7 @@ import { useDmStore } from './dmStore'
 import { usePresenceStore } from './presenceStore'
 import {
   cacheMessage as cacheMessageToDb,
+  searchDecryptedMessages,
   indexDecryptedMessage as indexToFts,
   removeFromFtsIndex
 } from '../crypto/storage'
@@ -87,6 +88,18 @@ function extractMentionedUserIds(content: string): string[] {
   return [...new Set(ids)]
 }
 
+function getMessageSearchText(message: Message): string {
+  const parsed = parseMessageContent(message.content || '')
+  const parsedText = parsed.type === 'text' ? parsed.text : (parsed.text || '')
+  const parsedFileName = parsed.type === 'file' ? parsed.file.name : ''
+  const attachmentNames = [
+    ...(message.attachment_filenames || []),
+    ...(message.attachments?.map((attachment) => attachment.filename).filter(Boolean) || [])
+  ]
+
+  return [parsedText, parsedFileName, ...attachmentNames].join(' ').trim()
+}
+
 export interface ReactionGroup {
   emoji: string
   senderIds: string[]
@@ -109,6 +122,19 @@ export interface Message {
   encrypted?: boolean
   decryptionFailed?: boolean
   edited_at?: string
+}
+
+export interface RecallSearchResult {
+  id: string
+  content: string
+  channel_id: string | null
+  conversation_id: string | null
+  server_id?: string | null
+  sender_id: string | null
+  sender: MessageSender | null
+  inserted_at: string
+  attachment_filenames?: string[]
+  search_preview?: string
 }
 
 export interface PendingMessageJumpTarget {
@@ -189,7 +215,7 @@ interface MessageState {
   focusMessage: (messageId: string) => void
 
   // Search
-  searchMessages: (query: string) => Promise<Message[]>
+  searchMessages: (query: string) => Promise<RecallSearchResult[]>
   setPendingJumpTarget: (
     target: Omit<PendingMessageJumpTarget, 'requestId'> | null
   ) => void
@@ -968,34 +994,83 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     if (trimmed.length < 2) return []
 
     const needle = trimmed.toLowerCase()
-    const seen = new Map<string, Message>()
+    const seen = new Map<string, RecallSearchResult>()
+    const loadedMessages = new Map<string, Message>()
 
     for (const messages of Object.values(get().messagesByChannel)) {
       for (const message of messages) {
+        loadedMessages.set(message.id, message)
+
         if (!message || seen.has(message.id)) {
           continue
         }
 
-        const parsed = parseMessageContent(message.content || '')
-        const parsedText = parsed.type === 'text' ? parsed.text : (parsed.text || '')
-        const parsedFileName = parsed.type === 'file' ? parsed.file.name : ''
-        const attachmentNames = [
-          ...(message.attachment_filenames || []),
-          ...(message.attachments?.map((attachment) => attachment.filename).filter(Boolean) || [])
-        ]
-        const haystack = [parsedText, parsedFileName, ...attachmentNames]
-          .join(' ')
-          .toLowerCase()
+        const haystack = getMessageSearchText(message).toLowerCase()
 
         if (!haystack.includes(needle)) {
           continue
         }
 
         seen.set(message.id, {
-          ...message,
-          attachment_filenames: attachmentNames
+          id: message.id,
+          content: message.content,
+          channel_id: message.channel_id,
+          conversation_id: message.conversation_id,
+          server_id: message.server_id ?? null,
+          sender_id: message.sender_id,
+          sender: message.sender,
+          inserted_at: message.inserted_at,
+          attachment_filenames: [
+            ...(message.attachment_filenames || []),
+            ...(message.attachments?.map((attachment) => attachment.filename).filter(Boolean) || [])
+          ],
+          search_preview: getMessageSearchText(message)
         })
       }
+    }
+
+    const indexedResults = await searchDecryptedMessages(trimmed)
+    for (const result of indexedResults) {
+      if (seen.has(result.messageId)) {
+        continue
+      }
+
+      const loaded = loadedMessages.get(result.messageId)
+      if (loaded) {
+        seen.set(result.messageId, {
+          id: loaded.id,
+          content: loaded.content,
+          channel_id: loaded.channel_id,
+          conversation_id: loaded.conversation_id,
+          server_id: loaded.server_id ?? null,
+          sender_id: loaded.sender_id,
+          sender: loaded.sender,
+          inserted_at: loaded.inserted_at,
+          attachment_filenames: loaded.attachment_filenames,
+          search_preview: result.preview.replace(/\[\[\[|\]\]\]/g, '')
+        })
+        continue
+      }
+
+      seen.set(result.messageId, {
+        id: result.messageId,
+        content: result.preview.replace(/\[\[\[|\]\]\]/g, ''),
+        channel_id: result.conversationId ? null : result.channelId,
+        conversation_id: result.conversationId ?? null,
+        server_id: result.serverId ?? null,
+        sender_id: result.senderId ?? null,
+        sender: result.senderUsername
+          ? {
+              id: result.senderId ?? '',
+              username: result.senderUsername,
+              display_name: null,
+              avatar_url: null
+            }
+          : null,
+        inserted_at: result.insertedAt ?? new Date(0).toISOString(),
+        attachment_filenames: [],
+        search_preview: result.preview.replace(/\[\[\[|\]\]\]/g, '')
+      })
     }
 
     return [...seen.values()]
@@ -1302,7 +1377,9 @@ async function processIncomingMessage(
     try {
       await cacheMessageToDb({
         id: messageId,
-        channelId: targetId,
+        channelId: (msg.channel_id as string) || null,
+        conversationId: (msg.conversation_id as string) || null,
+        serverId: (msg.server_id as string) || null,
         senderId,
         senderUsername: (msg.sender as MessageSender)?.username ?? null,
         ciphertext: base64ToUint8(ciphertextB64),
@@ -1326,7 +1403,7 @@ async function processIncomingMessage(
           text: payload.text,
           file: payload.file
         })
-        searchableText = payload.text || ''
+        searchableText = [payload.text || '', payload.file.name].filter(Boolean).join(' ')
       }
     }
 
@@ -1367,8 +1444,25 @@ async function processIncomingMessage(
     edited_at: (msg.edited_at as string) || undefined
   }
 
-  if (plaintextMessage.content) {
-    indexToFts(plaintextMessage.id, targetId, plaintextMessage.content).catch(() => {})
+  const plaintextSearchText = getMessageSearchText(plaintextMessage)
+  if (plaintextSearchText) {
+    indexToFts(plaintextMessage.id, targetId, plaintextSearchText).catch(() => {})
+  }
+
+  try {
+    await cacheMessageToDb({
+      id: plaintextMessage.id,
+      channelId: plaintextMessage.channel_id,
+      conversationId: plaintextMessage.conversation_id,
+      serverId: plaintextMessage.server_id ?? null,
+      senderId: plaintextMessage.sender_id,
+      senderUsername: plaintextMessage.sender?.username ?? null,
+      ciphertext: null,
+      mlsEpoch: null,
+      insertedAt: plaintextMessage.inserted_at
+    })
+  } catch {
+    // Metadata cache failure should not block message rendering.
   }
 
   return plaintextMessage
@@ -1436,8 +1530,9 @@ async function handleMessageEdited(
           text: payload.text,
           file: payload.file
         })
-        if (payload.text) {
-          indexToFts(messageId, targetId, payload.text).catch(() => {})
+        const fileSearchText = [payload.text || '', payload.file.name].filter(Boolean).join(' ')
+        if (fileSearchText) {
+          indexToFts(messageId, targetId, fileSearchText).catch(() => {})
         }
       }
     } else {

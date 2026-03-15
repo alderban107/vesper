@@ -157,7 +157,9 @@ export async function countKeyPackages(): Promise<number> {
 
 export async function cacheMessage(msg: {
   id: string
-  channelId: string
+  channelId: string | null
+  conversationId: string | null
+  serverId: string | null
   senderId: string | null
   senderUsername: string | null
   ciphertext: Uint8Array | null
@@ -167,6 +169,8 @@ export async function cacheMessage(msg: {
   await db().cacheMessage({
     id: msg.id,
     channel_id: msg.channelId,
+    conversation_id: msg.conversationId,
+    server_id: msg.serverId,
     sender_id: msg.senderId,
     sender_username: msg.senderUsername,
     ciphertext: msg.ciphertext,
@@ -178,7 +182,9 @@ export async function cacheMessage(msg: {
 export async function loadCachedMessages(channelId: string): Promise<
   Array<{
     id: string
-    channelId: string
+    channelId: string | null
+    conversationId: string | null
+    serverId: string | null
     senderId: string | null
     senderUsername: string | null
     ciphertext: Uint8Array | null
@@ -190,6 +196,8 @@ export async function loadCachedMessages(channelId: string): Promise<
   return results.map((r) => ({
     id: r.id,
     channelId: r.channel_id,
+    conversationId: r.conversation_id,
+    serverId: r.server_id,
     senderId: r.sender_id,
     senderUsername: r.sender_username,
     ciphertext: r.ciphertext ? new Uint8Array(r.ciphertext) : null,
@@ -223,14 +231,24 @@ export async function searchDecryptedMessages(
   Array<{
     messageId: string
     channelId: string
-    content: string
+    conversationId: string | null
+    serverId: string | null
+    senderId: string | null
+    senderUsername: string | null
+    insertedAt: string | null
+    preview: string
   }>
 > {
   const results = await db().searchMessages(query, channelId)
   return results.map((r) => ({
     messageId: r.message_id,
     channelId: r.channel_id,
-    content: r.content
+    conversationId: r.conversation_id,
+    serverId: r.server_id,
+    senderId: r.sender_id,
+    senderUsername: r.sender_username,
+    insertedAt: r.inserted_at,
+    preview: r.preview
   }))
 }
 
