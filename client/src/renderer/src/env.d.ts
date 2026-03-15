@@ -73,6 +73,8 @@ interface CryptoDbApi {
     }>
   >
   clearMessageCache(channelId: string): Promise<void>
+  getSentMessagePlaintext(ciphertextB64: string): Promise<string | null>
+  setSentMessagePlaintext(ciphertextB64: string, plaintext: string): Promise<void>
 
   // FTS5 full-text search
   searchMessages(

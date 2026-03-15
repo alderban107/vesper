@@ -102,6 +102,14 @@ const SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_message_cache_conversation ON message_cache(conversation_id);
   CREATE INDEX IF NOT EXISTS idx_message_cache_inserted_at ON message_cache(inserted_at DESC);
 
+  CREATE TABLE IF NOT EXISTS sent_message_cache (
+    ciphertext_b64 TEXT PRIMARY KEY,
+    plaintext TEXT NOT NULL,
+    inserted_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_sent_message_cache_inserted_at ON sent_message_cache(inserted_at DESC);
+
   CREATE VIRTUAL TABLE IF NOT EXISTS message_fts USING fts5(
     message_id,
     channel_id,
@@ -458,6 +466,22 @@ export function setCachedMessageDecryption(messageId: string, plaintext: string)
   getDb()
     .prepare('UPDATE message_cache SET decrypted_content = ? WHERE id = ?')
     .run(plaintext, messageId)
+}
+
+export function getSentMessagePlaintext(ciphertextB64: string): string | null {
+  const row = getDb()
+    .prepare('SELECT plaintext FROM sent_message_cache WHERE ciphertext_b64 = ?')
+    .get(ciphertextB64) as { plaintext: string | null } | undefined
+
+  return row?.plaintext ?? null
+}
+
+export function setSentMessagePlaintext(ciphertextB64: string, plaintext: string): void {
+  getDb()
+    .prepare(
+      'INSERT OR REPLACE INTO sent_message_cache (ciphertext_b64, plaintext, inserted_at) VALUES (?, ?, ?)'
+    )
+    .run(ciphertextB64, plaintext, new Date().toISOString())
 }
 
 export function getCachedMessages(channelId: string): Array<{

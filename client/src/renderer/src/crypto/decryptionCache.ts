@@ -3,6 +3,7 @@
  * Prevents re-decryption of messages that have already been displayed.
  * Foundation for future lazy-decrypt-on-scroll pattern.
  */
+import { loadSentMessagePlaintext, saveSentMessagePlaintext } from './storage'
 
 const DEFAULT_MAX_SIZE = 500
 
@@ -78,8 +79,26 @@ export function clearDecryptionCache(): void {
 
 export function cacheSentMessage(ciphertextB64: string, plaintext: string): void {
   sentMessageCache.set(ciphertextB64, plaintext)
+  saveSentMessagePlaintext(ciphertextB64, plaintext).catch(() => {})
 }
 
 export function getSentMessage(ciphertextB64: string): string | undefined {
   return sentMessageCache.get(ciphertextB64)
+}
+
+export async function getStoredSentMessage(
+  ciphertextB64: string
+): Promise<string | undefined> {
+  const cached = sentMessageCache.get(ciphertextB64)
+  if (cached !== undefined) {
+    return cached
+  }
+
+  const persisted = await loadSentMessagePlaintext(ciphertextB64)
+  if (persisted !== null) {
+    sentMessageCache.set(ciphertextB64, persisted)
+    return persisted
+  }
+
+  return undefined
 }

@@ -21,6 +21,8 @@ import {
   setCachedMessageDecryption,
   getCachedMessages,
   clearMessageCache,
+  getSentMessagePlaintext,
+  setSentMessagePlaintext,
   searchMessages,
   indexDecryptedMessage,
   removeFromFtsIndex
@@ -286,6 +288,14 @@ function registerIpcHandlers(): void {
   )
   ipcMain.handle('cryptoDb:clearMessageCache', (_, channelId: string) =>
     clearMessageCache(channelId)
+  )
+  ipcMain.handle('cryptoDb:getSentMessagePlaintext', (_, ciphertextB64: string) =>
+    getSentMessagePlaintext(ciphertextB64)
+  )
+  ipcMain.handle(
+    'cryptoDb:setSentMessagePlaintext',
+    (_, ciphertextB64: string, plaintext: string) =>
+      setSentMessagePlaintext(ciphertextB64, plaintext)
   )
 
   // Message search (FTS5)

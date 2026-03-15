@@ -67,6 +67,10 @@ const cryptoDbApi = {
     ipcRenderer.invoke('cryptoDb:getCachedMessages', channelId),
   clearMessageCache: (channelId: string) =>
     ipcRenderer.invoke('cryptoDb:clearMessageCache', channelId),
+  getSentMessagePlaintext: (ciphertextB64: string) =>
+    ipcRenderer.invoke('cryptoDb:getSentMessagePlaintext', ciphertextB64),
+  setSentMessagePlaintext: (ciphertextB64: string, plaintext: string) =>
+    ipcRenderer.invoke('cryptoDb:setSentMessagePlaintext', ciphertextB64, plaintext),
 
   // FTS5 full-text search
   searchMessages: (query: string, channelId?: string) =>

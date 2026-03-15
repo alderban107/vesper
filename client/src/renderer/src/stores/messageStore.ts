@@ -26,7 +26,8 @@ import {
   getCachedDecryption,
   setCachedDecryption,
   removeCachedDecryption,
-  getSentMessage
+  getSentMessage,
+  getStoredSentMessage
 } from '../crypto/decryptionCache'
 
 export function cacheSentPlaintext(ciphertext: string, plaintext: string): void {
@@ -1644,7 +1645,7 @@ async function processIncomingMessage(
     const mlsEpoch = (msg.mls_epoch as number) ?? null
     const cachedPlaintext =
       getCachedDecryption(messageId) ??
-      getSentMessage(ciphertextB64) ??
+      (await getStoredSentMessage(ciphertextB64)) ??
       (await loadCachedMessageDecryption(messageId))
     const plaintext =
       cachedPlaintext ??
@@ -1795,7 +1796,7 @@ async function handleMessageEdited(
   if (msg.ciphertext) {
     const ciphertextB64 = msg.ciphertext as string
     const plaintext =
-      getSentMessage(ciphertextB64) ??
+      (await getStoredSentMessage(ciphertextB64)) ??
       (await useCryptoStore.getState().decryptForChannel(targetId, ciphertextB64))
 
     if (plaintext) {

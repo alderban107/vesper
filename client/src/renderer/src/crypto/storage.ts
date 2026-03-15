@@ -192,6 +192,17 @@ export async function saveCachedMessageDecryption(
   await db().setCachedMessageDecryption(messageId, plaintext)
 }
 
+export async function loadSentMessagePlaintext(ciphertextB64: string): Promise<string | null> {
+  return db().getSentMessagePlaintext(ciphertextB64)
+}
+
+export async function saveSentMessagePlaintext(
+  ciphertextB64: string,
+  plaintext: string
+): Promise<void> {
+  await db().setSentMessagePlaintext(ciphertextB64, plaintext)
+}
+
 export async function loadCachedMessages(channelId: string): Promise<
   Array<{
     id: string

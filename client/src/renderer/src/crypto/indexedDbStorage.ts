@@ -10,13 +10,14 @@
  */
 
 const DB_NAME_PREFIX = 'vesper-crypto'
-const DB_VERSION = 1
+const DB_VERSION = 2
 
 const STORES = {
   identityKeys: 'identity_keys',
   mlsGroups: 'mls_groups',
   localKeyPackages: 'local_key_packages',
-  messageCache: 'message_cache'
+  messageCache: 'message_cache',
+  sentMessageCache: 'sent_message_cache'
 } as const
 
 function openDb(userId: string): Promise<IDBDatabase> {
@@ -45,6 +46,10 @@ function openDb(userId: string): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(STORES.messageCache)) {
         const msgStore = db.createObjectStore(STORES.messageCache, { keyPath: 'id' })
         msgStore.createIndex('channel_id', 'channel_id', { unique: false })
+      }
+
+      if (!db.objectStoreNames.contains(STORES.sentMessageCache)) {
+        db.createObjectStore(STORES.sentMessageCache, { keyPath: 'ciphertext_b64' })
       }
     }
 
@@ -274,6 +279,25 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
       for (const key of keys) {
         store.delete(key)
       }
+    },
+
+    async getSentMessagePlaintext(ciphertextB64: string) {
+      const db = await getDb()
+      const result = await req(
+        tx(db, STORES.sentMessageCache, 'readonly').get(ciphertextB64)
+      )
+      return result?.plaintext ?? null
+    },
+
+    async setSentMessagePlaintext(ciphertextB64: string, plaintext: string) {
+      const db = await getDb()
+      await req(
+        tx(db, STORES.sentMessageCache, 'readwrite').put({
+          ciphertext_b64: ciphertextB64,
+          plaintext,
+          inserted_at: new Date().toISOString()
+        })
+      )
     },
 
     // --- FTS5 Search ---
