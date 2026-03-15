@@ -8,6 +8,10 @@ on:
       - "server/**"
       - ".github/workflows/docker-server.yml"
 
+concurrency:
+  group: docker-server-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   packages: write

@@ -8,6 +8,10 @@ on:
       - "client/**"
       - ".github/workflows/docker-web.yml"
 
+concurrency:
+  group: docker-web-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   packages: write
