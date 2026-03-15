@@ -1,34 +1,27 @@
 defmodule VesperWeb.PendingWelcomeController do
   use VesperWeb, :controller
   alias Vesper.Encryption
+  alias Vesper.Chat
   alias Vesper.Servers
 
-  @doc "GET /api/v1/pending-welcomes/:channel_id — fetch pending welcomes for current user in a channel"
-  def index(conn, %{"channel_id" => channel_id}) do
+  @doc "GET /api/v1/pending-welcomes/:channel_id — fetch pending welcomes for the current MLS scope"
+  def index(conn, %{"channel_id" => scope_id}) do
     user = conn.assigns.current_user
-    channel = Servers.get_channel(channel_id)
+    case authorized_scope(user.id, scope_id) do
+      {:ok, {:channel, channel_id}} ->
+        render_welcomes(conn, Encryption.get_pending_welcomes(user.id, channel_id))
 
-    cond do
-      is_nil(channel) ->
-        conn |> put_status(:not_found) |> json(%{error: "channel not found"})
+      {:ok, {:conversation, conversation_id}} ->
+        render_welcomes(conn, Encryption.get_pending_conversation_welcomes(user.id, conversation_id))
 
-      not Servers.user_is_member?(user.id, channel.server_id) ->
+      {:error, :invalid_scope} ->
+        conn |> put_status(:bad_request) |> json(%{error: "invalid scope"})
+
+      {:error, :forbidden} ->
         conn |> put_status(:forbidden) |> json(%{error: "not a member"})
 
-      true ->
-        welcomes = Encryption.get_pending_welcomes(user.id, channel_id)
-
-        json(conn, %{
-          welcomes:
-            Enum.map(welcomes, fn w ->
-              %{
-                id: w.id,
-                welcome_data: Base.encode64(w.welcome_data),
-                sender_id: w.sender_id,
-                inserted_at: w.inserted_at
-              }
-            end)
-        })
+      {:error, :not_found} ->
+        conn |> put_status(:not_found) |> json(%{error: "scope not found"})
     end
   end
 
@@ -47,6 +40,62 @@ defmodule VesperWeb.PendingWelcomeController do
       true ->
         Encryption.delete_pending_welcome(id)
         json(conn, %{ok: true})
+    end
+  end
+
+  defp render_welcomes(conn, welcomes) do
+    json(conn, %{
+      welcomes:
+        Enum.map(welcomes, fn w ->
+          %{
+            id: w.id,
+            welcome_data: Base.encode64(w.welcome_data),
+            sender_id: w.sender_id,
+            inserted_at: w.inserted_at
+          }
+        end)
+    })
+  end
+
+  defp authorized_scope(user_id, "voice:channel:" <> channel_id), do: authorize_channel_scope(user_id, channel_id)
+  defp authorized_scope(user_id, "voice:dm:" <> conversation_id), do: authorize_conversation_scope(user_id, conversation_id)
+
+  defp authorized_scope(user_id, scope_id) do
+    with {:ok, uuid} <- Ecto.UUID.cast(scope_id) do
+      case authorize_channel_scope(user_id, uuid) do
+        {:error, :not_found} -> authorize_conversation_scope(user_id, uuid)
+        result -> result
+      end
+    else
+      :error -> {:error, :invalid_scope}
+    end
+  end
+
+  defp authorize_channel_scope(user_id, channel_id) do
+    case Servers.get_channel(channel_id) do
+      nil ->
+        {:error, :not_found}
+
+      channel ->
+        if Servers.user_is_member?(user_id, channel.server_id) do
+          {:ok, {:channel, channel_id}}
+        else
+          {:error, :forbidden}
+        end
+    end
+  end
+
+  defp authorize_conversation_scope(user_id, conversation_id) do
+    case Chat.get_conversation(conversation_id) do
+      nil ->
+        {:error, :not_found}
+
+      _conversation ->
+        if Chat.user_is_participant?(user_id, conversation_id) do
+          {:ok, {:conversation, conversation_id}}
+        else
+          {:error, :forbidden}
+        end
     end
   end
 end

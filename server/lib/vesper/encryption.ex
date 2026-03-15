@@ -110,6 +110,17 @@ defmodule Vesper.Encryption do
   end
 
   @doc """
+  Get all pending Welcomes for a user in a specific DM conversation.
+  """
+  def get_pending_conversation_welcomes(recipient_id, conversation_id) do
+    from(pw in PendingWelcome,
+      where: pw.recipient_id == ^recipient_id and pw.conversation_id == ^conversation_id,
+      order_by: [asc: pw.inserted_at]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
   Get all pending Welcomes for a user (across all channels).
   """
   def get_all_pending_welcomes(recipient_id) do

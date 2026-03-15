@@ -141,6 +141,18 @@ self.onrtctransform = (event: Event) => {
       })
     )
     .pipeTo(writable)
+    .catch((error: unknown) => {
+      // Browsers can reject the pipeline during teardown or renegotiation after
+      // the underlying stream has already moved to a closed state.
+      if (
+        error instanceof DOMException &&
+        (error.name === 'AbortError' || error.name === 'InvalidStateError')
+      ) {
+        return
+      }
+
+      console.error('Voice E2EE transform failed', error)
+    })
 }
 
 // Handle messages from main thread

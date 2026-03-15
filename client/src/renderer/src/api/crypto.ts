@@ -41,10 +41,10 @@ export async function getMyKeyPackageCount(): Promise<number> {
 }
 
 /**
- * Fetch pending Welcome messages for a channel.
+ * Fetch pending Welcome messages for an MLS scope.
  */
 export async function fetchPendingWelcomes(
-  channelId: string
+  scopeId: string
 ): Promise<
   Array<{
     id: string
@@ -52,7 +52,7 @@ export async function fetchPendingWelcomes(
     sender_id: string
   }>
 > {
-  const res = await apiFetch(`/api/v1/pending-welcomes/${channelId}`)
+  const res = await apiFetch(`/api/v1/pending-welcomes/${encodeURIComponent(scopeId)}`)
   if (!res.ok) return []
 
   const data = await res.json()

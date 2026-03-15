@@ -146,12 +146,14 @@ defmodule VesperWeb.VoiceChannel do
           sender_id: sender_id
         })
 
-        Encryption.store_pending_welcome(%{
-          recipient_id: recipient_id,
-          channel_id: voice_group_id(room_id, room_type),
-          welcome_data: decoded,
-          sender_id: sender_id
-        })
+        Encryption.store_pending_welcome(
+          %{
+            recipient_id: recipient_id,
+            welcome_data: decoded,
+            sender_id: sender_id
+          }
+          |> put_voice_scope(room_id, room_type)
+        )
 
         {:noreply, socket}
 
@@ -225,7 +227,11 @@ defmodule VesperWeb.VoiceChannel do
     :ok
   end
 
-  defp voice_group_id(room_id, room_type) do
-    "voice:#{room_type}:#{room_id}"
+  defp put_voice_scope(attrs, room_id, :channel) do
+    Map.put(attrs, :channel_id, room_id)
+  end
+
+  defp put_voice_scope(attrs, room_id, :dm) do
+    Map.put(attrs, :conversation_id, room_id)
   end
 end
