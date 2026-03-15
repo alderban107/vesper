@@ -22,6 +22,9 @@ import { useAuthStore } from '../../stores/authStore'
 import { useUIStore } from '../../stores/uiStore'
 import SettingsShell, { type SettingsSectionGroup } from '../settings/SettingsShell'
 
+const EMPTY_ROLES: ServerRole[] = []
+const EMPTY_PERMISSION_OVERRIDES: ChannelPermissionOverride[] = []
+
 type ChannelSettingsSection = 'overview' | 'behavior' | 'permissions' | 'danger'
 type PermissionDecision = 'inherit' | 'allow' | 'deny'
 
@@ -64,10 +67,12 @@ export default function ChannelSettingsModal(): React.JSX.Element | null {
   const servers = useServerStore((s) => s.servers)
   const members = useServerStore((s) => s.members)
   const roles = useServerStore((s) =>
-    activeServerId ? (s.rolesByServer[activeServerId] ?? []) : []
+    activeServerId ? (s.rolesByServer[activeServerId] ?? EMPTY_ROLES) : EMPTY_ROLES
   )
   const permissionOverrides = useServerStore((s) =>
-    channelSettingsChannelId ? (s.channelPermissionOverrides[channelSettingsChannelId] ?? []) : []
+    channelSettingsChannelId
+      ? (s.channelPermissionOverrides[channelSettingsChannelId] ?? EMPTY_PERMISSION_OVERRIDES)
+      : EMPTY_PERMISSION_OVERRIDES
   )
   const fetchMembers = useServerStore((s) => s.fetchMembers)
   const fetchRoles = useServerStore((s) => s.fetchRoles)

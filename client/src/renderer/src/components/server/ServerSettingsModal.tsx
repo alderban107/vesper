@@ -7,6 +7,9 @@ import RoleManager from './RoleManager'
 import InviteManager from './InviteManager'
 import SettingsShell, { type SettingsSectionGroup } from '../settings/SettingsShell'
 
+const EMPTY_BANS: ServerBan[] = []
+const EMPTY_AUDIT_ENTRIES: AuditLogEntry[] = []
+
 type ServerSettingsSection =
   | 'general'
   | 'members'
@@ -23,10 +26,12 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
   const servers = useServerStore((s) => s.servers)
   const members = useServerStore((s) => s.members)
   const bans = useServerStore((s) =>
-    activeServerId ? (s.bansByServer[activeServerId] ?? []) : []
+    activeServerId ? (s.bansByServer[activeServerId] ?? EMPTY_BANS) : EMPTY_BANS
   )
   const auditEntries = useServerStore((s) =>
-    activeServerId ? (s.auditLogByServer[activeServerId] ?? []) : []
+    activeServerId
+      ? (s.auditLogByServer[activeServerId] ?? EMPTY_AUDIT_ENTRIES)
+      : EMPTY_AUDIT_ENTRIES
   )
   const fetchMembers = useServerStore((s) => s.fetchMembers)
   const updateServer = useServerStore((s) => s.updateServer)
