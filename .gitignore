@@ -8,7 +8,6 @@ server/erl_crash.dump
 server/*.ez
 server/tmp/
 server/*.tar
-server/test/
 
 # Client (Electron/Node)
 client/node_modules/
