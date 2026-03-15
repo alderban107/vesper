@@ -262,6 +262,7 @@ export default function DmMessageInput(): React.JSX.Element {
       >
         <div className="vesper-composer-controls">
           <button
+            data-testid="file-upload-button"
             type="button"
             onClick={() => fileInputRef.current?.click()}
             disabled={uploading}

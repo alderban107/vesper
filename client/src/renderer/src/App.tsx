@@ -59,7 +59,7 @@ function SessionNoticeModal({
   onClose: () => void
 }): React.JSX.Element {
   return (
-    <div className="fixed inset-0 z-[200] bg-bg-base/86 backdrop-blur-md flex items-center justify-center p-6">
+    <div data-testid="session-notice" className="fixed inset-0 z-[200] bg-bg-base/86 backdrop-blur-md flex items-center justify-center p-6">
       <div className="glass-card rounded-3xl max-w-md w-full p-6 border border-border/60 shadow-2xl animate-scale-in">
         <div className="flex items-start gap-4">
           <div className="w-12 h-12 rounded-2xl bg-error/15 text-error flex items-center justify-center shrink-0">

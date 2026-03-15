@@ -75,7 +75,7 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
         { id: 'members', label: 'Members', icon: Users },
         { id: 'roles', label: 'Roles', icon: Shield },
         { id: 'invites', label: 'Invites', icon: Link },
-        { id: 'emojis', label: 'Emoji', icon: Smile },
+        { id: 'emojis', label: 'Emoji', icon: Smile, testId: 'emoji-tab' },
         { id: 'moderation', label: 'Moderation', icon: UserX },
         { id: 'audit', label: 'Audit Log', icon: History },
         ...(isOwner ? [{ id: 'danger', label: 'Danger Zone', tone: 'danger' as const, icon: AlertTriangle }] : [])
@@ -203,6 +203,7 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
 
   return (
     <SettingsShell
+      testId="server-settings"
       title="Server Settings"
       activeSection={activeSection}
       sections={sections}
@@ -363,6 +364,7 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
               <span className="vesper-settings-label">Upload Emoji</span>
               <div className="vesper-settings-inline-row">
                 <input
+                  data-testid="emoji-name-input"
                   type="text"
                   value={emojiName}
                   onChange={(event) => setEmojiName(event.target.value)}
@@ -371,6 +373,7 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
                   disabled={!canManageEmojis || emojiActionPending}
                 />
                 <button
+                  data-testid="emoji-save"
                   type="button"
                   onClick={() => emojiFileInputRef.current?.click()}
                   className="vesper-settings-secondary-button"
@@ -380,6 +383,7 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
                   Upload
                 </button>
                 <input
+                  data-testid="emoji-upload"
                   ref={emojiFileInputRef}
                   type="file"
                   accept="image/png,image/jpeg,image/gif,image/webp"
@@ -399,7 +403,7 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
               <div className="vesper-settings-feedback vesper-settings-feedback-error">{emojiError}</div>
             )}
 
-            <div className="vesper-settings-emoji-list">
+            <div data-testid="custom-emoji-list" className="vesper-settings-emoji-list">
               {server.emojis.length === 0 ? (
                 <div className="vesper-settings-note-pill">No custom emoji uploaded yet.</div>
               ) : (

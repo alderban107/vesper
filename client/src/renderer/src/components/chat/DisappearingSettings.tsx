@@ -43,6 +43,7 @@ export default function DisappearingSettings({ currentTtl, topic }: Props): Reac
   return (
     <div className="relative" ref={ref}>
       <button
+        data-testid="disappearing-settings"
         onClick={() => setOpen(!open)}
         className="text-text-muted hover:text-text-primary transition-colors flex items-center gap-1 p-1.5 rounded hover:bg-bg-tertiary/50"
         title="Disappearing messages"
@@ -52,13 +53,14 @@ export default function DisappearingSettings({ currentTtl, topic }: Props): Reac
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-1 glass-card rounded-xl py-1 z-50 min-w-[160px] animate-scale-in">
+        <div data-testid="ttl-picker" className="absolute right-0 top-full mt-1 glass-card rounded-xl py-1 z-50 min-w-[160px] animate-scale-in">
           <div className="px-3 py-1.5 text-text-faint text-xs font-medium uppercase tracking-wide">
             Disappearing Messages
           </div>
           {TTL_OPTIONS.map((opt) => (
             <button
               key={opt.label}
+              data-testid={`ttl-option-${opt.value ?? 'off'}`}
               onClick={() => setTtl(opt.value)}
               className={`w-full text-left px-3 py-1.5 text-sm hover:bg-bg-tertiary/30 transition-colors ${
                 currentTtl === opt.value

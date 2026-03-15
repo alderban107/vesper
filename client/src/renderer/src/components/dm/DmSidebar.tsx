@@ -64,6 +64,7 @@ export default function DmSidebar(): React.JSX.Element {
             const unread = dmUnreads[conv.id] || 0
             return (
               <button
+                data-testid="dm-row"
                 key={conv.id}
                 onClick={() => handleConversationSelect(conv.id)}
                 className={`w-full text-left px-3 py-2 flex items-center gap-2 transition-colors ${

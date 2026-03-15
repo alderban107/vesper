@@ -212,7 +212,7 @@ export default function MainPage(): React.JSX.Element {
     }
 
     return (
-      <section className={`vesper-thread-panel${mobilePanel ? ' vesper-thread-panel-mobile' : ''}`}>
+      <section data-testid="thread-panel" className={`vesper-thread-panel${mobilePanel ? ' vesper-thread-panel-mobile' : ''}`}>
         <div className="vesper-thread-header">
           <div className="vesper-thread-header-copy">
             <h2 className="vesper-thread-title">Thread</h2>

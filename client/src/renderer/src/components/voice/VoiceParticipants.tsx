@@ -75,7 +75,7 @@ function ParticipantRow({
               size="xs"
             />
           </div>
-          <span className={participant.speaking ? 'vesper-voice-participant-name vesper-voice-participant-name-speaking' : 'vesper-voice-participant-name'}>
+          <span data-testid="voice-participant-name" className={participant.speaking ? 'vesper-voice-participant-name vesper-voice-participant-name-speaking' : 'vesper-voice-participant-name'}>
             {displayName}
           </span>
           <div className="vesper-voice-participant-icons">

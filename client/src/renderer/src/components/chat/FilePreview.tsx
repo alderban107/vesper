@@ -90,7 +90,7 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
 
   if (error) {
     return (
-      <div className="flex items-center gap-2 px-3 py-2 bg-bg-tertiary/50 rounded-lg text-xs text-text-faint border border-border mt-1.5">
+      <div data-testid="attachment" className="flex items-center gap-2 px-3 py-2 bg-bg-tertiary/50 rounded-lg text-xs text-text-faint border border-border mt-1.5">
         <AlertCircle className="w-4 h-4 text-red-400" />
         <span>File expired or unavailable</span>
       </div>
@@ -100,7 +100,7 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
   // Image preview
   if (isImage) {
     return (
-      <div className="mt-1.5">
+      <div data-testid="attachment" className="mt-1.5">
         {loading ? (
           <div className="w-48 h-32 rounded-lg bg-bg-tertiary/50 border border-border flex items-center justify-center">
             <Loader2 className="w-5 h-5 text-text-faint animate-spin" />
@@ -137,7 +137,7 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
 
   if (isAudio) {
     return (
-      <div className="vesper-audio-preview">
+      <div data-testid="attachment" className="vesper-audio-preview">
         {loading ? (
           <div className="vesper-audio-preview-loading">
             <Loader2 className="w-4 h-4 text-text-faint animate-spin" />
@@ -162,6 +162,7 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
   // Generic file download card
   return (
     <button
+      data-testid="attachment"
       onClick={handleDownload}
       className="vesper-file-card group"
     >

@@ -10,6 +10,7 @@ export interface ContextMenuItem {
   disabled?: boolean
   divider?: boolean
   hint?: string
+  testId?: string
 }
 
 interface ContextMenuHeader {
@@ -100,6 +101,7 @@ export default function ContextMenu({ x, y, items, onClose, header }: ContextMen
         <div key={i}>
           {item.divider && <div className="border-t border-border my-1" />}
           <button
+            data-testid={item.testId}
             onClick={(e) => {
               e.stopPropagation()
               if (!item.disabled) {

@@ -1,0 +1,204 @@
+[
+  {
+    "checkpoint": "signup-complete",
+    "client": "alice",
+    "timestamp": 1773564838182,
+    "snapshot": {
+      "messages": [],
+      "threadCounts": {},
+      "reactions": {},
+      "unreadBadges": {},
+      "activeServer": "Direct Messages",
+      "activeChannel": null
+    },
+    "url": "http://127.0.0.1:52243/"
+  },
+  {
+    "checkpoint": "signup-complete",
+    "client": "bob",
+    "timestamp": 1773564839460,
+    "snapshot": {
+      "messages": [],
+      "threadCounts": {},
+      "reactions": {},
+      "unreadBadges": {},
+      "activeServer": "Direct Messages",
+      "activeChannel": null
+    },
+    "url": "http://127.0.0.1:52243/"
+  },
+  {
+    "checkpoint": "signup-complete",
+    "client": "charlie",
+    "timestamp": 1773564840659,
+    "snapshot": {
+      "messages": [],
+      "threadCounts": {},
+      "reactions": {},
+      "unreadBadges": {},
+      "activeServer": "Direct Messages",
+      "activeChannel": null
+    },
+    "url": "http://127.0.0.1:52243/"
+  },
+  {
+    "checkpoint": "dm-convergence",
+    "client": "alice",
+    "timestamp": 1773564842690,
+    "snapshot": {
+      "messages": [
+        {
+          "text": "Hey Bob, this is Alice — DM test alpha",
+          "sender": "alice_e2e",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Second message from Alice — DM test bravo",
+          "sender": "",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Hi Alice! Bob here — DM test charlie",
+          "sender": "bob_e2e",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Another from Bob — DM test delta",
+          "sender": "",
+          "hasThread": false,
+          "isEdited": false
+        }
+      ],
+      "threadCounts": {},
+      "reactions": {},
+      "unreadBadges": {},
+      "activeServer": "Direct Messages",
+      "activeChannel": null
+    },
+    "url": "http://127.0.0.1:52243/"
+  },
+  {
+    "checkpoint": "dm-convergence",
+    "client": "bob",
+    "timestamp": 1773564842692,
+    "snapshot": {
+      "messages": [
+        {
+          "text": "Hey Bob, this is Alice — DM test alpha",
+          "sender": "alice_e2e",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Second message from Alice — DM test bravo",
+          "sender": "",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Hi Alice! Bob here — DM test charlie",
+          "sender": "bob_e2e",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Another from Bob — DM test delta",
+          "sender": "",
+          "hasThread": false,
+          "isEdited": false
+        }
+      ],
+      "threadCounts": {},
+      "reactions": {},
+      "unreadBadges": {},
+      "activeServer": "Direct Messages",
+      "activeChannel": null
+    },
+    "url": "http://127.0.0.1:52243/"
+  },
+  {
+    "checkpoint": "dm-refresh-convergence",
+    "client": "alice",
+    "timestamp": 1773564844562,
+    "snapshot": {
+      "messages": [
+        {
+          "text": "Hey Bob, this is Alice — DM test alpha",
+          "sender": "alice_e2e",
+          "hasThread": true,
+          "isEdited": false
+        },
+        {
+          "text": "Hi Alice! Bob here — DM test charlie",
+          "sender": "bob_e2e",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Second message from Alice — DM test bravo",
+          "sender": "alice_e2e",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Another from Bob — DM test delta",
+          "sender": "bob_e2e",
+          "hasThread": false,
+          "isEdited": false
+        }
+      ],
+      "threadCounts": {
+        "Hey Bob, this is Alice — DM test alpha": 2
+      },
+      "reactions": {},
+      "unreadBadges": {},
+      "activeServer": "Direct Messages",
+      "activeChannel": null
+    },
+    "url": "http://127.0.0.1:52243/"
+  },
+  {
+    "checkpoint": "dm-refresh-convergence",
+    "client": "bob",
+    "timestamp": 1773564845387,
+    "snapshot": {
+      "messages": [
+        {
+          "text": "Hey Bob, this is Alice — DM test alpha",
+          "sender": "alice_e2e",
+          "hasThread": true,
+          "isEdited": false
+        },
+        {
+          "text": "Hi Alice! Bob here — DM test charlie",
+          "sender": "bob_e2e",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Second message from Alice — DM test bravo",
+          "sender": "alice_e2e",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Another from Bob — DM test delta",
+          "sender": "bob_e2e",
+          "hasThread": false,
+          "isEdited": false
+        }
+      ],
+      "threadCounts": {
+        "Hey Bob, this is Alice — DM test alpha": 2
+      },
+      "reactions": {},
+      "unreadBadges": {},
+      "activeServer": "Direct Messages",
+      "activeChannel": null
+    },
+    "url": "http://127.0.0.1:52243/"
+  }
+]

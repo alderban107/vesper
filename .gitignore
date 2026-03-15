@@ -16,7 +16,6 @@ client/out/
 client/dist/
 client/dist-web/
 client/coverage/
-client/e2e/
 client/test-results/
 client/playwright-report/
 

@@ -290,13 +290,15 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
             {
               label: 'Edit',
               icon: Pencil,
-              onClick: handleStartEdit
+              onClick: handleStartEdit,
+              testId: 'edit-message'
             },
             {
               label: 'Delete',
               icon: Trash2,
               onClick: handleDelete,
-              danger: true
+              danger: true,
+              testId: 'delete-message'
             }
           ]
         : []),
@@ -313,7 +315,8 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
             {
               label: 'Pin Message',
               icon: Pin,
-              onClick: () => pinMessage(topic, message.id)
+              onClick: () => pinMessage(topic, message.id),
+              testId: 'pin-message'
             }
           ]
         : []),
@@ -343,6 +346,7 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
 
   return (
     <div
+      data-testid="message-row"
       data-message-id={message.id}
       className={
         `${startsGroup
@@ -406,7 +410,7 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
 
         {startsGroup && (
           <div className="vesper-message-header">
-            <span className="vesper-message-author">{displayName}</span>
+            <span data-testid="message-sender" className="vesper-message-author">{displayName}</span>
             <span className="vesper-message-time">{formatTime(message.inserted_at)}</span>
           </div>
         )}
@@ -414,6 +418,7 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
         {isEditing ? (
           <div className="mt-1">
             <textarea
+              data-testid="edit-input"
               ref={editRef}
               value={editText}
               onChange={(e) => setEditText(e.target.value)}
@@ -428,10 +433,10 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
         ) : (
           <>
             {displayText && (
-              <div className="vesper-message-content text-text-secondary text-sm break-words whitespace-pre-wrap">
+              <div data-testid="message-content" className="vesper-message-content text-text-secondary text-sm break-words whitespace-pre-wrap">
                 <MarkdownContent content={displayText} />
                 {message.edited_at && (
-                  <span className="ml-1.5 text-xs text-text-faintest">(edited)</span>
+                  <span data-testid="edited-marker" className="ml-1.5 text-xs text-text-faintest">(edited)</span>
                 )}
               </div>
             )}
@@ -445,7 +450,7 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
             ))}
 
             {!displayText && message.edited_at && (
-              <span className="text-text-faintest text-xs">(edited)</span>
+              <span data-testid="edited-marker" className="text-text-faintest text-xs">(edited)</span>
             )}
           </>
         )}
@@ -460,11 +465,12 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
         {showThreadSummary && (
           <div className="vesper-message-thread-meta">
             <button
+              data-testid="thread-button"
               type="button"
               onClick={handleOpenThread}
               className={`vesper-message-thread-link${isActiveThread ? ' vesper-message-thread-link-active' : ''}`}
             >
-              <span className="inline-flex items-center gap-1.5">
+              <span data-testid="thread-count" className="inline-flex items-center gap-1.5">
                 <MessageSquare className="w-3.5 h-3.5" />
                 {threadSummaryLabel}
               </span>

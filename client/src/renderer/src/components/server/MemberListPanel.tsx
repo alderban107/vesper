@@ -116,7 +116,7 @@ function MemberRow({
 
         <div className="vesper-member-copy">
           <div className="vesper-member-name-row">
-            <span className="vesper-member-name">{displayName}</span>
+            <span data-testid="member-name" className="vesper-member-name">{displayName}</span>
             {isOwner && <Crown className="vesper-member-role-icon vesper-member-role-icon-owner" />}
             {isAdmin && !isOwner && <Shield className="vesper-member-role-icon vesper-member-role-icon-admin" />}
             {status === 'idle' && !isOwner && !isAdmin && <MoonStar className="vesper-member-role-icon" />}
@@ -223,7 +223,7 @@ export default function MemberListPanel(): React.JSX.Element {
       width={memberListWidth}
       onWidthChange={setMemberListWidth}
     >
-      <div className="vesper-member-list-panel">
+      <div data-testid="member-list" className="vesper-member-list-panel">
         <div className="vesper-member-list-header">
           <span className="vesper-member-list-title">Members</span>
           <span className="vesper-member-list-count">{members.length}</span>

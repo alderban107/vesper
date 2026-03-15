@@ -260,7 +260,7 @@ export default function MessageInput(): React.JSX.Element {
       {/* Mention autocomplete */}
       {mentionQuery !== null && (
         <div className="relative mb-1">
-          <div className="absolute bottom-0 left-0 z-50">
+          <div data-testid="mention-autocomplete" className="absolute bottom-0 left-0 z-50">
             <MentionAutocomplete
               query={mentionQuery}
               onSelect={handleMentionSelect}

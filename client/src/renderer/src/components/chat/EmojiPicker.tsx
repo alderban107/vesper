@@ -203,7 +203,7 @@ export default function EmojiPicker({ onSelect, onClose }: Props): React.JSX.Ele
   }
 
   return (
-    <div ref={pickerRef} className="vesper-emoji-picker">
+    <div ref={pickerRef} data-testid="emoji-picker" className="vesper-emoji-picker">
       <div className="vesper-emoji-picker-header">
         <div className="vesper-emoji-picker-search">
           <Search className="vesper-emoji-picker-search-icon" />

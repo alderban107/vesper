@@ -70,6 +70,7 @@ export default function Header({ mobile = false }: Props): React.JSX.Element {
               <div className="vesper-mobile-header-subtitle">Direct message</div>
             </div>
             <button
+              data-testid="dm-call-button"
               type="button"
               onClick={() => startDmCall(activeConversation.id)}
               className="vesper-mobile-header-button"
@@ -93,6 +94,7 @@ export default function Header({ mobile = false }: Props): React.JSX.Element {
               <div className="vesper-mobile-header-subtitle">{activeServer?.name || 'Channel'}</div>
             </div>
             <button
+              data-testid="toggle-members"
               type="button"
               onClick={toggleMemberList}
               className={`vesper-mobile-header-button${showMemberList ? ' vesper-mobile-header-button-active' : ''}`}
@@ -134,6 +136,7 @@ export default function Header({ mobile = false }: Props): React.JSX.Element {
             topic={`dm:${activeConversation.id}`}
           />
           <button
+            data-testid="dm-call-button"
             onClick={() => startDmCall(activeConversation.id)}
             className="text-text-muted hover:text-text-primary transition-colors p-1.5 rounded hover:bg-bg-tertiary/50"
             title={voiceState === 'idle' ? 'Start voice call' : 'Switch to this call'}
@@ -155,6 +158,7 @@ export default function Header({ mobile = false }: Props): React.JSX.Element {
           <SearchBar />
           <div className="relative">
             <button
+              data-testid="toggle-pins"
               onClick={() => setShowPinnedPopover((value) => !value)}
               className={`text-text-muted hover:text-text-primary transition-colors p-1.5 rounded hover:bg-bg-tertiary/50 ${showPinnedPopover ? 'text-accent' : ''}`}
               title="Pinned Messages"
@@ -203,6 +207,7 @@ export default function Header({ mobile = false }: Props): React.JSX.Element {
             </button>
           )}
           <button
+            data-testid="toggle-members"
             onClick={toggleMemberList}
             className={`text-text-muted hover:text-text-primary transition-colors p-1.5 rounded hover:bg-bg-tertiary/50 ${showMemberList ? 'text-accent' : ''}`}
             title={showMemberList ? 'Hide Member List' : 'Show Member List'}

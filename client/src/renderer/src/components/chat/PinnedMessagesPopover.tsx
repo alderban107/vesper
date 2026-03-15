@@ -108,6 +108,7 @@ export default function PinnedMessagesPopover({
 
   return (
     <div
+      data-testid="pins-panel"
       ref={popoverRef}
       className="absolute right-0 top-10 z-40 w-96 max-w-[80vw] rounded-xl border border-border bg-bg-secondary/95 p-2 shadow-2xl backdrop-blur"
     >
@@ -127,6 +128,7 @@ export default function PinnedMessagesPopover({
         ) : (
           pins.map((pin) => (
             <div
+              data-testid="pinned-message"
               key={pin.id}
               className="rounded-lg border border-border/60 bg-bg-primary/70 px-2.5 py-2"
             >

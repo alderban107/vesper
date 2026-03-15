@@ -39,6 +39,7 @@ interface StreamCard {
   speaking: boolean
   muted: boolean
   hasShareAudio: boolean
+  testId?: string
 }
 
 interface ParticipantCard {
@@ -150,7 +151,8 @@ function VoiceVideoSurface({
   displayName,
   avatarUrl,
   mirror = false,
-  fit = 'cover'
+  fit = 'cover',
+  testId
 }: {
   stream: MediaStream
   muted?: boolean
@@ -159,6 +161,7 @@ function VoiceVideoSurface({
   avatarUrl: string | null
   mirror?: boolean
   fit?: 'cover' | 'contain'
+  testId?: string
 }): React.JSX.Element {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const [ready, setReady] = useState(false)
@@ -188,7 +191,7 @@ function VoiceVideoSurface({
     .join('') || '?'
 
   return (
-    <div className="vesper-voice-video-surface">
+    <div data-testid={testId} className="vesper-voice-video-surface">
       {!ready && (
         <div className="vesper-voice-video-surface-overlay">
           {avatarUrl ? (
@@ -344,17 +347,27 @@ export default function VoiceChannelPanel(): React.JSX.Element | null {
     ): void => {
       const member = members.find((entry) => entry.user_id === userId)
       const participant = participants.find((entry) => entry.user_id === userId)
+      const displayName = member?.user.display_name || member?.user.username || userId.slice(0, 8)
+      let testId: string | undefined
+      if (isLocal) {
+        testId = 'local-video'
+      } else if (slot === 'share_video') {
+        testId = 'remote-screen-share'
+      } else {
+        testId = `remote-video-${displayName}`
+      }
       cards.push({
         key: `${userId}:${slot}`,
         userId,
-        displayName: member?.user.display_name || member?.user.username || userId.slice(0, 8),
+        displayName,
         avatarUrl: member?.user.avatar_url ?? null,
         stream,
         slot,
         isLocal,
         speaking: participant?.speaking ?? false,
         muted: participant?.muted ?? false,
-        hasShareAudio: Boolean(participant?.share_audio_track_id)
+        hasShareAudio: Boolean(participant?.share_audio_track_id),
+        testId
       })
     }
 
@@ -414,7 +427,7 @@ export default function VoiceChannelPanel(): React.JSX.Element | null {
   }
 
   return (
-    <div className="vesper-voice-room">
+    <div data-testid="voice-channel-panel" className="vesper-voice-room">
       <div className="vesper-voice-room-hero">
         <div className="vesper-voice-room-hero-copy">
           <div className="vesper-voice-room-kicker">{activeServer?.name || 'Server Voice'}</div>
@@ -424,7 +437,7 @@ export default function VoiceChannelPanel(): React.JSX.Element | null {
               ? 'Mic, camera, screen share, and share audio are relayed as encrypted RTP. Pick a profile, focus the stage, and tune each stream separately.'
               : 'Join this voice room to talk live, turn on your camera, or present your screen with encrypted transport.'}
           </p>
-          <div className="vesper-voice-room-health">
+          <div className={`vesper-voice-room-health${isConnected ? '' : ''}`} data-testid={isConnected ? 'voice-connected' : undefined}>
             <span className={`vesper-voice-room-quality vesper-voice-room-quality-${connectionQuality}`}>
               {connectionQualityLabel}
             </span>
@@ -454,6 +467,7 @@ export default function VoiceChannelPanel(): React.JSX.Element | null {
           {isConnected ? (
             <>
               <button
+                data-testid="mute-button"
                 type="button"
                 onClick={toggleMute}
                 className={`vesper-voice-room-button${muted ? ' vesper-voice-room-button-danger' : ''}`}
@@ -470,6 +484,7 @@ export default function VoiceChannelPanel(): React.JSX.Element | null {
                 {deafened ? 'Undeafen' : 'Deafen'}
               </button>
               <button
+                data-testid="camera-button"
                 type="button"
                 onClick={() => {
                   void toggleCamera(cameraProfile)
@@ -480,6 +495,7 @@ export default function VoiceChannelPanel(): React.JSX.Element | null {
                 {cameraEnabled ? 'Stop Camera' : 'Camera'}
               </button>
               <button
+                data-testid="screen-share-button"
                 type="button"
                 onClick={() => {
                   void toggleScreenShare(shareProfile, shareAudioPreferred)
@@ -490,6 +506,7 @@ export default function VoiceChannelPanel(): React.JSX.Element | null {
                 {screenShareEnabled ? 'Stop Share' : 'Share Screen'}
               </button>
               <button
+                data-testid="disconnect-call"
                 type="button"
                 onClick={disconnect}
                 className="vesper-voice-room-button vesper-voice-room-button-danger"
@@ -648,6 +665,7 @@ export default function VoiceChannelPanel(): React.JSX.Element | null {
                 avatarUrl={focusedStream.avatarUrl}
                 mirror={focusedStream.isLocal && focusedStream.slot === 'camera_video'}
                 fit={focusedStream.slot === 'share_video' ? 'contain' : 'cover'}
+                testId={focusedStream.testId}
                 className="vesper-voice-room-stage-video"
               />
             </>
@@ -683,6 +701,7 @@ export default function VoiceChannelPanel(): React.JSX.Element | null {
                     displayName={card.displayName}
                     avatarUrl={card.avatarUrl}
                     mirror={card.isLocal && card.slot === 'camera_video'}
+                    testId={card.testId}
                     className="vesper-voice-room-stream-card-video"
                   />
                 </div>
@@ -856,7 +875,7 @@ function ParticipantAudioCard({
             speaking={participant.speaking}
           />
           <div>
-            <div className="vesper-voice-roster-card-name">{participant.displayName}</div>
+            <div data-testid="voice-participant-name" className="vesper-voice-roster-card-name">{participant.displayName}</div>
             <div className="vesper-voice-roster-card-meta">
               {participant.muted ? 'Muted' : participant.speaking ? 'Speaking' : 'Listening'}
             </div>
@@ -948,7 +967,7 @@ function VoicePresenceTile({
         )}
       </div>
 
-      <div className="vesper-voice-presence-name">
+      <div data-testid="voice-participant-name" className="vesper-voice-presence-name">
         {participant.displayName}
         {participant.isLocal ? ' (You)' : ''}
       </div>

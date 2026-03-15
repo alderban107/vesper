@@ -26,12 +26,13 @@ export default function MessageActions({
   return (
     <div className="vesper-message-actions">
       {expiryLabel && (
-        <span className="vesper-message-action-meta" title={expiryLabel}>
+        <span data-testid="expiry-label" className="vesper-message-action-meta" title={expiryLabel}>
           {expiryLabel}
         </span>
       )}
 
       <button
+        data-testid="react-button"
         type="button"
         onClick={onReact}
         className="vesper-message-action-button"
@@ -53,6 +54,7 @@ export default function MessageActions({
 
       {onThread && (
         <button
+          data-testid="thread-button"
           type="button"
           onClick={onThread}
           className="vesper-message-action-button"
@@ -66,6 +68,7 @@ export default function MessageActions({
       {canEdit && (
         <>
           <button
+            data-testid="edit-message"
             type="button"
             onClick={onEdit}
             className="vesper-message-action-button"
@@ -76,6 +79,7 @@ export default function MessageActions({
           </button>
 
           <button
+            data-testid="delete-message"
             type="button"
             onClick={onDelete}
             className="vesper-message-action-button vesper-message-action-button-danger"
@@ -89,6 +93,7 @@ export default function MessageActions({
 
       {onMore && (
         <button
+          data-testid="message-menu-button"
           type="button"
           onClick={onMore}
           className="vesper-message-action-button"

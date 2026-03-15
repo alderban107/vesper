@@ -26,6 +26,7 @@ export default function MessageReactionBar({
 
         return (
           <button
+            data-testid="reaction-chip"
             key={reaction.emoji}
             type="button"
             onClick={() => onToggleReaction(reaction.emoji)}

@@ -437,11 +437,12 @@ export default function Sidebar(): React.JSX.Element {
           )
 
           return (
-            <div key={server.id} className="relative">
+            <div key={server.id} className="relative" data-testid="server-row">
               {isActive && (
                 <div className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1 w-1 h-8 bg-accent rounded-r-full" />
               )}
               <button
+                data-testid="server-row"
                 onClick={() => handleServerClick(server.id)}
                 onContextMenu={(event) => serverMenu.onContextMenu(event, server.id)}
                 title={server.name}
@@ -708,6 +709,7 @@ export default function Sidebar(): React.JSX.Element {
                                   className={`${isVoice ? 'vesper-channel-voice-block' : ''}${dragState?.type === 'channel' && dragState.id === channel.id ? ' vesper-channel-row-shell-dragging' : ''}`}
                                 >
                                   <button
+                                    data-testid="channel-row"
                                     draggable={isServerOwner}
                                     onDragStart={() =>
                                       isServerOwner &&

@@ -1,0 +1,422 @@
+[
+  {
+    "checkpoint": "signup-complete",
+    "client": "alice",
+    "timestamp": 1773567157986,
+    "snapshot": {
+      "messages": [],
+      "threadCounts": {},
+      "reactions": {},
+      "unreadBadges": {},
+      "activeServer": "Direct Messages",
+      "activeChannel": null
+    },
+    "url": "http://127.0.0.1:62996/"
+  },
+  {
+    "checkpoint": "signup-complete",
+    "client": "bob",
+    "timestamp": 1773567159284,
+    "snapshot": {
+      "messages": [],
+      "threadCounts": {},
+      "reactions": {},
+      "unreadBadges": {},
+      "activeServer": "Direct Messages",
+      "activeChannel": null
+    },
+    "url": "http://127.0.0.1:62996/"
+  },
+  {
+    "checkpoint": "signup-complete",
+    "client": "charlie",
+    "timestamp": 1773567160570,
+    "snapshot": {
+      "messages": [],
+      "threadCounts": {},
+      "reactions": {},
+      "unreadBadges": {},
+      "activeServer": "Direct Messages",
+      "activeChannel": null
+    },
+    "url": "http://127.0.0.1:62996/"
+  },
+  {
+    "checkpoint": "dm-convergence",
+    "client": "alice",
+    "timestamp": 1773567162814,
+    "snapshot": {
+      "messages": [
+        {
+          "text": "Hey Bob, this is Alice — DM test alpha",
+          "sender": "alice_e2e",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Second message from Alice — DM test bravo",
+          "sender": "",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Hi Alice! Bob here — DM test charlie",
+          "sender": "bob_e2e",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Another from Bob — DM test delta",
+          "sender": "",
+          "hasThread": false,
+          "isEdited": false
+        }
+      ],
+      "threadCounts": {},
+      "reactions": {},
+      "unreadBadges": {},
+      "activeServer": "Direct Messages",
+      "activeChannel": null
+    },
+    "url": "http://127.0.0.1:62996/"
+  },
+  {
+    "checkpoint": "dm-convergence",
+    "client": "bob",
+    "timestamp": 1773567162815,
+    "snapshot": {
+      "messages": [
+        {
+          "text": "Second message from Alice — DM test bravo",
+          "sender": "alice_e2e",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Hey Bob, this is Alice — DM test alpha",
+          "sender": "",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Hi Alice! Bob here — DM test charlie",
+          "sender": "bob_e2e",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Another from Bob — DM test delta",
+          "sender": "",
+          "hasThread": false,
+          "isEdited": false
+        }
+      ],
+      "threadCounts": {},
+      "reactions": {},
+      "unreadBadges": {},
+      "activeServer": "Direct Messages",
+      "activeChannel": null
+    },
+    "url": "http://127.0.0.1:62996/"
+  },
+  {
+    "checkpoint": "dm-refresh-convergence",
+    "client": "alice",
+    "timestamp": 1773567164653,
+    "snapshot": {
+      "messages": [
+        {
+          "text": "Hi Alice! Bob here — DM test charlie",
+          "sender": "bob_e2e",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Second message from Alice — DM test bravo",
+          "sender": "alice_e2e",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Hey Bob, this is Alice — DM test alpha",
+          "sender": "",
+          "hasThread": true,
+          "isEdited": false
+        },
+        {
+          "text": "Another from Bob — DM test delta",
+          "sender": "bob_e2e",
+          "hasThread": false,
+          "isEdited": false
+        }
+      ],
+      "threadCounts": {
+        "Hey Bob, this is Alice — DM test alpha": 2
+      },
+      "reactions": {},
+      "unreadBadges": {},
+      "activeServer": "Direct Messages",
+      "activeChannel": null
+    },
+    "url": "http://127.0.0.1:62996/"
+  },
+  {
+    "checkpoint": "dm-refresh-convergence",
+    "client": "bob",
+    "timestamp": 1773567165457,
+    "snapshot": {
+      "messages": [
+        {
+          "text": "Hi Alice! Bob here — DM test charlie",
+          "sender": "bob_e2e",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Second message from Alice — DM test bravo",
+          "sender": "alice_e2e",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Hey Bob, this is Alice — DM test alpha",
+          "sender": "",
+          "hasThread": true,
+          "isEdited": false
+        },
+        {
+          "text": "Another from Bob — DM test delta",
+          "sender": "bob_e2e",
+          "hasThread": false,
+          "isEdited": false
+        }
+      ],
+      "threadCounts": {
+        "Hey Bob, this is Alice — DM test alpha": 2
+      },
+      "reactions": {},
+      "unreadBadges": {},
+      "activeServer": "Direct Messages",
+      "activeChannel": null
+    },
+    "url": "http://127.0.0.1:62996/"
+  },
+  {
+    "checkpoint": "server-join-convergence",
+    "client": "alice",
+    "timestamp": 1773567168047,
+    "snapshot": {
+      "messages": [],
+      "threadCounts": {},
+      "reactions": {},
+      "unreadBadges": {},
+      "activeServer": "Vesper E2E Server",
+      "activeChannel": "random-e2e"
+    },
+    "url": "http://127.0.0.1:62996/"
+  },
+  {
+    "checkpoint": "server-join-convergence",
+    "client": "bob",
+    "timestamp": 1773567168048,
+    "snapshot": {
+      "messages": [],
+      "threadCounts": {},
+      "reactions": {},
+      "unreadBadges": {},
+      "activeServer": "Vesper E2E Server",
+      "activeChannel": "general"
+    },
+    "url": "http://127.0.0.1:62996/"
+  },
+  {
+    "checkpoint": "server-join-convergence",
+    "client": "charlie",
+    "timestamp": 1773567168050,
+    "snapshot": {
+      "messages": [],
+      "threadCounts": {},
+      "reactions": {},
+      "unreadBadges": {},
+      "activeServer": "Vesper E2E Server",
+      "activeChannel": "general"
+    },
+    "url": "http://127.0.0.1:62996/"
+  },
+  {
+    "checkpoint": "channel-thread",
+    "client": "alice",
+    "timestamp": 1773567176443,
+    "snapshot": {
+      "messages": [
+        {
+          "text": "Channel msg from Alice — chan test golf",
+          "sender": "alice_e2e",
+          "hasThread": true,
+          "isEdited": false
+        },
+        {
+          "text": "Encrypted message is syncing...",
+          "sender": "bob_e2e",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Encrypted message is syncing...",
+          "sender": "charlie_e2e",
+          "hasThread": false,
+          "isEdited": false
+        }
+      ],
+      "threadCounts": {
+        "Channel msg from Alice — chan test golf": 1
+      },
+      "reactions": {},
+      "unreadBadges": {},
+      "activeServer": "Vesper E2E Server",
+      "activeChannel": "general-e2e"
+    },
+    "url": "http://127.0.0.1:62996/"
+  },
+  {
+    "checkpoint": "final-convergence",
+    "client": "alice",
+    "timestamp": 1773567187844,
+    "snapshot": {
+      "messages": [
+        {
+          "text": "Channel msg from Alice — chan test golf",
+          "sender": "alice_e2e",
+          "hasThread": true,
+          "isEdited": false
+        },
+        {
+          "text": "Encrypted message is syncing...",
+          "sender": "bob_e2e",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Encrypted message is syncing...",
+          "sender": "charlie_e2e",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Check out this emoji :testfire: inline",
+          "sender": "alice_e2e",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Follow-up from Alice — chan test juliet",
+          "sender": "",
+          "hasThread": false,
+          "isEdited": false
+        }
+      ],
+      "threadCounts": {
+        "Channel msg from Alice — chan test golf": 1
+      },
+      "reactions": {},
+      "unreadBadges": {},
+      "activeServer": "Vesper E2E Server",
+      "activeChannel": "general-e2e"
+    },
+    "url": "http://127.0.0.1:62996/"
+  },
+  {
+    "checkpoint": "final-convergence",
+    "client": "bob",
+    "timestamp": 1773567187846,
+    "snapshot": {
+      "messages": [
+        {
+          "text": "Encrypted message is syncing...",
+          "sender": "alice_e2e",
+          "hasThread": true,
+          "isEdited": false
+        },
+        {
+          "text": "Channel msg from Bob — chan test hotel",
+          "sender": "bob_e2e",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Encrypted message is syncing...",
+          "sender": "charlie_e2e",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Encrypted message is syncing...",
+          "sender": "alice_e2e",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Encrypted message is syncing...",
+          "sender": "",
+          "hasThread": false,
+          "isEdited": false
+        }
+      ],
+      "threadCounts": {
+        "Encrypted message is syncing...": 1
+      },
+      "reactions": {},
+      "unreadBadges": {},
+      "activeServer": "Vesper E2E Server",
+      "activeChannel": "general-e2e"
+    },
+    "url": "http://127.0.0.1:62996/"
+  },
+  {
+    "checkpoint": "final-convergence",
+    "client": "charlie",
+    "timestamp": 1773567187848,
+    "snapshot": {
+      "messages": [
+        {
+          "text": "Encrypted message is syncing...",
+          "sender": "alice_e2e",
+          "hasThread": true,
+          "isEdited": false
+        },
+        {
+          "text": "Encrypted message is syncing...",
+          "sender": "bob_e2e",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Channel msg from Charlie — chan test india",
+          "sender": "charlie_e2e",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Encrypted message is syncing...",
+          "sender": "alice_e2e",
+          "hasThread": false,
+          "isEdited": false
+        },
+        {
+          "text": "Follow-up from Alice — chan test juliet",
+          "sender": "",
+          "hasThread": false,
+          "isEdited": false
+        }
+      ],
+      "threadCounts": {
+        "Encrypted message is syncing...": 1
+      },
+      "reactions": {},
+      "unreadBadges": {},
+      "activeServer": "Vesper E2E Server",
+      "activeChannel": "general-e2e"
+    },
+    "url": "http://127.0.0.1:62996/"
+  }
+]

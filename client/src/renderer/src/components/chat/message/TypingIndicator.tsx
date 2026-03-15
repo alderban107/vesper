@@ -131,6 +131,7 @@ export default function TypingIndicator({ typingUsers }: Props): React.JSX.Eleme
 
   return (
     <div
+      data-testid="typing-indicator"
       className={`vesper-typing-indicator${isVisible ? '' : ' vesper-typing-indicator-hidden'}`}
       aria-live={isVisible ? 'polite' : 'off'}
       aria-atomic="true"

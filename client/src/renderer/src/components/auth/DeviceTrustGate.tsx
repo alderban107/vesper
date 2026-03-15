@@ -98,7 +98,7 @@ export default function DeviceTrustGate(): React.JSX.Element | null {
   }
 
   return (
-    <div className="fixed inset-0 z-[120] bg-bg-base/82 backdrop-blur-md flex items-center justify-center p-6">
+    <div data-testid="device-trust-gate" className="fixed inset-0 z-[120] bg-bg-base/82 backdrop-blur-md flex items-center justify-center p-6">
       <div className="glass-card rounded-3xl max-w-3xl w-full p-8 animate-scale-in border border-border/60 shadow-2xl">
         <div className="flex items-start gap-4 mb-6">
           <div className="w-12 h-12 rounded-2xl bg-accent/15 text-accent flex items-center justify-center">

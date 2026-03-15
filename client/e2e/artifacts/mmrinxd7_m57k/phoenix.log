@@ -1,0 +1,10 @@
+01:52:52.049 request_id=GJz3w28i2WLbwzAAABnB [error] ** (ArgumentError) comparing `c.id` with `nil` is forbidden as it is unsafe. If you want to check if a value is nil, use is_nil/1 instead
+    (ecto 3.13.5) lib/ecto/query/builder.ex:1265: Ecto.Query.Builder.not_nil!/2
+    (vesper 0.1.0) lib/vesper/servers.ex:977: Vesper.Servers.sibling_query/3
+    (vesper 0.1.0) lib/vesper/servers.ex:909: Vesper.Servers.put_channel_position/3
+    (vesper 0.1.0) lib/vesper/servers.ex:370: anonymous fn/2 in Vesper.Servers.create_channel/2
+    (vesper 0.1.0) lib/vesper/repo.ex:2: anonymous fn/1 in Vesper.Repo.transaction/2
+    (ecto 3.13.5) lib/ecto/repo/transaction.ex:11: anonymous fn/3 in Ecto.Repo.Transaction.transact/4
+    (ecto_sql 3.13.4) lib/ecto/adapters/sql.ex:1473: anonymous fn/3 in Ecto.Adapters.SQL.checkout_or_transaction/4
+    (db_connection 2.9.0) lib/db_connection.ex:1747: DBConnection.run_transaction/4
+

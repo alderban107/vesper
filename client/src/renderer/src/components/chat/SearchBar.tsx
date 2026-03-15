@@ -279,6 +279,7 @@ export default function SearchBar(): React.JSX.Element {
   return (
     <>
       <button
+        data-testid="search-button"
         type="button"
         onClick={() => setIsOpen(true)}
         className="text-text-faint hover:text-text-primary p-1.5 rounded hover:bg-bg-tertiary/50 transition-colors"
@@ -299,6 +300,7 @@ export default function SearchBar(): React.JSX.Element {
             <div className="flex items-center gap-3 border-b border-border px-4 py-3">
               <Search className="h-4 w-4 text-text-faint shrink-0" />
               <input
+                data-testid="search-input"
                 ref={inputRef}
                 type="text"
                 value={query}
@@ -360,9 +362,10 @@ export default function SearchBar(): React.JSX.Element {
                   No local recall results yet. Messages become searchable after they have been decrypted on this device.
                 </div>
               ) : (
-                <div className="p-2">
+                <div data-testid="search-results" className="p-2">
                   {results.map((result, index) => (
                     <button
+                      data-testid="search-result"
                       key={result.id}
                       type="button"
                       onClick={() => handleResultClick(result)}

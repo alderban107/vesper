@@ -5,6 +5,7 @@ export interface SettingsSectionItem {
   label: string
   tone?: 'default' | 'danger'
   icon?: React.ComponentType<{ className?: string }>
+  testId?: string
 }
 
 export interface SettingsSectionGroup {
@@ -19,6 +20,7 @@ interface Props {
   onSectionChange: (sectionId: string) => void
   onClose: () => void
   children: React.ReactNode
+  testId?: string
 }
 
 export default function SettingsShell({
@@ -27,7 +29,8 @@ export default function SettingsShell({
   sections,
   onSectionChange,
   onClose,
-  children
+  children,
+  testId
 }: Props): React.JSX.Element {
   const itemRefs = useRef<Record<string, HTMLButtonElement | null>>({})
   const flatItems = useMemo(
@@ -84,6 +87,7 @@ export default function SettingsShell({
   return (
     <div
       className="vesper-settings-overlay"
+      data-testid={testId}
       role="dialog"
       aria-modal="true"
       aria-label={title}
@@ -130,6 +134,7 @@ export default function SettingsShell({
                         ref={(node) => {
                           itemRefs.current[item.id] = node
                         }}
+                        data-testid={item.testId}
                         className={className}
                         onClick={() => onSectionChange(item.id)}
                         onKeyDown={(event) => handleNavKeyDown(event, item.id)}

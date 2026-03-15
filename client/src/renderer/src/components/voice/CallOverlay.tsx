@@ -15,6 +15,7 @@ interface OverlayEntry {
   participantMuted: boolean
   isLocal: boolean
   hasShareAudio: boolean
+  testId?: string
 }
 
 function OverlayVideo({
@@ -28,7 +29,8 @@ function OverlayVideo({
   speaking = false,
   participantMuted = false,
   isLocal = false,
-  hasShareAudio = false
+  hasShareAudio = false,
+  testId
 }: {
   stream: MediaStream
   muted?: boolean
@@ -41,6 +43,7 @@ function OverlayVideo({
   participantMuted?: boolean
   isLocal?: boolean
   hasShareAudio?: boolean
+  testId?: string
 }): React.JSX.Element {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const [ready, setReady] = useState(false)
@@ -70,7 +73,7 @@ function OverlayVideo({
     .join('') || '?'
 
   return (
-    <div className={speaking ? 'vesper-call-overlay-video-shell vesper-call-overlay-video-shell-speaking' : 'vesper-call-overlay-video-shell'}>
+    <div data-testid={testId} className={speaking ? 'vesper-call-overlay-video-shell vesper-call-overlay-video-shell-speaking' : 'vesper-call-overlay-video-shell'}>
       {!ready && (
         <div className="vesper-call-overlay-video-loading">
           {avatarUrl ? <img src={avatarUrl} alt="" className="vesper-call-overlay-video-preview" /> : null}
@@ -210,7 +213,8 @@ export default function CallOverlay(): React.JSX.Element | null {
           speaking: participant.speaking ?? false,
           participantMuted: participant.muted,
           isLocal: false,
-          hasShareAudio: Boolean(participant.share_audio_track_id)
+          hasShareAudio: Boolean(participant.share_audio_track_id),
+          testId: 'remote-screen-share'
         })
       }
 
@@ -224,7 +228,8 @@ export default function CallOverlay(): React.JSX.Element | null {
           speaking: participant.speaking ?? false,
           participantMuted: participant.muted,
           isLocal: false,
-          hasShareAudio: false
+          hasShareAudio: false,
+          testId: `remote-video-${displayName}`
         })
       }
 
@@ -242,7 +247,8 @@ export default function CallOverlay(): React.JSX.Element | null {
       speaking: false,
       participantMuted: muted,
       isLocal: true,
-      hasShareAudio: shareAudioPreferred
+      hasShareAudio: shareAudioPreferred,
+      testId: 'local-video'
     } : null,
     localCameraStream ? {
       id: 'local:camera_video',
@@ -253,7 +259,8 @@ export default function CallOverlay(): React.JSX.Element | null {
       speaking: false,
       participantMuted: muted,
       isLocal: true,
-      hasShareAudio: false
+      hasShareAudio: false,
+      testId: 'local-video'
     } : null
   ].filter((entry): entry is OverlayEntry => entry !== null)
 
@@ -307,7 +314,7 @@ export default function CallOverlay(): React.JSX.Element | null {
           : 'vesper-call-overlay-quality-unknown'
 
   return (
-    <div className="vesper-call-overlay">
+    <div data-testid="call-overlay" className="vesper-call-overlay">
       <div className="vesper-call-overlay-shell glass-card">
         <div className="vesper-call-overlay-status-row">
           <div className="vesper-call-overlay-status-copy">
@@ -365,6 +372,7 @@ export default function CallOverlay(): React.JSX.Element | null {
                 participantMuted={entry.participantMuted}
                 isLocal={entry.isLocal}
                 hasShareAudio={entry.hasShareAudio}
+                testId={entry.testId}
                 className={`vesper-call-overlay-video${entry.isLocal ? ' vesper-call-overlay-video-local' : ''}`}
               />
             ))}
@@ -381,6 +389,7 @@ export default function CallOverlay(): React.JSX.Element | null {
 
         <div className="vesper-call-overlay-controls">
           <button
+            data-testid="mute-button"
             onClick={toggleMute}
             className={`vesper-call-overlay-control${
               muted
@@ -405,6 +414,7 @@ export default function CallOverlay(): React.JSX.Element | null {
           </button>
 
           <button
+            data-testid="disconnect-call"
             onClick={disconnect}
             className="vesper-call-overlay-control vesper-call-overlay-control-hangup"
             title="Hang up"
@@ -413,6 +423,7 @@ export default function CallOverlay(): React.JSX.Element | null {
           </button>
 
           <button
+            data-testid="camera-button"
             onClick={() => {
               void toggleCamera()
             }}
@@ -428,6 +439,7 @@ export default function CallOverlay(): React.JSX.Element | null {
           </button>
 
           <button
+            data-testid="screen-share-button"
             onClick={() => {
               void toggleScreenShare(undefined, shareAudioPreferred)
             }}

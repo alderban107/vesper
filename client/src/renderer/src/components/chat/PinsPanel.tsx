@@ -58,7 +58,7 @@ export default function PinsPanel({ channelId, topic, onClose }: Props): React.J
   }
 
   return (
-    <div className="w-80 border-l border-border bg-bg-primary/80 backdrop-blur-sm flex flex-col h-full">
+    <div data-testid="pins-panel" className="w-80 border-l border-border bg-bg-primary/80 backdrop-blur-sm flex flex-col h-full">
       <div className="px-4 py-3 border-b border-border flex items-center gap-2 shrink-0">
         <Pin className="w-4 h-4 text-accent" />
         <span className="text-text-primary font-semibold text-sm flex-1">Pinned Messages</span>
@@ -80,6 +80,7 @@ export default function PinsPanel({ channelId, topic, onClose }: Props): React.J
         ) : (
           pins.map((pin) => (
             <div
+              data-testid="pinned-message"
               key={pin.id}
               className="glass-card rounded-lg p-3 group"
             >

@@ -17,7 +17,7 @@ export default function VoiceControls(): React.JSX.Element | null {
   if (voiceState === 'idle') return null
 
   return (
-    <div className="px-3 py-2 bg-bg-base/50 border-t border-border">
+    <div data-testid="voice-connected" className="px-3 py-2 bg-bg-base/50 border-t border-border">
       <div className="flex items-center gap-2 mb-2">
         <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
         <span className="text-success text-xs font-semibold">
@@ -27,6 +27,7 @@ export default function VoiceControls(): React.JSX.Element | null {
 
       <div className="flex gap-1.5">
         <button
+          data-testid="mute-button"
           onClick={toggleMute}
           className={`flex-1 py-1.5 rounded-lg flex items-center justify-center gap-1.5 text-xs font-medium transition-all ${
             muted
@@ -51,6 +52,7 @@ export default function VoiceControls(): React.JSX.Element | null {
         </button>
 
         <button
+          data-testid="camera-button"
           onClick={() => {
             void toggleCamera()
           }}
@@ -66,6 +68,7 @@ export default function VoiceControls(): React.JSX.Element | null {
         </button>
 
         <button
+          data-testid="screen-share-button"
           onClick={() => {
             void toggleScreenShare()
           }}
@@ -83,6 +86,7 @@ export default function VoiceControls(): React.JSX.Element | null {
         </button>
 
         <button
+          data-testid="disconnect-call"
           onClick={disconnect}
           className="px-3 py-1.5 rounded-lg bg-red-600/20 text-red-400 hover:bg-red-600/30 flex items-center justify-center transition-colors"
           title="Disconnect"

@@ -58,7 +58,7 @@ export default function IncomingCallModal(): React.JSX.Element | null {
   })()
 
   return (
-    <div className="vesper-incoming-call-shell">
+    <div data-testid="incoming-call" className="vesper-incoming-call-shell">
       <div className="vesper-incoming-call-card glass-card animate-scale-in">
         <div className="vesper-incoming-call-avatar">
           <div className="vesper-incoming-call-avatar-ring">
@@ -75,6 +75,7 @@ export default function IncomingCallModal(): React.JSX.Element | null {
 
         <div className="vesper-incoming-call-actions">
           <button
+            data-testid="reject-call"
             onClick={() => rejectCall()}
             className="vesper-incoming-call-button vesper-incoming-call-button-decline"
             title="Decline"
@@ -85,6 +86,7 @@ export default function IncomingCallModal(): React.JSX.Element | null {
             <span>Decline</span>
           </button>
           <button
+            data-testid="accept-call"
             onClick={() => acceptCall(incomingCall.conversationId)}
             className="vesper-incoming-call-button vesper-incoming-call-button-accept"
             title="Accept"
