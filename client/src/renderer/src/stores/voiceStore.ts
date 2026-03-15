@@ -24,6 +24,20 @@ const NOISE_GATE_THRESHOLD_DB_KEY = 'voice:noiseGateThresholdDb'
 const REMOTE_VOICE_VOLUMES_KEY = 'voice:remoteVoiceVolumes'
 const REMOTE_STREAM_VOLUMES_KEY = 'voice:remoteStreamVolumes'
 const SHARE_AUDIO_PREFERRED_KEY = 'voice:shareAudioPreferred'
+const MLS_JOIN_REQUEST_COOLDOWN_MS = 2000
+
+const recentVoiceJoinRequests = new Map<string, number>()
+
+function maybeRequestVoiceMlsJoin(topic: string): void {
+  const now = Date.now()
+  const lastRequestAt = recentVoiceJoinRequests.get(topic) ?? 0
+  if (now - lastRequestAt < MLS_JOIN_REQUEST_COOLDOWN_MS) {
+    return
+  }
+
+  recentVoiceJoinRequests.set(topic, now)
+  pushToChannel(topic, 'mls_request_join', {})
+}
 
 function readString(key: string): string | null {
   return localStorage.getItem(key)
@@ -1267,7 +1281,7 @@ async function initVoice(
       }
     } else if (event === 'mls_request_join_all') {
       if (!useCryptoStore.getState().hasGroup(topic)) {
-        pushToChannel(topic, 'mls_request_join', {})
+        maybeRequestVoiceMlsJoin(topic)
       }
     } else if (event === 'mls_request_join') {
       handleVoiceMlsJoinRequest(roomId, data, topic)
