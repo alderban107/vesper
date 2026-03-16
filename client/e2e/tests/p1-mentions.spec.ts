@@ -4,7 +4,7 @@
  */
 
 import { test, expect } from '@playwright/test'
-import { createUserContext, signup, type UserContext } from '../helpers/auth'
+import { createUserContext, login, type UserContext } from '../helpers/auth'
 import { createServer, createChannel, getInviteCode, joinServerWithCode, selectServer, selectChannel } from '../helpers/server'
 import { sendChannelMessage } from '../helpers/channel'
 import { waitForMessage } from '../helpers/wait'
@@ -17,8 +17,8 @@ test.describe('P1: Mentions', () => {
   test.beforeAll(async ({ browser }) => {
     alice = await createUserContext(browser, 'alice', USERS.alice.username, USERS.alice.password)
     bob = await createUserContext(browser, 'bob', USERS.bob.username, USERS.bob.password)
-    await signup(alice)
-    await signup(bob)
+    await login(alice)
+    await login(bob)
 
     await createServer(alice.page, 'Mention Server')
     const code = await getInviteCode(alice.page)
@@ -37,6 +37,7 @@ test.describe('P1: Mentions', () => {
   test('Member mention autocomplete inserts correct syntax (R-MSG-4)', async () => {
     const input = alice.page.locator('[data-testid="message-input"]')
     await input.fill('')
+    const suffix = 'mention-sync-rmsg4'
 
     // Type @ to trigger autocomplete
     await input.type('@bob')
@@ -54,17 +55,20 @@ test.describe('P1: Mentions', () => {
       }
     }
 
-    // Send the message with the mention
-    await alice.page.click('[data-testid="send-button"]')
-    await alice.page.waitForTimeout(1_000)
+    // Ensure the message includes stable plain text we can assert on both clients.
+    await input.type(` ${suffix}`)
+
+    // Send via keyboard to avoid flaky pointer interception by transient overlays.
+    await input.press('Enter')
+    await waitForMessage(alice.page, suffix)
+    await waitForMessage(bob.page, suffix)
 
     // Bob should see the message with a mention highlight
     const mentionHighlight = bob.page.locator('[data-testid="message-row"] .vesper-mention-highlight, [data-testid="message-row"] .mention')
     const hasMention = await mentionHighlight.count() > 0
     // If the app renders mentions with highlight, verify it; otherwise just verify the message arrived
     if (!hasMention) {
-      // Fallback: at minimum, verify the message arrived
-      await bob.page.waitForSelector(`[data-testid="message-row"]`, { timeout: 10_000 })
+      await waitForMessage(bob.page, suffix)
     }
   })
 

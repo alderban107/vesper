@@ -8,6 +8,8 @@ defmodule Vesper.Encryption.PendingWelcome do
   schema "mls_pending_welcomes" do
     field :welcome_data, :binary
     field :group_id, :string
+    field :recipient_client_id, :string
+    field :recipient_key_package_ref, :string
 
     belongs_to :recipient, Vesper.Accounts.User
     belongs_to :sender, Vesper.Accounts.User
@@ -23,6 +25,8 @@ defmodule Vesper.Encryption.PendingWelcome do
       :welcome_data,
       :group_id,
       :recipient_id,
+      :recipient_client_id,
+      :recipient_key_package_ref,
       :sender_id,
       :channel_id,
       :conversation_id

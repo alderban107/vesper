@@ -31,7 +31,7 @@
  */
 
 import { test, expect, type Browser, type Page, type BrowserContext } from '@playwright/test'
-import { readRunState } from '../harness/state'
+import { readRunState, saveRecoveryKey } from '../harness/state'
 import { ConsoleMonitor } from '../harness/console-monitor'
 import { signup, createUserContext, login, approveWithRecoveryKey, type UserContext } from '../helpers/auth'
 import { createDm, selectDm, sendDmMessage } from '../helpers/dm'
@@ -106,14 +106,17 @@ test.describe('P0 Smoke — full continuous run', () => {
   test('Step 3: three users can sign up from clean clients', async () => {
     await signup(alice)
     expect(alice.recoveryKey).toBeTruthy()
+    saveRecoveryKey(alice.username, alice.recoveryKey!)
     await recordSnapshot(alice.page, 'signup-complete', 'alice')
 
     await signup(bob)
     expect(bob.recoveryKey).toBeTruthy()
+    saveRecoveryKey(bob.username, bob.recoveryKey!)
     await recordSnapshot(bob.page, 'signup-complete', 'bob')
 
     await signup(charlie)
     expect(charlie.recoveryKey).toBeTruthy()
+    saveRecoveryKey(charlie.username, charlie.recoveryKey!)
     await recordSnapshot(charlie.page, 'signup-complete', 'charlie')
   })
 

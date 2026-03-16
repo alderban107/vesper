@@ -6,7 +6,7 @@
 import type { Page } from '@playwright/test'
 import { waitForMessage, waitForThreadPanel } from './wait'
 
-const ENCRYPTION_READY_TIMEOUT = 20_000
+const ENCRYPTION_READY_TIMEOUT = 60_000
 const ENCRYPTION_POLL_INTERVAL = 500
 
 /** Send a message in the current channel. Retries if encryption is still syncing.
@@ -64,10 +64,11 @@ export async function getChannelMessages(page: Page): Promise<string[]> {
 /** Open a thread from a message containing the given text. */
 export async function openThread(page: Page, messageText: string): Promise<void> {
   const row = page.locator(`[data-testid="message-row"]:has-text("${messageText}")`).first()
-  // Hover to show action row
+  await row.scrollIntoViewIfNeeded()
   await row.hover()
-  // Click the "Start thread" action button (not the thread-link)
-  await row.locator('[data-testid="thread-button"].vesper-message-action-button').click()
+  const threadButton = row.locator('[data-testid="thread-button"].vesper-message-action-button')
+  await threadButton.waitFor({ state: 'visible', timeout: 5_000 })
+  await threadButton.click({ force: true })
   await waitForThreadPanel(page)
 }
 
@@ -139,10 +140,15 @@ export async function uploadChannelAttachment(
 ): Promise<void> {
   const fileInput = page.locator('.vesper-composer-form input[type="file"]')
   await fileInput.setInputFiles(filePath)
+  // Wait for staging/upload prep to complete.
   await page.waitForSelector('.vesper-composer-icon-button .animate-spin', {
     state: 'hidden',
     timeout: 10_000,
   })
+
+  // Submit the staged file to send the attachment message.
+  const input = page.locator('[data-testid="message-input"]')
+  await input.press('Enter')
 }
 
 /** Start typing in the channel (triggers typing indicator). */

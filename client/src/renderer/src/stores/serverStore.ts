@@ -311,6 +311,7 @@ interface ServerState {
     type?: string,
     categoryId?: string | null
   ) => Promise<Channel | null>
+  refreshServerChannels: (serverId: string) => Promise<void>
   deleteChannel: (serverId: string, channelId: string) => Promise<boolean>
   updateChannel: (
     serverId: string,
@@ -492,6 +493,7 @@ export const useServerStore = create<ServerState>((set, get) => ({
     })
     if (id) {
       get().fetchMembers(id)
+      void get().refreshServerChannels(id)
     }
   },
 
@@ -525,6 +527,39 @@ export const useServerStore = create<ServerState>((set, get) => ({
       // ignore
     }
     return null
+  },
+
+  refreshServerChannels: async (serverId) => {
+    const channels = await fetchServerChannels(serverId)
+    if (!channels) {
+      return
+    }
+
+    set((s) => {
+      const nextServers = s.servers.map((srv) =>
+        srv.id === serverId
+          ? { ...srv, channels }
+          : srv
+      )
+
+      const activeServer = nextServers.find((srv) => srv.id === s.activeServerId)
+      const activeChannelStillVisible = activeServer?.channels.some(
+        (channel) => channel.id === s.activeChannelId
+      ) ?? false
+      const nextActiveChannelId =
+        s.activeServerId === serverId && !activeChannelStillVisible
+          ? getFirstNavigableChannel(activeServer)?.id ?? null
+          : s.activeChannelId
+
+      if (s.activeServerId === serverId) {
+        writeStoredValue(LAST_CHANNEL_KEY, nextActiveChannelId)
+      }
+
+      return {
+        servers: nextServers,
+        activeChannelId: nextActiveChannelId
+      }
+    })
   },
 
   updateChannel: async (serverId, channelId, attrs) => {

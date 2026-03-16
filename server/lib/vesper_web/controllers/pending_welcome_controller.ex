@@ -7,10 +7,14 @@ defmodule VesperWeb.PendingWelcomeController do
   @doc "GET /api/v1/pending-welcomes/:channel_id — fetch pending welcomes for the current MLS scope"
   def index(conn, %{"channel_id" => scope_id}) do
     user = conn.assigns.current_user
+    current_device = conn.assigns.current_device
 
     case authorized_scope(user.id, scope_id) do
       {:ok, authorized_group_id} ->
-        render_welcomes(conn, Encryption.get_pending_welcomes(user.id, authorized_group_id))
+        render_welcomes(
+          conn,
+          Encryption.get_pending_welcomes(user.id, authorized_group_id, current_device.client_id)
+        )
 
       {:error, :invalid_scope} ->
         conn |> put_status(:bad_request) |> json(%{error: "invalid scope"})
@@ -35,6 +39,10 @@ defmodule VesperWeb.PendingWelcomeController do
       welcome.recipient_id != user.id ->
         conn |> put_status(:forbidden) |> json(%{error: "forbidden"})
 
+      not is_nil(welcome.recipient_client_id) and
+          welcome.recipient_client_id != conn.assigns.current_device.client_id ->
+        conn |> put_status(:forbidden) |> json(%{error: "forbidden"})
+
       true ->
         Encryption.delete_pending_welcome(id)
         json(conn, %{ok: true})
@@ -48,6 +56,7 @@ defmodule VesperWeb.PendingWelcomeController do
           %{
             id: w.id,
             welcome_data: Base.encode64(w.welcome_data),
+            key_package_ref: w.recipient_key_package_ref,
             sender_id: w.sender_id,
             inserted_at: w.inserted_at
           }

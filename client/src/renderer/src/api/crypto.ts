@@ -4,11 +4,13 @@ import { apiFetch } from './client'
  * Upload key packages to the server directory.
  */
 export async function uploadKeyPackages(
-  packages: Uint8Array[]
+  packages: Uint8Array[],
+  deviceId: string
 ): Promise<boolean> {
   const res = await apiFetch('/api/v1/key-packages', {
     method: 'POST',
     body: JSON.stringify({
+      device_id: deviceId,
       key_packages: packages.map((p) => uint8ToBase64(p))
     })
   })
@@ -19,9 +21,11 @@ export async function uploadKeyPackages(
  * Fetch one unconsumed key package for a user.
  */
 export async function fetchKeyPackage(
-  userId: string
+  userId: string,
+  deviceId?: string
 ): Promise<Uint8Array | null> {
-  const res = await apiFetch(`/api/v1/key-packages/${userId}`)
+  const query = deviceId ? `?device_id=${encodeURIComponent(deviceId)}` : ''
+  const res = await apiFetch(`/api/v1/key-packages/${userId}${query}`)
   if (!res.ok) return null
 
   const data = await res.json()
@@ -30,10 +34,20 @@ export async function fetchKeyPackage(
 }
 
 /**
+ * Purge all unconsumed key packages for the current user.
+ * Used when a new device is set up to remove stale packages from previous devices.
+ */
+export async function purgeMyKeyPackages(deviceId: string): Promise<void> {
+  const query = `?device_id=${encodeURIComponent(deviceId)}`
+  await apiFetch(`/api/v1/key-packages/me${query}`, { method: 'DELETE' })
+}
+
+/**
  * Get count of unconsumed key packages for the current user.
  */
-export async function getMyKeyPackageCount(): Promise<number> {
-  const res = await apiFetch('/api/v1/key-packages/me/count')
+export async function getMyKeyPackageCount(deviceId: string): Promise<number> {
+  const query = `?device_id=${encodeURIComponent(deviceId)}`
+  const res = await apiFetch(`/api/v1/key-packages/me/count${query}`)
   if (!res.ok) return 0
 
   const data = await res.json()
@@ -49,6 +63,7 @@ export async function fetchPendingWelcomes(
   Array<{
     id: string
     welcome_data: Uint8Array
+    key_package_ref?: string | null
     sender_id: string
   }>
 > {
@@ -57,9 +72,10 @@ export async function fetchPendingWelcomes(
 
   const data = await res.json()
   return (data.welcomes || []).map(
-    (w: { id: string; welcome_data: string; sender_id: string }) => ({
+    (w: { id: string; welcome_data: string; key_package_ref?: string | null; sender_id: string }) => ({
       id: w.id,
       welcome_data: base64ToUint8(w.welcome_data),
+      key_package_ref: typeof w.key_package_ref === 'string' ? w.key_package_ref : null,
       sender_id: w.sender_id
     })
   )
@@ -84,6 +100,7 @@ export async function fetchPendingResyncRequests(
     id: string
     requester_id: string
     requester_username: string | null
+    requester_client_id: string | null
     request_id: string
     last_known_epoch: number | null
     reason: string | null
@@ -101,6 +118,66 @@ export async function fetchPendingResyncRequests(
  */
 export async function ackPendingResyncRequest(requestId: string): Promise<void> {
   await apiFetch(`/api/v1/pending-resync-requests/${requestId}`, {
+    method: 'DELETE'
+  })
+}
+
+/**
+ * Fetch pending same-user history requests for an MLS scope.
+ */
+export async function fetchPendingHistoryRequests(
+  scopeId: string
+): Promise<
+  Array<{
+    id: string
+    requester_id: string
+    requester_username: string | null
+    requester_client_id: string | null
+  }>
+> {
+  const res = await apiFetch(`/api/v1/pending-history-requests/${encodeURIComponent(scopeId)}`)
+  if (!res.ok) return []
+
+  const data = await res.json()
+  return data.requests || []
+}
+
+/**
+ * Acknowledge a processed pending same-user history request.
+ */
+export async function ackPendingHistoryRequest(requestId: string): Promise<void> {
+  await apiFetch(`/api/v1/pending-history-requests/${requestId}`, {
+    method: 'DELETE'
+  })
+}
+
+/**
+ * Fetch pending same-user history bundles for an MLS scope.
+ */
+export async function fetchPendingHistoryBundles(
+  scopeId: string
+): Promise<
+  Array<{
+    id: string
+    ciphertext: string
+    mls_epoch: number
+    recipient_id: string
+    recipient_client_id: string | null
+    sender_id: string
+  }>
+> {
+  const res = await apiFetch(`/api/v1/pending-history-bundles/${encodeURIComponent(scopeId)}`)
+  if (!res.ok) return []
+
+  const data = await res.json()
+  return data.bundles || []
+}
+
+/**
+ * Acknowledge a processed pending same-user history bundle.
+ */
+export async function ackPendingHistoryBundle(bundleId: string): Promise<void> {
+  await apiFetch(`/api/v1/pending-history-bundles/${bundleId}`, {
     method: 'DELETE'
   })
 }

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { getServerUrl } from '../../api/client'
 import { avatarColor } from '../../utils/avatar'
 import type { PresenceStatus } from '../../stores/presenceStore'
@@ -40,6 +40,11 @@ export default function Avatar({
 }: Props): React.JSX.Element {
   const [imgError, setImgError] = useState(false)
   const resolvedAvatarUrl = resolveAvatarUrl(avatarUrl)
+
+  useEffect(() => {
+    setImgError(false)
+  }, [resolvedAvatarUrl])
+
   const initials = displayName.slice(0, 2).toUpperCase()
   const sizeClass = SIZES[size]
   const statusClassName = status ? `vesper-avatar-status vesper-avatar-status-${status}` : null

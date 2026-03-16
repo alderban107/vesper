@@ -199,6 +199,7 @@ export default function Header({ mobile = false }: Props): React.JSX.Element {
           )}
           {isServerOwner && (
             <button
+              data-testid="channel-settings-button"
               onClick={() => openChannelSettingsModal(activeChannel.id)}
               className="text-text-muted hover:text-text-primary transition-colors p-1.5 rounded hover:bg-bg-tertiary/50"
               title="Channel Settings"

@@ -6,6 +6,7 @@ defmodule Vesper.Encryption.KeyPackage do
   @foreign_key_type :binary_id
 
   schema "key_packages" do
+    field :client_id, :string
     field :key_package_data, :binary
     field :consumed, :boolean, default: false
 
@@ -16,7 +17,7 @@ defmodule Vesper.Encryption.KeyPackage do
 
   def changeset(key_package, attrs) do
     key_package
-    |> cast(attrs, [:key_package_data, :user_id, :consumed])
-    |> validate_required([:key_package_data, :user_id])
+    |> cast(attrs, [:key_package_data, :user_id, :client_id, :consumed])
+    |> validate_required([:key_package_data, :user_id, :client_id])
   end
 end

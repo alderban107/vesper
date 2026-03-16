@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import type { ClientState } from 'ts-mls'
+import { getLocalDeviceIdentity } from '../auth/deviceIdentity'
 import {
+  buildClientCredentialIdentity,
   initCipherSuite,
   createMLSGroup,
   addMemberToGroup,
@@ -16,6 +18,7 @@ import {
   decodeKeyPackageBytes,
   deriveVoiceKey,
   groupHasMember,
+  getGroupLeafIdentities,
   getGroupMemberIdentities,
   findMemberLeafIndex
 } from '../crypto/mls'
@@ -33,9 +36,63 @@ import { useAuthStore } from './authStore'
 import { withGroupLock } from '../crypto/groupLock'
 import { cacheSentMessage } from '../crypto/decryptionCache'
 
+function isAlreadyMemberValidationError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    /already in the group/i.test(error.message)
+  )
+}
+
+async function loadOrderedWelcomeKeyPackages(
+  keyPackageRef?: string | null
+): Promise<
+  Array<{
+    id: number
+    publicData: Uint8Array
+    privateData: Uint8Array
+  }>
+> {
+  const localPackages = await loadKeyPackages()
+  if (
+    typeof keyPackageRef !== 'string' ||
+    keyPackageRef.length === 0 ||
+    localPackages.length === 0
+  ) {
+    return localPackages
+  }
+
+  const matchingPackages = localPackages.filter(
+    (pkg) => uint8ToBase64(new Uint8Array(pkg.publicData)) === keyPackageRef
+  )
+  if (matchingPackages.length > 0) {
+    return [
+      ...matchingPackages,
+      ...localPackages.filter(
+        (pkg) => uint8ToBase64(new Uint8Array(pkg.publicData)) !== keyPackageRef
+      )
+    ]
+  }
+
+  // Replenishment saves local packages asynchronously relative to the UI. If a
+  // Welcome arrives while a new device is still finishing setup, retry once so
+  // we can pick up the matching private package as soon as it lands locally.
+  await new Promise((resolve) => setTimeout(resolve, 150))
+
+  const retriedPackages = await loadKeyPackages()
+  return [
+    ...retriedPackages.filter(
+      (pkg) => uint8ToBase64(new Uint8Array(pkg.publicData)) === keyPackageRef
+    ),
+    ...retriedPackages.filter(
+      (pkg) => uint8ToBase64(new Uint8Array(pkg.publicData)) !== keyPackageRef
+    )
+  ]
+}
+
 export interface JoinRequestResult {
   commitBytes: string
   welcomeBytes: string | null
+  keyPackageRef: string | null
 }
 
 export interface ResyncRequestResult extends JoinRequestResult {
@@ -58,16 +115,22 @@ interface CryptoState {
   handleJoinRequest: (
     channelId: string,
     userId: string,
-    username?: string
+    username?: string,
+    deviceId?: string
   ) => Promise<JoinRequestResult | null>
   /** Remove and re-add a member to repair their local MLS state */
   handleResyncRequest: (
     channelId: string,
     userId: string,
-    username?: string
+    username?: string,
+    deviceId?: string
   ) => Promise<ResyncRequestResult | null>
   /** Process a Welcome message to join an existing group */
-  handleWelcome: (channelId: string, welcomeData: string) => Promise<boolean>
+  handleWelcome: (
+    channelId: string,
+    welcomeData: string,
+    keyPackageRef?: string | null
+  ) => Promise<boolean>
   /** Process a Commit message to update group state */
   handleCommit: (channelId: string, commitData: string) => Promise<void>
   /** Encrypt a plaintext message for a channel */
@@ -144,8 +207,17 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
     // Check for pending welcomes (offline delivery)
     const welcomes = await fetchPendingWelcomes(channelId)
     for (const welcome of welcomes) {
-      const processed = await get().handleWelcome(channelId, uint8ToBase64(welcome.welcome_data))
-      if (processed) {
+      if (get().groupStates[channelId]) {
+        await ackPendingWelcome(welcome.id).catch(() => {})
+        return
+      }
+
+      const processed = await get().handleWelcome(
+        channelId,
+        uint8ToBase64(welcome.welcome_data),
+        welcome.key_package_ref
+      )
+      if (processed || get().groupStates[channelId]) {
         await ackPendingWelcome(welcome.id)
         return
       }
@@ -178,7 +250,10 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
 
         if (localPackages.length === 0) {
           // Generate one on the fly
-          const pairs = await createKeyPackageBatch(user.id, 1)
+          const pairs = await createKeyPackageBatch(
+            buildClientCredentialIdentity(user.id, getLocalDeviceIdentity().id),
+            1
+          )
           publicPackage = pairs[0].publicPackage
           privatePackage = pairs[0].privatePackage
         } else {
@@ -210,7 +285,7 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
     })
   },
 
-  handleJoinRequest: async (channelId, userId, username) => {
+  handleJoinRequest: async (channelId, userId, username, deviceId) => {
     if (!useAuthStore.getState().canUseE2EE) return null
     if (!get().groupStates[channelId]) return // We're not the group owner / don't have state
 
@@ -222,27 +297,34 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
         await initCipherSuite()
         const localUser = useAuthStore.getState().user
         const memberIdentities = getGroupMemberIdentities(state)
+        const memberLeafIdentities = getGroupLeafIdentities(state)
+        const isSameUser = localUser ? userId === localUser.id : false
 
         if (
           !localUser ||
           !memberIdentities.some(
             (identity) => identity === localUser.id || identity === localUser.username
           ) ||
-          (memberIdentities[0] !== localUser.id && memberIdentities[0] !== localUser.username)
+          (!isSameUser &&
+            memberIdentities[0] !== localUser.id &&
+            memberIdentities[0] !== localUser.username)
         ) {
           return null
         }
 
-        if (groupHasMember(state, userId, username)) {
+        // Skip duplicate member check for same-user different-device joins.
+        // Multi-device: the same user joins from a new device with a different
+        // key package. Both devices coexist as separate leaves in the MLS tree.
+        if (!isSameUser && groupHasMember(state, userId, username)) {
           console.warn(`Skipping MLS join request for existing member ${userId} in ${channelId}`)
           return null
         }
 
         // Fetch the requesting user's key package from the directory
-        const keyPackageBytes = await fetchKeyPackage(userId)
+        const keyPackageBytes = await fetchKeyPackage(userId, deviceId)
         if (!keyPackageBytes) {
           console.warn(`No key package available for user ${userId}`)
-          return
+          return null
         }
 
         const memberKeyPackage = decodeKeyPackageBytes(keyPackageBytes)
@@ -252,7 +334,15 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
             ? new TextDecoder().decode(requestedCredential.identity)
             : null
 
-        if (requestedIdentity && memberIdentities.includes(requestedIdentity)) {
+        if (requestedIdentity && memberLeafIdentities.includes(requestedIdentity)) {
+          return null
+        }
+
+        if (
+          !isSameUser &&
+          requestedIdentity &&
+          groupHasMember(state, requestedIdentity, userId, username)
+        ) {
           console.warn(
             `Skipping MLS join request for existing member ${requestedIdentity} in ${channelId}`
           )
@@ -273,16 +363,20 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
         // This is called from messageStore which handles the channel push
         return {
           commitBytes: uint8ToBase64(result.commitBytes),
-          welcomeBytes: result.welcomeBytes ? uint8ToBase64(result.welcomeBytes) : null
+          welcomeBytes: result.welcomeBytes ? uint8ToBase64(result.welcomeBytes) : null,
+          keyPackageRef: uint8ToBase64(keyPackageBytes)
         }
       } catch (e) {
+        if (isAlreadyMemberValidationError(e)) {
+          return null
+        }
         console.error('Failed to handle join request:', e)
         return null
       }
     })
   },
 
-  handleResyncRequest: async (channelId, userId, username) => {
+  handleResyncRequest: async (channelId, userId, username, deviceId) => {
     if (!useAuthStore.getState().canUseE2EE) return
     if (!get().groupStates[channelId]) return
 
@@ -294,18 +388,21 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
         await initCipherSuite()
         const localUser = useAuthStore.getState().user
         const memberIdentities = getGroupMemberIdentities(state)
+        const isSameUser = localUser ? userId === localUser.id : false
 
         if (
           !localUser ||
           !memberIdentities.some(
             (identity) => identity === localUser.id || identity === localUser.username
           ) ||
-          (memberIdentities[0] !== localUser.id && memberIdentities[0] !== localUser.username)
+          (!isSameUser &&
+            memberIdentities[0] !== localUser.id &&
+            memberIdentities[0] !== localUser.username)
         ) {
           return null
         }
 
-        const keyPackageBytes = await fetchKeyPackage(userId)
+        const keyPackageBytes = await fetchKeyPackage(userId, deviceId)
         if (!keyPackageBytes) {
           console.warn(`No key package available for user ${userId}`)
           return null
@@ -321,12 +418,12 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
         let workingState = state
         let removeCommitBytes: string | null = null
 
-        const existingLeafIndex = findMemberLeafIndex(
-          workingState,
-          userId,
-          username,
-          requestedIdentity
-        )
+        const existingLeafIndex =
+          requestedIdentity && groupHasMember(workingState, requestedIdentity)
+            ? findMemberLeafIndex(workingState, requestedIdentity)
+            : isSameUser
+              ? null
+              : findMemberLeafIndex(workingState, userId, username, requestedIdentity)
 
         if (existingLeafIndex !== null) {
           const removed = await removeMemberFromGroup(workingState, existingLeafIndex)
@@ -349,7 +446,8 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
         return {
           removeCommitBytes,
           commitBytes: uint8ToBase64(added.commitBytes),
-          welcomeBytes: added.welcomeBytes ? uint8ToBase64(added.welcomeBytes) : null
+          welcomeBytes: added.welcomeBytes ? uint8ToBase64(added.welcomeBytes) : null,
+          keyPackageRef: uint8ToBase64(keyPackageBytes)
         }
       } catch (e) {
         console.error('Failed to handle resync request:', e)
@@ -358,7 +456,7 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
     })
   },
 
-  handleWelcome: async (channelId, welcomeData) => {
+  handleWelcome: async (channelId, welcomeData, keyPackageRef) => {
     if (!useAuthStore.getState().canUseE2EE) {
       return false
     }
@@ -368,15 +466,14 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
         await initCipherSuite()
         const welcomeBytes = base64ToUint8(welcomeData)
 
-        // Get a local key package
-        const localPackages = await loadKeyPackages()
+        const orderedPackages = await loadOrderedWelcomeKeyPackages(keyPackageRef)
 
-        if (localPackages.length === 0) {
+        if (orderedPackages.length === 0) {
           console.warn(`No local key packages available to process Welcome for ${channelId}`)
           return false
         }
 
-        for (const pkg of localPackages) {
+        for (const pkg of orderedPackages) {
           try {
             const publicPackageBytes = new Uint8Array(pkg.publicData)
             const publicPackage = decodeKeyPackageBytes(publicPackageBytes)

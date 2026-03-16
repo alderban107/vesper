@@ -3,7 +3,7 @@
  * Covers: R-VOICE-5
  */
 import { test, expect } from '@playwright/test'
-import { createUserContext, signup, type UserContext } from '../helpers/auth'
+import { createUserContext, login, type UserContext } from '../helpers/auth'
 import { createServer, createVoiceChannel, getInviteCode, joinServerWithCode, selectServer } from '../helpers/server'
 import { joinVoiceChannel, disconnectCall, toggleCamera } from '../helpers/voice'
 import { USERS, CHANNELS } from '../fixtures/test-data'
@@ -15,8 +15,8 @@ test.describe('P2: Device failure degradation', () => {
   test.beforeAll(async ({ browser }) => {
     alice = await createUserContext(browser, 'alice', USERS.alice.username, USERS.alice.password)
     bob = await createUserContext(browser, 'bob', USERS.bob.username, USERS.bob.password)
-    await signup(alice)
-    await signup(bob)
+    await login(alice)
+    await login(bob)
 
     await createServer(alice.page, 'Device Failure Server')
     const code = await getInviteCode(alice.page)

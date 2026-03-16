@@ -171,7 +171,7 @@ export default function InviteManager(): React.JSX.Element {
           <h3 className="text-text-primary text-sm font-semibold mb-1">Server Invite Code</h3>
           <p className="text-text-faintest text-[10px] mb-2">Rotates every 24 hours</p>
           <div className="flex items-center gap-2">
-            <code className="bg-bg-base/50 text-accent-text px-3 py-2 rounded-lg border border-border text-sm font-mono flex-1">
+            <code data-testid="permanent-invite-code" className="bg-bg-base/50 text-accent-text px-3 py-2 rounded-lg border border-border text-sm font-mono flex-1">
               {permanentCode}
             </code>
             <button
@@ -198,6 +198,7 @@ export default function InviteManager(): React.JSX.Element {
               Expire after
             </label>
             <select
+              data-testid="invite-expiry-select"
               value={expirySeconds}
               onChange={(e) => setExpirySeconds(Number(e.target.value))}
               className="bg-bg-base/50 text-text-secondary text-xs px-2 py-1.5 rounded-lg border border-border"
@@ -215,6 +216,7 @@ export default function InviteManager(): React.JSX.Element {
               Max uses
             </label>
             <select
+              data-testid="invite-max-uses-select"
               value={maxUses}
               onChange={(e) => setMaxUses(Number(e.target.value))}
               className="bg-bg-base/50 text-text-secondary text-xs px-2 py-1.5 rounded-lg border border-border"
@@ -243,6 +245,7 @@ export default function InviteManager(): React.JSX.Element {
           </div>
         </div>
         <button
+          data-testid="invite-create-button"
           onClick={createInvite}
           disabled={creating}
           className="px-4 py-2 glow-accent hover:glow-accent-hover disabled:opacity-40 disabled:shadow-none text-bg-base rounded-lg text-sm font-medium transition-all flex items-center gap-2"
@@ -266,6 +269,7 @@ export default function InviteManager(): React.JSX.Element {
             {invites.map((invite) => (
               <div
                 key={invite.id}
+                data-testid="invite-row"
                 className="flex items-center gap-3 px-3 py-2 rounded-lg bg-bg-tertiary/30 hover:bg-bg-tertiary/50 transition-colors group"
               >
                 <div className="flex-1 min-w-0">
@@ -298,6 +302,7 @@ export default function InviteManager(): React.JSX.Element {
                   </div>
                 </div>
                 <button
+                  data-testid="invite-revoke"
                   onClick={() => revokeInvite(invite.id)}
                   className="opacity-0 group-hover:opacity-100 text-text-faint hover:text-red-400 transition-all p-1 rounded hover:bg-bg-tertiary/50"
                   title="Revoke"

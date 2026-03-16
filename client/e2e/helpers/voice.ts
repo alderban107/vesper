@@ -33,11 +33,11 @@ export async function rejectIncomingCall(page: Page): Promise<void> {
 /** Disconnect from the current call. */
 export async function disconnectCall(page: Page): Promise<void> {
   await page.click('[data-testid="disconnect-call"]')
-  // Wait for call overlay to disappear
-  await page.waitForSelector('[data-testid="call-overlay"]', {
-    state: 'hidden',
-    timeout: 10_000,
-  })
+  // Wait for call UI to settle — call-overlay hides (DM) or voice-connected disappears (channel)
+  await Promise.race([
+    page.waitForSelector('[data-testid="call-overlay"]', { state: 'hidden', timeout: 10_000 }).catch(() => {}),
+    page.waitForSelector('[data-testid="voice-connected"]', { state: 'detached', timeout: 10_000 }).catch(() => {}),
+  ])
 }
 
 /** Join a voice channel (click on it in sidebar). */
@@ -55,7 +55,7 @@ export async function toggleMute(page: Page): Promise<void> {
 export async function isMuted(page: Page): Promise<boolean> {
   const btn = page.locator('[data-testid="mute-button"]')
   const classes = await btn.getAttribute('class')
-  return classes?.includes('muted') ?? false
+  return (classes?.includes('vesper-call-overlay-control-danger') || classes?.includes('vesper-voice-room-button-danger')) ?? false
 }
 
 /** Toggle camera in a voice call. */
@@ -81,14 +81,32 @@ export async function getVoiceParticipants(page: Page): Promise<string[]> {
 
 /** Toggle screen share. */
 export async function toggleScreenShare(page: Page): Promise<void> {
-  await page.click('[data-testid="screen-share-button"]')
+  await page.locator('[data-testid="screen-share-button"]:visible').first().click()
 }
 
 /** Check if screen share is active. */
 export async function isScreenSharing(page: Page): Promise<boolean> {
-  const btn = page.locator('[data-testid="screen-share-button"]')
-  const classes = await btn.getAttribute('class')
-  return classes?.includes('active') ?? false
+  const accountPanelStop = page.locator('button[title="Stop Screen Share"]:visible')
+  if ((await accountPanelStop.count()) > 0) {
+    return true
+  }
+
+  const stopByTitle = page.locator('[data-testid="screen-share-button"][title="Stop Screen Share"]:visible')
+  if ((await stopByTitle.count()) > 0) {
+    return true
+  }
+
+  const stopByLabel = page.locator('[data-testid="screen-share-button"]:visible').filter({
+    hasText: 'Stop Share'
+  })
+  if ((await stopByLabel.count()) > 0) {
+    return true
+  }
+
+  const activeButton = page.locator(
+    '[data-testid="screen-share-button"].vesper-call-overlay-control-active:visible, [data-testid="screen-share-button"].vesper-voice-room-button-active:visible'
+  )
+  return (await activeButton.count()) > 0
 }
 
 /** Check if a remote screen share feed is visible. */

@@ -326,8 +326,15 @@ defmodule VesperWeb.AuthController do
     else
       case Accounts.approve_current_device_with_recovery(user, device.id, recovery_key_hash) do
         {:ok, updated_device} ->
-          broadcast_device_event(user.id, "device_updated", updated_device)
-          json(conn, auth_state_json(user, updated_device, true))
+          with {:ok, tokens} <- Accounts.create_tokens(user, updated_device) do
+            broadcast_device_event(user.id, "device_updated", updated_device)
+            json(conn, session_json(user, tokens, true))
+          else
+            _ ->
+              conn
+              |> put_status(:unprocessable_entity)
+              |> json(%{error: "could not create a trusted session for this device"})
+          end
 
         {:error, :not_found} ->
           conn |> put_status(:not_found) |> json(%{error: "invalid recovery key"})

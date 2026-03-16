@@ -177,7 +177,7 @@ defmodule Vesper.Chat do
     |> Repo.get(id)
     |> case do
       nil -> nil
-      message -> Repo.preload(message, [:sender, :attachments])
+      message -> Repo.preload(message, [:sender, :attachments, :reactions])
     end
   end
 
@@ -307,7 +307,7 @@ defmodule Vesper.Chat do
         where: m.channel_id == ^channel_id,
         order_by: [desc: m.inserted_at],
         limit: ^limit,
-        preload: [:sender, :attachments]
+        preload: [:sender, :attachments, :reactions]
       )
 
     query =
@@ -329,7 +329,7 @@ defmodule Vesper.Chat do
         where: m.conversation_id == ^conversation_id,
         order_by: [desc: m.inserted_at],
         limit: ^limit,
-        preload: [:sender, :attachments]
+        preload: [:sender, :attachments, :reactions]
       )
 
     query =
@@ -351,7 +351,7 @@ defmodule Vesper.Chat do
       where: m.parent_message_id == ^parent_message_id,
       order_by: [asc: m.inserted_at],
       limit: ^limit,
-      preload: [:sender, :attachments]
+      preload: [:sender, :attachments, :reactions]
     )
     |> Repo.all()
   end

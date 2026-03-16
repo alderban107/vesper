@@ -127,6 +127,7 @@ defmodule VesperWeb.Router do
     # Key package directory
     post("/key-packages", KeyPackageController, :create)
     get("/key-packages/me/count", KeyPackageController, :count)
+    delete("/key-packages/me", KeyPackageController, :purge)
     get("/key-packages/:user_id", KeyPackageController, :show)
 
     # Pending welcomes
@@ -136,6 +137,12 @@ defmodule VesperWeb.Router do
     # Pending MLS resync requests
     get("/pending-resync-requests/:channel_id", PendingResyncRequestController, :index)
     delete("/pending-resync-requests/:id", PendingResyncRequestController, :delete)
+
+    # Pending same-user MLS history recovery
+    get("/pending-history-requests/:channel_id", PendingHistoryRequestController, :index)
+    delete("/pending-history-requests/:id", PendingHistoryRequestController, :delete)
+    get("/pending-history-bundles/:channel_id", PendingHistoryBundleController, :index)
+    delete("/pending-history-bundles/:id", PendingHistoryBundleController, :delete)
   end
 
   # Enable LiveDashboard in development

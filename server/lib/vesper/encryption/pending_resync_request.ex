@@ -9,6 +9,7 @@ defmodule Vesper.Encryption.PendingResyncRequest do
     field :group_id, :string
     field :request_id, :string
     field :requester_username, :string
+    field :requester_client_id, :string
     field :last_known_epoch, :integer
     field :reason, :string
 
@@ -26,14 +27,15 @@ defmodule Vesper.Encryption.PendingResyncRequest do
       :request_id,
       :requester_id,
       :requester_username,
+      :requester_client_id,
       :last_known_epoch,
       :reason,
       :channel_id,
       :conversation_id
     ])
     |> validate_required([:group_id, :request_id, :requester_id])
-    |> unique_constraint([:group_id, :requester_id],
-      name: :mls_pending_resync_requests_group_id_requester_id_index
+    |> unique_constraint([:group_id, :requester_id, :requester_client_id],
+      name: :mls_pending_resync_requests_group_id_requester_id_requester_client_id_index
     )
   end
 end

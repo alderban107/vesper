@@ -1,13 +1,15 @@
 /**
  * P1: Device trust gating and session renewal.
  * Covers: R-AUTH-3, R-AUTH-4, R-E2EE-3, R-E2EE-4
+ *
+ * Depends on P0 having already signed up alice_e2e.
  */
 
 import { test, expect } from '@playwright/test'
-import { readRunState } from '../harness/state'
-import { createUserContext, signup, login, approveWithRecoveryKey, unlockTrustedDevice, simulateSessionExpiry, type UserContext } from '../helpers/auth'
-import { waitForAppShell, waitForLoginPage, waitForSessionNotice, waitForDeviceTrustGate } from '../helpers/wait'
+import { createUserContext, login, approveWithRecoveryKey, unlockTrustedDevice, simulateSessionExpiry, type UserContext } from '../helpers/auth'
+import { waitForAppShell, waitForLoginPage } from '../helpers/wait'
 import { assertNoDecryptionFailures } from '../helpers/assertions'
+import { getRecoveryKey } from '../harness/state'
 import { USERS } from '../fixtures/test-data'
 
 let alice: UserContext
@@ -20,60 +22,61 @@ test.describe('P1: Device trust and session renewal', () => {
   })
 
   test('Pending device shows gate, recovery key approves it (R-AUTH-3, R-E2EE-4)', async ({ browser }) => {
-    // First, register alice on one device
-    alice = await createUserContext(browser, 'alice-dev1', USERS.alice.username, USERS.alice.password)
-    await signup(alice)
-    const recoveryKey = alice.recoveryKey!
-    expect(recoveryKey).toBeTruthy()
-    await alice.context.close()
+    const recoveryKey = getRecoveryKey(USERS.alice.username)
 
     // Login on a new device — should show pending gate
-    alice = await createUserContext(browser, 'alice-dev2', USERS.alice.username, USERS.alice.password)
-    await login(alice)
-
-    // Device trust gate should appear since this is a new device
-    await waitForDeviceTrustGate(alice.page)
+    alice = await createUserContext(browser, 'alice-trust-dev', USERS.alice.username, USERS.alice.password)
+    await login(alice, { expectTrustGate: true })
 
     // Approve with recovery key
     await approveWithRecoveryKey(alice.page, recoveryKey)
+    await waitForAppShell(alice.page)
 
     // Now E2EE should be available
     await assertNoDecryptionFailures(alice.page)
   })
 
   test('Trusted-but-locked device shows unlock UI (R-AUTH-3, R-E2EE-3)', async ({ browser }) => {
-    // Register alice
-    alice = await createUserContext(browser, 'alice-unlock', USERS.alice.username, USERS.alice.password)
-    await signup(alice)
-    await alice.context.close()
+    // Login on new device — may show trust gate with unlock option
+    alice = await createUserContext(browser, 'alice-unlock-dev', USERS.alice.username, USERS.alice.password)
 
-    // Login on same device concept — trusted but needs unlock
-    alice = await createUserContext(browser, 'alice-unlock2', USERS.alice.username, USERS.alice.password)
-    await login(alice)
+    const { page, username, password } = alice
+    const { readRunState } = await import('../harness/state')
+    const state = readRunState()
+    await page.goto(state.clientUrl)
+    await page.waitForSelector('[data-testid="login-form"]', { timeout: 10_000 })
+    const form = page.locator('[data-testid="login-form"]')
+    await form.locator('input[type="text"]').fill(username)
+    await form.locator('input[type="password"]').fill(password)
+    await form.locator('button[type="submit"]').click()
 
-    // If device trust gate appears with unlock option
-    const hasGate = await alice.page.locator('[data-testid="device-trust-gate"]').isVisible({ timeout: 5_000 }).catch(() => false)
+    // If device trust gate appears with unlock option, use it
+    const hasGate = await page.locator('[data-testid="device-trust-gate"]').isVisible({ timeout: 5_000 }).catch(() => false)
     if (hasGate) {
-      const hasUnlock = await alice.page.locator('text=Unlock encrypted chats').isVisible()
+      const hasUnlock = await page.locator('text=Unlock encrypted chats').isVisible()
       if (hasUnlock) {
-        await unlockTrustedDevice(alice.page, USERS.alice.password)
-        await assertNoDecryptionFailures(alice.page)
+        await unlockTrustedDevice(page, USERS.alice.password)
+      } else {
+        // Trust gate without unlock — approve with recovery key
+        const recoveryKey = getRecoveryKey(USERS.alice.username)
+        await approveWithRecoveryKey(page, recoveryKey)
       }
     }
+
+    // Verify app health regardless of gate path
+    await waitForAppShell(page)
+    await assertNoDecryptionFailures(page)
   })
 
   test('Session expiry returns user to sign-in (R-AUTH-4)', async ({ browser }) => {
-    alice = await createUserContext(browser, 'alice-session', USERS.alice.username, USERS.alice.password)
-    await signup(alice)
+    alice = await createUserContext(browser, 'alice-session-dev', USERS.alice.username, USERS.alice.password)
+    await login(alice)
 
     // Simulate session expiry
     await simulateSessionExpiry(alice.page)
 
-    // Wait for the app to react — should show session notice or login
-    await alice.page.waitForTimeout(2_000)
+    // Reload — should be back at login
     await alice.page.reload()
-
-    // Should be back at login
     await waitForLoginPage(alice.page)
 
     // Session notice should be visible

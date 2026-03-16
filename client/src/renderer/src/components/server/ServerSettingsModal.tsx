@@ -74,7 +74,7 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
         { id: 'general', label: 'Overview', icon: Settings },
         { id: 'members', label: 'Members', icon: Users },
         { id: 'roles', label: 'Roles', icon: Shield },
-        { id: 'invites', label: 'Invites', icon: Link },
+        { id: 'invites', label: 'Invites', icon: Link, testId: 'invites-tab' },
         { id: 'emojis', label: 'Emoji', icon: Smile, testId: 'emoji-tab' },
         { id: 'moderation', label: 'Moderation', icon: UserX },
         { id: 'audit', label: 'Audit Log', icon: History },

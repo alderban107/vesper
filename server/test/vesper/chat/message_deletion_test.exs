@@ -38,7 +38,8 @@ defmodule Vesper.Chat.MessageDeletionTest do
       refute File.exists?(FileStorage.get_path(storage_key))
 
       # Attachment row is gone (cascade)
-      assert Repo.aggregate(from(a in Attachment, where: a.storage_key == ^storage_key), :count) == 0
+      assert Repo.aggregate(from(a in Attachment, where: a.storage_key == ^storage_key), :count) ==
+               0
     end
 
     test "preserves file when another message still references the same blob", %{
@@ -64,7 +65,8 @@ defmodule Vesper.Chat.MessageDeletionTest do
         )
 
       # Two attachment rows reference the same blob
-      assert Repo.aggregate(from(a in Attachment, where: a.storage_key == ^shared_key), :count) == 2
+      assert Repo.aggregate(from(a in Attachment, where: a.storage_key == ^shared_key), :count) ==
+               2
 
       # Delete the first message — file should survive
       assert {:ok, _} = Chat.delete_message(msg1)
@@ -72,7 +74,8 @@ defmodule Vesper.Chat.MessageDeletionTest do
       assert File.exists?(FileStorage.get_path(shared_key)),
              "File should still exist while another attachment references it"
 
-      assert Repo.aggregate(from(a in Attachment, where: a.storage_key == ^shared_key), :count) == 1
+      assert Repo.aggregate(from(a in Attachment, where: a.storage_key == ^shared_key), :count) ==
+               1
 
       # Delete the second message — file should now be removed
       assert {:ok, _} = Chat.delete_message(msg2)
@@ -80,7 +83,8 @@ defmodule Vesper.Chat.MessageDeletionTest do
       refute File.exists?(FileStorage.get_path(shared_key)),
              "File should be deleted when no attachments reference it"
 
-      assert Repo.aggregate(from(a in Attachment, where: a.storage_key == ^shared_key), :count) == 0
+      assert Repo.aggregate(from(a in Attachment, where: a.storage_key == ^shared_key), :count) ==
+               0
     end
 
     test "deletes multiple attachment files from a single message", %{

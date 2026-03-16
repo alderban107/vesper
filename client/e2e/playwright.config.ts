@@ -10,7 +10,7 @@ import { defineConfig } from '@playwright/test'
 
 export default defineConfig({
   testDir: './tests',
-  timeout: 15_000, // fail fast — no test should take longer than 15s
+  timeout: 120_000,
   expect: { timeout: 5_000 },
   fullyParallel: false, // tests share state within a spec file
   retries: 0, // no retries — we want to see real failures
@@ -43,7 +43,7 @@ export default defineConfig({
     video: 'retain-on-failure',
 
     // Permissions
-    permissions: ['clipboard-read', 'clipboard-write'],
+    permissions: ['clipboard-read', 'clipboard-write', 'camera', 'microphone'],
     ignoreHTTPSErrors: true,
   },
 

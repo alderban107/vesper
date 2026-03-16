@@ -34,19 +34,23 @@ export async function waitForServerInSidebar(page: Page, serverName: string): Pr
 
 /** Wait for a channel row to appear by name. */
 export async function waitForChannel(page: Page, channelName: string): Promise<void> {
-  await page.waitForSelector(`.vesper-channel-row-label:text("${channelName}")`, {
+  await page.waitForSelector(`.vesper-channel-row-label:has-text("${channelName}")`, {
     timeout: 10_000,
   })
 }
 
 /** Wait for a message containing specific text to appear. */
 export async function waitForMessage(page: Page, text: string, timeout = 10_000): Promise<void> {
-  await page.waitForSelector(`[data-testid="message-row"]:has-text("${text}")`, { timeout })
+  await page
+    .getByTestId('message-row')
+    .filter({ hasText: text })
+    .first()
+    .waitFor({ state: 'visible', timeout })
 }
 
 /** Wait for a DM conversation row containing a username. */
 export async function waitForDmConversation(page: Page, username: string): Promise<void> {
-  await page.waitForSelector(`[data-testid="sidebar"] :text("${username}")`, {
+  await page.waitForSelector(`[data-testid="dm-row"]:has-text("${username}")`, {
     timeout: 15_000,
   })
 }
@@ -76,7 +80,7 @@ export async function waitForTypingGone(page: Page): Promise<void> {
 
 /** Wait for unread badge on a channel or DM. */
 export async function waitForUnreadBadge(page: Page, target: string): Promise<void> {
-  await page.waitForSelector(`:text("${target}") ~ .vesper-channel-unread-badge, :text("${target}") ~ span:has-text(/\\d+/)`, {
+  await page.waitForSelector(`.vesper-channel-row:has-text("${target}") .vesper-channel-unread-badge`, {
     timeout: 10_000,
   })
 }

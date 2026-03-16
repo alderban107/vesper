@@ -50,6 +50,7 @@ defmodule VesperWeb.PendingResyncRequestController do
             request_id: request.request_id,
             requester_id: request.requester_id,
             requester_username: request.requester_username,
+            requester_client_id: request.requester_client_id,
             last_known_epoch: request.last_known_epoch,
             reason: request.reason,
             inserted_at: request.inserted_at
