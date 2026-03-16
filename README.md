@@ -167,6 +167,17 @@ docker-compose.yml       full stack (PostgreSQL, Phoenix, web client, coturn)
 turnserver.conf          coturn configuration for voice relay
 ```
 
+## File Upload Limits
+
+The maximum upload size is **50 MiB**, hardcoded in two places:
+
+| Location | What it controls |
+|----------|-----------------|
+| `server/lib/vesper_web/endpoint.ex` → `Plug.Parsers` `:length` | Maximum HTTP request body the server will accept. Requests exceeding this are rejected with a 413 before any application code runs. |
+| `server/lib/vesper/chat/file_storage.ex` → `max_upload_size/0` | Application-level limit checked by `AttachmentController`. Returns a descriptive error to the client. |
+
+To change the limit, update **both** values. They must match — if `Plug.Parsers` is lower than `max_upload_size`, uploads between the two values will fail silently with a 413 and no CORS headers. The server must be rebuilt after changing either value.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, testing, and code conventions.
