@@ -110,30 +110,45 @@ async function hasUnlockedLocalIdentity(userId: string): Promise<boolean> {
 }
 
 async function refreshActiveEncryptedViews(): Promise<void> {
-  const [{ useMessageStore }, { useServerStore }, { useDmStore }] = await Promise.all([
+  const [{ useMessageStore }, { useServerStore }, { useDmStore }, { useCryptoStore }] = await Promise.all([
     import('./messageStore'),
     import('./serverStore'),
-    import('./dmStore')
+    import('./dmStore'),
+    import('./cryptoStore')
   ])
 
   const activeChannelId = useServerStore.getState().activeChannelId
   const selectedConversationId = useDmStore.getState().selectedConversationId
   const messageStore = useMessageStore.getState()
-  const work: Array<Promise<void>> = []
 
-  if (activeChannelId) {
-    work.push(messageStore.fetchMessages(activeChannelId))
+  // For active DMs, re-join the channel to trigger MLS group setup now that
+  // E2EE may have become available (e.g. after device approval). Simply
+  // re-fetching messages without the group ready will leave them as "syncing".
+  if (selectedConversationId) {
+    const crypto = useCryptoStore.getState()
+    if (!crypto.hasGroup(selectedConversationId)) {
+      // Leave and rejoin to re-trigger the MLS bootstrap flow
+      messageStore.leaveDmChat(selectedConversationId)
+      messageStore.joinDmChat(selectedConversationId)
+      // joinDmChat handles fetching messages internally, so skip manual fetch
+    } else {
+      await messageStore.fetchDmMessages(selectedConversationId)
+    }
   }
 
-  if (selectedConversationId) {
-    work.push(messageStore.fetchDmMessages(selectedConversationId))
+  if (activeChannelId) {
+    const crypto = useCryptoStore.getState()
+    if (!crypto.hasGroup(activeChannelId)) {
+      messageStore.leaveChannelChat(activeChannelId)
+      messageStore.joinChannelChat(activeChannelId)
+    } else {
+      await messageStore.fetchMessages(activeChannelId)
+    }
   }
 
   if (messageStore.activeThreadParentId) {
-    work.push(messageStore.fetchThreadReplies(messageStore.activeThreadParentId))
+    await messageStore.fetchThreadReplies(messageStore.activeThreadParentId)
   }
-
-  await Promise.all(work)
 }
 
 async function resetEncryptedRuntime(): Promise<void> {

@@ -43,6 +43,7 @@ const recentMlsResyncRequests = new Map<string, number>()
 const MLS_RECOVERY_BACKOFF_MS = [150, 500, 1500] as const
 const ENCRYPTED_MESSAGE_SYNCING_PLACEHOLDER = 'Encrypted message is syncing...'
 const ENCRYPTED_MESSAGE_APPROVAL_PLACEHOLDER = 'Approve this device to read encrypted messages.'
+const ENCRYPTED_MESSAGE_UNAVAILABLE_PLACEHOLDER = 'Message unavailable - decryption failed'
 const inFlightScopeRecoveries = new Map<string, Promise<void>>()
 
 export interface MessageSender {
@@ -572,13 +573,53 @@ async function recoverEncryptedScope(
       await crypto.resetGroup(scope.targetId).catch(() => {})
     }
 
-    await tryRecoveryRound('local_state_reset')
+    if (await tryRecoveryRound('local_state_reset')) {
+      return
+    }
+
+    // Recovery exhausted — mark remaining failed messages as permanently unavailable
+    // so the UI doesn't keep showing "syncing" forever
+    markFailedMessagesUnavailable(scope, getState)
   })().finally(() => {
     inFlightScopeRecoveries.delete(key)
   })
 
   inFlightScopeRecoveries.set(key, run)
   return run
+}
+
+/**
+ * After recovery retries are exhausted, replace the "syncing" placeholder with
+ * a permanent "unavailable" message so the UI doesn't mislead the user into
+ * thinking messages will eventually appear.
+ */
+function markFailedMessagesUnavailable(
+  scope: EncryptedScopeDescriptor,
+  getState: () => MessageState
+): void {
+  const messages = getState().messagesByChannel[scope.targetId]
+  if (!messages) return
+
+  const updated = messages.map((msg) => {
+    if (
+      msg.encrypted &&
+      msg.decryptionFailed &&
+      (msg.content === ENCRYPTED_MESSAGE_SYNCING_PLACEHOLDER ||
+        msg.content === ENCRYPTED_MESSAGE_APPROVAL_PLACEHOLDER)
+    ) {
+      return { ...msg, content: ENCRYPTED_MESSAGE_UNAVAILABLE_PLACEHOLDER }
+    }
+    return msg
+  })
+
+  if (updated !== messages) {
+    useMessageStore.setState((s) => ({
+      messagesByChannel: {
+        ...s.messagesByChannel,
+        [scope.targetId]: updated
+      }
+    }))
+  }
 }
 
 function maybeRecoverEncryptedScope(
@@ -1162,17 +1203,47 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     })
 
     if (canUseEncryptedFeatures()) {
+      const conversation = getDmConversation(conversationId)
+      const isExistingConversation = conversation?.last_message != null
+
       useCryptoStore
         .getState()
         .ensureGroupMembership(conversationId)
         .then(async () => {
-          if (!useCryptoStore.getState().hasGroup(conversationId)) {
+          if (useCryptoStore.getState().hasGroup(conversationId)) {
+            return
+          }
+
+          if (isExistingConversation) {
+            // Existing conversation — request to join the existing group rather
+            // than blindly creating a new one that can't decrypt old messages.
+            maybeRequestMlsJoin(conversationId, topic)
+            maybeRequestMlsResync(
+              conversationId,
+              conversationId,
+              topic,
+              null,
+              'missing_state'
+            )
+
+            // Wait for the other participant to respond with a Welcome
+            const joined = await waitForDmBootstrap(conversationId, 4000)
+            if (joined) {
+              return
+            }
+
+            // Fallback: bootstrap a new group so at least new messages work
+            const bootstrapped = await bootstrapDmGroupIfLeader(conversationId, topic)
+            if (!bootstrapped && !useCryptoStore.getState().hasGroup(conversationId)) {
+              await forceBootstrapDmGroup(conversationId, topic)
+            }
+          } else {
+            // New conversation — create the group immediately
             const bootstrapped = await bootstrapDmGroupIfLeader(conversationId, topic)
             if (bootstrapped || useCryptoStore.getState().hasGroup(conversationId)) {
               return
             }
 
-            // Not the leader — try force-bootstrapping as fallback
             const forced = await forceBootstrapDmGroup(conversationId, topic)
             if (forced || useCryptoStore.getState().hasGroup(conversationId)) {
               return
