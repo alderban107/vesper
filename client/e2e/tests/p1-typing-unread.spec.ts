@@ -4,13 +4,12 @@
  */
 
 import { test, expect } from '@playwright/test'
-import { readRunState } from '../harness/state'
-import { createUserContext, signup, type UserContext } from '../helpers/auth'
+import { createUserContext, login, type UserContext } from '../helpers/auth'
 import { createDm, selectDm, sendDmMessage, startDmTyping, clearDmComposer } from '../helpers/dm'
 import { createServer, createChannel, getInviteCode, joinServerWithCode, selectServer, selectChannel } from '../helpers/server'
 import { sendChannelMessage, startChannelTyping, clearChannelComposer } from '../helpers/channel'
 import { hardRefresh } from '../helpers/navigation'
-import { USERS, SERVER, CHANNELS, DM_MESSAGES, CHANNEL_MESSAGES } from '../fixtures/test-data'
+import { USERS } from '../fixtures/test-data'
 
 let alice: UserContext
 let bob: UserContext
@@ -19,8 +18,8 @@ test.describe('P1: Typing and unread behavior', () => {
   test.beforeAll(async ({ browser }) => {
     alice = await createUserContext(browser, 'alice', USERS.alice.username, USERS.alice.password)
     bob = await createUserContext(browser, 'bob', USERS.bob.username, USERS.bob.password)
-    await signup(alice)
-    await signup(bob)
+    await login(alice)
+    await login(bob)
   })
 
   test.afterAll(async () => {
@@ -56,7 +55,7 @@ test.describe('P1: Typing and unread behavior', () => {
     await sendDmMessage(alice.page, 'Unread test message alpha')
 
     // Bob should see unread badge
-    await bob.page.waitForSelector('span:has-text("1")', { timeout: 10_000 })
+    await bob.page.waitForSelector('.vesper-dm-unread-badge', { timeout: 10_000 })
 
     // Bob opens the DM - unread should clear
     await selectDm(bob.page, USERS.alice.username)
@@ -65,6 +64,10 @@ test.describe('P1: Typing and unread behavior', () => {
     // Refresh and verify unread stays cleared
     await hardRefresh(bob.page)
     await bob.page.waitForTimeout(2_000)
+
+    // Re-select DM to verify app is healthy after refresh
+    await selectDm(bob.page, USERS.alice.username)
+    await bob.page.waitForTimeout(1_000)
   })
 
   test('Channel typing indicator appears (R-CHANNEL-4)', async () => {

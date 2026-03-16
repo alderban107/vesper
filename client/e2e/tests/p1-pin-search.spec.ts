@@ -4,7 +4,7 @@
  */
 
 import { test, expect } from '@playwright/test'
-import { createUserContext, signup, type UserContext } from '../helpers/auth'
+import { createUserContext, login, type UserContext } from '../helpers/auth'
 import { createServer, createChannel, getInviteCode, joinServerWithCode, selectServer, selectChannel } from '../helpers/server'
 import { sendChannelMessage } from '../helpers/channel'
 import { pinMessage, unpinMessage, openPinsPanel, getPinnedMessages, jumpToPinnedMessage } from '../helpers/message'
@@ -19,8 +19,8 @@ test.describe('P1: Pin and search', () => {
   test.beforeAll(async ({ browser }) => {
     alice = await createUserContext(browser, 'alice', USERS.alice.username, USERS.alice.password)
     bob = await createUserContext(browser, 'bob', USERS.bob.username, USERS.bob.password)
-    await signup(alice)
-    await signup(bob)
+    await login(alice)
+    await login(bob)
 
     await createServer(alice.page, 'Pin Search Server')
     const code = await getInviteCode(alice.page)

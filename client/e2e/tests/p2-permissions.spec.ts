@@ -3,7 +3,7 @@
  * Covers: R-SERVER-5
  */
 import { test, expect } from '@playwright/test'
-import { createUserContext, signup, type UserContext } from '../helpers/auth'
+import { createUserContext, login, type UserContext } from '../helpers/auth'
 import { createServer, createChannel, getInviteCode, joinServerWithCode, selectServer, selectChannel, getChannelNames } from '../helpers/server'
 import { sendChannelMessage } from '../helpers/channel'
 import { USERS } from '../fixtures/test-data'
@@ -15,8 +15,8 @@ test.describe('P2: Permission overrides', () => {
   test.beforeAll(async ({ browser }) => {
     alice = await createUserContext(browser, 'alice', USERS.alice.username, USERS.alice.password)
     bob = await createUserContext(browser, 'bob', USERS.bob.username, USERS.bob.password)
-    await signup(alice)
-    await signup(bob)
+    await login(alice)
+    await login(bob)
 
     await createServer(alice.page, 'Permissions Server')
     const code = await getInviteCode(alice.page)
@@ -33,23 +33,16 @@ test.describe('P2: Permission overrides', () => {
     await createChannel(alice.page, 'admin-only')
     await selectChannel(alice.page, 'admin-only')
 
-    // Open channel settings and restrict access
-    await alice.page.click('[data-testid="channel-settings"]').catch(() => {
-      // Channel settings may be accessed via right-click or header
-    })
+    // Open channel settings via the header gear button
+    const settingsBtn = alice.page.locator('[data-testid="channel-settings-button"]')
+    if (await settingsBtn.isVisible()) {
+      await settingsBtn.click()
+      await alice.page.waitForSelector('[data-testid="channel-settings"]', { timeout: 10_000 })
 
-    // Try to restrict the channel via server settings
-    await alice.page.click('.vesper-guild-header-button').catch(() => {})
-    await alice.page.waitForTimeout(1_000)
-    const settingsOption = alice.page.locator('text=Server Settings')
-    if (await settingsOption.isVisible()) {
-      await settingsOption.click()
-      await alice.page.waitForSelector('[data-testid="server-settings"]', { timeout: 10_000 })
-
-      // Look for channel permissions UI
-      const permissionsTab = alice.page.locator('text=Permissions, text=Channels')
-      if (await permissionsTab.first().isVisible()) {
-        await permissionsTab.first().click()
+      // Look for permissions section
+      const permissionsTab = alice.page.locator('[data-testid="channel-settings"] button:has-text("Permissions")').first()
+      if (await permissionsTab.isVisible()) {
+        await permissionsTab.click()
       }
       await alice.page.keyboard.press('Escape')
     }

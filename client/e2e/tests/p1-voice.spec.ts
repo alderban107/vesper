@@ -4,7 +4,7 @@
  */
 
 import { test, expect } from '@playwright/test'
-import { createUserContext, signup, type UserContext } from '../helpers/auth'
+import { createUserContext, login, type UserContext } from '../helpers/auth'
 import { createDm, selectDm } from '../helpers/dm'
 import { createServer, createVoiceChannel, getInviteCode, joinServerWithCode, selectServer } from '../helpers/server'
 import {
@@ -20,7 +20,6 @@ import {
   hasRemoteVideo,
   getVoiceParticipants,
 } from '../helpers/voice'
-import { hardRefresh } from '../helpers/navigation'
 import { USERS, CHANNELS } from '../fixtures/test-data'
 
 let alice: UserContext
@@ -30,8 +29,8 @@ test.describe('P1: Voice and video', () => {
   test.beforeAll(async ({ browser }) => {
     alice = await createUserContext(browser, 'alice', USERS.alice.username, USERS.alice.password)
     bob = await createUserContext(browser, 'bob', USERS.bob.username, USERS.bob.password)
-    await signup(alice)
-    await signup(bob)
+    await login(alice)
+    await login(bob)
   })
 
   test.afterAll(async () => {
@@ -70,7 +69,11 @@ test.describe('P1: Voice and video', () => {
     await rejectIncomingCall(bob.page)
 
     // Both sides should settle with no active call overlay
-    await alice.page.waitForTimeout(3_000)
+    await alice.page.waitForSelector('[data-testid="call-overlay"]', {
+      state: 'hidden',
+      timeout: 10_000,
+    })
+    await expect(alice.page.locator('[data-testid="call-overlay"]')).toHaveCount(0)
     await expect(bob.page.locator('[data-testid="call-overlay"]')).toHaveCount(0)
   })
 

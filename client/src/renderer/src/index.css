@@ -2167,6 +2167,20 @@
   color: #fca5a5;
 }
 
+.vesper-account-panel-button-active {
+  color: #86efac;
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.vesper-account-panel-button-active:hover {
+  background: rgba(34, 197, 94, 0.2);
+}
+
+.vesper-account-panel-button-disabled {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
 .vesper-profile-popout-layer {
   position: fixed;
   inset: 0;
@@ -3916,6 +3930,68 @@
   color: var(--color-text-primary);
   font-size: 0.88rem;
   font-weight: 600;
+}
+
+.vesper-channel-type-card {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.75rem 0.95rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 64%, transparent);
+  border-radius: 0.85rem;
+  background: color-mix(in srgb, var(--color-bg-base) 48%, transparent);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+
+.vesper-channel-type-card:hover {
+  border-color: color-mix(in srgb, var(--color-border) 90%, transparent);
+  background: color-mix(in srgb, var(--color-bg-secondary) 58%, transparent);
+  color: var(--color-text-primary);
+}
+
+.vesper-channel-type-card-active {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+  color: var(--color-text-primary);
+}
+
+.vesper-channel-type-card-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.2rem;
+  height: 2.2rem;
+  border-radius: 0.65rem;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 68%, transparent);
+  color: var(--color-text-faint);
+  flex-shrink: 0;
+}
+
+.vesper-channel-type-card-active .vesper-channel-type-card-icon {
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-accent);
+}
+
+.vesper-channel-type-card-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.vesper-channel-type-card-title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: inherit;
+}
+
+.vesper-channel-type-card-description {
+  font-size: 0.78rem;
+  color: var(--color-text-faint);
+  line-height: 1.35;
 }
 
 .vesper-channel-row-voice {

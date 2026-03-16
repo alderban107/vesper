@@ -3,7 +3,7 @@
  * Covers: R-SYNC-4 (extended), P2 Scenario Pack #2
  */
 import { test, expect } from '@playwright/test'
-import { createUserContext, signup, login, type UserContext } from '../helpers/auth'
+import { createUserContext, login, type UserContext } from '../helpers/auth'
 import { createServer, createChannel, getInviteCode, joinServerWithCode, selectServer, selectChannel } from '../helpers/server'
 import { sendChannelMessage } from '../helpers/channel'
 import { createDm, selectDm, sendDmMessage } from '../helpers/dm'
@@ -23,8 +23,8 @@ test.describe('P2: Extended offline catch-up', () => {
   test('Client catches up after extended absence with many messages (R-SYNC-4)', async ({ browser }) => {
     alice = await createUserContext(browser, 'alice-ext', USERS.alice.username, USERS.alice.password)
     bob = await createUserContext(browser, 'bob-ext', USERS.bob.username, USERS.bob.password)
-    await signup(alice)
-    await signup(bob)
+    await login(alice)
+    await login(bob)
 
     await createServer(alice.page, 'Extended Offline Server')
     const code = await getInviteCode(alice.page)
@@ -39,17 +39,16 @@ test.describe('P2: Extended offline catch-up', () => {
     await waitForMessage(bob.page, 'Before offline — ext alpha')
 
     // Close bob for extended time
-    await bob.context.close()
+    await bob.context.setOffline(true)
 
     // Alice sends many messages
     for (let i = 1; i <= 10; i++) {
       await sendChannelMessage(alice.page, `Offline msg ${i} — ext ${i}`)
     }
-    await alice.page.waitForTimeout(5_000)
 
-    // Bob returns
-    bob = await createUserContext(browser, 'bob-ext2', USERS.bob.username, USERS.bob.password)
-    await login(bob)
+    // Bob returns on the same device context
+    await bob.context.setOffline(false)
+    await bob.page.reload()
     await selectServer(bob.page, 'Extended Offline Server')
     await selectChannel(bob.page, 'offline-ext')
 

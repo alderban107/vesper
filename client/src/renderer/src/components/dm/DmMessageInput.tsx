@@ -1,7 +1,11 @@
 import { useState, useRef, useCallback } from 'react'
 import { Paperclip, SendHorizonal, Smile, Loader2 } from 'lucide-react'
 import { useDmStore } from '../../stores/dmStore'
-import { useMessageStore, cacheSentPlaintext } from '../../stores/messageStore'
+import {
+  useMessageStore,
+  cacheSentPlaintext,
+  getPreferredMlsJoinDeviceId
+} from '../../stores/messageStore'
 import { apiUpload } from '../../api/client'
 import { encryptFile } from '../../crypto/fileEncryption'
 import { encodePayload } from '../../crypto/payload'
@@ -79,10 +83,12 @@ export default function DmMessageInput(): React.JSX.Element {
     if (conversation && myId) {
       for (const participant of conversation.participants) {
         if (participant.user_id === myId) continue
+        const preferredDeviceId = getPreferredMlsJoinDeviceId(topic, participant.user_id)
         const result = await crypto.handleJoinRequest(
           conversationId!,
           participant.user_id,
-          participant.user.username
+          participant.user.username,
+          preferredDeviceId
         )
         if (!result) continue
 
@@ -93,7 +99,8 @@ export default function DmMessageInput(): React.JSX.Element {
         if (result.welcomeBytes) {
           pushToChannel(topic, 'mls_welcome', {
             recipient_id: participant.user_id,
-            welcome_data: result.welcomeBytes
+            welcome_data: result.welcomeBytes,
+            key_package_ref: result.keyPackageRef
           })
         }
       }

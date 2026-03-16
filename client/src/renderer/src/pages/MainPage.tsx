@@ -147,7 +147,9 @@ export default function MainPage(): React.JSX.Element {
     isVoiceChannelView &&
     voiceRoomType === 'channel' &&
     voiceRoomId === activeChannelId
-  const shouldShowCallOverlay = isMobile && voiceState !== 'idle' && !isCurrentVoiceRoomView
+  const shouldShowCallOverlay =
+    voiceState !== 'idle' &&
+    (voiceRoomType === 'dm' || (isMobile && !isCurrentVoiceRoomView))
   const showThreadPanel = Boolean(activeThreadParentId && (isChannelView || isDmView))
   const inlineThreadReplies = activeThreadParentId
     ? activeTargetMessages.filter((message) => message.parent_message_id === activeThreadParentId)

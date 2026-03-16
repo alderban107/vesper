@@ -40,7 +40,7 @@ export async function createDm(page: Page, username: string): Promise<void> {
 /** Select an existing DM conversation by the other user's display text. */
 export async function selectDm(page: Page, displayName: string): Promise<void> {
   await openDmView(page)
-  await page.click(`button:has-text("${displayName}")`)
+  await page.click(`[data-testid="dm-row"]:has-text("${displayName}")`)
   // Wait for the composer to appear
   await page.waitForSelector('.vesper-composer-textarea', { timeout: 5_000 })
 }
@@ -126,9 +126,13 @@ export async function uploadDmAttachment(
 ): Promise<void> {
   const fileInput = page.locator('.vesper-composer-form input[type="file"]')
   await fileInput.setInputFiles(filePath)
-  // Wait for upload to complete (loader disappears)
+  // Wait for staging/upload prep to complete.
   await page.waitForSelector('.vesper-composer-icon-button .animate-spin', {
     state: 'hidden',
     timeout: 10_000,
   })
+
+  // Submit the staged file as a DM message.
+  const textarea = page.locator('.vesper-composer-textarea')
+  await textarea.press('Enter')
 }

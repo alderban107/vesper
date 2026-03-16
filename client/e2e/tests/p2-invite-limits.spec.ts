@@ -3,7 +3,7 @@
  * Covers: R-SERVER-2 (P2), P2 Scenario Pack #4
  */
 import { test, expect } from '@playwright/test'
-import { createUserContext, signup, type UserContext } from '../helpers/auth'
+import { createUserContext, login, type UserContext } from '../helpers/auth'
 import { createServer, getInviteCode, joinServerWithCode, selectServer } from '../helpers/server'
 import { waitForServerInSidebar } from '../helpers/wait'
 import { USERS } from '../fixtures/test-data'
@@ -23,9 +23,9 @@ test.describe('P2: Invite limits', () => {
     alice = await createUserContext(browser, 'alice-inv', USERS.alice.username, USERS.alice.password)
     bob = await createUserContext(browser, 'bob-inv', USERS.bob.username, USERS.bob.password)
     charlie = await createUserContext(browser, 'charlie-inv', USERS.charlie.username, USERS.charlie.password)
-    await signup(alice)
-    await signup(bob)
-    await signup(charlie)
+    await login(alice)
+    await login(bob)
+    await login(charlie)
 
     await createServer(alice.page, 'Invite Limits Server')
 
@@ -38,17 +38,18 @@ test.describe('P2: Invite limits', () => {
     await waitForServerInSidebar(bob.page, 'Invite Limits Server')
 
     // Check if invite management UI exists for limiting uses
-    await alice.page.click('.vesper-guild-header-button').catch(() => {})
-    await alice.page.waitForTimeout(1_000)
-    const settingsOption = alice.page.locator('text=Server Settings')
+    await alice.page.click('.vesper-guild-header-button')
+    await alice.page.waitForSelector('.vesper-guild-header-menu', { timeout: 5_000 })
+    const settingsOption = alice.page.locator('.vesper-guild-header-menu button:has-text("Server Settings")')
     if (await settingsOption.isVisible()) {
       await settingsOption.click()
-      const inviteTab = alice.page.locator('text=Invites')
+      await alice.page.waitForSelector('[data-testid="server-settings"]', { timeout: 10_000 })
+      const inviteTab = alice.page.locator('[data-testid="invites-tab"]')
       if (await inviteTab.isVisible().catch(() => false)) {
         await inviteTab.click()
-        // Document what invite management options exist
-        await alice.page.waitForTimeout(2_000)
       }
+      await alice.page.keyboard.press('Escape')
+    } else {
       await alice.page.keyboard.press('Escape')
     }
 

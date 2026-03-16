@@ -5,6 +5,7 @@ defmodule VesperWeb.KeyPackageController do
   @doc "POST /api/v1/key-packages — bulk upload key packages"
   def create(conn, %{"key_packages" => packages}) when is_list(packages) do
     user_id = conn.assigns.current_user.id
+    current_device = conn.assigns.current_device
 
     result =
       Enum.reduce_while(packages, {:ok, []}, fn b64, {:ok, acc} ->
@@ -16,7 +17,8 @@ defmodule VesperWeb.KeyPackageController do
 
     case result do
       {:ok, decoded} ->
-        {count, _} = Encryption.upload_key_packages(user_id, Enum.reverse(decoded))
+        {count, _} =
+          Encryption.upload_key_packages(user_id, current_device.client_id, Enum.reverse(decoded))
 
         conn
         |> put_status(:created)
@@ -36,8 +38,8 @@ defmodule VesperWeb.KeyPackageController do
   end
 
   @doc "GET /api/v1/key-packages/:user_id — fetch one unconsumed key package"
-  def show(conn, %{"user_id" => user_id}) do
-    case Encryption.fetch_and_consume_key_package(user_id) do
+  def show(conn, %{"user_id" => user_id} = params) do
+    case Encryption.fetch_and_consume_key_package(user_id, params["device_id"]) do
       nil ->
         conn
         |> put_status(:not_found)
@@ -50,7 +52,23 @@ defmodule VesperWeb.KeyPackageController do
 
   @doc "GET /api/v1/key-packages/me/count — count unconsumed for current user"
   def count(conn, _params) do
-    count = Encryption.count_key_packages(conn.assigns.current_user.id)
+    count =
+      Encryption.count_key_packages(
+        conn.assigns.current_user.id,
+        conn.assigns.current_device.client_id
+      )
+
     json(conn, %{count: count})
+  end
+
+  @doc "DELETE /api/v1/key-packages/me — purge all unconsumed key packages for current user"
+  def purge(conn, _params) do
+    {count, _} =
+      Encryption.purge_key_packages(
+        conn.assigns.current_user.id,
+        conn.assigns.current_device.client_id
+      )
+
+    json(conn, %{purged: count})
   end
 end

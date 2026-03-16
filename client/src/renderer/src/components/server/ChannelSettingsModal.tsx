@@ -287,6 +287,7 @@ export default function ChannelSettingsModal(): React.JSX.Element | null {
 
   return (
     <SettingsShell
+      testId="channel-settings"
       title={isCategory ? 'Category Settings' : 'Channel Settings'}
       activeSection={activeSection}
       sections={sections}

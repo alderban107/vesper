@@ -9,7 +9,7 @@ import fs from 'fs'
 import path from 'path'
 import { getFreePort } from './ports'
 import { waitForHealth, waitForVite } from './readiness'
-import { type RunState, generateRunId, writeRunState } from './state'
+import { type RunState, generateRunId, readRunState, writeRunState } from './state'
 
 const ROOT = path.resolve(__dirname, '..', '..', '..')
 const SERVER_DIR = path.join(ROOT, 'server')
@@ -19,6 +19,18 @@ let phoenixProcess: ChildProcess | null = null
 let viteProcess: ChildProcess | null = null
 
 export async function bootStack(): Promise<RunState> {
+  try {
+    const existing = readRunState()
+    if (existing.ownerPid === process.ppid) {
+      await waitForHealth(existing.apiUrl, 1_000)
+      await waitForVite(existing.clientUrl, 1_000)
+      console.log(`[e2e] Reusing stack ${existing.runId}...`)
+      return existing
+    }
+  } catch {
+    // No active stack to reuse.
+  }
+
   const runId = generateRunId()
   const apiPort = await getFreePort()
   const clientPort = await getFreePort()
@@ -34,6 +46,7 @@ export async function bootStack(): Promise<RunState> {
 
   const state: RunState = {
     runId,
+    ownerPid: process.ppid,
     apiPort,
     apiUrl,
     clientPort,
@@ -120,12 +133,26 @@ export function teardownStack(state: RunState): void {
     console.log('[e2e] Stopping Phoenix...')
     phoenixProcess.kill('SIGTERM')
     phoenixProcess = null
+  } else if (state.phoenixPid) {
+    try {
+      console.log('[e2e] Stopping Phoenix...')
+      process.kill(state.phoenixPid, 'SIGTERM')
+    } catch {
+      // already stopped
+    }
   }
 
   if (viteProcess && !viteProcess.killed) {
     console.log('[e2e] Stopping Vite...')
     viteProcess.kill('SIGTERM')
     viteProcess = null
+  } else if (state.vitePid) {
+    try {
+      console.log('[e2e] Stopping Vite...')
+      process.kill(state.vitePid, 'SIGTERM')
+    } catch {
+      // already stopped
+    }
   }
 
   // Drop the E2E database

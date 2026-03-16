@@ -61,13 +61,32 @@ export async function createVoiceChannel(page: Page, name: string): Promise<void
   await page.waitForSelector('.vesper-guild-header-menu', { timeout: 5_000 })
   await page.click('.vesper-guild-header-menu >> text=Create Channel')
 
-  const nameInput = page.locator('form.glass-card input[type="text"]')
+  const modal = page.locator('.glass-card:has-text("Create Channel")').last()
+  await modal.waitFor({ state: 'visible', timeout: 5_000 })
+
+  const nameInput = modal.locator('input[type="text"]')
   await nameInput.waitFor({ state: 'visible', timeout: 5_000 })
 
   // Select voice channel type
-  await page.click('text=Voice Channel')
+  const voiceTypeButton = modal.locator('button:has-text("Voice Channel")').first()
+  await voiceTypeButton.click()
   await nameInput.fill(name)
-  await page.click('form.glass-card button[type="submit"]')
+
+  const submitBtn = modal.locator('button[type="submit"]')
+  await submitBtn.waitFor({ state: 'visible', timeout: 2_000 })
+
+  const [response] = await Promise.all([
+    page.waitForResponse(
+      (res) => res.url().includes('/channels') && res.request().method() === 'POST',
+      { timeout: 10_000 }
+    ),
+    submitBtn.click(),
+  ])
+
+  if (!response.ok()) {
+    const body = await response.text().catch(() => 'no body')
+    throw new Error(`Create voice channel API failed (${response.status()}): ${body}`)
+  }
 
   await waitForChannel(page, name)
 }

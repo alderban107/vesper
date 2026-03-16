@@ -47,7 +47,9 @@ export function joinChannel(
 
   const CHAT_EVENTS = [
     'new_message', 'typing_start', 'typing_stop', 'disappearing_ttl_updated',
-    'mls_request_join_all', 'mls_request_join', 'mls_resync_request', 'mls_commit', 'mls_welcome', 'mls_remove', 'incoming_call',
+    'mls_request_join_all', 'mls_request_join', 'mls_resync_request', 'mls_commit', 'mls_welcome', 'mls_remove',
+    'mls_history_request', 'mls_history_bundle',
+    'incoming_call',
     'call_rejected',
     'presence_state', 'presence_diff',
     'reaction_update',

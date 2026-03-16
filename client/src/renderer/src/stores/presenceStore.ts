@@ -219,6 +219,8 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
                 : srv
             )
           }))
+        } else if (event === 'channels_updated') {
+          void useServerStore.getState().refreshServerChannels(serverId)
         }
       })
     }

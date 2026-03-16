@@ -44,6 +44,21 @@ defmodule VesperWeb.ChannelHelpers do
 
   def attachments_json(_), do: []
 
+  def reactions_json(%{reactions: reactions}) when is_list(reactions) do
+    Enum.map(reactions, fn r ->
+      %{
+        id: r.id,
+        emoji: r.emoji,
+        ciphertext: r.ciphertext,
+        mls_epoch: r.mls_epoch,
+        sender_id: r.sender_id,
+        inserted_at: r.inserted_at
+      }
+    end)
+  end
+
+  def reactions_json(_), do: []
+
   def maybe_add_parent(attrs, %{"parent_message_id" => parent_id}) when is_binary(parent_id) do
     Map.put(attrs, :parent_message_id, parent_id)
   end
@@ -95,7 +110,8 @@ defmodule VesperWeb.ChannelHelpers do
       expires_at: message.expires_at,
       parent_message_id: message.parent_message_id,
       inserted_at: message.inserted_at,
-      attachments: attachments_json(message)
+      attachments: attachments_json(message),
+      reactions: reactions_json(message)
     }
 
     Map.put(payload, id_field, Map.get(message, id_field))
