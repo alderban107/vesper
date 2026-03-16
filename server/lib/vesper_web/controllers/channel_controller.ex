@@ -118,11 +118,13 @@ defmodule VesperWeb.ChannelController do
         conn |> put_status(:not_found) |> json(%{error: "not found"})
       else
         Servers.delete_channel(channel)
+
         VesperWeb.Endpoint.broadcast!(
           "presence:server:#{server_id}",
           "channels_updated",
           %{server_id: server_id}
         )
+
         json(conn, %{ok: true})
       end
     else

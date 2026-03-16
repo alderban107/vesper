@@ -6,6 +6,7 @@ defmodule Vesper.Encryption do
 
   import Ecto.Query
   alias Vesper.Repo
+
   alias Vesper.Encryption.{
     KeyPackage,
     PendingHistoryBundle,

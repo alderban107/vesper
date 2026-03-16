@@ -305,7 +305,8 @@ defmodule VesperWeb.DmChannel do
                request_id: attrs.request_id,
                requester_id: socket.assigns.user_id,
                requester_username: socket.assigns.username,
-               requester_client_id: Map.get(payload, "device_id") || socket.assigns.device_client_id,
+               requester_client_id:
+                 Map.get(payload, "device_id") || socket.assigns.device_client_id,
                last_known_epoch: attrs.last_known_epoch,
                reason: attrs.reason,
                conversation_id: conversation_id
