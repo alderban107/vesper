@@ -153,6 +153,8 @@ client/                  Electron + React frontend
   docker-server.yml        build & push server Docker image
   docker-web.yml           build & push web client Docker image
   release.yml              build desktop installers
+  nightly.yml              daily nightly release (Docker + desktop)
+.github/CI.md             CI/CD pipeline documentation
 
 doc/
   DESIGN.md              architecture overview

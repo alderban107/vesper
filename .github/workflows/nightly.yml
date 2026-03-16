@@ -1,0 +1,368 @@
+name: Nightly Release
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # 06:00 UTC daily
+  workflow_dispatch: # Manual trigger always builds
+
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Gate: skip the entire pipeline if nothing changed since the last nightly
+  # ---------------------------------------------------------------------------
+  check-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      short_sha: ${{ steps.check.outputs.short_sha }}
+      date: ${{ steps.check.outputs.date }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for changes since last nightly
+        id: check
+        run: |
+          DATE=$(date -u +%Y%m%d)
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          echo "date=${DATE}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+          # Manual dispatch always builds
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "Manual dispatch — building unconditionally."
+            exit 0
+          fi
+
+          # Compare HEAD against the existing nightly tag
+          if git rev-parse nightly >/dev/null 2>&1; then
+            NIGHTLY_SHA=$(git rev-parse nightly)
+            HEAD_SHA=$(git rev-parse HEAD)
+            if [ "$NIGHTLY_SHA" = "$HEAD_SHA" ]; then
+              echo "should_build=false" >> "$GITHUB_OUTPUT"
+              echo "No changes since last nightly (${SHORT_SHA}). Skipping."
+            else
+              echo "should_build=true" >> "$GITHUB_OUTPUT"
+              echo "Changes detected (nightly=${NIGHTLY_SHA:0:7} → HEAD=${SHORT_SHA})."
+            fi
+          else
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "No previous nightly tag found. Building."
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Docker: server image (per-arch builds)
+  # ---------------------------------------------------------------------------
+  docker-server-build:
+    needs: check-changes
+    if: needs.check-changes.outputs.should_build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./server
+          file: ./server/Dockerfile
+          push: true
+          provenance: false
+          tags: ghcr.io/${{ github.repository }}-app:nightly-${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=server-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=server-${{ matrix.arch }}
+
+  # ---------------------------------------------------------------------------
+  # Docker: server manifest (stitch multi-arch)
+  # ---------------------------------------------------------------------------
+  docker-server-manifest:
+    runs-on: ubuntu-latest
+    needs: [check-changes, docker-server-build]
+    if: needs.check-changes.outputs.should_build == 'true'
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifest
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}-app
+        run: |
+          docker buildx imagetools create \
+            -t "${IMAGE}:nightly" \
+            "${IMAGE}:nightly-amd64" \
+            "${IMAGE}:nightly-arm64"
+
+  # ---------------------------------------------------------------------------
+  # Docker: web client image (per-arch builds)
+  # ---------------------------------------------------------------------------
+  docker-web-build:
+    needs: check-changes
+    if: needs.check-changes.outputs.should_build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./client
+          file: ./client/Dockerfile.web
+          push: true
+          provenance: false
+          tags: ghcr.io/${{ github.repository }}-web:nightly-${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=web-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=web-${{ matrix.arch }}
+
+  # ---------------------------------------------------------------------------
+  # Docker: web client manifest (stitch multi-arch)
+  # ---------------------------------------------------------------------------
+  docker-web-manifest:
+    runs-on: ubuntu-latest
+    needs: [check-changes, docker-web-build]
+    if: needs.check-changes.outputs.should_build == 'true'
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifest
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}-web
+        run: |
+          docker buildx imagetools create \
+            -t "${IMAGE}:nightly" \
+            "${IMAGE}:nightly-amd64" \
+            "${IMAGE}:nightly-arm64"
+
+  # ---------------------------------------------------------------------------
+  # Desktop: Linux
+  # ---------------------------------------------------------------------------
+  desktop-linux:
+    needs: check-changes
+    if: needs.check-changes.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install dependencies
+        working-directory: client
+        run: npm ci
+
+      - name: Build
+        working-directory: client
+        run: npm run build
+
+      - name: Package
+        working-directory: client
+        run: npx electron-builder --linux --publish never
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-linux
+          path: |
+            client/dist/*.AppImage
+            client/dist/*.deb
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Desktop: macOS
+  # ---------------------------------------------------------------------------
+  desktop-mac:
+    needs: check-changes
+    if: needs.check-changes.outputs.should_build == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install dependencies
+        working-directory: client
+        run: npm ci
+
+      - name: Build
+        working-directory: client
+        run: npm run build
+
+      - name: Package
+        working-directory: client
+        run: npx electron-builder --mac --publish never
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-mac
+          path: |
+            client/dist/*.dmg
+            client/dist/*.zip
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Desktop: Windows
+  # ---------------------------------------------------------------------------
+  desktop-win:
+    needs: check-changes
+    if: needs.check-changes.outputs.should_build == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install dependencies
+        working-directory: client
+        run: npm ci
+
+      - name: Build
+        working-directory: client
+        run: npm run build
+
+      - name: Package
+        working-directory: client
+        run: npx electron-builder --win --publish never
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-win
+          path: |
+            client/dist/*.exe
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Publish: create/update the rolling nightly release
+  # ---------------------------------------------------------------------------
+  release:
+    runs-on: ubuntu-latest
+    if: needs.check-changes.outputs.should_build == 'true'
+    needs:
+      - check-changes
+      - docker-server-manifest
+      - docker-web-manifest
+      - desktop-linux
+      - desktop-mac
+      - desktop-win
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all desktop artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: desktop-*
+          merge-multiple: true
+
+      - name: List artifacts
+        run: find artifacts -type f | sort
+
+      - name: Delete previous nightly release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Delete the release (which also untags if it was created via API)
+          gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
+
+      - name: Create nightly release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DATE: ${{ needs.check-changes.outputs.date }}
+          SHORT_SHA: ${{ needs.check-changes.outputs.short_sha }}
+        run: |
+          BODY="## Nightly Build — ${DATE}
+
+          **Commit:** [\`${SHORT_SHA}\`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})
+
+          ### Docker Images
+          \`\`\`
+          docker pull ghcr.io/${{ github.repository }}-app:nightly
+          docker pull ghcr.io/${{ github.repository }}-web:nightly
+          \`\`\`
+
+          ### Desktop Downloads
+          Download the appropriate installer for your platform from the assets below.
+
+          | Platform | Files |
+          |----------|-------|
+          | Linux | \`.AppImage\`, \`.deb\` |
+          | macOS | \`.dmg\`, \`.zip\` |
+          | Windows | \`.exe\` (installer + portable) |
+
+          ---
+          > **Note:** Desktop builds are currently unsigned. macOS and Windows may show
+          > security warnings on first launch."
+
+          # Gather all files from artifacts directory into an array (handles spaces in filenames)
+          FILES=()
+          while IFS= read -r -d '' f; do
+            FILES+=("$f")
+          done < <(find artifacts -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.dmg' -o -name '*.zip' -o -name '*.exe' \) -print0)
+
+          gh release create nightly \
+            --title "Nightly Build — ${DATE}" \
+            --notes "${BODY}" \
+            --prerelease \
+            --target "${{ github.sha }}" \
+            "${FILES[@]}"

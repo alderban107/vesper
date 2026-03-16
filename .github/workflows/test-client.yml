@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  changes:
+  client-changes:
     runs-on: ubuntu-latest
     outputs:
       client: ${{ steps.check.outputs.client }}
@@ -42,9 +42,9 @@ jobs:
             echo "client=false" >> "$GITHUB_OUTPUT"
           fi
 
-  check:
-    needs: changes
-    if: needs.changes.outputs.client == 'true'
+  client-test:
+    needs: client-changes
+    if: needs.client-changes.outputs.client == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -67,12 +67,12 @@ jobs:
   # Gate job — branch protection should require this check.
   client-checks:
     if: always()
-    needs: [changes, check]
+    needs: [client-changes, client-test]
     runs-on: ubuntu-latest
     steps:
       - name: Evaluate result
         run: |
-          if [ "${{ needs.check.result }}" = "failure" ] || [ "${{ needs.check.result }}" = "cancelled" ]; then
+          if [ "${{ needs.client-test.result }}" = "failure" ] || [ "${{ needs.client-test.result }}" = "cancelled" ]; then
             echo "Client checks failed or were cancelled"
             exit 1
           fi

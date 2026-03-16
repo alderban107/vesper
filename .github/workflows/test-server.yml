@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  changes:
+  server-changes:
     runs-on: ubuntu-latest
     outputs:
       server: ${{ steps.check.outputs.server }}
@@ -43,9 +43,9 @@ jobs:
             echo "server=false" >> "$GITHUB_OUTPUT"
           fi
 
-  test:
-    needs: changes
-    if: needs.changes.outputs.server == 'true'
+  server-test:
+    needs: server-changes
+    if: needs.server-changes.outputs.server == 'true'
     runs-on: ubuntu-latest
 
     services:
@@ -106,14 +106,14 @@ jobs:
   # Gate job — branch protection should require this check.
   # Succeeds when tests pass OR when tests were skipped (no server changes).
   # Fails only when tests actually fail.
-  server-tests:
+  server-checks:
     if: always()
-    needs: [changes, test]
+    needs: [server-changes, server-test]
     runs-on: ubuntu-latest
     steps:
       - name: Evaluate result
         run: |
-          if [ "${{ needs.test.result }}" = "failure" ] || [ "${{ needs.test.result }}" = "cancelled" ]; then
+          if [ "${{ needs.server-test.result }}" = "failure" ] || [ "${{ needs.server-test.result }}" = "cancelled" ]; then
             echo "Server tests failed or were cancelled"
             exit 1
           fi
