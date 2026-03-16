@@ -52,7 +52,11 @@ defmodule VesperWeb.Endpoint do
   plug Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
     pass: ["*/*"],
-    json_decoder: Phoenix.json_library()
+    json_decoder: Phoenix.json_library(),
+    # Must be >= max_upload_size (default 50 MiB). Plug.Parsers defaults to
+    # 8 MB which silently rejects larger uploads with a 413 before any
+    # controller code runs.
+    length: 52_428_800
 
   plug Plug.MethodOverride
   plug Plug.Head
