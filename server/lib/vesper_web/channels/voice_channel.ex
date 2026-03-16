@@ -110,10 +110,11 @@ defmodule VesperWeb.VoiceChannel do
   end
 
   # MLS events for voice E2EE (same pattern as ChatChannel)
-  def handle_in("mls_request_join", _payload, socket) do
+  def handle_in("mls_request_join", payload, socket) when is_map(payload) do
     broadcast_from!(socket, "mls_request_join", %{
       user_id: socket.assigns.user_id,
-      username: socket.assigns.username
+      username: socket.assigns.username,
+      device_id: Map.get(payload, "device_id") || socket.assigns.device_client_id
     })
 
     {:noreply, socket}
@@ -140,6 +141,8 @@ defmodule VesperWeb.VoiceChannel do
                  request_id: attrs.request_id,
                  requester_id: socket.assigns.user_id,
                  requester_username: socket.assigns.username,
+                 requester_client_id:
+                   Map.get(payload, "device_id") || socket.assigns.device_client_id,
                  last_known_epoch: attrs.last_known_epoch,
                  reason: attrs.reason
                }
@@ -150,6 +153,7 @@ defmodule VesperWeb.VoiceChannel do
               id: request.id,
               user_id: socket.assigns.user_id,
               username: socket.assigns.username,
+              device_id: request.requester_client_id,
               request_id: request.request_id,
               last_known_epoch: request.last_known_epoch,
               reason: request.reason
@@ -170,7 +174,8 @@ defmodule VesperWeb.VoiceChannel do
       when is_binary(commit_data) do
     broadcast!(socket, "mls_commit", %{
       commit_data: commit_data,
-      sender_id: socket.assigns.user_id
+      sender_id: socket.assigns.user_id,
+      sender_device_id: socket.assigns.device_client_id
     })
 
     {:noreply, socket}
@@ -185,7 +190,8 @@ defmodule VesperWeb.VoiceChannel do
     broadcast!(socket, "mls_remove", %{
       removed_user_id: removed_user_id,
       commit_data: commit_data,
-      sender_id: socket.assigns.user_id
+      sender_id: socket.assigns.user_id,
+      sender_device_id: socket.assigns.device_client_id
     })
 
     {:noreply, socket}
@@ -193,7 +199,7 @@ defmodule VesperWeb.VoiceChannel do
 
   def handle_in(
         "mls_welcome",
-        %{"recipient_id" => recipient_id, "welcome_data" => welcome_data},
+        %{"recipient_id" => recipient_id, "welcome_data" => welcome_data} = payload,
         socket
       )
       when is_binary(recipient_id) and is_binary(welcome_data) do
@@ -207,6 +213,8 @@ defmodule VesperWeb.VoiceChannel do
         case Encryption.store_pending_welcome(
                %{
                  recipient_id: recipient_id,
+                 recipient_client_id: Map.get(payload, "recipient_device_id"),
+                 recipient_key_package_ref: Map.get(payload, "key_package_ref"),
                  group_id: group_id,
                  welcome_data: decoded,
                  sender_id: sender_id
@@ -217,6 +225,8 @@ defmodule VesperWeb.VoiceChannel do
             broadcast!(socket, "mls_welcome", %{
               id: welcome.id,
               recipient_id: recipient_id,
+              recipient_device_id: welcome.recipient_client_id,
+              key_package_ref: welcome.recipient_key_package_ref,
               welcome_data: welcome_data,
               sender_id: sender_id
             })

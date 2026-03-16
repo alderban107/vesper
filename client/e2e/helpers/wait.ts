@@ -41,7 +41,11 @@ export async function waitForChannel(page: Page, channelName: string): Promise<v
 
 /** Wait for a message containing specific text to appear. */
 export async function waitForMessage(page: Page, text: string, timeout = 10_000): Promise<void> {
-  await page.waitForSelector(`[data-testid="message-row"]:has-text("${text}")`, { timeout })
+  await page
+    .getByTestId('message-row')
+    .filter({ hasText: text })
+    .first()
+    .waitFor({ state: 'visible', timeout })
 }
 
 /** Wait for a DM conversation row containing a username. */

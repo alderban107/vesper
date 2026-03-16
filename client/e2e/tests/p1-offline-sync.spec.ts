@@ -4,7 +4,7 @@
  */
 
 import { test, expect } from '@playwright/test'
-import { createUserContext, signup, login, type UserContext } from '../helpers/auth'
+import { createUserContext, login, type UserContext } from '../helpers/auth'
 import { createServer, createChannel, getInviteCode, joinServerWithCode, selectServer, selectChannel } from '../helpers/server'
 import { sendChannelMessage } from '../helpers/channel'
 import { createDm, selectDm, sendDmMessage } from '../helpers/dm'
@@ -26,8 +26,8 @@ test.describe('P1: Offline sync and pending welcomes', () => {
   test('Client catches up after offline absence (R-SYNC-4)', async ({ browser }) => {
     alice = await createUserContext(browser, 'alice-sync', USERS.alice.username, USERS.alice.password)
     bob = await createUserContext(browser, 'bob-sync', USERS.bob.username, USERS.bob.password)
-    await signup(alice)
-    await signup(bob)
+    await login(alice)
+    await login(bob)
 
     // Set up server and channel
     await createServer(alice.page, 'Sync Server')
@@ -74,9 +74,9 @@ test.describe('P1: Offline sync and pending welcomes', () => {
     alice = await createUserContext(browser, 'alice-welcome', USERS.alice.username, USERS.alice.password)
     bob = await createUserContext(browser, 'bob-welcome', USERS.bob.username, USERS.bob.password)
     charlie = await createUserContext(browser, 'charlie-welcome', USERS.charlie.username, USERS.charlie.password)
-    await signup(alice)
-    await signup(bob)
-    await signup(charlie)
+    await login(alice)
+    await login(bob)
+    await login(charlie)
 
     // Alice creates a DM with Bob while Charlie is new
     await createDm(alice.page, USERS.bob.username)

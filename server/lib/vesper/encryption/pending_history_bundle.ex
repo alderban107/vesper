@@ -1,15 +1,15 @@
-defmodule Vesper.Encryption.PendingWelcome do
+defmodule Vesper.Encryption.PendingHistoryBundle do
   use Ecto.Schema
   import Ecto.Changeset
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
-  schema "mls_pending_welcomes" do
-    field :welcome_data, :binary
+  schema "mls_pending_history_bundles" do
     field :group_id, :string
+    field :ciphertext, :string
+    field :mls_epoch, :integer
     field :recipient_client_id, :string
-    field :recipient_key_package_ref, :string
 
     belongs_to :recipient, Vesper.Accounts.User
     belongs_to :sender, Vesper.Accounts.User
@@ -19,18 +19,28 @@ defmodule Vesper.Encryption.PendingWelcome do
     timestamps(type: :utc_datetime, updated_at: false)
   end
 
-  def changeset(welcome, attrs) do
-    welcome
+  def changeset(bundle, attrs) do
+    bundle
     |> cast(attrs, [
-      :welcome_data,
       :group_id,
+      :ciphertext,
+      :mls_epoch,
       :recipient_id,
       :recipient_client_id,
-      :recipient_key_package_ref,
       :sender_id,
       :channel_id,
       :conversation_id
     ])
-    |> validate_required([:welcome_data, :group_id, :recipient_id, :sender_id])
+    |> validate_required([
+      :group_id,
+      :ciphertext,
+      :mls_epoch,
+      :recipient_id,
+      :recipient_client_id,
+      :sender_id
+    ])
+    |> unique_constraint([:group_id, :recipient_id, :recipient_client_id, :sender_id],
+      name: :mls_pending_history_bundles_group_recipient_sender_index
+    )
   end
 end

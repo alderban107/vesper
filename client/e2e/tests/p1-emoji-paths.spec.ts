@@ -4,7 +4,7 @@
  */
 
 import { test, expect } from '@playwright/test'
-import { createUserContext, signup, type UserContext } from '../helpers/auth'
+import { createUserContext, login, type UserContext } from '../helpers/auth'
 import { createServer, createChannel, getInviteCode, joinServerWithCode, selectServer, selectChannel } from '../helpers/server'
 import { sendChannelMessage } from '../helpers/channel'
 import { uploadCustomEmoji, useCustomEmojiInMessage, reactWithCustomEmoji, isCustomEmojiRendered } from '../helpers/emoji'
@@ -20,8 +20,8 @@ test.describe('P1: Custom emoji in messages and reactions', () => {
   test.beforeAll(async ({ browser }) => {
     alice = await createUserContext(browser, 'alice', USERS.alice.username, USERS.alice.password)
     bob = await createUserContext(browser, 'bob', USERS.bob.username, USERS.bob.password)
-    await signup(alice)
-    await signup(bob)
+    await login(alice)
+    await login(bob)
 
     await createServer(alice.page, 'Emoji Server')
     const code = await getInviteCode(alice.page)
@@ -43,10 +43,10 @@ test.describe('P1: Custom emoji in messages and reactions', () => {
 
   test('Custom emoji renders in message body (R-EMOJI-2)', async () => {
     // Send a message with :testfire: inline
-    await sendChannelMessage(alice.page, CHANNEL_MESSAGES.emojiInBody)
+    await sendChannelMessage(alice.page, CHANNEL_MESSAGES.emojiInBody, 'Check out this emoji')
 
     // Wait for message on bob's side
-    await waitForMessage(bob.page, CHANNEL_MESSAGES.emojiInBody)
+    await waitForMessage(bob.page, 'Check out this emoji')
 
     // Emoji should render as an image, not raw :testfire: text
     const aliceRendered = await isCustomEmojiRendered(alice.page, CUSTOM_EMOJI.name)

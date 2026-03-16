@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { apiFetch } from '../api/client'
-import { joinChannel, leaveChannel, pushToChannel } from '../api/socket'
+import { getLocalDeviceIdentity } from '../auth/deviceIdentity'
+import { getChannel, joinChannel, leaveChannel, pushToChannel } from '../api/socket'
 import { useCryptoStore } from './cryptoStore'
 import { useAuthStore } from './authStore'
 import { useVoiceStore } from './voiceStore'
@@ -17,9 +18,13 @@ import {
   removeFromFtsIndex
 } from '../crypto/storage'
 import {
+  ackPendingHistoryBundle,
+  ackPendingHistoryRequest,
   ackPendingWelcome,
   ackPendingResyncRequest,
   base64ToUint8,
+  fetchPendingHistoryBundles,
+  fetchPendingHistoryRequests,
   fetchPendingResyncRequests
 } from '../api/crypto'
 import { encodePayload, decodePayload } from '../crypto/payload'
@@ -38,13 +43,104 @@ export function cacheSentPlaintext(ciphertext: string, plaintext: string): void 
 
 const MLS_JOIN_REQUEST_COOLDOWN_MS = 2000
 const recentMlsJoinRequests = new Map<string, number>()
+const recentMlsJoinDeviceIds = new Map<string, string>()
 const MLS_RESYNC_REQUEST_COOLDOWN_MS = 5000
 const recentMlsResyncRequests = new Map<string, number>()
 const MLS_RECOVERY_BACKOFF_MS = [150, 500, 1500] as const
+const DM_JOIN_WAIT_TIMEOUT_MS = 10_000
 const ENCRYPTED_MESSAGE_SYNCING_PLACEHOLDER = 'Encrypted message is syncing...'
 const ENCRYPTED_MESSAGE_APPROVAL_PLACEHOLDER = 'Approve this device to read encrypted messages.'
 const ENCRYPTED_MESSAGE_UNAVAILABLE_PLACEHOLDER = 'Message unavailable - decryption failed'
 const inFlightScopeRecoveries = new Map<string, Promise<void>>()
+// After processing a Welcome, suppress recovery for this scope. The Welcome
+// handler already marks pre-join messages as unavailable and requests a history
+// bundle, so recovery would be destructive (resync resets epoch state).
+const recentWelcomeProcessed = new Map<string, number>()
+const WELCOME_RECOVERY_SUPPRESSION_MS = 30_000
+const scopeMessageRefreshTokens = new Map<string, number>()
+const historySyncRetryTimers = new Map<string, number>()
+
+function clearHistorySyncRetry(scopeId: string): void {
+  const timerId = historySyncRetryTimers.get(scopeId)
+  if (timerId !== undefined) {
+    window.clearTimeout(timerId)
+    historySyncRetryTimers.delete(scopeId)
+  }
+}
+
+function scopeNeedsHistorySync(scopeId: string): boolean {
+  const messages = useMessageStore.getState().messagesByChannel[scopeId] ?? []
+  return messages.some(
+    (message) =>
+      message.decryptionFailed ||
+      message.content === ENCRYPTED_MESSAGE_SYNCING_PLACEHOLDER ||
+      message.content === ENCRYPTED_MESSAGE_UNAVAILABLE_PLACEHOLDER
+  )
+}
+
+function requestHistorySync(
+  scopeId: string,
+  topic: string,
+  attempt = 0,
+  force = false
+): void {
+  const RETRY_DELAYS_MS = [0, 1000, 3000, 7000] as const
+  const STEADY_STATE_RETRY_DELAY_MS = 15_000
+
+  clearHistorySyncRetry(scopeId)
+
+  if (
+    !useCryptoStore.getState().hasGroup(scopeId) ||
+    (!force && !scopeNeedsHistorySync(scopeId))
+  ) {
+    return
+  }
+
+  pushToChannel(topic, 'mls_history_request', {
+    device_id: getLocalDeviceIdentity().id
+  })
+
+  void processPendingHistoryBundles(scopeId, scopeId, useMessageStore.setState).catch(() => {})
+
+  const nextDelay =
+    attempt + 1 < RETRY_DELAYS_MS.length
+      ? RETRY_DELAYS_MS[attempt + 1]
+      : STEADY_STATE_RETRY_DELAY_MS
+  const timerId = window.setTimeout(() => {
+    requestHistorySync(scopeId, topic, attempt + 1, force)
+  }, nextDelay)
+
+  historySyncRetryTimers.set(scopeId, timerId)
+}
+
+async function pushToChannelWithAck(
+  topic: string,
+  event: string,
+  payload: object
+): Promise<boolean> {
+  const channel = getChannel(topic)
+  if (!channel) {
+    return false
+  }
+
+  return await new Promise<boolean>((resolve) => {
+    channel
+      .push(event, payload)
+      .receive('ok', () => resolve(true))
+      .receive('error', () => resolve(false))
+      .receive('timeout', () => resolve(false))
+  })
+}
+
+function beginScopeMessageRefresh(scopeId: string): number {
+  const nextToken = (scopeMessageRefreshTokens.get(scopeId) ?? 0) + 1
+  scopeMessageRefreshTokens.set(scopeId, nextToken)
+  return nextToken
+}
+
+function isCurrentScopeMessageRefresh(scopeId: string, token: number): boolean {
+  return scopeMessageRefreshTokens.get(scopeId) === token
+}
 
 export interface MessageSender {
   id: string
@@ -140,13 +236,39 @@ function maybeRequestMlsJoin(targetId: string, topic: string): void {
   }
 
   recentMlsJoinRequests.set(topic, now)
-  pushToChannel(topic, 'mls_request_join', {})
+  pushToChannel(topic, 'mls_request_join', {
+    device_id: getLocalDeviceIdentity().id
+  })
+}
+
+function getMlsJoinDeviceKey(topic: string, userId: string): string {
+  return `${topic}:${userId}`
+}
+
+function rememberMlsJoinDeviceId(
+  topic: string,
+  userId: string,
+  deviceId?: string | null
+): void {
+  if (!deviceId) {
+    return
+  }
+
+  recentMlsJoinDeviceIds.set(getMlsJoinDeviceKey(topic, userId), deviceId)
+}
+
+export function getPreferredMlsJoinDeviceId(
+  topic: string,
+  userId: string
+): string | undefined {
+  return recentMlsJoinDeviceIds.get(getMlsJoinDeviceKey(topic, userId))
 }
 
 interface PendingMlsResyncRequest {
   id?: string
   requester_id: string
   requester_username?: string | null
+  requester_client_id?: string | null
   request_id?: string
   last_known_epoch?: number | null
   reason?: string | null
@@ -179,6 +301,7 @@ function maybeRequestMlsResync(
 
   recentMlsResyncRequests.set(scopeId, now)
   pushToChannel(topic, 'mls_resync_request', {
+    device_id: getLocalDeviceIdentity().id,
     request_id: crypto.randomUUID(),
     last_known_epoch: lastKnownEpoch,
     reason,
@@ -193,14 +316,25 @@ async function processMlsResyncRequest(
 ): Promise<boolean> {
   const requesterId = request.requester_id
   const requesterUsername = request.requester_username ?? undefined
-  const userId = useAuthStore.getState().user?.id
+  const requesterDeviceId = request.requester_client_id ?? undefined
+  const localUser = useAuthStore.getState().user
+  const localDeviceId = getLocalDeviceIdentity().id
   const crypto = useCryptoStore.getState()
 
-  if (!requesterId || requesterId === userId || !crypto.hasGroup(targetId)) {
+  if (!requesterId || !crypto.hasGroup(targetId)) {
     return false
   }
 
-  const result = await crypto.handleResyncRequest(targetId, requesterId, requesterUsername)
+  if (localUser?.id === requesterId && requesterDeviceId === localDeviceId) {
+    return false
+  }
+
+  const result = await crypto.handleResyncRequest(
+    targetId,
+    requesterId,
+    requesterUsername,
+    requesterDeviceId
+  )
   if (!result) {
     return false
   }
@@ -219,7 +353,9 @@ async function processMlsResyncRequest(
   if (result.welcomeBytes) {
     pushToChannel(topic, 'mls_welcome', {
       recipient_id: requesterId,
-      welcome_data: result.welcomeBytes
+      recipient_device_id: requesterDeviceId,
+      welcome_data: result.welcomeBytes,
+      key_package_ref: result.keyPackageRef
     })
   }
 
@@ -241,6 +377,66 @@ async function processPendingMlsResyncRequests(
   }
 }
 
+async function processPendingHistoryRequests(
+  targetId: string,
+  scopeId: string,
+  topic: string
+): Promise<void> {
+  const requests = await fetchPendingHistoryRequests(scopeId)
+  const currentUserId = useAuthStore.getState().user?.id
+  const localDeviceId = getLocalDeviceIdentity().id
+
+  for (const request of requests) {
+    if (
+      request.requester_id !== currentUserId ||
+      !request.requester_client_id ||
+      request.requester_client_id === localDeviceId
+    ) {
+      continue
+    }
+
+    await sendHistoryBundle(
+      targetId,
+      topic,
+      request.requester_id,
+      request.requester_client_id,
+      request.id
+    )
+  }
+}
+
+async function processPendingHistoryBundles(
+  targetId: string,
+  scopeId: string,
+  set: (fn: (s: MessageState) => Partial<MessageState>) => void
+): Promise<void> {
+  const bundles = await fetchPendingHistoryBundles(scopeId)
+  const currentUserId = useAuthStore.getState().user?.id
+  const localDeviceId = getLocalDeviceIdentity().id
+
+  for (const bundle of bundles) {
+    if (
+      bundle.recipient_id !== currentUserId ||
+      bundle.recipient_client_id !== localDeviceId
+    ) {
+      continue
+    }
+
+    await processHistoryBundle(
+      targetId,
+      {
+        id: bundle.id,
+        ciphertext: bundle.ciphertext,
+        mls_epoch: bundle.mls_epoch,
+        recipient_id: bundle.recipient_id,
+        recipient_device_id: bundle.recipient_client_id,
+        sender_id: bundle.sender_id
+      },
+      set
+    )
+  }
+}
+
 async function waitForChannelBootstrap(
   channelId: string,
   initialMemberCount: number
@@ -258,6 +454,76 @@ async function waitForChannelBootstrap(
 
     // Wait for at least one join AND 500ms of stability (no new members)
     if (currentCount > initialMemberCount && Date.now() - lastChangeTime > 500) {
+      return
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+}
+
+function getExpectedChannelMemberCount(channelId: string): number | null {
+  const serverStore = useServerStore.getState()
+  const activeServer = serverStore.servers.find((server) =>
+    server.channels.some((channel) => channel.id === channelId)
+  )
+
+  if (!activeServer) {
+    return null
+  }
+
+  if (serverStore.activeServerId !== activeServer.id) {
+    return null
+  }
+
+  return serverStore.members.length > 0 ? serverStore.members.length : null
+}
+
+async function waitForChannelMembershipReady(
+  channelId: string,
+  topic: string
+): Promise<void> {
+  const expectedMemberCount = getExpectedChannelMemberCount(channelId)
+  const deadline = Date.now() + 5000
+  let lastCount = useCryptoStore.getState().getMemberCount(channelId)
+  let lastChangeTime = Date.now()
+  let requestedJoinAll = false
+
+  if (
+    expectedMemberCount !== null &&
+    lastCount > 0 &&
+    lastCount < expectedMemberCount
+  ) {
+    pushToChannel(topic, 'mls_request_join_all', {})
+    requestedJoinAll = true
+  }
+
+  while (Date.now() < deadline) {
+    const currentCount = useCryptoStore.getState().getMemberCount(channelId)
+    if (currentCount !== lastCount) {
+      lastCount = currentCount
+      lastChangeTime = Date.now()
+    }
+
+    if (
+      expectedMemberCount !== null &&
+      currentCount > 0 &&
+      currentCount < expectedMemberCount &&
+      !requestedJoinAll
+    ) {
+      pushToChannel(topic, 'mls_request_join_all', {})
+      requestedJoinAll = true
+    }
+
+    const stableForMs = Date.now() - lastChangeTime
+    if (
+      expectedMemberCount !== null &&
+      currentCount >= expectedMemberCount &&
+      stableForMs >= 750
+    ) {
+      return
+    }
+
+    if (expectedMemberCount === null && stableForMs >= 750) {
       return
     }
 
@@ -310,10 +576,12 @@ async function bootstrapDmGroupIfLeader(
       continue
     }
 
+    const preferredDeviceId = getPreferredMlsJoinDeviceId(topic, participant.user_id)
     const result = await crypto.handleJoinRequest(
       conversationId,
       participant.user_id,
-      participant.user.username
+      participant.user.username,
+      preferredDeviceId
     )
 
     if (!result) {
@@ -327,7 +595,9 @@ async function bootstrapDmGroupIfLeader(
     if (result.welcomeBytes) {
       pushToChannel(topic, 'mls_welcome', {
         recipient_id: participant.user_id,
-        welcome_data: result.welcomeBytes
+        recipient_device_id: preferredDeviceId,
+        welcome_data: result.welcomeBytes,
+        key_package_ref: result.keyPackageRef
       })
     }
   }
@@ -337,11 +607,17 @@ async function bootstrapDmGroupIfLeader(
 
 async function waitForDmBootstrap(
   conversationId: string,
-  timeoutMs = 2000
+  timeoutMs = DM_JOIN_WAIT_TIMEOUT_MS
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
 
   while (Date.now() < deadline) {
+    if (useCryptoStore.getState().hasGroup(conversationId)) {
+      return true
+    }
+
+    await useCryptoStore.getState().ensureGroupMembership(conversationId).catch(() => {})
+
     if (useCryptoStore.getState().hasGroup(conversationId)) {
       return true
     }
@@ -374,10 +650,12 @@ async function forceBootstrapDmGroup(
   for (const participant of conversation.participants) {
     if (participant.user_id === userId) continue
 
+    const preferredDeviceId = getPreferredMlsJoinDeviceId(topic, participant.user_id)
     const result = await crypto.handleJoinRequest(
       conversationId,
       participant.user_id,
-      participant.user.username
+      participant.user.username,
+      preferredDeviceId
     )
 
     if (!result) continue
@@ -389,7 +667,9 @@ async function forceBootstrapDmGroup(
     if (result.welcomeBytes) {
       pushToChannel(topic, 'mls_welcome', {
         recipient_id: participant.user_id,
-        welcome_data: result.welcomeBytes
+        recipient_device_id: preferredDeviceId,
+        welcome_data: result.welcomeBytes,
+        key_package_ref: result.keyPackageRef
       })
     }
   }
@@ -413,7 +693,9 @@ export async function ensureChannelGroupReady(channelId: string): Promise<boolea
   // Ask to join an existing group (bypass cooldown since we're about to send)
   const topic = `chat:channel:${channelId}`
   recentMlsJoinRequests.delete(topic)
-  pushToChannel(topic, 'mls_request_join', {})
+  pushToChannel(topic, 'mls_request_join', {
+    device_id: getLocalDeviceIdentity().id
+  })
 
   // Wait for a welcome — if someone has the group, they'll add us
   const joinDeadline = Date.now() + 2000
@@ -533,6 +815,25 @@ async function recoverEncryptedScope(
     return
   }
 
+  // For DM scopes without a group or with a solo group (< 2 members), this
+  // device hasn't joined the real MLS group yet. Recovery would send a
+  // destructive resync request. Wait for Welcome processing to bring us into
+  // the real group.
+  if (scope.kind === 'dm') {
+    const crypto = useCryptoStore.getState()
+    if (!crypto.hasGroup(scope.targetId) || crypto.getMemberCount(scope.targetId) < 2) {
+      return
+    }
+  }
+
+  // If a Welcome was recently processed for this scope, skip recovery. The
+  // Welcome handler already marks pre-join messages as unavailable and requests
+  // a history bundle from existing devices.
+  const welcomeAt = recentWelcomeProcessed.get(scope.targetId) ?? 0
+  if (Date.now() - welcomeAt < WELCOME_RECOVERY_SUPPRESSION_MS) {
+    return
+  }
+
   const key = getScopeRecoveryKey(scope)
   const existing = inFlightScopeRecoveries.get(key)
   if (existing) {
@@ -641,15 +942,33 @@ function maybeRecoverEncryptedScope(
 
 async function refreshScopeAfterCryptoUpdate(
   scope: EncryptedScopeDescriptor,
-  getState: () => MessageState
+  getState: () => MessageState,
+  setState: (fn: (s: MessageState) => Partial<MessageState>) => void,
+  afterWelcome = false
 ): Promise<void> {
   await refreshEncryptedScope(scope, getState).catch(() => {})
 
+  await processPendingHistoryBundles(scope.targetId, scope.scopeId, setState).catch(() => {})
+
   if (hasFailedMessagesInScope(scope, getState)) {
-    void recoverEncryptedScope(scope, getState, null, 'post_crypto_update').catch(() => {})
+    if (afterWelcome) {
+      // After joining via Welcome, failed messages are from before this device
+      // joined the group and can't be decrypted (MLS forward secrecy). Mark
+      // them as permanently unavailable instead of triggering recovery which
+      // would resync the epoch and break messages that ARE decryptable.
+      markFailedMessagesUnavailable(scope, getState)
+    } else {
+      void recoverEncryptedScope(scope, getState, null, 'post_crypto_update').catch(() => {})
+    }
   }
 
-  await processPendingMlsResyncRequests(scope.targetId, scope.scopeId, scope.topic).catch(() => {})
+  if (!afterWelcome) {
+    await processPendingMlsResyncRequests(scope.targetId, scope.scopeId, scope.topic).catch(() => {})
+  }
+
+  if (useCryptoStore.getState().hasGroup(scope.targetId)) {
+    await processPendingHistoryRequests(scope.targetId, scope.scopeId, scope.topic).catch(() => {})
+  }
 }
 
 export interface ReactionGroup {
@@ -875,34 +1194,59 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           id: msg.id as string | undefined,
           requester_id: msg.user_id as string,
           requester_username: (msg.username as string | undefined) ?? undefined,
+          requester_client_id: (msg.device_id as string | undefined) ?? undefined,
           request_id: msg.request_id as string | undefined,
           last_known_epoch: (msg.last_known_epoch as number | null | undefined) ?? null,
           reason: (msg.reason as string | null | undefined) ?? null
         }).catch(() => {})
       } else if (event === 'mls_commit') {
         const senderId = msg.sender_id as string
+        const senderDeviceId =
+          typeof msg.sender_device_id === 'string' ? msg.sender_device_id : null
         const userId = useAuthStore.getState().user?.id
-        if (senderId !== userId) {
+        const localDeviceId = getLocalDeviceIdentity().id
+        if (senderId !== userId || senderDeviceId !== localDeviceId) {
           void useCryptoStore
             .getState()
             .handleCommit(channelId, msg.commit_data as string)
-            .then(async () => refreshScopeAfterCryptoUpdate(scope, get))
+            .then(async () => {
+              // Only refresh if we actually have a group after the commit.
+              // Without group state (commit stored as pending for later Welcome),
+              // refreshing fetches messages we can't decrypt and triggers
+              // destructive recovery that interferes with the MLS handshake.
+              if (useCryptoStore.getState().hasGroup(channelId)) {
+                await refreshScopeAfterCryptoUpdate(scope, get, set, true)
+              }
+            })
             .catch(() => {})
         }
       } else if (event === 'mls_welcome') {
         const recipientId = msg.recipient_id as string
+        const recipientDeviceId =
+          typeof msg.recipient_device_id === 'string' ? msg.recipient_device_id : null
         const userId = useAuthStore.getState().user?.id
-        if (recipientId === userId) {
+        if (
+          recipientId === userId &&
+          (!recipientDeviceId || recipientDeviceId === getLocalDeviceIdentity().id)
+        ) {
           const welcomeId = typeof msg.id === 'string' ? msg.id : null
           void useCryptoStore
             .getState()
-            .handleWelcome(channelId, msg.welcome_data as string)
+            .handleWelcome(
+              channelId,
+              msg.welcome_data as string,
+              (msg.key_package_ref as string | undefined) ?? null
+            )
             .then(async (processed) => {
               if (processed) {
+                recentWelcomeProcessed.set(channelId, Date.now())
                 if (welcomeId) {
                   await ackPendingWelcome(welcomeId).catch(() => {})
                 }
-                await refreshScopeAfterCryptoUpdate(scope, get)
+                await refreshScopeAfterCryptoUpdate(scope, get, set, true)
+                if (hasFailedMessagesInScope(scope, get)) {
+                  requestHistorySync(channelId, topic, 0, true)
+                }
               }
             })
             .catch(() => {})
@@ -910,12 +1254,47 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       } else if (event === 'mls_remove') {
         const userId = useAuthStore.getState().user?.id
         const removedId = msg.removed_user_id as string
-        if (removedId === userId) {
+        const senderId = msg.sender_id as string
+        const senderDeviceId =
+          typeof msg.sender_device_id === 'string' ? msg.sender_device_id : null
+        const localDeviceId = getLocalDeviceIdentity().id
+        const isLocalSender = senderId === userId && senderDeviceId === localDeviceId
+        if (removedId === userId && !isLocalSender) {
           useCryptoStore.getState().resetGroup(channelId)
-        } else {
+        } else if (!isLocalSender) {
           if (msg.commit_data) {
             useCryptoStore.getState().handleCommit(channelId, msg.commit_data as string)
           }
+        }
+      } else if (event === 'mls_history_request') {
+        const requesterId = msg.user_id as string
+        const requesterDeviceId =
+          typeof msg.device_id === 'string' ? msg.device_id : null
+        const currentUserId = useAuthStore.getState().user?.id
+        const localDeviceId = getLocalDeviceIdentity().id
+        if (
+          requesterId === currentUserId &&
+          requesterDeviceId &&
+          requesterDeviceId !== localDeviceId
+        ) {
+          void sendHistoryBundle(
+            channelId,
+            topic,
+            requesterId,
+            requesterDeviceId,
+            typeof msg.id === 'string' ? msg.id : undefined
+          ).catch(() => {})
+        }
+      } else if (event === 'mls_history_bundle') {
+        const recipientId = msg.recipient_id as string
+        const recipientDeviceId =
+          typeof msg.recipient_device_id === 'string' ? msg.recipient_device_id : null
+        const currentUserId = useAuthStore.getState().user?.id
+        if (
+          recipientId === currentUserId &&
+          recipientDeviceId === getLocalDeviceIdentity().id
+        ) {
+          void processHistoryBundle(channelId, msg, set).catch(() => {})
         }
       } else if (event === 'reaction_update') {
         handleReactionUpdate(channelId, msg, set)
@@ -934,11 +1313,12 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       useCryptoStore
         .getState()
         .ensureGroupMembership(channelId)
-        .then(() => {
-          if (!useCryptoStore.getState().hasGroup(channelId)) {
-            maybeRequestMlsJoin(channelId, topic)
-            maybeRequestMlsResync(channelId, channelId, topic, null, 'missing_state')
+        .then(async () => {
+          if (useCryptoStore.getState().hasGroup(channelId)) {
+            return
           }
+
+          maybeRequestMlsJoin(channelId, topic)
         })
         .catch(() => {
           // Continue without encryption
@@ -946,6 +1326,8 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         .finally(() => {
           get().fetchMessages(channelId)
           void processPendingMlsResyncRequests(channelId, channelId, topic).catch(() => {})
+          void processPendingHistoryRequests(channelId, channelId, topic).catch(() => {})
+          void processPendingHistoryBundles(channelId, channelId, set).catch(() => {})
         })
     } else {
       void get().fetchMessages(channelId)
@@ -953,10 +1335,12 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   },
 
   leaveChannelChat: (channelId) => {
+    clearHistorySyncRetry(channelId)
     leaveChannel(`chat:channel:${channelId}`)
   },
 
   fetchMessages: async (channelId) => {
+    const refreshToken = beginScopeMessageRefresh(channelId)
     try {
       const res = await apiFetch(`/api/v1/channels/${channelId}/messages?limit=50`)
       if (res.ok) {
@@ -965,6 +1349,11 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         const messages = await Promise.all(
           rawMessages.map((m) => processIncomingMessage(channelId, m))
         )
+
+        if (!isCurrentScopeMessageRefresh(channelId, refreshToken)) {
+          return
+        }
+
         scheduleExpiryTimers(channelId, messages)
         set((s) => ({
           messagesByChannel: {
@@ -1064,6 +1453,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     }
 
     if (crypto.hasGroup(channelId)) {
+      await waitForChannelMembershipReady(channelId, topic)
       const encrypted = await crypto.encryptForChannel(channelId, payloadStr)
       if (encrypted) {
         cacheSentPlaintext(encrypted.ciphertext, resolvedContent)
@@ -1141,34 +1531,59 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           id: msg.id as string | undefined,
           requester_id: msg.user_id as string,
           requester_username: (msg.username as string | undefined) ?? undefined,
+          requester_client_id: (msg.device_id as string | undefined) ?? undefined,
           request_id: msg.request_id as string | undefined,
           last_known_epoch: (msg.last_known_epoch as number | null | undefined) ?? null,
           reason: (msg.reason as string | null | undefined) ?? null
         }).catch(() => {})
       } else if (event === 'mls_commit') {
         const senderId = msg.sender_id as string
+        const senderDeviceId =
+          typeof msg.sender_device_id === 'string' ? msg.sender_device_id : null
         const userId = useAuthStore.getState().user?.id
-        if (senderId !== userId) {
+        const localDeviceId = getLocalDeviceIdentity().id
+        if (senderId !== userId || senderDeviceId !== localDeviceId) {
           void useCryptoStore
             .getState()
             .handleCommit(conversationId, msg.commit_data as string)
-            .then(async () => refreshScopeAfterCryptoUpdate(scope, get))
+            .then(async () => {
+              if (useCryptoStore.getState().hasGroup(conversationId)) {
+                await refreshScopeAfterCryptoUpdate(scope, get, set, true)
+              }
+            })
             .catch(() => {})
         }
       } else if (event === 'mls_welcome') {
         const recipientId = msg.recipient_id as string
+        const recipientDeviceId =
+          typeof msg.recipient_device_id === 'string' ? msg.recipient_device_id : null
         const userId = useAuthStore.getState().user?.id
-        if (recipientId === userId) {
+        if (
+          recipientId === userId &&
+          (!recipientDeviceId || recipientDeviceId === getLocalDeviceIdentity().id)
+        ) {
           const welcomeId = typeof msg.id === 'string' ? msg.id : null
           void useCryptoStore
             .getState()
-            .handleWelcome(conversationId, msg.welcome_data as string)
+            .handleWelcome(
+              conversationId,
+              msg.welcome_data as string,
+              (msg.key_package_ref as string | undefined) ?? null
+            )
             .then(async (processed) => {
               if (processed) {
+                recentWelcomeProcessed.set(conversationId, Date.now())
                 if (welcomeId) {
                   await ackPendingWelcome(welcomeId).catch(() => {})
                 }
-                await refreshScopeAfterCryptoUpdate(scope, get)
+                await refreshScopeAfterCryptoUpdate(scope, get, set, true)
+                // Request message history from other devices of the same user
+                // when this device still has failed encrypted messages after
+                // joining. Messages sent before this device joined are not
+                // decryptable by design and need a same-user history bundle.
+                if (hasFailedMessagesInScope(scope, get)) {
+                  requestHistorySync(conversationId, topic, 0, true)
+                }
               }
             })
             .catch(() => {})
@@ -1176,12 +1591,59 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       } else if (event === 'mls_remove') {
         const userId = useAuthStore.getState().user?.id
         const removedId = msg.removed_user_id as string
-        if (removedId === userId) {
+        const senderId = msg.sender_id as string
+        const senderDeviceId =
+          typeof msg.sender_device_id === 'string' ? msg.sender_device_id : null
+        const localDeviceId = getLocalDeviceIdentity().id
+        const isLocalSender = senderId === userId && senderDeviceId === localDeviceId
+        // Only reset if someone ELSE removed us. If we sent the remove
+        // ourselves (e.g., resync), our state is already updated.
+        if (removedId === userId && !isLocalSender) {
           useCryptoStore.getState().resetGroup(conversationId)
-        } else {
+        } else if (!isLocalSender) {
           if (msg.commit_data) {
             useCryptoStore.getState().handleCommit(conversationId, msg.commit_data as string)
           }
+        }
+      } else if (event === 'mls_history_request') {
+        // Another device of the same user is requesting message history
+        const requesterId = msg.user_id as string
+        const requesterDeviceId =
+          typeof msg.device_id === 'string' ? msg.device_id : null
+        const currentUserId = useAuthStore.getState().user?.id
+        const localDeviceId = getLocalDeviceIdentity().id
+        if (
+          requesterId === currentUserId &&
+          requesterDeviceId &&
+          requesterDeviceId !== localDeviceId
+        ) {
+          void sendHistoryBundle(
+            conversationId,
+            topic,
+            requesterId,
+            requesterDeviceId,
+            typeof msg.id === 'string' ? msg.id : undefined
+          ).catch((error) => {
+            console.warn(
+              '[mls] history bundle failed',
+              JSON.stringify({
+                conversationId,
+                requesterDeviceId,
+                error: error instanceof Error ? error.message : String(error)
+              })
+            )
+          })
+        }
+      } else if (event === 'mls_history_bundle') {
+        const recipientId = msg.recipient_id as string
+        const recipientDeviceId =
+          typeof msg.recipient_device_id === 'string' ? msg.recipient_device_id : null
+        const currentUserId = useAuthStore.getState().user?.id
+        if (
+          recipientId === currentUserId &&
+          recipientDeviceId === getLocalDeviceIdentity().id
+        ) {
+          void processHistoryBundle(conversationId, msg, set).catch(() => {})
         }
       } else if (event === 'reaction_update') {
         handleReactionUpdate(conversationId, msg, set)
@@ -1216,27 +1678,23 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
           if (isExistingConversation) {
             // Existing conversation — request to join the existing group rather
-            // than blindly creating a new one that can't decrypt old messages.
+            // than creating a local solo branch that cannot decrypt shared
+            // ciphertext and can diverge from the real DM state.
             maybeRequestMlsJoin(conversationId, topic)
+
+            // Wait for the other participant to respond with a Welcome
+            const joined = await waitForDmBootstrap(conversationId)
+            if (joined) {
+              return
+            }
+
             maybeRequestMlsResync(
               conversationId,
               conversationId,
               topic,
               null,
-              'missing_state'
+              'missing_welcome'
             )
-
-            // Wait for the other participant to respond with a Welcome
-            const joined = await waitForDmBootstrap(conversationId, 4000)
-            if (joined) {
-              return
-            }
-
-            // Fallback: bootstrap a new group so at least new messages work
-            const bootstrapped = await bootstrapDmGroupIfLeader(conversationId, topic)
-            if (!bootstrapped && !useCryptoStore.getState().hasGroup(conversationId)) {
-              await forceBootstrapDmGroup(conversationId, topic)
-            }
           } else {
             // New conversation — create the group immediately
             const bootstrapped = await bootstrapDmGroupIfLeader(conversationId, topic)
@@ -1263,8 +1721,25 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           // Continue without encryption
         })
         .finally(() => {
-          get().fetchDmMessages(conversationId)
-          void processPendingMlsResyncRequests(conversationId, conversationId, topic).catch(() => {})
+          // Skip re-fetch if Welcome was processed — the Welcome handler
+          // already re-fetched and will receive a history bundle.
+          const welcomeAt = recentWelcomeProcessed.get(conversationId) ?? 0
+          const welcomeProcessedRecently =
+            Date.now() - welcomeAt < WELCOME_RECOVERY_SUPPRESSION_MS
+
+          if (!welcomeProcessedRecently) {
+            if (isExistingConversation && !useCryptoStore.getState().hasGroup(conversationId)) {
+              return
+            }
+
+            get().fetchDmMessages(conversationId)
+            void processPendingMlsResyncRequests(conversationId, conversationId, topic).catch(
+              () => {}
+            )
+          }
+
+          void processPendingHistoryRequests(conversationId, conversationId, topic).catch(() => {})
+          void processPendingHistoryBundles(conversationId, conversationId, set).catch(() => {})
         })
     } else {
       void get().fetchDmMessages(conversationId)
@@ -1272,10 +1747,12 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   },
 
   leaveDmChat: (conversationId) => {
+    clearHistorySyncRetry(conversationId)
     leaveChannel(`dm:${conversationId}`)
   },
 
   fetchDmMessages: async (conversationId) => {
+    const refreshToken = beginScopeMessageRefresh(conversationId)
     try {
       const res = await apiFetch(
         `/api/v1/conversations/${conversationId}/messages?limit=50`
@@ -1286,6 +1763,11 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         const messages = await Promise.all(
           rawMessages.map((m) => processIncomingMessage(conversationId, m))
         )
+
+        if (!isCurrentScopeMessageRefresh(conversationId, refreshToken)) {
+          return
+        }
+
         scheduleExpiryTimers(conversationId, messages)
         set((s) => ({
           messagesByChannel: {
@@ -1371,9 +1853,21 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const shouldClearInlineReply = !parentMessageId
     const payloadStr = encodePayload({ v: 1, type: 'text', text: content })
 
+    // For DMs, wait briefly for the other participant to join the group.
+    // When both parties are on new devices, the group creator may have a solo
+    // group until the other party processes a Welcome via mls_request_join.
+    // Encrypting before they join means they can't decrypt (MLS forward secrecy).
+    if (crypto.hasGroup(conversationId) && crypto.getMemberCount(conversationId) < 2) {
+      const memberDeadline = Date.now() + 5000
+      while (Date.now() < memberDeadline) {
+        if (useCryptoStore.getState().getMemberCount(conversationId) >= 2) break
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+    }
+
     // Try encrypting with existing group, or create a new one
-    const encrypted = crypto.hasGroup(conversationId)
-      ? await crypto.encryptForChannel(conversationId, payloadStr)
+    const encrypted = useCryptoStore.getState().hasGroup(conversationId)
+      ? await useCryptoStore.getState().encryptForChannel(conversationId, payloadStr)
       : null
 
     if (encrypted) {
@@ -2320,6 +2814,170 @@ async function processIncomingMessage(
 const mlsJoinLocks = new Map<string, Promise<void>>()
 
 /**
+ * Send a history bundle to a new device of the same user.
+ * Re-encrypts message plaintext at the current epoch so the new device
+ * can decrypt messages sent before it joined the MLS group.
+ */
+async function sendHistoryBundle(
+  targetId: string,
+  topic: string,
+  recipientId: string,
+  recipientDeviceId: string,
+  pendingRequestId?: string
+): Promise<void> {
+  const messages = useMessageStore.getState().messagesByChannel[targetId] || []
+  const items: Array<{
+    id: string
+    content: string
+    channelId: string | null
+    conversationId: string | null
+    serverId: string | null
+    senderId: string | null
+    sender: MessageSender | null
+    insertedAt: string
+    expiresAt: string | null
+    parentMessageId: string | null
+  }> = []
+
+  for (const msg of messages) {
+    if (!msg.content || msg.decryptionFailed) continue
+    if (msg.content === ENCRYPTED_MESSAGE_SYNCING_PLACEHOLDER) continue
+    if (msg.content === ENCRYPTED_MESSAGE_UNAVAILABLE_PLACEHOLDER) continue
+    if (msg.content === ENCRYPTED_MESSAGE_APPROVAL_PLACEHOLDER) continue
+    items.push({
+      id: msg.id,
+      content: msg.content,
+      channelId: msg.channel_id,
+      conversationId: msg.conversation_id,
+      serverId: msg.server_id ?? null,
+      senderId: msg.sender_id,
+      sender: msg.sender ?? null,
+      insertedAt: msg.inserted_at,
+      expiresAt: msg.expires_at,
+      parentMessageId: msg.parent_message_id
+    })
+  }
+
+  if (items.length === 0) return
+
+  const bundlePayload = encodePayload({
+    v: 1,
+    type: 'text',
+    text: JSON.stringify(items)
+  })
+
+  const crypto = useCryptoStore.getState()
+  const encrypted = await crypto.encryptForChannel(targetId, bundlePayload)
+  if (!encrypted) return
+
+  const pushed = await pushToChannelWithAck(topic, 'mls_history_bundle', {
+    ciphertext: encrypted.ciphertext,
+    mls_epoch: encrypted.epoch,
+    recipient_id: recipientId,
+    recipient_device_id: recipientDeviceId
+  })
+
+  if (pushed && pendingRequestId) {
+    await ackPendingHistoryRequest(pendingRequestId).catch(() => {})
+  }
+}
+
+/**
+ * Process a history bundle from another device of the same user.
+ * Decrypts the bundle and replaces "unavailable" messages with actual content.
+ */
+async function processHistoryBundle(
+  targetId: string,
+  msg: Record<string, unknown>,
+  set: (fn: (s: MessageState) => Partial<MessageState>) => void
+): Promise<void> {
+  const crypto = useCryptoStore.getState()
+  const decrypted = await crypto.decryptForChannel(targetId, msg.ciphertext as string)
+  if (!decrypted) return
+
+  const payload = decodePayload(decrypted)
+  if (payload.type !== 'text' || !payload.text) return
+
+  let items: Array<{
+    id: string
+    content: string
+    channelId?: string | null
+    conversationId?: string | null
+    serverId?: string | null
+    senderId?: string | null
+    sender?: MessageSender | null
+    insertedAt?: string
+    expiresAt?: string | null
+    parentMessageId?: string | null
+  }>
+  try {
+    items = JSON.parse(payload.text)
+  } catch {
+    return
+  }
+
+  if (!Array.isArray(items) || items.length === 0) return
+
+  clearHistorySyncRetry(targetId)
+
+  const contentMap = new Map<string, string>()
+  const missingMessages = new Map<string, Message>()
+  for (const item of items) {
+    if (item.id && item.content) {
+      contentMap.set(item.id, item.content)
+      setCachedDecryption(item.id, item.content)
+      void saveCachedMessageDecryption(item.id, item.content).catch(() => {})
+      void indexToFts(item.id, targetId, item.content).catch(() => {})
+      missingMessages.set(item.id, {
+        id: item.id,
+        content: item.content,
+        channel_id: item.channelId ?? null,
+        conversation_id: item.conversationId ?? null,
+        server_id: item.serverId ?? null,
+        sender_id: item.senderId ?? null,
+        sender: item.sender ?? null,
+        inserted_at: item.insertedAt ?? new Date().toISOString(),
+        expires_at: item.expiresAt ?? null,
+        parent_message_id: item.parentMessageId ?? null,
+        attachments: [],
+        reactions: [],
+        encrypted: true,
+        decryptionFailed: false
+      })
+    }
+  }
+
+  set((s) => {
+    const existingMessages = s.messagesByChannel[targetId] ?? []
+    const existingIds = new Set(existingMessages.map((message) => message.id))
+
+    const updated = existingMessages.map((m) => {
+      const content = contentMap.get(m.id)
+      if (!content) return m
+      if (!m.decryptionFailed && m.content !== ENCRYPTED_MESSAGE_UNAVAILABLE_PLACEHOLDER) return m
+      return { ...m, content, decryptionFailed: false, encrypted: true }
+    })
+
+    for (const [messageId, bundledMessage] of missingMessages.entries()) {
+      if (!existingIds.has(messageId)) {
+        updated.push(bundledMessage)
+      }
+    }
+
+    updated.sort((a, b) => a.inserted_at.localeCompare(b.inserted_at))
+
+    return {
+      messagesByChannel: { ...s.messagesByChannel, [targetId]: updated }
+    }
+  })
+
+  const bundleId = typeof msg.id === 'string' ? msg.id : null
+  if (bundleId) {
+    await ackPendingHistoryBundle(bundleId).catch(() => {})
+  }
+}
+
+/**
  * Handle an MLS join request from another user.
  */
 async function handleMlsJoinRequest(
@@ -2329,6 +2987,8 @@ async function handleMlsJoinRequest(
 ): Promise<void> {
   const userId = msg.user_id as string
   const username = (msg.username as string | undefined) ?? undefined
+  const deviceId = (msg.device_id as string | undefined) ?? undefined
+  rememberMlsJoinDeviceId(topic, userId, deviceId)
   const crypto = useCryptoStore.getState()
 
   if (!crypto.hasGroup(targetId)) return
@@ -2336,19 +2996,19 @@ async function handleMlsJoinRequest(
   // Serialize join requests per group to avoid concurrent epoch commits
   const prev = mlsJoinLocks.get(targetId) ?? Promise.resolve()
   const current = prev.then(async () => {
-    const result = await useCryptoStore.getState().handleJoinRequest(targetId, userId, username)
+    const crypto = useCryptoStore.getState()
+    const result = await crypto.handleJoinRequest(targetId, userId, username, deviceId)
 
-    if (!result) return
-
-    pushToChannel(topic, 'mls_commit', {
-      commit_data: result.commitBytes
-    })
-
-    if (result.welcomeBytes) {
-      pushToChannel(topic, 'mls_welcome', {
-        recipient_id: userId,
-        welcome_data: result.welcomeBytes
-      })
+    if (result) {
+      pushToChannel(topic, 'mls_commit', { commit_data: result.commitBytes })
+      if (result.welcomeBytes) {
+        pushToChannel(topic, 'mls_welcome', {
+          recipient_id: userId,
+          recipient_device_id: deviceId,
+          welcome_data: result.welcomeBytes,
+          key_package_ref: result.keyPackageRef
+        })
+      }
     }
   }).catch(() => {})
   mlsJoinLocks.set(targetId, current)

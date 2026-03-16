@@ -34,6 +34,7 @@ import {
 import type { KeyPackagePair } from './types'
 
 type PublicCommitMessage = Extract<MLSMessage, { wireformat: 'mls_public_message' }>
+const MLS_IDENTITY_SEPARATOR = ':'
 
 /**
  * Properly decode an MLS message from bytes.
@@ -124,6 +125,34 @@ function makeCredential(identity: string) {
   }
 }
 
+function decodeCredentialIdentity(identityBytes: Uint8Array): string {
+  return new TextDecoder().decode(identityBytes)
+}
+
+function normalizeCredentialIdentity(identity: string): { full: string; userId: string } {
+  const separatorIndex = identity.indexOf(MLS_IDENTITY_SEPARATOR)
+  if (separatorIndex === -1) {
+    return { full: identity, userId: identity }
+  }
+
+  return {
+    full: identity,
+    userId: identity.slice(0, separatorIndex)
+  }
+}
+
+function credentialMatchesCandidates(
+  identityBytes: Uint8Array,
+  candidates: Set<string>
+): boolean {
+  const decoded = normalizeCredentialIdentity(decodeCredentialIdentity(identityBytes))
+  return candidates.has(decoded.full) || candidates.has(decoded.userId)
+}
+
+export function buildClientCredentialIdentity(userId: string, deviceId: string): string {
+  return `${userId}${MLS_IDENTITY_SEPARATOR}${deviceId}`
+}
+
 /**
  * Generate a batch of key packages for a user.
  * Returns public packages (for server) and private packages (for local storage).
@@ -193,7 +222,7 @@ export function groupHasMember(
     const credential = node.leaf.credential
     if (credential.credentialType !== 'basic') return false
 
-    return candidates.has(new TextDecoder().decode(credential.identity))
+    return credentialMatchesCandidates(credential.identity, candidates)
   })
 }
 
@@ -210,7 +239,26 @@ export function getGroupMemberIdentities(state: ClientState): string[] {
       continue
     }
 
-    identities.add(new TextDecoder().decode(credential.identity))
+    identities.add(normalizeCredentialIdentity(decodeCredentialIdentity(credential.identity)).userId)
+  }
+
+  return [...identities]
+}
+
+export function getGroupLeafIdentities(state: ClientState): string[] {
+  const identities = new Set<string>()
+
+  for (const node of state.ratchetTree) {
+    if (!node || node.nodeType !== 'leaf') {
+      continue
+    }
+
+    const credential = node.leaf.credential
+    if (credential.credentialType !== 'basic') {
+      continue
+    }
+
+    identities.add(decodeCredentialIdentity(credential.identity))
   }
 
   return [...identities]
@@ -236,7 +284,7 @@ export function findGroupMemberLeafIndex(
     const credential = node.leaf.credential
     if (
       credential.credentialType === 'basic' &&
-      candidates.has(new TextDecoder().decode(credential.identity))
+      credentialMatchesCandidates(credential.identity, candidates)
     ) {
       return leafIndex
     }
@@ -269,7 +317,7 @@ export function findMemberLeafIndex(
       continue
     }
 
-    if (candidates.has(new TextDecoder().decode(credential.identity))) {
+    if (credentialMatchesCandidates(credential.identity, candidates)) {
       return nodeIndex / 2
     }
   }

@@ -328,10 +328,11 @@ defmodule VesperWeb.ChatChannel do
     {:noreply, socket}
   end
 
-  def handle_in("mls_request_join", _payload, socket) do
+  def handle_in("mls_request_join", payload, socket) when is_map(payload) do
     broadcast_from!(socket, "mls_request_join", %{
       user_id: socket.assigns.user_id,
-      username: socket.assigns.username
+      username: socket.assigns.username,
+      device_id: Map.get(payload, "device_id") || socket.assigns.device_client_id
     })
 
     {:noreply, socket}
@@ -352,6 +353,7 @@ defmodule VesperWeb.ChatChannel do
                request_id: attrs.request_id,
                requester_id: socket.assigns.user_id,
                requester_username: socket.assigns.username,
+               requester_client_id: Map.get(payload, "device_id") || socket.assigns.device_client_id,
                last_known_epoch: attrs.last_known_epoch,
                reason: attrs.reason,
                channel_id: channel_id
@@ -361,6 +363,7 @@ defmodule VesperWeb.ChatChannel do
               id: request.id,
               user_id: socket.assigns.user_id,
               username: socket.assigns.username,
+              device_id: request.requester_client_id,
               request_id: request.request_id,
               last_known_epoch: request.last_known_epoch,
               reason: request.reason
@@ -381,7 +384,8 @@ defmodule VesperWeb.ChatChannel do
       when is_binary(commit_data) do
     broadcast!(socket, "mls_commit", %{
       commit_data: commit_data,
-      sender_id: socket.assigns.user_id
+      sender_id: socket.assigns.user_id,
+      sender_device_id: socket.assigns.device_client_id
     })
 
     {:noreply, socket}
@@ -396,7 +400,8 @@ defmodule VesperWeb.ChatChannel do
     broadcast!(socket, "mls_remove", %{
       removed_user_id: removed_user_id,
       commit_data: commit_data,
-      sender_id: socket.assigns.user_id
+      sender_id: socket.assigns.user_id,
+      sender_device_id: socket.assigns.device_client_id
     })
 
     {:noreply, socket}
@@ -404,7 +409,7 @@ defmodule VesperWeb.ChatChannel do
 
   def handle_in(
         "mls_welcome",
-        %{"recipient_id" => recipient_id, "welcome_data" => welcome_data},
+        %{"recipient_id" => recipient_id, "welcome_data" => welcome_data} = payload,
         socket
       )
       when is_binary(recipient_id) and is_binary(welcome_data) do
@@ -415,6 +420,8 @@ defmodule VesperWeb.ChatChannel do
 
         case Encryption.store_pending_welcome(%{
                recipient_id: recipient_id,
+               recipient_client_id: Map.get(payload, "recipient_device_id"),
+               recipient_key_package_ref: Map.get(payload, "key_package_ref"),
                channel_id: channel_id,
                group_id: channel_id,
                welcome_data: decoded,
@@ -424,6 +431,8 @@ defmodule VesperWeb.ChatChannel do
             broadcast!(socket, "mls_welcome", %{
               id: welcome.id,
               recipient_id: recipient_id,
+              recipient_device_id: welcome.recipient_client_id,
+              key_package_ref: welcome.recipient_key_package_ref,
               welcome_data: welcome_data,
               sender_id: sender_id
             })
@@ -436,6 +445,75 @@ defmodule VesperWeb.ChatChannel do
 
       {:error, _} ->
         {:reply, {:error, %{reason: "invalid encoding"}}, socket}
+    end
+  end
+
+  def handle_in("mls_history_request", payload, socket) do
+    requester_device_id =
+      case Map.get(payload, "device_id") do
+        value when is_binary(value) and value != "" -> value
+        _ -> nil
+      end
+
+    case Encryption.store_pending_history_request(%{
+           group_id: socket.assigns.channel_id,
+           requester_id: socket.assigns.user_id,
+           requester_username: socket.assigns.username,
+           requester_client_id: requester_device_id,
+           channel_id: socket.assigns.channel_id
+         }) do
+      {:ok, request} ->
+        broadcast_from!(socket, "mls_history_request", %{
+          id: request.id,
+          user_id: socket.assigns.user_id,
+          device_id: requester_device_id
+        })
+
+        {:noreply, socket}
+
+      {:error, _changeset} ->
+        {:reply, {:error, %{reason: "could not store history request"}}, socket}
+    end
+  end
+
+  def handle_in(
+        "mls_history_bundle",
+        %{
+          "ciphertext" => ciphertext,
+          "mls_epoch" => epoch,
+          "recipient_id" => recipient_id
+        } = payload,
+        socket
+      ) do
+    recipient_device_id =
+      case Map.get(payload, "recipient_device_id") do
+        value when is_binary(value) and value != "" -> value
+        _ -> nil
+      end
+
+    case Encryption.store_pending_history_bundle(%{
+           group_id: socket.assigns.channel_id,
+           ciphertext: ciphertext,
+           mls_epoch: epoch,
+           recipient_id: recipient_id,
+           recipient_client_id: recipient_device_id,
+           sender_id: socket.assigns.user_id,
+           channel_id: socket.assigns.channel_id
+         }) do
+      {:ok, bundle} ->
+        broadcast!(socket, "mls_history_bundle", %{
+          id: bundle.id,
+          ciphertext: ciphertext,
+          mls_epoch: epoch,
+          recipient_id: recipient_id,
+          recipient_device_id: recipient_device_id,
+          sender_id: socket.assigns.user_id
+        })
+
+        {:noreply, socket}
+
+      {:error, _changeset} ->
+        {:reply, {:error, %{reason: "could not store history bundle"}}, socket}
     end
   end
 

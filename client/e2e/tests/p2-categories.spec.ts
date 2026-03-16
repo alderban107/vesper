@@ -3,9 +3,10 @@
  * Covers: R-SERVER-6
  */
 import { test, expect } from '@playwright/test'
-import { createUserContext, signup, type UserContext } from '../helpers/auth'
+import { createUserContext, login, type UserContext } from '../helpers/auth'
 import { createServer, createChannel, getInviteCode, joinServerWithCode, selectServer, getChannelNames } from '../helpers/server'
 import { hardRefresh } from '../helpers/navigation'
+import { waitForChannel } from '../helpers/wait'
 import { USERS } from '../fixtures/test-data'
 
 let alice: UserContext
@@ -15,8 +16,8 @@ test.describe('P2: Channel categories and ordering', () => {
   test.beforeAll(async ({ browser }) => {
     alice = await createUserContext(browser, 'alice', USERS.alice.username, USERS.alice.password)
     bob = await createUserContext(browser, 'bob', USERS.bob.username, USERS.bob.password)
-    await signup(alice)
-    await signup(bob)
+    await login(alice)
+    await login(bob)
 
     await createServer(alice.page, 'Category Server')
     const code = await getInviteCode(alice.page)
@@ -40,6 +41,9 @@ test.describe('P2: Channel categories and ordering', () => {
 
     // Check ordering on bob
     await selectServer(bob.page, 'Category Server')
+    await waitForChannel(bob.page, 'alpha-channel')
+    await waitForChannel(bob.page, 'beta-channel')
+    await waitForChannel(bob.page, 'gamma-channel')
     const bobChannels = await getChannelNames(bob.page)
 
     // Both should have the same channels

@@ -58,19 +58,30 @@ export async function editMessage(
   originalText: string,
   newText: string
 ): Promise<void> {
-  const row = page.locator(`[data-testid="message-row"]:has-text("${originalText}")`)
+  const rowByText = page.locator(`[data-testid="message-row"]:has-text("${originalText}")`).first()
+  await rowByText.waitFor({ state: 'visible', timeout: 10_000 })
+  const messageId = await rowByText.getAttribute('data-message-id')
+  const row = messageId
+    ? page.locator(`[data-testid="message-row"][data-message-id="${messageId}"]`)
+    : rowByText
+
   await row.hover()
   await row.locator('[data-testid="edit-message"]').click()
 
   // Wait for edit mode — the message content becomes a textarea
   const editInput = row.locator('[data-testid="edit-input"]')
+  await editInput.waitFor({ state: 'visible', timeout: 10_000 })
   await editInput.fill(newText)
   await editInput.press('Enter')
 
   // Wait for edited content to appear
-  await page.waitForSelector(`[data-testid="message-row"]:has-text("${newText}")`, {
-    timeout: 10_000,
-  })
+  if (messageId) {
+    await row.filter({ hasText: newText }).waitFor({ state: 'visible', timeout: 10_000 })
+  } else {
+    await page.waitForSelector(`[data-testid="message-row"]:has-text("${newText}")`, {
+      timeout: 10_000,
+    })
+  }
 }
 
 /** Delete a message (author only). Uses hover action bar buttons directly. */

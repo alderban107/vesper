@@ -1,17 +1,14 @@
-defmodule Vesper.Encryption.PendingResyncRequest do
+defmodule Vesper.Encryption.PendingHistoryRequest do
   use Ecto.Schema
   import Ecto.Changeset
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
-  schema "mls_pending_resync_requests" do
+  schema "mls_pending_history_requests" do
     field :group_id, :string
-    field :request_id, :string
-    field :requester_username, :string
     field :requester_client_id, :string
-    field :last_known_epoch, :integer
-    field :reason, :string
+    field :requester_username, :string
 
     belongs_to :requester, Vesper.Accounts.User
     belongs_to :channel, Vesper.Servers.Channel
@@ -24,18 +21,15 @@ defmodule Vesper.Encryption.PendingResyncRequest do
     request
     |> cast(attrs, [
       :group_id,
-      :request_id,
       :requester_id,
-      :requester_username,
       :requester_client_id,
-      :last_known_epoch,
-      :reason,
+      :requester_username,
       :channel_id,
       :conversation_id
     ])
-    |> validate_required([:group_id, :request_id, :requester_id])
+    |> validate_required([:group_id, :requester_id, :requester_client_id])
     |> unique_constraint([:group_id, :requester_id, :requester_client_id],
-      name: :mls_pending_resync_requests_group_id_requester_id_requester_client_id_index
+      name: :mls_pending_history_requests_group_id_requester_id_requester_client_id_index
     )
   end
 end

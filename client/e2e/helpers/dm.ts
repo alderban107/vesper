@@ -126,9 +126,13 @@ export async function uploadDmAttachment(
 ): Promise<void> {
   const fileInput = page.locator('.vesper-composer-form input[type="file"]')
   await fileInput.setInputFiles(filePath)
-  // Wait for upload to complete (loader disappears)
+  // Wait for staging/upload prep to complete.
   await page.waitForSelector('.vesper-composer-icon-button .animate-spin', {
     state: 'hidden',
     timeout: 10_000,
   })
+
+  // Submit the staged file as a DM message.
+  const textarea = page.locator('.vesper-composer-textarea')
+  await textarea.press('Enter')
 }

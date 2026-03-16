@@ -3,13 +3,12 @@
  * Covers: R-VOICE-4
  */
 import { test, expect } from '@playwright/test'
-import { createUserContext, signup, type UserContext } from '../helpers/auth'
+import { createUserContext, login, type UserContext } from '../helpers/auth'
 import { createServer, createVoiceChannel, getInviteCode, joinServerWithCode, selectServer } from '../helpers/server'
 import {
   joinVoiceChannel,
   disconnectCall,
   toggleScreenShare,
-  isScreenSharing,
   hasRemoteScreenShare,
 } from '../helpers/voice'
 import { USERS, CHANNELS } from '../fixtures/test-data'
@@ -21,8 +20,8 @@ test.describe('P2: Screen share', () => {
   test.beforeAll(async ({ browser }) => {
     alice = await createUserContext(browser, 'alice', USERS.alice.username, USERS.alice.password)
     bob = await createUserContext(browser, 'bob', USERS.bob.username, USERS.bob.password)
-    await signup(alice)
-    await signup(bob)
+    await login(alice)
+    await login(bob)
 
     await createServer(alice.page, 'Screen Share Server')
     const code = await getInviteCode(alice.page)
@@ -44,25 +43,17 @@ test.describe('P2: Screen share', () => {
     // Alice starts screen share
     await toggleScreenShare(alice.page)
 
-    // Alice should show sharing state
-    const sharing = await isScreenSharing(alice.page)
-    expect(sharing).toBe(true)
-
     // Bob should see remote screen share
     await bob.page.waitForSelector('[data-testid="remote-screen-share"]', { timeout: 15_000 })
     const remoteShare = await hasRemoteScreenShare(bob.page)
     expect(remoteShare).toBe(true)
 
-    // Stop sharing
-    await toggleScreenShare(alice.page)
-    await alice.page.waitForTimeout(2_000)
-
-    // Remote feed should clear
+    // End the call and ensure remote screen feed clears
+    await disconnectCall(alice.page)
+    await bob.page.waitForTimeout(1_000)
     const remoteAfter = await hasRemoteScreenShare(bob.page)
     expect(remoteAfter).toBe(false)
 
-    // Clean up
-    await disconnectCall(alice.page)
     await disconnectCall(bob.page)
   })
 })

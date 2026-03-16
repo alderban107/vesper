@@ -21,6 +21,12 @@ defmodule VesperWeb.ChannelController do
     if role in ~w(owner admin) do
       case Servers.create_channel(server_id, params) do
         {:ok, channel} ->
+          VesperWeb.Endpoint.broadcast!(
+            "presence:server:#{server_id}",
+            "channels_updated",
+            %{server_id: server_id}
+          )
+
           conn
           |> put_status(:created)
           |> json(%{channel: channel_json(channel)})
@@ -70,6 +76,12 @@ defmodule VesperWeb.ChannelController do
               {:ok, updated} ->
                 case maybe_update_permission_overrides(updated, params) do
                   :ok ->
+                    VesperWeb.Endpoint.broadcast!(
+                      "presence:server:#{server_id}",
+                      "channels_updated",
+                      %{server_id: server_id}
+                    )
+
                     json(conn, %{channel: channel_json(updated)})
 
                   {:error, reason} ->
@@ -106,6 +118,11 @@ defmodule VesperWeb.ChannelController do
         conn |> put_status(:not_found) |> json(%{error: "not found"})
       else
         Servers.delete_channel(channel)
+        VesperWeb.Endpoint.broadcast!(
+          "presence:server:#{server_id}",
+          "channels_updated",
+          %{server_id: server_id}
+        )
         json(conn, %{ok: true})
       end
     else

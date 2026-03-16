@@ -1,16 +1,24 @@
-defmodule VesperWeb.PendingResyncRequestController do
+defmodule VesperWeb.PendingHistoryBundleController do
   use VesperWeb, :controller
-  alias Vesper.Encryption
   alias Vesper.Chat
+  alias Vesper.Encryption
   alias Vesper.Servers
 
-  @doc "GET /api/v1/pending-resync-requests/:channel_id — fetch pending resync requests for the current MLS scope"
+  @doc "GET /api/v1/pending-history-bundles/:channel_id — fetch pending same-user history bundles for the current MLS scope"
   def index(conn, %{"channel_id" => scope_id}) do
     user = conn.assigns.current_user
+    current_device = conn.assigns.current_device
 
     case authorized_scope(user.id, scope_id) do
       {:ok, authorized_group_id} ->
-        render_requests(conn, Encryption.get_pending_resync_requests(authorized_group_id))
+        render_bundles(
+          conn,
+          Encryption.get_pending_history_bundles(
+            user.id,
+            authorized_group_id,
+            current_device.client_id
+          )
+        )
 
       {:error, :invalid_scope} ->
         conn |> put_status(:bad_request) |> json(%{error: "invalid scope"})
@@ -23,54 +31,42 @@ defmodule VesperWeb.PendingResyncRequestController do
     end
   end
 
-  @doc "DELETE /api/v1/pending-resync-requests/:id — acknowledge a processed resync request"
+  @doc "DELETE /api/v1/pending-history-bundles/:id — acknowledge a processed history bundle"
   def delete(conn, %{"id" => id}) do
     user = conn.assigns.current_user
-    request = Encryption.get_pending_resync_request(id)
+    bundle = Encryption.get_pending_history_bundle(id)
 
     cond do
-      is_nil(request) ->
+      is_nil(bundle) ->
         json(conn, %{ok: true})
 
-      match?({:error, _}, authorized_scope(user.id, request.group_id)) ->
+      bundle.recipient_id != user.id ->
+        conn |> put_status(:forbidden) |> json(%{error: "forbidden"})
+
+      bundle.recipient_client_id != conn.assigns.current_device.client_id ->
         conn |> put_status(:forbidden) |> json(%{error: "forbidden"})
 
       true ->
-        Encryption.delete_pending_resync_request(id)
+        Encryption.delete_pending_history_bundle(id)
         json(conn, %{ok: true})
     end
   end
 
-  defp render_requests(conn, requests) do
+  defp render_bundles(conn, bundles) do
     json(conn, %{
-      requests:
-        Enum.map(requests, fn request ->
+      bundles:
+        Enum.map(bundles, fn bundle ->
           %{
-            id: request.id,
-            request_id: request.request_id,
-            requester_id: request.requester_id,
-            requester_username: request.requester_username,
-            requester_client_id: request.requester_client_id,
-            last_known_epoch: request.last_known_epoch,
-            reason: request.reason,
-            inserted_at: request.inserted_at
+            id: bundle.id,
+            ciphertext: bundle.ciphertext,
+            mls_epoch: bundle.mls_epoch,
+            recipient_id: bundle.recipient_id,
+            recipient_client_id: bundle.recipient_client_id,
+            sender_id: bundle.sender_id,
+            inserted_at: bundle.inserted_at
           }
         end)
     })
-  end
-
-  defp authorized_scope(user_id, "voice:channel:" <> channel_id) do
-    case authorize_channel_scope(user_id, channel_id) do
-      {:ok, _channel_id} -> {:ok, "voice:channel:#{channel_id}"}
-      error -> error
-    end
-  end
-
-  defp authorized_scope(user_id, "voice:dm:" <> conversation_id) do
-    case authorize_conversation_scope(user_id, conversation_id) do
-      {:ok, _conversation_id} -> {:ok, "voice:dm:#{conversation_id}"}
-      error -> error
-    end
   end
 
   defp authorized_scope(user_id, scope_id) do

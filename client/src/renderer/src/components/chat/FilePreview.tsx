@@ -5,6 +5,7 @@ import { decryptFile } from '../../crypto/fileEncryption'
 import type { FileMessageContent } from '../../stores/messageStore'
 import AudioPlayer from './AudioPlayer'
 import ImageLightbox from './ImageLightbox'
+import VideoPlayer from './VideoPlayer'
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -19,13 +20,14 @@ interface Props {
 export default function FilePreview({ file }: Props): React.JSX.Element {
   const isImage = file.content_type.startsWith('image/')
   const isAudio = file.content_type.startsWith('audio/')
+  const isVideo = file.content_type.startsWith('video/')
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(false)
   const [showLightbox, setShowLightbox] = useState(false)
 
   useEffect(() => {
-    if (!isImage && !isAudio) {
+    if (!isImage && !isAudio && !isVideo) {
       return
     }
 
@@ -65,7 +67,7 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
         URL.revokeObjectURL(objectUrl)
       }
     }
-  }, [file.content_type, file.id, file.iv, file.key, isAudio, isImage])
+  }, [file.content_type, file.id, file.iv, file.key, isAudio, isImage, isVideo])
 
   const handleDownload = async (): Promise<void> => {
     try {
@@ -154,6 +156,28 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
               }}
             />
           </>
+        ) : null}
+      </div>
+    )
+  }
+
+  if (isVideo) {
+    return (
+      <div data-testid="attachment" className="vesper-audio-preview">
+        {loading ? (
+          <div className="vesper-audio-preview-loading">
+            <Loader2 className="w-4 h-4 text-text-faint animate-spin" />
+            <span>Decrypting video...</span>
+          </div>
+        ) : previewUrl ? (
+          <VideoPlayer
+            src={previewUrl}
+            name={file.name}
+            sizeLabel={formatSize(file.size)}
+            onDownload={() => {
+              void handleDownload()
+            }}
+          />
         ) : null}
       </div>
     )

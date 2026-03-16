@@ -4,6 +4,7 @@ import {
   ackPendingResyncRequest,
   fetchPendingResyncRequests
 } from '../api/crypto'
+import { getLocalDeviceIdentity } from '../auth/deviceIdentity'
 import { getVoiceRtcConfig } from '../api/voiceConfig'
 import { connectSocket, joinVoiceChannel, leaveChannel, pushToChannel } from '../api/socket'
 import {
@@ -45,13 +46,16 @@ function maybeRequestVoiceMlsJoin(topic: string): void {
   }
 
   recentVoiceJoinRequests.set(topic, now)
-  pushToChannel(topic, 'mls_request_join', {})
+  pushToChannel(topic, 'mls_request_join', {
+    device_id: getLocalDeviceIdentity().id
+  })
 }
 
 interface PendingVoiceMlsResyncRequest {
   id?: string
   requester_id: string
   requester_username?: string | null
+  requester_client_id?: string | null
   request_id?: string
   last_known_epoch?: number | null
   reason?: string | null
@@ -71,6 +75,7 @@ function maybeRequestVoiceMlsResync(topic: string, reason: string): void {
 
   recentVoiceResyncRequests.set(topic, now)
   pushToChannel(topic, 'mls_resync_request', {
+    device_id: getLocalDeviceIdentity().id,
     request_id: crypto.randomUUID(),
     last_known_epoch: null,
     reason,
@@ -84,14 +89,25 @@ async function processVoiceMlsResyncRequest(
 ): Promise<boolean> {
   const requesterId = request.requester_id
   const requesterUsername = request.requester_username ?? undefined
-  const userId = useAuthStore.getState().user?.id
+  const requesterDeviceId = request.requester_client_id ?? undefined
+  const localUser = useAuthStore.getState().user
+  const localDeviceId = getLocalDeviceIdentity().id
   const cryptoStore = useCryptoStore.getState()
 
-  if (!requesterId || requesterId === userId || !cryptoStore.hasGroup(topic)) {
+  if (!requesterId || !cryptoStore.hasGroup(topic)) {
     return false
   }
 
-  const result = await cryptoStore.handleResyncRequest(topic, requesterId, requesterUsername)
+  if (localUser?.id === requesterId && requesterDeviceId === localDeviceId) {
+    return false
+  }
+
+  const result = await cryptoStore.handleResyncRequest(
+    topic,
+    requesterId,
+    requesterUsername,
+    requesterDeviceId
+  )
   if (!result) {
     return false
   }
@@ -110,7 +126,9 @@ async function processVoiceMlsResyncRequest(
   if (result.welcomeBytes) {
     pushToChannel(topic, 'mls_welcome', {
       recipient_id: requesterId,
-      welcome_data: result.welcomeBytes
+      recipient_device_id: requesterDeviceId,
+      welcome_data: result.welcomeBytes,
+      key_package_ref: result.keyPackageRef
     })
   }
 
@@ -1496,14 +1514,18 @@ async function initVoice(
         id: data.id as string | undefined,
         requester_id: data.user_id as string,
         requester_username: (data.username as string | undefined) ?? undefined,
+        requester_client_id: (data.device_id as string | undefined) ?? undefined,
         request_id: data.request_id as string | undefined,
         last_known_epoch: (data.last_known_epoch as number | null | undefined) ?? null,
         reason: (data.reason as string | null | undefined) ?? null
       })
     } else if (event === 'mls_commit') {
       const senderId = data.sender_id as string
+      const senderDeviceId =
+        typeof data.sender_device_id === 'string' ? data.sender_device_id : null
       const userId = useAuthStore.getState().user?.id
-      if (senderId !== userId) {
+      const localDeviceId = getLocalDeviceIdentity().id
+      if (senderId !== userId || senderDeviceId !== localDeviceId) {
         const crypto = useCryptoStore.getState()
         await crypto.handleCommit(topic, data.commit_data as string)
         if (!(await applyVoiceKeyIfAvailable(topic))) {
@@ -1512,11 +1534,20 @@ async function initVoice(
       }
     } else if (event === 'mls_welcome') {
       const recipientId = data.recipient_id as string
+      const recipientDeviceId =
+        typeof data.recipient_device_id === 'string' ? data.recipient_device_id : null
       const userId = useAuthStore.getState().user?.id
-      if (recipientId === userId) {
+      if (
+        recipientId === userId &&
+        (!recipientDeviceId || recipientDeviceId === getLocalDeviceIdentity().id)
+      ) {
         const crypto = useCryptoStore.getState()
         const welcomeId = typeof data.id === 'string' ? data.id : null
-        const processed = await crypto.handleWelcome(topic, data.welcome_data as string)
+        const processed = await crypto.handleWelcome(
+          topic,
+          data.welcome_data as string,
+          (data.key_package_ref as string | undefined) ?? null
+        )
         if (processed) {
           if (welcomeId) {
             await ackPendingWelcome(welcomeId).catch(() => {})
@@ -1529,10 +1560,15 @@ async function initVoice(
     } else if (event === 'mls_remove') {
       const userId = useAuthStore.getState().user?.id
       const removedId = data.removed_user_id as string
-      if (removedId === userId) {
+      const senderId = data.sender_id as string
+      const senderDeviceId =
+        typeof data.sender_device_id === 'string' ? data.sender_device_id : null
+      const localDeviceId = getLocalDeviceIdentity().id
+      const isLocalSender = senderId === userId && senderDeviceId === localDeviceId
+      if (removedId === userId && !isLocalSender) {
         await useCryptoStore.getState().resetGroup(topic)
         void recoverVoiceMlsState(topic, 'removed_from_group', preferredCreatorId).catch(() => {})
-      } else if (data.commit_data) {
+      } else if (!isLocalSender && data.commit_data) {
         const crypto = useCryptoStore.getState()
         await crypto.handleCommit(topic, data.commit_data as string)
         if (!(await applyVoiceKeyIfAvailable(topic))) {
@@ -1586,11 +1622,12 @@ async function handleVoiceMlsJoinRequest(
 ): Promise<void> {
   const userId = msg.user_id as string
   const username = (msg.username as string | undefined) ?? undefined
+  const deviceId = (msg.device_id as string | undefined) ?? undefined
   const crypto = useCryptoStore.getState()
 
   if (!crypto.hasGroup(topic)) return
 
-  const result = await crypto.handleJoinRequest(topic, userId, username)
+  const result = await crypto.handleJoinRequest(topic, userId, username, deviceId)
 
   if (!result) return
 
@@ -1601,7 +1638,9 @@ async function handleVoiceMlsJoinRequest(
   if (result.welcomeBytes) {
     pushToChannel(topic, 'mls_welcome', {
       recipient_id: userId,
-      welcome_data: result.welcomeBytes
+      recipient_device_id: deviceId,
+      welcome_data: result.welcomeBytes,
+      key_package_ref: result.keyPackageRef
     })
   }
 

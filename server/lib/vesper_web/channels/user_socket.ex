@@ -36,6 +36,7 @@ defmodule VesperWeb.UserSocket do
               socket
               |> assign(:user_id, user_id)
               |> assign(:device_id, device.id)
+              |> assign(:device_client_id, device.client_id)
               |> assign(:device_trust_state, device.trust_state)
               |> assign(:username, user.username)
               |> assign(:display_name, user.display_name)

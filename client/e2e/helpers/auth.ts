@@ -4,8 +4,8 @@
  */
 
 import type { Page, BrowserContext } from '@playwright/test'
-import { readRunState } from '../harness/state'
-import { waitForAppShell, waitForRecoveryModal, waitForRegisterPage } from './wait'
+import { readRunState, getRecoveryKey } from '../harness/state'
+import { waitForAppShell, waitForDeviceTrustGate, waitForRecoveryModal, waitForRegisterPage } from './wait'
 
 export interface UserContext {
   name: string
@@ -86,8 +86,18 @@ export async function signup(user: UserContext): Promise<void> {
 /**
  * Logs in an existing user through the real UI.
  * Covers: R-AUTH-2
+ *
+ * After submit, races between app shell and device trust gate. If the gate
+ * appears (new browser context = new device), it auto-approves using the
+ * recovery key persisted by P0.
+ *
+ * Set `expectTrustGate: true` to ONLY wait for the gate (skips app shell
+ * wait and auto-approval — caller handles the gate manually).
  */
-export async function login(user: UserContext): Promise<void> {
+export async function login(
+  user: UserContext,
+  opts?: { expectTrustGate?: boolean }
+): Promise<void> {
   const { page, username, password } = user
   const state = readRunState()
 
@@ -98,6 +108,28 @@ export async function login(user: UserContext): Promise<void> {
   await form.locator('input[type="text"]').fill(username)
   await form.locator('input[type="password"]').fill(password)
   await form.locator('button[type="submit"]').click()
+
+  if (opts?.expectTrustGate) {
+    await waitForDeviceTrustGate(page)
+    return
+  }
+
+  // Race: app shell appears cleanly, or device trust gate intercepts.
+  const appShell = page.locator('[data-testid="main-page"], [data-testid="app-shell"]')
+  const trustGate = page.locator('[data-testid="device-trust-gate"]')
+
+  await Promise.race([
+    appShell.waitFor({ state: 'visible', timeout: 15_000 }),
+    trustGate.waitFor({ state: 'visible', timeout: 15_000 }),
+  ])
+
+  // If the trust gate is showing, auto-approve with the persisted recovery key
+  if (await trustGate.isVisible()) {
+    const recoveryKey = getRecoveryKey(username)
+    await trustGate.locator('textarea').fill(recoveryKey)
+    await trustGate.locator('button:has-text("Use recovery key")').click()
+    await trustGate.waitFor({ state: 'hidden', timeout: 10_000 })
+  }
 
   await waitForAppShell(page)
 }

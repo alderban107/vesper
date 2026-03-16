@@ -7,14 +7,18 @@ import {
   createEncryptedKeyBundle,
   createRecoveryData,
   decryptEncryptedKeyBundle,
-  decryptWithRecoveryKey,
   recoveryKeyToBytes
 } from '../crypto/identity'
-import { initCipherSuite, createKeyPackageBatch, encodeKeyPackageBytes } from '../crypto/mls'
+import {
+  buildClientCredentialIdentity,
+  initCipherSuite,
+  createKeyPackageBatch,
+  encodeKeyPackageBytes
+} from '../crypto/mls'
 import { serializePrivatePackage } from '../crypto/keySerialization'
 import { clearSearchIndexSyncCredentials } from '../crypto/searchIndexSync'
-import { saveIdentity, saveKeyPackages, loadIdentity, initStorage } from '../crypto/storage'
-import { getMyKeyPackageCount, uploadKeyPackages } from '../api/crypto'
+import { saveIdentity, saveKeyPackages, loadIdentity, loadKeyPackages, initStorage } from '../crypto/storage'
+import { getMyKeyPackageCount, uploadKeyPackages, purgeMyKeyPackages } from '../api/crypto'
 import { useServerStore } from './serverStore'
 import { resetAllStores } from './resetStores'
 
@@ -92,6 +96,10 @@ function buildSessionBody(extra: Record<string, unknown>): Record<string, unknow
     device_name: device.name,
     device_platform: device.platform
   }
+}
+
+function getCurrentMlsCredentialIdentity(userId: string): string {
+  return buildClientCredentialIdentity(userId, getLocalDeviceIdentity().id)
 }
 
 function parseError(data: Record<string, unknown>, fallback: string): string {
@@ -183,6 +191,34 @@ function resolveCurrentDevice(
   )
 }
 
+function shouldGenerateFreshDeviceIdentity(currentDevice: AuthDevice | null | undefined): boolean {
+  return Boolean(currentDevice?.approval_method)
+}
+
+async function createFreshLocalDeviceIdentity(userId: string): Promise<boolean> {
+  await initCipherSuite()
+
+  const pairs = await createKeyPackageBatch(getCurrentMlsCredentialIdentity(userId), 1)
+  const signaturePrivateKey = pairs[0]?.privatePackage.signaturePrivateKey
+  const signaturePublicKey = pairs[0]?.publicPackage.leafNode.signaturePublicKey
+
+  if (!signaturePrivateKey || !signaturePublicKey) {
+    return false
+  }
+
+  await saveIdentity(
+    userId,
+    signaturePublicKey,
+    signaturePublicKey,
+    new Uint8Array(0),
+    new Uint8Array(0),
+    new Uint8Array(0),
+    signaturePrivateKey
+  )
+
+  return true
+}
+
 async function hydrateTrustedCryptoFromPasswordResponse(
   userId: string,
   data: AuthResponsePayload,
@@ -215,36 +251,6 @@ async function hydrateTrustedCryptoFromPasswordResponse(
     bundle.ciphertext,
     bundle.nonce,
     bundle.salt,
-    privateKeys
-  )
-
-  return true
-}
-
-async function hydrateTrustedCryptoFromRecovery(
-  userId: string,
-  data: AuthResponsePayload,
-  encryptedRecoveryBundle: string,
-  mnemonic: string
-): Promise<boolean> {
-  if (!data.public_identity_key || !data.public_key_exchange) {
-    return false
-  }
-
-  await initCipherSuite()
-
-  const privateKeys = await decryptWithRecoveryKey(
-    mnemonic,
-    base64ToUint8(encryptedRecoveryBundle)
-  )
-
-  await saveIdentity(
-    userId,
-    base64ToUint8(data.public_identity_key),
-    base64ToUint8(data.public_key_exchange),
-    new Uint8Array(0),
-    new Uint8Array(0),
-    new Uint8Array(0),
     privateKeys
   )
 
@@ -321,10 +327,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         signaturePrivateKey
       )
 
-      const batchPairs = await createKeyPackageBatch(data.user.id, KEY_PACKAGE_TARGET, {
-        signKey: signaturePrivateKey,
-        publicKey: signaturePublicKey
-      })
+      const batchPairs = await createKeyPackageBatch(
+        getCurrentMlsCredentialIdentity(data.user.id),
+        KEY_PACKAGE_TARGET,
+        {
+          signKey: signaturePrivateKey,
+          publicKey: signaturePublicKey
+        }
+      )
 
       await saveKeyPackages(
         batchPairs.map((pair) => ({
@@ -334,7 +344,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       )
 
       const publicPackageBytes = batchPairs.map((pair) => encodeKeyPackageBytes(pair.publicPackage))
-      await uploadKeyPackages(publicPackageBytes)
+      await uploadKeyPackages(publicPackageBytes, getLocalDeviceIdentity().id)
 
       set({
         user: data.user,
@@ -378,17 +388,23 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
       let canUseE2EE = false
       if (data.current_device?.trust_state === 'trusted') {
-        if (data.encrypted_key_bundle) {
+        canUseE2EE = await hasUnlockedLocalIdentity(data.user.id)
+
+        if (!canUseE2EE && shouldGenerateFreshDeviceIdentity(data.current_device)) {
+          try {
+            canUseE2EE = await createFreshLocalDeviceIdentity(data.user.id)
+          } catch {
+            canUseE2EE = false
+          }
+        }
+
+        if (!canUseE2EE && data.encrypted_key_bundle) {
           try {
             await hydrateTrustedCryptoFromPasswordResponse(data.user.id, data, password)
             canUseE2EE = true
           } catch {
             canUseE2EE = false
           }
-        }
-
-        if (!canUseE2EE) {
-          canUseE2EE = await hasUnlockedLocalIdentity(data.user.id)
         }
       }
 
@@ -520,8 +536,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
 
     if (!wasUsingE2EE && canUseE2EE) {
-      await refreshActiveEncryptedViews()
       await get().replenishKeyPackages()
+      await refreshActiveEncryptedViews()
     }
   },
 
@@ -581,6 +597,31 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         return false
       }
 
+      let refreshedTokensApplied = false
+
+      if (approveData.access_token && approveData.refresh_token) {
+        setTokens(approveData.access_token, approveData.refresh_token)
+        refreshedTokensApplied = true
+      } else {
+        const currentRefreshToken = localStorage.getItem('refreshToken')
+        if (currentRefreshToken) {
+          const refreshRes = await apiFetch('/api/v1/auth/refresh', {
+            method: 'POST',
+            body: JSON.stringify({ refresh_token: currentRefreshToken })
+          })
+          const refreshData = (await refreshRes.json()) as AuthResponsePayload
+          if (refreshRes.ok && refreshData.access_token && refreshData.refresh_token) {
+            setTokens(refreshData.access_token, refreshData.refresh_token)
+            refreshedTokensApplied = true
+          }
+        }
+      }
+
+      if (refreshedTokensApplied) {
+        disconnectSocket()
+        connectSocket()
+      }
+
       const stateRes = await apiFetch('/api/v1/auth/me')
       const stateData = (await stateRes.json()) as AuthResponsePayload
 
@@ -589,15 +630,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         return false
       }
 
-      const restored = await hydrateTrustedCryptoFromRecovery(
-        stateData.user.id,
-        stateData,
-        recoverData.encrypted_recovery_bundle,
-        mnemonic
-      )
+      const restored = await createFreshLocalDeviceIdentity(stateData.user.id)
 
       if (!restored) {
-        set({ error: 'This device was approved, but recovery data could not be restored.' })
+        set({ error: 'This device was approved, but encrypted chat setup could not be completed.' })
         return false
       }
 
@@ -609,8 +645,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       })
 
       await get().fetchDevices()
-      await refreshActiveEncryptedViews()
       await get().replenishKeyPackages()
+      await refreshActiveEncryptedViews()
       return true
     } catch (error) {
       set({
@@ -636,7 +672,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         return false
       }
 
-      const restored = await hydrateTrustedCryptoFromPasswordResponse(state.user.id, data, password)
+      const restored =
+        (await hasUnlockedLocalIdentity(state.user.id)) ||
+        (shouldGenerateFreshDeviceIdentity(data.current_device) &&
+          (await createFreshLocalDeviceIdentity(state.user.id))) ||
+        (await hydrateTrustedCryptoFromPasswordResponse(state.user.id, data, password))
+
       if (!restored) {
         set({ error: 'This device is approved, but it still needs your password to unlock encrypted chats.' })
         return false
@@ -647,8 +688,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         error: null,
         currentDevice: data.current_device ?? state.currentDevice
       })
-      await refreshActiveEncryptedViews()
       await get().replenishKeyPackages()
+      await refreshActiveEncryptedViews()
       return true
     } catch (error) {
       set({
@@ -693,8 +734,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
 
     if (!state.canUseE2EE && canUseE2EE) {
-      await refreshActiveEncryptedViews()
       await get().replenishKeyPackages()
+      await refreshActiveEncryptedViews()
     }
   },
 
@@ -769,7 +810,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
 
     try {
-      const count = await getMyKeyPackageCount()
+      // New device: no local key packages means any server-side packages are
+      // from previous devices. Purge them so fetchKeyPackage always returns
+      // a package matching the current device's private keys.
+      const localPackages = await loadKeyPackages()
+      if (localPackages.length === 0) {
+        await purgeMyKeyPackages(getLocalDeviceIdentity().id)
+      }
+
+      const count = await getMyKeyPackageCount(getLocalDeviceIdentity().id)
       if (count >= KEY_PACKAGE_THRESHOLD) {
         return
       }
@@ -781,13 +830,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
 
       const toGenerate = KEY_PACKAGE_TARGET - count
-      const pairs = await createKeyPackageBatch(state.user.id, toGenerate, {
+      const pairs = await createKeyPackageBatch(getCurrentMlsCredentialIdentity(state.user.id), toGenerate, {
         signKey: identity.signaturePrivateKey,
         publicKey: identity.publicIdentityKey
       })
-
-      const publicPackageBytes = pairs.map((pair) => encodeKeyPackageBytes(pair.publicPackage))
-      await uploadKeyPackages(publicPackageBytes)
 
       await saveKeyPackages(
         pairs.map((pair) => ({
@@ -795,6 +841,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           privateData: serializePrivatePackage(pair.privatePackage)
         }))
       )
+
+      const publicPackageBytes = pairs.map((pair) => encodeKeyPackageBytes(pair.publicPackage))
+      await uploadKeyPackages(publicPackageBytes, getLocalDeviceIdentity().id)
     } catch {
       console.warn('Failed to replenish key packages')
     }

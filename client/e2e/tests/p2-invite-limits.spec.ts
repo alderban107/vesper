@@ -3,7 +3,7 @@
  * Covers: R-SERVER-2 (P2), P2 Scenario Pack #4
  */
 import { test, expect } from '@playwright/test'
-import { createUserContext, signup, type UserContext } from '../helpers/auth'
+import { createUserContext, login, type UserContext } from '../helpers/auth'
 import { createServer, getInviteCode, joinServerWithCode, selectServer } from '../helpers/server'
 import { waitForServerInSidebar } from '../helpers/wait'
 import { USERS } from '../fixtures/test-data'
@@ -23,9 +23,9 @@ test.describe('P2: Invite limits', () => {
     alice = await createUserContext(browser, 'alice-inv', USERS.alice.username, USERS.alice.password)
     bob = await createUserContext(browser, 'bob-inv', USERS.bob.username, USERS.bob.password)
     charlie = await createUserContext(browser, 'charlie-inv', USERS.charlie.username, USERS.charlie.password)
-    await signup(alice)
-    await signup(bob)
-    await signup(charlie)
+    await login(alice)
+    await login(bob)
+    await login(charlie)
 
     await createServer(alice.page, 'Invite Limits Server')
 

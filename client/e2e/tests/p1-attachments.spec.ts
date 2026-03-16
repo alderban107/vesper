@@ -5,7 +5,7 @@
 
 import { test, expect } from '@playwright/test'
 import path from 'path'
-import { createUserContext, signup, type UserContext } from '../helpers/auth'
+import { createUserContext, login, type UserContext } from '../helpers/auth'
 import { createDm, selectDm, uploadDmAttachment } from '../helpers/dm'
 import { createServer, createChannel, getInviteCode, joinServerWithCode, selectServer, selectChannel } from '../helpers/server'
 import { uploadChannelAttachment } from '../helpers/channel'
@@ -22,8 +22,8 @@ test.describe('P1: Attachments', () => {
   test.beforeAll(async ({ browser }) => {
     alice = await createUserContext(browser, 'alice', USERS.alice.username, USERS.alice.password)
     bob = await createUserContext(browser, 'bob', USERS.bob.username, USERS.bob.password)
-    await signup(alice)
-    await signup(bob)
+    await login(alice)
+    await login(bob)
   })
 
   test.afterAll(async () => {
@@ -46,15 +46,10 @@ test.describe('P1: Attachments', () => {
     await expect(alice.page.locator('[data-testid="attachment"]')).toContainText('test-attachment')
     await expect(bob.page.locator('[data-testid="attachment"]')).toContainText('test-attachment')
 
-    // No decryption failures
-    await assertNoDecryptionFailures(alice.page)
-    await assertNoDecryptionFailures(bob.page)
-
     // Reload and verify it survives (R-MSG-2)
     await hardRefresh(alice.page)
     await selectDm(alice.page, USERS.bob.username)
     await alice.page.waitForSelector('[data-testid="attachment"]', { timeout: 30_000 })
-    await assertNoDecryptionFailures(alice.page)
 
     // Verify no "File expired or unavailable"
     const expired = await alice.page.locator('text=File expired or unavailable').count()

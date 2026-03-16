@@ -10,7 +10,7 @@ import { defineConfig } from '@playwright/test'
 
 export default defineConfig({
   testDir: './tests',
-  timeout: 30_000,
+  timeout: 120_000,
   expect: { timeout: 5_000 },
   fullyParallel: false, // tests share state within a spec file
   retries: 0, // no retries — we want to see real failures

@@ -3,7 +3,7 @@
  * Covers: R-SERVER-5
  */
 import { test, expect } from '@playwright/test'
-import { createUserContext, signup, type UserContext } from '../helpers/auth'
+import { createUserContext, login, type UserContext } from '../helpers/auth'
 import { createServer, createChannel, getInviteCode, joinServerWithCode, selectServer, selectChannel, getChannelNames } from '../helpers/server'
 import { sendChannelMessage } from '../helpers/channel'
 import { USERS } from '../fixtures/test-data'
@@ -15,8 +15,8 @@ test.describe('P2: Permission overrides', () => {
   test.beforeAll(async ({ browser }) => {
     alice = await createUserContext(browser, 'alice', USERS.alice.username, USERS.alice.password)
     bob = await createUserContext(browser, 'bob', USERS.bob.username, USERS.bob.password)
-    await signup(alice)
-    await signup(bob)
+    await login(alice)
+    await login(bob)
 
     await createServer(alice.page, 'Permissions Server')
     const code = await getInviteCode(alice.page)
@@ -40,7 +40,7 @@ test.describe('P2: Permission overrides', () => {
       await alice.page.waitForSelector('[data-testid="channel-settings"]', { timeout: 10_000 })
 
       // Look for permissions section
-      const permissionsTab = alice.page.locator('text=Permissions')
+      const permissionsTab = alice.page.locator('[data-testid="channel-settings"] button:has-text("Permissions")').first()
       if (await permissionsTab.isVisible()) {
         await permissionsTab.click()
       }
