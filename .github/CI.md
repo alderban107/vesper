@@ -9,13 +9,13 @@ them, and what they produce.
 
 Runs on pushes to non-main, non-tag branches when files under `client/` change.
 Executes `npm run check:web` (TypeScript typecheck + Vite web build). The `client-checks`
-job is a branch protection gate.
+gate job is a required status check for branch protection.
 
 ### `test-server.yml` — Server Tests
 
 Runs on pushes to non-main, non-tag branches when files under `server/` change.
 Spins up PostgreSQL 17, compiles with `--warnings-as-errors`, and runs `mix test`. The
-`server-tests` job is a branch protection gate.
+`server-checks` gate job is a required status check for branch protection.
 
 ### `docker-server.yml` — Server Docker Image
 
