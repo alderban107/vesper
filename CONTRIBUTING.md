@@ -49,7 +49,7 @@ Git hooks help for local clones, but the real repo-wide gate is GitHub Actions. 
 - **Server Tests** (`.github/workflows/test-server.yml`) — runs `mix test` with a PostgreSQL 17 service container when `server/` files change
 - **Client Checks** (`.github/workflows/test-client.yml`) — runs `npm run check:web` when `client/` files change
 
-Both skip `.md`-only changes and use a gate job pattern so branch protection status checks pass even when the test jobs are skipped (e.g., a server-only change won't block on client checks). Configure branch protection to require the `server-tests` and `client-checks` job names.
+Both skip `.md`-only changes and use a gate job pattern so branch protection status checks pass even when the test jobs are skipped (e.g., a server-only change won't block on client checks). Configure branch protection to require the `server-checks` and `client-checks` job names.
 
 ### Server tests
 
