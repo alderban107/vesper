@@ -3,7 +3,7 @@
 # Runs npm run check:web when client/ files change. Uses a gate
 # job (client-checks) for branch protection compatibility.
 
-name: Client Checks
+name: Client Tests
 
 on:
   push:
