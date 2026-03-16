@@ -356,13 +356,15 @@ jobs:
           > **Note:** Desktop builds are currently unsigned. macOS and Windows will show
           > security warnings on first launch. This will be resolved before public release."
 
-          # Gather all files from artifacts directory
-          FILES=$(find artifacts -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.dmg' -o -name '*.zip' -o -name '*.exe' \))
+          # Gather all files from artifacts directory into an array (handles spaces in filenames)
+          FILES=()
+          while IFS= read -r -d '' f; do
+            FILES+=("$f")
+          done < <(find artifacts -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.dmg' -o -name '*.zip' -o -name '*.exe' \) -print0)
 
-          # shellcheck disable=SC2086
           gh release create nightly \
             --title "Nightly Build — ${DATE}" \
             --notes "${BODY}" \
             --prerelease \
             --target "${{ github.sha }}" \
-            $FILES
+            "${FILES[@]}"
