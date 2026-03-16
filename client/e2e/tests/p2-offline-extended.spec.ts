@@ -45,7 +45,6 @@ test.describe('P2: Extended offline catch-up', () => {
     for (let i = 1; i <= 10; i++) {
       await sendChannelMessage(alice.page, `Offline msg ${i} — ext ${i}`)
     }
-    await alice.page.waitForTimeout(5_000)
 
     // Bob returns
     bob = await createUserContext(browser, 'bob-ext2', USERS.bob.username, USERS.bob.password)

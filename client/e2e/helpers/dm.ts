@@ -40,7 +40,7 @@ export async function createDm(page: Page, username: string): Promise<void> {
 /** Select an existing DM conversation by the other user's display text. */
 export async function selectDm(page: Page, displayName: string): Promise<void> {
   await openDmView(page)
-  await page.click(`button:has-text("${displayName}")`)
+  await page.click(`[data-testid="dm-row"]:has-text("${displayName}")`)
   // Wait for the composer to appear
   await page.waitForSelector('.vesper-composer-textarea', { timeout: 5_000 })
 }

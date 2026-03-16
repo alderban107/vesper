@@ -495,7 +495,7 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
         {showThreadSummary && (
           <div className="vesper-message-thread-meta">
             <button
-              data-testid="thread-button"
+              data-testid="thread-link"
               type="button"
               onClick={handleOpenThread}
               className={`vesper-message-thread-link${isActiveThread ? ' vesper-message-thread-link-active' : ''}`}

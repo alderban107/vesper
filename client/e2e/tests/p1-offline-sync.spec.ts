@@ -8,7 +8,6 @@ import { createUserContext, signup, login, type UserContext } from '../helpers/a
 import { createServer, createChannel, getInviteCode, joinServerWithCode, selectServer, selectChannel } from '../helpers/server'
 import { sendChannelMessage } from '../helpers/channel'
 import { createDm, selectDm, sendDmMessage } from '../helpers/dm'
-import { restartBrowserContext } from '../helpers/navigation'
 import { waitForMessage } from '../helpers/wait'
 import { assertConvergence, assertNoDecryptionFailures } from '../helpers/assertions'
 import { USERS } from '../fixtures/test-data'
@@ -50,9 +49,6 @@ test.describe('P1: Offline sync and pending welcomes', () => {
     await sendChannelMessage(alice.page, 'While bob offline 1 — sync bravo')
     await sendChannelMessage(alice.page, 'While bob offline 2 — sync charlie')
     await sendChannelMessage(alice.page, 'While bob offline 3 — sync delta')
-
-    // Wait for messages to be fully committed
-    await alice.page.waitForTimeout(3_000)
 
     // Bob comes back
     bob = await createUserContext(browser, 'bob-sync2', USERS.bob.username, USERS.bob.password)

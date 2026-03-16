@@ -50,8 +50,8 @@ test.describe('P1: Disappearing messages', () => {
     )
 
     // Check for expiry label on both clients
-    const aliceExpiry = alice.page.locator('[data-testid="message-row"]:has-text("' + CHANNEL_MESSAGES.disappearing + '") [data-testid="expiry-label"]')
-    const bobExpiry = bob.page.locator('[data-testid="message-row"]:has-text("' + CHANNEL_MESSAGES.disappearing + '") [data-testid="expiry-label"]')
+    const aliceExpiry = alice.page.locator(`[data-testid="message-row"]:has-text("${CHANNEL_MESSAGES.disappearing}") [data-testid="expiry-label"]`)
+    const bobExpiry = bob.page.locator(`[data-testid="message-row"]:has-text("${CHANNEL_MESSAGES.disappearing}") [data-testid="expiry-label"]`)
 
     // At least one side should show the expiry label
     const aliceHas = await aliceExpiry.count() > 0

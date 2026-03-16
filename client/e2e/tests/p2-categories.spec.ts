@@ -34,9 +34,6 @@ test.describe('P2: Channel categories and ordering', () => {
     await createChannel(alice.page, 'beta-channel')
     await createChannel(alice.page, 'gamma-channel')
 
-    // Wait for channels to propagate
-    await alice.page.waitForTimeout(3_000)
-
     // Check ordering on alice
     await selectServer(alice.page, 'Category Server')
     const aliceChannels = await getChannelNames(alice.page)

@@ -81,8 +81,8 @@ export async function reactWithCustomEmoji(
     await searchInput.fill(emojiName)
   }
 
-  // Click the custom emoji
-  await page.click(`[data-testid="emoji-picker"] [data-emoji-name="${emojiName}"]`)
+  // Click the custom emoji (custom emojis have title=":name:")
+  await page.click(`[data-testid="emoji-picker"] button[title=":${emojiName}:"]`)
 
   await page.waitForSelector('[data-testid="emoji-picker"]', {
     state: 'hidden',
@@ -102,7 +102,6 @@ export async function isCustomEmojiRendered(
       `img[alt=":${emojiName}:"]`,
       `img[alt="${emojiName}"]`,
       `img.vesper-inline-custom-emoji`,
-      `[data-emoji-name="${emojiName}"]`,
     ].join(', ')
   )
 

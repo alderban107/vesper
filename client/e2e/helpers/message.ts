@@ -52,7 +52,7 @@ export async function getReactions(
   return reactions
 }
 
-/** Edit a message (author only). */
+/** Edit a message (author only). Uses hover action bar buttons directly. */
 export async function editMessage(
   page: Page,
   originalText: string,
@@ -60,8 +60,7 @@ export async function editMessage(
 ): Promise<void> {
   const row = page.locator(`[data-testid="message-row"]:has-text("${originalText}")`)
   await row.hover()
-  await row.locator('[data-testid="message-menu-button"]').click()
-  await page.click('[data-testid="edit-message"]')
+  await row.locator('[data-testid="edit-message"]').click()
 
   // Wait for edit mode — the message content becomes a textarea
   const editInput = row.locator('[data-testid="edit-input"]')
@@ -74,15 +73,15 @@ export async function editMessage(
   })
 }
 
-/** Delete a message (author only). */
+/** Delete a message (author only). Uses hover action bar buttons directly. */
 export async function deleteMessage(page: Page, messageText: string): Promise<void> {
   const row = page.locator(`[data-testid="message-row"]:has-text("${messageText}")`)
   await row.hover()
-  await row.locator('[data-testid="message-menu-button"]').click()
-  await page.click('[data-testid="delete-message"]')
+  await row.locator('[data-testid="delete-message"]').click()
 
   // Confirm deletion if there's a confirm dialog
-  const confirmBtn = page.locator('button:has-text("Delete")').last()
+  const dialog = page.locator('.fixed.inset-0').last()
+  const confirmBtn = dialog.locator('button:has-text("Delete")')
   if (await confirmBtn.isVisible({ timeout: 2_000 }).catch(() => false)) {
     await confirmBtn.click()
   }
@@ -94,22 +93,20 @@ export async function deleteMessage(page: Page, messageText: string): Promise<vo
   })
 }
 
-/** Pin a message. */
+/** Pin a message via right-click context menu. */
 export async function pinMessage(page: Page, messageText: string): Promise<void> {
   const row = page.locator(`[data-testid="message-row"]:has-text("${messageText}")`)
-  await row.hover()
-  await row.locator('[data-testid="message-menu-button"]').click()
+  await row.click({ button: 'right' })
+  await page.waitForSelector('[data-testid="pin-message"]', { timeout: 5_000 })
   await page.click('[data-testid="pin-message"]')
-
-  // Wait for pin confirmation
   await page.waitForTimeout(1_000)
 }
 
-/** Unpin a message. */
+/** Unpin a message via right-click context menu. */
 export async function unpinMessage(page: Page, messageText: string): Promise<void> {
   const row = page.locator(`[data-testid="message-row"]:has-text("${messageText}")`)
-  await row.hover()
-  await row.locator('[data-testid="message-menu-button"]').click()
+  await row.click({ button: 'right' })
+  await page.waitForSelector('[data-testid="unpin-message"]', { timeout: 5_000 })
   await page.click('[data-testid="unpin-message"]')
   await page.waitForTimeout(1_000)
 }

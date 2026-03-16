@@ -38,17 +38,18 @@ test.describe('P2: Invite limits', () => {
     await waitForServerInSidebar(bob.page, 'Invite Limits Server')
 
     // Check if invite management UI exists for limiting uses
-    await alice.page.click('.vesper-guild-header-button').catch(() => {})
-    await alice.page.waitForTimeout(1_000)
-    const settingsOption = alice.page.locator('text=Server Settings')
+    await alice.page.click('.vesper-guild-header-button')
+    await alice.page.waitForSelector('.vesper-guild-header-menu', { timeout: 5_000 })
+    const settingsOption = alice.page.locator('.vesper-guild-header-menu button:has-text("Server Settings")')
     if (await settingsOption.isVisible()) {
       await settingsOption.click()
-      const inviteTab = alice.page.locator('text=Invites')
+      await alice.page.waitForSelector('[data-testid="server-settings"]', { timeout: 10_000 })
+      const inviteTab = alice.page.locator('[data-testid="invites-tab"]')
       if (await inviteTab.isVisible().catch(() => false)) {
         await inviteTab.click()
-        // Document what invite management options exist
-        await alice.page.waitForTimeout(2_000)
       }
+      await alice.page.keyboard.press('Escape')
+    } else {
       await alice.page.keyboard.press('Escape')
     }
 

@@ -46,7 +46,7 @@ export async function waitForMessage(page: Page, text: string, timeout = 10_000)
 
 /** Wait for a DM conversation row containing a username. */
 export async function waitForDmConversation(page: Page, username: string): Promise<void> {
-  await page.waitForSelector(`[data-testid="sidebar"] :has-text("${username}")`, {
+  await page.waitForSelector(`[data-testid="dm-row"]:has-text("${username}")`, {
     timeout: 15_000,
   })
 }

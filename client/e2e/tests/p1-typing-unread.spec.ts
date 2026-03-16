@@ -55,7 +55,7 @@ test.describe('P1: Typing and unread behavior', () => {
     await sendDmMessage(alice.page, 'Unread test message alpha')
 
     // Bob should see unread badge
-    await bob.page.waitForSelector('span:has-text("1")', { timeout: 10_000 })
+    await bob.page.waitForSelector('.vesper-dm-unread-badge', { timeout: 10_000 })
 
     // Bob opens the DM - unread should clear
     await selectDm(bob.page, USERS.alice.username)
