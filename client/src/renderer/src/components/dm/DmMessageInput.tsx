@@ -14,6 +14,7 @@ import ComposerShell from '../chat/message/ComposerShell'
 import type { StagedFile } from '../chat/message/ComposerShell'
 import { formatCustomEmojiToken } from '../../utils/emoji'
 import { extractVideoThumbnail } from '../../utils/videoThumbnail'
+import { extractAudioMetadata } from '../../utils/audioMetadata'
 
 let stagedIdCounter = 0
 
@@ -165,6 +166,49 @@ export default function DmMessageInput(): React.JSX.Element {
     const attachmentIds = [attachmentId]
     if (fileFields.thumbnail) {
       attachmentIds.push(fileFields.thumbnail.id)
+    }
+
+    // Audio metadata extraction + cover art upload
+    const isAudio = file.type.startsWith('audio/')
+    if (isAudio) {
+      try {
+        const meta = await extractAudioMetadata(file)
+        if (meta) {
+          if (meta.duration) {
+            fileFields.duration = meta.duration
+          }
+          const audioMeta: NonNullable<FilePayload['file']['audio_metadata']> = {}
+          if (meta.title) audioMeta.title = meta.title
+          if (meta.artist) audioMeta.artist = meta.artist
+          if (meta.album) audioMeta.album = meta.album
+
+          if (meta.coverBlob) {
+            const coverData = await meta.coverBlob.arrayBuffer()
+            const coverEncrypted = await encryptFile(coverData)
+            const coverBlob = new Blob([coverEncrypted.ciphertext])
+            const coverForm = new FormData()
+            coverForm.append('file', coverBlob, 'cover.jpg')
+            coverForm.append('encrypted', 'true')
+
+            const coverRes = await apiUpload('/api/v1/attachments', coverForm)
+            if (coverRes.ok) {
+              const coverJson = await coverRes.json()
+              audioMeta.cover = {
+                id: coverJson.attachment.id,
+                key: coverEncrypted.key,
+                iv: coverEncrypted.iv
+              }
+              attachmentIds.push(coverJson.attachment.id)
+            }
+          }
+
+          if (audioMeta.title || audioMeta.artist || audioMeta.album || audioMeta.cover) {
+            fileFields.audio_metadata = audioMeta
+          }
+        }
+      } catch {
+        // Metadata extraction failed — audio still uploads without metadata
+      }
     }
 
     const envelope = encodePayload({

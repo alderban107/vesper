@@ -3002,6 +3002,26 @@
   transform: translateY(-1px);
 }
 
+/* ── Audio cover art & metadata ── */
+
+.vesper-audio-cover-thumb {
+  width: 48px;
+  height: 48px;
+  border-radius: 0.5rem;
+  object-fit: cover;
+  flex: 0 0 48px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+}
+
+.vesper-audio-preview-artist {
+  font-size: 0.72rem;
+  color: var(--color-text-faint);
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ── Video embed ── */
 
 .vesper-video-preview {

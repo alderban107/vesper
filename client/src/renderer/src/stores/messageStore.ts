@@ -77,6 +77,16 @@ export interface FileMessageContent {
       key: string
       iv: string
     }
+    audio_metadata?: {
+      title?: string
+      artist?: string
+      album?: string
+      cover?: {
+        id: string
+        key: string
+        iv: string
+      }
+    }
   }
 }
 

@@ -23,6 +23,16 @@ export interface FilePayload {
       key: string // thumbnail AES key (base64)
       iv: string // thumbnail IV (base64)
     }
+    audio_metadata?: {
+      title?: string
+      artist?: string
+      album?: string
+      cover?: {
+        id: string // cover art attachment ID
+        key: string // cover art AES key (base64)
+        iv: string // cover art IV (base64)
+      }
+    }
   }
 }
 

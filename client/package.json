@@ -20,7 +20,13 @@
     "test:e2e:ui": "npx playwright test --config e2e/playwright.config.ts --ui",
     "test:e2e:headed": "npx playwright test --config e2e/playwright.config.ts --headed"
   },
-  "keywords": ["messaging", "e2ee", "encryption", "electron", "webrtc"],
+  "keywords": [
+    "messaging",
+    "e2ee",
+    "encryption",
+    "electron",
+    "webrtc"
+  ],
   "author": "alderban107",
   "license": "AGPL-3.0-only",
   "repository": {
@@ -51,6 +57,7 @@
     "electron-updater": "^6.8.3",
     "hash-wasm": "^4.12.0",
     "lucide-react": "^0.576.0",
+    "music-metadata-browser": "^2.5.11",
     "phoenix": "^1.8.4",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
