@@ -44,13 +44,18 @@ The git hooks run these checks automatically:
 
 `pre-commit` runs `mix precommit` in `server/`, then `npm run check:web` in `client/`. `pre-push` reruns `npm run check:web`, so a push is blocked if the web app no longer typechecks or builds.
 
-Git hooks help for local clones, but the real repo-wide gate is GitHub Actions. The `Verify` workflow runs `npm run check:web` on pushes and pull requests, so branch protection can require it before merge.
+Git hooks help for local clones, but the real repo-wide gate is GitHub Actions. Two CI workflows run on pushes and pull requests:
+
+- **Server Tests** (`test-server.yml`) — runs `mix test` with PostgreSQL when `server/` files change
+- **Client Checks** (`test-client.yml`) — runs `npm run check:web` when `client/` files change
+
+Both use a gate job pattern so branch protection status checks pass even when the workflow skips (e.g., a server-only change won't block on client checks). Configure branch protection to require the `server-tests` and `client-checks` job names.
 
 ### Server tests
 
 ```bash
 cd server
-mix test           # 107 tests
+mix test
 ```
 
 ### Client E2E tests

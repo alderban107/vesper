@@ -1,0 +1,72 @@
+# Client CI — typecheck and production build
+#
+# Runs npm run check:web when client/ files change. Uses a gate
+# job (client-checks) for branch protection compatibility.
+# Replaces the older verify.yml workflow.
+
+name: Client Checks
+
+on:
+  pull_request:
+  push:
+    branches-ignore:
+      - main
+    tags-ignore:
+      - "v*"
+
+concurrency:
+  group: test-client-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      client: ${{ steps.filter.outputs.client }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            client:
+              - 'client/**'
+              - '!**/*.md'
+
+  check:
+    needs: changes
+    if: needs.changes.outputs.client == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install dependencies
+        working-directory: client
+        run: npm ci
+
+      - name: Typecheck and build
+        working-directory: client
+        run: npm run check:web
+
+  # Gate job — branch protection should require this check.
+  client-checks:
+    if: always()
+    needs: [changes, check]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate result
+        run: |
+          if [ "${{ needs.check.result }}" = "failure" ] || [ "${{ needs.check.result }}" = "cancelled" ]; then
+            echo "Client checks failed or were cancelled"
+            exit 1
+          fi
+          echo "Client checks passed or were skipped (no client changes)"
