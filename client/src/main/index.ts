@@ -321,6 +321,7 @@ function registerIpcHandlers(): void {
 function setupAutoUpdater(): void {
   autoUpdater.autoDownload = true
   autoUpdater.autoInstallOnAppQuit = true
+  autoUpdater.allowPrerelease = true // Include nightly prerelease builds
 
   autoUpdater.on('update-available', (info) => {
     const notification = new Notification({
