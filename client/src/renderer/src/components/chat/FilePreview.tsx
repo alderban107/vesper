@@ -4,6 +4,7 @@ import { apiFetch } from '../../api/client'
 import { decryptFile } from '../../crypto/fileEncryption'
 import { useVisibility } from '../../hooks/useVisibility'
 import type { FileMessageContent } from '../../stores/messageStore'
+import { resolveContentType } from '../../utils/mimeSniff'
 import AudioPlayer from './AudioPlayer'
 import ImageLightbox from './ImageLightbox'
 import VideoPlayer from './VideoPlayer'
@@ -27,9 +28,10 @@ interface Props {
 }
 
 export default function FilePreview({ file }: Props): React.JSX.Element {
-  const isImage = file.content_type.startsWith('image/')
-  const isAudio = file.content_type.startsWith('audio/')
-  const isVideo = file.content_type.startsWith('video/')
+  const effectiveType = resolveContentType(file.content_type, file.name)
+  const isImage = effectiveType.startsWith('image/')
+  const isAudio = effectiveType.startsWith('audio/')
+  const isVideo = effectiveType.startsWith('video/')
   const isMedia = isImage || isAudio || isVideo
 
   const { ref: visibilityRef, hasBeenVisible, isFarAway } = useVisibility()
@@ -71,7 +73,7 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
         const encrypted = await res.arrayBuffer()
         const decrypted = await decryptFile(encrypted, file.key, file.iv)
         if (cancelled) return
-        const blob = new Blob([decrypted], { type: file.content_type })
+        const blob = new Blob([decrypted], { type: effectiveType })
         const url = URL.createObjectURL(blob)
         blobUrlRef.current = url
         setPreviewUrl(url)
@@ -86,7 +88,7 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
     return () => {
       cancelled = true
     }
-  }, [isImage, hasBeenVisible, file.id, file.key, file.iv, file.content_type])
+  }, [isImage, hasBeenVisible, file.id, file.key, file.iv, effectiveType])
 
   // Audio: fetch when explicitly requested
   useEffect(() => {
@@ -103,7 +105,7 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
         const encrypted = await res.arrayBuffer()
         const decrypted = await decryptFile(encrypted, file.key, file.iv)
         if (cancelled) return
-        const blob = new Blob([decrypted], { type: file.content_type })
+        const blob = new Blob([decrypted], { type: effectiveType })
         const url = URL.createObjectURL(blob)
         blobUrlRef.current = url
         setPreviewUrl(url)
@@ -118,7 +120,7 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
     return () => {
       cancelled = true
     }
-  }, [isAudio, audioRequested, file.id, file.key, file.iv, file.content_type])
+  }, [isAudio, audioRequested, file.id, file.key, file.iv, effectiveType])
 
   // Memory eviction: revoke blob URLs for images that scroll far away
   useEffect(() => {
@@ -175,7 +177,7 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
       }
       const encryptedBlob = await res.arrayBuffer()
       const decrypted = await decryptFile(encryptedBlob, file.key, file.iv)
-      const blob = new Blob([decrypted], { type: file.content_type })
+      const blob = new Blob([decrypted], { type: effectiveType })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
@@ -203,7 +205,7 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
         <VideoPlayer
           fileId={file.id}
           name={file.name}
-          contentType={file.content_type}
+          contentType={effectiveType}
           size={file.size}
           encryptionKey={file.key}
           iv={file.iv}
@@ -326,7 +328,7 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
       className="vesper-file-card group"
     >
       <span className="vesper-file-card-icon">
-        {file.content_type ? <FileText className="w-4 h-4" /> : <Paperclip className="w-4 h-4" />}
+        {effectiveType ? <FileText className="w-4 h-4" /> : <Paperclip className="w-4 h-4" />}
       </span>
       <span className="vesper-file-card-copy">
         <span className="vesper-file-card-name">{file.name}</span>
