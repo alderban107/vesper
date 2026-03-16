@@ -17,6 +17,12 @@ export interface FilePayload {
     size: number
     key: string // base64-encoded AES-256-GCM key
     iv: string // base64-encoded IV
+    duration?: number // seconds (video or audio)
+    thumbnail?: {
+      id: string // thumbnail attachment ID
+      key: string // thumbnail AES key (base64)
+      iv: string // thumbnail IV (base64)
+    }
   }
 }
 

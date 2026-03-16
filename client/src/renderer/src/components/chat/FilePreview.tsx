@@ -163,6 +163,10 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
           size={file.size}
           encryptionKey={file.key}
           iv={file.iv}
+          thumbnailId={file.thumbnail?.id}
+          thumbnailKey={file.thumbnail?.key}
+          thumbnailIv={file.thumbnail?.iv}
+          duration={file.duration}
         />
       </div>
     )

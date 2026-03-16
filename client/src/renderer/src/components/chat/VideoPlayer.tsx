@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { AlertCircle, Download, Film, Loader2, Play } from 'lucide-react'
 import { apiFetch } from '../../api/client'
 import { decryptFile } from '../../crypto/fileEncryption'
@@ -7,6 +7,17 @@ function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function formatDuration(seconds: number): string {
+  const s = Math.round(seconds)
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const sec = s % 60
+  if (h > 0) {
+    return `${h}:${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`
+  }
+  return `${m}:${sec.toString().padStart(2, '0')}`
 }
 
 type VideoState = 'unloaded' | 'loading' | 'loaded' | 'error'
@@ -18,6 +29,10 @@ interface VideoPlayerProps {
   size: number
   encryptionKey: string
   iv: string
+  thumbnailId?: string
+  thumbnailKey?: string
+  thumbnailIv?: string
+  duration?: number
 }
 
 export default function VideoPlayer({
@@ -26,10 +41,43 @@ export default function VideoPlayer({
   contentType,
   size,
   encryptionKey,
-  iv
+  iv,
+  thumbnailId,
+  thumbnailKey,
+  thumbnailIv,
+  duration
 }: VideoPlayerProps): React.JSX.Element {
   const [state, setState] = useState<VideoState>('unloaded')
   const [blobUrl, setBlobUrl] = useState<string | null>(null)
+  const [posterUrl, setPosterUrl] = useState<string | null>(null)
+
+  // Eagerly fetch/decrypt the tiny thumbnail JPEG
+  useEffect(() => {
+    if (!thumbnailId || !thumbnailKey || !thumbnailIv) return
+
+    let cancelled = false
+    let url: string | null = null
+
+    void (async () => {
+      try {
+        const res = await apiFetch(`/api/v1/attachments/${thumbnailId}`)
+        if (!res.ok || cancelled) return
+        const encrypted = await res.arrayBuffer()
+        const decrypted = await decryptFile(encrypted, thumbnailKey, thumbnailIv)
+        if (cancelled) return
+        const blob = new Blob([decrypted], { type: 'image/jpeg' })
+        url = URL.createObjectURL(blob)
+        setPosterUrl(url)
+      } catch {
+        // Thumbnail fetch failed — no poster, not critical
+      }
+    })()
+
+    return () => {
+      cancelled = true
+      if (url) URL.revokeObjectURL(url)
+    }
+  }, [thumbnailId, thumbnailKey, thumbnailIv])
 
   const fetchAndDecrypt = async (): Promise<void> => {
     setState('loading')
@@ -112,30 +160,60 @@ export default function VideoPlayer({
     )
   }
 
-  // Unloaded or loading state — click-to-load card
+  // Unloaded or loading state — click-to-load card with optional poster
   return (
     <div data-testid="attachment" className="vesper-video-preview">
-      <button
-        type="button"
-        className="vesper-video-card"
-        onClick={() => void fetchAndDecrypt()}
-        disabled={state === 'loading'}
-      >
-        <span className="vesper-video-card-icon">
-          <Film className="w-4 h-4" />
-        </span>
-        <span className="vesper-file-card-copy">
-          <span className="vesper-file-card-name">{name}</span>
-          <span className="vesper-file-card-meta">{formatSize(size)}</span>
-        </span>
-        <span className="vesper-video-card-action">
-          {state === 'loading' ? (
-            <Loader2 className="w-4 h-4 animate-spin" />
-          ) : (
-            <Play className="w-4 h-4" />
+      {posterUrl ? (
+        <button
+          type="button"
+          className="vesper-video-poster-card"
+          onClick={() => void fetchAndDecrypt()}
+          disabled={state === 'loading'}
+        >
+          <img src={posterUrl} alt="" className="vesper-video-poster-img" />
+          <span className="vesper-video-poster-overlay">
+            {state === 'loading' ? (
+              <span className="vesper-video-poster-spinner">
+                <Loader2 className="w-8 h-8 animate-spin" />
+              </span>
+            ) : (
+              <span className="vesper-video-poster-play">
+                <Play className="w-6 h-6" />
+              </span>
+            )}
+          </span>
+          {duration != null && (
+            <span className="vesper-video-duration-badge">
+              {formatDuration(duration)}
+            </span>
           )}
-        </span>
-      </button>
+        </button>
+      ) : (
+        <button
+          type="button"
+          className="vesper-video-card"
+          onClick={() => void fetchAndDecrypt()}
+          disabled={state === 'loading'}
+        >
+          <span className="vesper-video-card-icon">
+            <Film className="w-4 h-4" />
+          </span>
+          <span className="vesper-file-card-copy">
+            <span className="vesper-file-card-name">{name}</span>
+            <span className="vesper-file-card-meta">
+              {formatSize(size)}
+              {duration != null && ` · ${formatDuration(duration)}`}
+            </span>
+          </span>
+          <span className="vesper-video-card-action">
+            {state === 'loading' ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Play className="w-4 h-4" />
+            )}
+          </span>
+        </button>
+      )}
     </div>
   )
 }

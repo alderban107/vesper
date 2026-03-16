@@ -5,6 +5,7 @@ import { useMessageStore, cacheSentPlaintext } from '../../stores/messageStore'
 import { apiUpload } from '../../api/client'
 import { encryptFile } from '../../crypto/fileEncryption'
 import { encodePayload } from '../../crypto/payload'
+import type { FilePayload } from '../../crypto/payload'
 import { useCryptoStore } from '../../stores/cryptoStore'
 import { pushToChannel } from '../../api/socket'
 import { useAuthStore } from '../../stores/authStore'
@@ -12,6 +13,7 @@ import EmojiPicker from '../chat/EmojiPicker'
 import ComposerShell from '../chat/message/ComposerShell'
 import type { StagedFile } from '../chat/message/ComposerShell'
 import { formatCustomEmojiToken } from '../../utils/emoji'
+import { extractVideoThumbnail } from '../../utils/videoThumbnail'
 
 let stagedIdCounter = 0
 
@@ -121,18 +123,55 @@ export default function DmMessageInput(): React.JSX.Element {
     const data = await res.json()
     const attachmentId = data.attachment.id
 
+    // Build the file payload fields
+    const fileFields: FilePayload['file'] = {
+      id: attachmentId,
+      name: file.name,
+      content_type: file.type || 'application/octet-stream',
+      size: file.size,
+      key: encrypted.key,
+      iv: encrypted.iv
+    }
+
+    // Video thumbnail extraction + upload
+    const isVideo = file.type.startsWith('video/')
+    if (isVideo) {
+      try {
+        const thumb = await extractVideoThumbnail(file)
+        if (thumb) {
+          const thumbData = await thumb.blob.arrayBuffer()
+          const thumbEncrypted = await encryptFile(thumbData)
+          const thumbBlob = new Blob([thumbEncrypted.ciphertext])
+          const thumbForm = new FormData()
+          thumbForm.append('file', thumbBlob, 'thumbnail.jpg')
+          thumbForm.append('encrypted', 'true')
+
+          const thumbRes = await apiUpload('/api/v1/attachments', thumbForm)
+          if (thumbRes.ok) {
+            const thumbJson = await thumbRes.json()
+            fileFields.thumbnail = {
+              id: thumbJson.attachment.id,
+              key: thumbEncrypted.key,
+              iv: thumbEncrypted.iv
+            }
+            fileFields.duration = thumb.duration
+          }
+        }
+      } catch {
+        // Thumbnail extraction failed — video still uploads without one
+      }
+    }
+
+    const attachmentIds = [attachmentId]
+    if (fileFields.thumbnail) {
+      attachmentIds.push(fileFields.thumbnail.id)
+    }
+
     const envelope = encodePayload({
       v: 1,
       type: 'file',
       text: text || null,
-      file: {
-        id: attachmentId,
-        name: file.name,
-        content_type: file.type || 'application/octet-stream',
-        size: file.size,
-        key: encrypted.key,
-        iv: encrypted.iv
-      }
+      file: fileFields
     })
 
     const topic = `dm:${conversationId}`
@@ -150,7 +189,7 @@ export default function DmMessageInput(): React.JSX.Element {
       pushToChannel(topic, 'new_message', {
         ciphertext: enc.ciphertext,
         mls_epoch: enc.epoch,
-        attachment_ids: [attachmentId],
+        attachment_ids: attachmentIds,
         ...(parentId && { parent_message_id: parentId })
       })
       return true
@@ -173,7 +212,7 @@ export default function DmMessageInput(): React.JSX.Element {
       pushToChannel(topic, 'new_message', {
         ciphertext: freshEncrypted.ciphertext,
         mls_epoch: freshEncrypted.epoch,
-        attachment_ids: [attachmentId],
+        attachment_ids: attachmentIds,
         ...(parentId && { parent_message_id: parentId })
       })
       return true

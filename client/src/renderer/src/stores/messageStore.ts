@@ -71,6 +71,12 @@ export interface FileMessageContent {
     size: number
     key: string
     iv: string
+    duration?: number
+    thumbnail?: {
+      id: string
+      key: string
+      iv: string
+    }
   }
 }
 
