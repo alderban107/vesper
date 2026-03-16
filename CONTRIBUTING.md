@@ -44,14 +44,32 @@ The git hooks run these checks automatically:
 
 `pre-commit` runs `mix precommit` in `server/`, then `npm run check:web` in `client/`. `pre-push` reruns `npm run check:web`, so a push is blocked if the web app no longer typechecks or builds.
 
-Git hooks help for local clones, but the real repo-wide gate is GitHub Actions. The `Verify` workflow runs `npm run check:web` on pushes and pull requests, so branch protection can require it before merge.
+Git hooks help for local clones, but the real repo-wide gate is GitHub Actions. Two CI workflows run on every push to non-`main` branches:
+
+- **Server Tests** (`.github/workflows/test-server.yml`) — runs `mix test` with a PostgreSQL 17 service container when `server/` files change
+- **Client Checks** (`.github/workflows/test-client.yml`) — runs `npm run check:web` when `client/` files change
+
+Both skip `.md`-only changes and use a gate job pattern so branch protection status checks pass even when the test jobs are skipped (e.g., a server-only change won't block on client checks). Configure branch protection to require the `server-tests` and `client-checks` job names.
 
 ### Server tests
 
 ```bash
 cd server
-mix test           # 107 tests
+mix test
 ```
+
+Server tests live in `server/test/` with support modules in `server/test/support/`:
+
+| Path | Purpose |
+|------|---------|
+| `test/test_helper.exs` | ExUnit bootstrap, starts Ecto sandbox |
+| `test/support/data_case.ex` | Base test case with Ecto sandbox checkout |
+| `test/support/factory.ex` | Test data factories (users, servers, channels, messages, attachments) |
+| `test/vesper/chat/message_deletion_test.exs` | Attachment file cleanup on message deletion |
+
+The test database is configured in `server/config/test.exs` and supports env var overrides (`TEST_DB_HOST`, `TEST_DB_USER`, `TEST_DB_PASS`) for CI and Docker environments.
+
+`mix precommit` (used by git hooks) runs in the test environment and chains: compile with warnings-as-errors → unused deps check → format → test.
 
 ### Client E2E tests
 
@@ -60,7 +78,9 @@ cd client
 npm run test:e2e
 ```
 
-E2E tests use Playwright and require both the server and a test database to be running.
+E2E tests live in `client/e2e/` and use Playwright. They require a running server and test database. The suite is organized by priority (`p0-` smoke, `p1-` core features, `p2-` edge cases) with 19 spec files, fixtures, and harness tooling. See `client/e2e/REQUIREMENTS.md` for the full test plan.
+
+**Note:** There are no client unit tests yet. `npm run check:web` (typecheck + production build) is the current client-side CI gate.
 
 ## Code Conventions
 

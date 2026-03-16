@@ -1,0 +1,120 @@
+# Server CI — Elixir tests with PostgreSQL
+#
+# Runs mix test when server/ files change. Uses a gate job
+# (server-tests) so branch protection gets a green check even
+# when the workflow skips because only non-server files changed.
+
+name: Server Tests
+
+on:
+  push:
+    branches-ignore: [main]
+    tags-ignore: ["v*"]
+
+concurrency:
+  group: test-server-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      server: ${{ steps.check.outputs.server }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check for server changes
+        id: check
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE=${{ github.event.pull_request.base.sha }}
+            HEAD=${{ github.event.pull_request.head.sha }}
+          else
+            BASE=${{ github.event.before }}
+            HEAD=${{ github.sha }}
+          fi
+
+          # Any non-markdown files changed under server/?
+          if git diff --name-only "$BASE" "$HEAD" -- 'server/' | grep -qvE '\.md$'; then
+            echo "server=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "server=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  test:
+    needs: changes
+    if: needs.changes.outputs.server == 'true'
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      MIX_ENV: test
+      TEST_DB_HOST: localhost
+      TEST_DB_USER: postgres
+      TEST_DB_PASS: postgres
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.18"
+          otp-version: "27"
+
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            server/deps
+            server/_build
+          key: mix-${{ runner.os }}-${{ hashFiles('server/mix.lock') }}
+          restore-keys: mix-${{ runner.os }}-
+
+      - name: Install dependencies
+        working-directory: server
+        run: mix deps.get
+
+      - name: Compile (warnings as errors)
+        working-directory: server
+        run: mix compile --warnings-as-errors
+
+      - name: Setup database
+        working-directory: server
+        run: |
+          mix ecto.create --quiet
+          mix ecto.migrate --quiet
+
+      - name: Run tests
+        working-directory: server
+        run: mix test
+
+  # Gate job — branch protection should require this check.
+  # Succeeds when tests pass OR when tests were skipped (no server changes).
+  # Fails only when tests actually fail.
+  server-tests:
+    if: always()
+    needs: [changes, test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate result
+        run: |
+          if [ "${{ needs.test.result }}" = "failure" ] || [ "${{ needs.test.result }}" = "cancelled" ]; then
+            echo "Server tests failed or were cancelled"
+            exit 1
+          fi
+          echo "Server tests passed or were skipped (no server changes)"

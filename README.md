@@ -124,7 +124,15 @@ The client connects to a Vesper server URL. In development, this defaults to `lo
 server/                  Elixir/Phoenix backend (API + WebSocket)
   lib/vesper/              domain logic (accounts, chat, encryption)
   lib/vesper_web/          controllers, channels, router
+  config/test.exs          test DB config (supports TEST_DB_* env overrides)
   priv/repo/migrations/   database migrations
+  test/
+    test_helper.exs        ExUnit bootstrap
+    support/
+      data_case.ex         base test case (Ecto sandbox)
+      factory.ex           test data factories
+    vesper/chat/           domain-level tests
+      message_deletion_test.exs
 
 client/                  Electron + React frontend
   src/main/                Electron main process (encrypted SQLite, IPC)
@@ -133,6 +141,18 @@ client/                  Electron + React frontend
     crypto/                E2EE layer (MLS, identity, payloads, key serialization)
     stores/                Zustand stores (auth, crypto, messages, servers)
     components/            React UI components
+  e2e/                     Playwright E2E test suite
+    tests/                   spec files (p0-smoke, p1-core, p2-edge)
+    fixtures/                test data and attachments
+    harness/                 test orchestration helpers
+    REQUIREMENTS.md          full test plan
+
+.github/workflows/
+  test-server.yml          server CI — mix test + PostgreSQL 17
+  test-client.yml          client CI — typecheck + production build
+  docker-server.yml        build & push server Docker image
+  docker-web.yml           build & push web client Docker image
+  release.yml              build desktop installers
 
 doc/
   DESIGN.md              architecture overview
