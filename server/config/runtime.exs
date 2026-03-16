@@ -135,10 +135,10 @@ if config_env() == :prod do
   config :vesper, :ice_servers, ice_servers
   config :vesper, :ice_transport_policy, ice_transport_policy
 
-  # Max upload size (default 25MB)
+  # Max upload size (default 50MB)
   config :vesper,
          :max_upload_size,
-         String.to_integer(System.get_env("MAX_UPLOAD_SIZE") || "26214400")
+         String.to_integer(System.get_env("MAX_UPLOAD_SIZE") || "52428800")
 
   # File expiry (default 30 days)
   config :vesper, :file_expiry_days, String.to_integer(System.get_env("FILE_EXPIRY_DAYS") || "30")

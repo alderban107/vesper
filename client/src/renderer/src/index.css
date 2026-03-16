@@ -2964,6 +2964,135 @@
   opacity: 1;
 }
 
+/* ── Audio: unloaded click-to-load card ── */
+
+.vesper-audio-unloaded-card {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: color 0.16s ease;
+}
+
+.vesper-audio-unloaded-card:hover {
+  color: var(--color-text-primary);
+}
+
+.vesper-audio-card-action {
+  width: 2.1rem;
+  height: 2.1rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  color: var(--color-accent-text);
+  flex: 0 0 auto;
+  transition: background-color 0.16s ease, transform 0.16s ease;
+}
+
+.vesper-audio-unloaded-card:hover .vesper-audio-card-action {
+  background: color-mix(in srgb, var(--color-accent) 28%, transparent);
+  transform: translateY(-1px);
+}
+
+/* ── Video embed ── */
+
+.vesper-video-preview {
+  width: min(100%, 32rem);
+  margin-top: 0.5rem;
+}
+
+.vesper-video-element {
+  width: 100%;
+  max-height: 28rem;
+  border-radius: 1rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+  background: var(--color-bg-tertiary);
+  object-fit: contain;
+}
+
+.vesper-video-card {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.85rem 0.95rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+  border-radius: 1rem;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.035), transparent 60%),
+    color-mix(in srgb, var(--color-bg-secondary) 76%, transparent);
+  text-align: left;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.vesper-video-card:hover {
+  border-color: color-mix(in srgb, var(--color-accent) 26%, var(--color-border));
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.05), transparent 60%),
+    color-mix(in srgb, var(--color-bg-tertiary) 82%, transparent);
+  color: var(--color-text-primary);
+}
+
+.vesper-video-card:disabled {
+  cursor: wait;
+  opacity: 0.75;
+}
+
+.vesper-video-card-icon {
+  width: 2.25rem;
+  height: 2.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.85rem;
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  color: var(--color-accent-text);
+  flex: 0 0 auto;
+}
+
+.vesper-video-card-action {
+  width: 2.1rem;
+  height: 2.1rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  color: var(--color-accent-text);
+  flex: 0 0 auto;
+  margin-left: auto;
+  transition: background-color 0.16s ease, transform 0.16s ease;
+}
+
+.vesper-video-card:hover .vesper-video-card-action {
+  background: color-mix(in srgb, var(--color-accent) 28%, transparent);
+  transform: translateY(-1px);
+}
+
+.vesper-video-error {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.vesper-video-error-message {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--color-text-faint);
+  font-size: 0.78rem;
+}
+
 .vesper-lightbox {
   position: fixed;
   inset: 0;
