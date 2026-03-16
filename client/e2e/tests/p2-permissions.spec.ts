@@ -33,23 +33,16 @@ test.describe('P2: Permission overrides', () => {
     await createChannel(alice.page, 'admin-only')
     await selectChannel(alice.page, 'admin-only')
 
-    // Open channel settings and restrict access
-    await alice.page.click('[data-testid="channel-settings"]').catch(() => {
-      // Channel settings may be accessed via right-click or header
-    })
+    // Open channel settings via the header gear button
+    const settingsBtn = alice.page.locator('[data-testid="channel-settings-button"]')
+    if (await settingsBtn.isVisible()) {
+      await settingsBtn.click()
+      await alice.page.waitForSelector('[data-testid="channel-settings"]', { timeout: 10_000 })
 
-    // Try to restrict the channel via server settings
-    await alice.page.click('.vesper-guild-header-button').catch(() => {})
-    await alice.page.waitForTimeout(1_000)
-    const settingsOption = alice.page.locator('text=Server Settings')
-    if (await settingsOption.isVisible()) {
-      await settingsOption.click()
-      await alice.page.waitForSelector('[data-testid="server-settings"]', { timeout: 10_000 })
-
-      // Look for channel permissions UI
-      const permissionsTab = alice.page.locator('text=Permissions, text=Channels')
-      if (await permissionsTab.first().isVisible()) {
-        await permissionsTab.first().click()
+      // Look for permissions section
+      const permissionsTab = alice.page.locator('text=Permissions')
+      if (await permissionsTab.isVisible()) {
+        await permissionsTab.click()
       }
       await alice.page.keyboard.press('Escape')
     }

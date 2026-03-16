@@ -163,7 +163,8 @@ defmodule VesperWeb.MessageController do
       expires_at: message.expires_at,
       parent_message_id: message.parent_message_id,
       inserted_at: message.inserted_at,
-      attachments: attachments_json(message)
+      attachments: attachments_json(message),
+      reactions: reactions_json(message)
     }
 
     # Include ciphertext for encrypted messages, content for plaintext
@@ -190,6 +191,21 @@ defmodule VesperWeb.MessageController do
   end
 
   defp attachments_json(_), do: []
+
+  defp reactions_json(%{reactions: reactions}) when is_list(reactions) do
+    Enum.map(reactions, fn r ->
+      %{
+        id: r.id,
+        emoji: r.emoji,
+        ciphertext: r.ciphertext,
+        mls_epoch: r.mls_epoch,
+        sender_id: r.sender_id,
+        inserted_at: r.inserted_at
+      }
+    end)
+  end
+
+  defp reactions_json(_), do: []
 
   defp sender_json(nil), do: nil
 

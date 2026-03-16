@@ -20,7 +20,6 @@ import {
   hasRemoteVideo,
   getVoiceParticipants,
 } from '../helpers/voice'
-import { hardRefresh } from '../helpers/navigation'
 import { USERS, CHANNELS } from '../fixtures/test-data'
 
 let alice: UserContext
@@ -70,7 +69,11 @@ test.describe('P1: Voice and video', () => {
     await rejectIncomingCall(bob.page)
 
     // Both sides should settle with no active call overlay
-    await alice.page.waitForTimeout(3_000)
+    await alice.page.waitForSelector('[data-testid="call-overlay"]', {
+      state: 'hidden',
+      timeout: 10_000,
+    })
+    await expect(alice.page.locator('[data-testid="call-overlay"]')).toHaveCount(0)
     await expect(bob.page.locator('[data-testid="call-overlay"]')).toHaveCount(0)
   })
 

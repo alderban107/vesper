@@ -49,8 +49,8 @@ defmodule VesperWeb.AvatarController do
         dest = Path.join(avatar_dir, "#{user.id}.#{ext}")
         File.cp!(upload.path, dest)
 
-        # Update user's avatar_url
-        avatar_url = "/api/v1/avatars/#{user.id}"
+        # Update user's avatar_url with cache-bust param
+        avatar_url = "/api/v1/avatars/#{user.id}?v=#{System.os_time(:second)}"
 
         case Accounts.update_profile(user, %{avatar_url: avatar_url}) do
           {:ok, updated_user} ->
@@ -118,7 +118,7 @@ defmodule VesperWeb.AvatarController do
         dest = Path.join(banner_dir, "#{user.id}.#{ext}")
         File.cp!(upload.path, dest)
 
-        banner_url = "/api/v1/banners/#{user.id}"
+        banner_url = "/api/v1/banners/#{user.id}?v=#{System.os_time(:second)}"
 
         case Accounts.update_profile(user, %{banner_url: banner_url}) do
           {:ok, updated_user} ->

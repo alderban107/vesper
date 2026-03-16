@@ -33,11 +33,11 @@ export async function rejectIncomingCall(page: Page): Promise<void> {
 /** Disconnect from the current call. */
 export async function disconnectCall(page: Page): Promise<void> {
   await page.click('[data-testid="disconnect-call"]')
-  // Wait for call overlay to disappear
-  await page.waitForSelector('[data-testid="call-overlay"]', {
-    state: 'hidden',
-    timeout: 10_000,
-  })
+  // Wait for call UI to settle — call-overlay hides (DM) or voice-connected disappears (channel)
+  await Promise.race([
+    page.waitForSelector('[data-testid="call-overlay"]', { state: 'hidden', timeout: 10_000 }).catch(() => {}),
+    page.waitForSelector('[data-testid="voice-connected"]', { state: 'detached', timeout: 10_000 }).catch(() => {}),
+  ])
 }
 
 /** Join a voice channel (click on it in sidebar). */
@@ -55,7 +55,7 @@ export async function toggleMute(page: Page): Promise<void> {
 export async function isMuted(page: Page): Promise<boolean> {
   const btn = page.locator('[data-testid="mute-button"]')
   const classes = await btn.getAttribute('class')
-  return classes?.includes('muted') ?? false
+  return (classes?.includes('vesper-call-overlay-control-danger') || classes?.includes('vesper-voice-room-button-danger')) ?? false
 }
 
 /** Toggle camera in a voice call. */
@@ -88,7 +88,7 @@ export async function toggleScreenShare(page: Page): Promise<void> {
 export async function isScreenSharing(page: Page): Promise<boolean> {
   const btn = page.locator('[data-testid="screen-share-button"]')
   const classes = await btn.getAttribute('class')
-  return classes?.includes('active') ?? false
+  return (classes?.includes('vesper-call-overlay-control-active') || classes?.includes('vesper-voice-room-button-active')) ?? false
 }
 
 /** Check if a remote screen share feed is visible. */

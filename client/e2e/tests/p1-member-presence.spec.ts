@@ -78,19 +78,13 @@ test.describe('P1: Member list and presence', () => {
 
     await alice.page.waitForSelector('[data-testid="member-list"]', { timeout: 10_000 })
 
-    // Click on charlie in the member list
-    const charlieEntry = alice.page.locator(`[data-testid="member-name"]:has-text("${USERS.charlie.username}")`)
-    await charlieEntry.click()
+    // Find charlie's member row and click the message button
+    const charlieRow = alice.page.locator(`[data-testid="member-list"] .vesper-member-row:has([data-testid="member-name"]:has-text("${USERS.charlie.username}"))`)
+    const messageBtn = charlieRow.locator('.vesper-member-message-button')
+    await messageBtn.click()
 
-    // Look for a "Message" or "DM" option in context menu
-    const dmOption = alice.page.locator('text=Message, text=Direct Message, text=Send Message').first()
-    const hasDmOption = await dmOption.isVisible().catch(() => false)
-
-    if (hasDmOption) {
-      await dmOption.click()
-      // Should land in a DM with charlie
-      await alice.page.waitForTimeout(3_000)
-      await waitForAppShell(alice.page)
-    }
+    // Should navigate to DM view with charlie
+    await alice.page.waitForSelector('.vesper-composer-textarea', { timeout: 10_000 })
+    await waitForAppShell(alice.page)
   })
 })

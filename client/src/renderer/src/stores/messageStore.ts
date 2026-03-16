@@ -616,6 +616,30 @@ export interface ReactionGroup {
   senderIds: string[]
 }
 
+interface RawReaction {
+  id: string
+  emoji: string
+  sender_id: string
+  ciphertext?: string | null
+  mls_epoch?: number | null
+  inserted_at: string
+}
+
+function groupReactions(reactions?: RawReaction[]): ReactionGroup[] | undefined {
+  if (!reactions || reactions.length === 0) return undefined
+  const groups = new Map<string, string[]>()
+  for (const r of reactions) {
+    const key = r.emoji
+    const existing = groups.get(key)
+    if (existing) {
+      existing.push(r.sender_id)
+    } else {
+      groups.set(key, [r.sender_id])
+    }
+  }
+  return Array.from(groups, ([emoji, senderIds]) => ({ emoji, senderIds }))
+}
+
 export interface Message {
   id: string
   content: string
@@ -2173,6 +2197,7 @@ async function processIncomingMessage(
       expires_at: (msg.expires_at as string) || null,
       parent_message_id: (msg.parent_message_id as string) || null,
       attachments: (msg.attachments as Attachment[] | undefined) ?? [],
+      reactions: groupReactions(msg.reactions as RawReaction[] | undefined),
       encrypted: true,
       decryptionFailed: !plaintext,
       edited_at: (msg.edited_at as string) || undefined
@@ -2191,6 +2216,7 @@ async function processIncomingMessage(
     expires_at: (msg.expires_at as string) || null,
     parent_message_id: (msg.parent_message_id as string) || null,
     attachments: (msg.attachments as Attachment[] | undefined) ?? [],
+    reactions: groupReactions(msg.reactions as RawReaction[] | undefined),
     edited_at: (msg.edited_at as string) || undefined
   }
 

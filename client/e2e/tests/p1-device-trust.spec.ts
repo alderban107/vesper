@@ -4,7 +4,6 @@
  */
 
 import { test, expect } from '@playwright/test'
-import { readRunState } from '../harness/state'
 import { createUserContext, signup, login, approveWithRecoveryKey, unlockTrustedDevice, simulateSessionExpiry, type UserContext } from '../helpers/auth'
 import { waitForAppShell, waitForLoginPage, waitForSessionNotice, waitForDeviceTrustGate } from '../helpers/wait'
 import { assertNoDecryptionFailures } from '../helpers/assertions'
@@ -57,9 +56,12 @@ test.describe('P1: Device trust and session renewal', () => {
       const hasUnlock = await alice.page.locator('text=Unlock encrypted chats').isVisible()
       if (hasUnlock) {
         await unlockTrustedDevice(alice.page, USERS.alice.password)
-        await assertNoDecryptionFailures(alice.page)
       }
     }
+
+    // Verify app health regardless of gate path
+    await waitForAppShell(alice.page)
+    await assertNoDecryptionFailures(alice.page)
   })
 
   test('Session expiry returns user to sign-in (R-AUTH-4)', async ({ browser }) => {
