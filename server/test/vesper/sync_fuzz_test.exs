@@ -34,7 +34,9 @@ defmodule Vesper.SyncFuzzTest do
 
     extra_channels =
       for idx <- 1..2 do
-        channel = insert_channel(server, %{name: "sync_fuzz_channel_#{seed}_#{idx}", position: idx + 1})
+        channel =
+          insert_channel(server, %{name: "sync_fuzz_channel_#{seed}_#{idx}", position: idx + 1})
+
         {:ok, _room} = Runtime.ensure_room_for_channel(channel)
         channel
       end
@@ -42,7 +44,10 @@ defmodule Vesper.SyncFuzzTest do
     channels = [default_channel | extra_channels]
 
     {:ok, dm_one} = Chat.create_conversation(user.id, [peer.id], name: "sync_fuzz_dm_#{seed}_1")
-    {:ok, dm_two} = Chat.create_conversation(user.id, [alt_peer.id], name: "sync_fuzz_dm_#{seed}_2")
+
+    {:ok, dm_two} =
+      Chat.create_conversation(user.id, [alt_peer.id], name: "sync_fuzz_dm_#{seed}_2")
+
     conversations = [dm_one, dm_two]
 
     baseline_event_id = Sync.latest_event_id_for_user(user.id) || 0
@@ -160,7 +165,13 @@ defmodule Vesper.SyncFuzzTest do
       2 ->
         conversation = Enum.at(conversations, :rand.uniform(length(conversations)) - 1)
         sender_id = if(rem(step, 2) == 0, do: user_id, else: peer_id)
-        message = insert_encrypted_message(%{conversation_id: conversation.id, sender_id: sender_id}, step)
+
+        message =
+          insert_encrypted_message(
+            %{conversation_id: conversation.id, sender_id: sender_id},
+            step
+          )
+
         assert {:ok, _projected} = Runtime.project_message(message)
 
         %{
