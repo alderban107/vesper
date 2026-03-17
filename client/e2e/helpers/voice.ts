@@ -6,6 +6,23 @@
 
 import { expect, type Page } from '@playwright/test'
 
+async function countVisible(locator: ReturnType<Page['locator']>): Promise<number> {
+  return locator.evaluateAll((elements) =>
+    elements.filter((element) => {
+      if (!(element instanceof HTMLElement)) {
+        return false
+      }
+
+      const style = window.getComputedStyle(element)
+      if (style.visibility === 'hidden' || style.display === 'none') {
+        return false
+      }
+
+      return element.getClientRects().length > 0
+    }).length,
+  )
+}
+
 /** Start a DM call with the current conversation partner. */
 export async function startDmCall(page: Page): Promise<void> {
   await page.click('[data-testid="dm-call-button"]')
@@ -66,7 +83,7 @@ export async function toggleCamera(page: Page): Promise<void> {
 
 /** Check if local camera preview is showing. */
 export async function hasLocalVideoPreview(page: Page): Promise<boolean> {
-  return page.locator('[data-testid="local-video"]').isVisible()
+  return (await countVisible(page.locator('[data-testid="local-video"]'))) > 0
 }
 
 /** Wait for the local camera preview to reach the requested visibility state. */
@@ -82,7 +99,7 @@ export async function waitForLocalVideoPreview(
 
 /** Check if remote video is rendering for a participant. */
 export async function hasRemoteVideo(page: Page, username: string): Promise<boolean> {
-  return page.locator(`[data-testid="remote-video-${username}"]`).isVisible()
+  return (await countVisible(page.locator(`[data-testid="remote-video-${username}"]`))) > 0
 }
 
 /** Wait for a participant's remote video to reach the requested visibility state. */
@@ -113,21 +130,7 @@ export async function waitForVoiceParticipants(
 
   await expect
     .poll(
-      async () =>
-        participants.evaluateAll((elements) =>
-          elements.filter((element) => {
-            if (!(element instanceof HTMLElement)) {
-              return false
-            }
-
-            const style = window.getComputedStyle(element)
-            if (style.visibility === 'hidden' || style.display === 'none') {
-              return false
-            }
-
-            return element.getClientRects().length > 0
-          }).length,
-        ),
+      async () => countVisible(participants),
       { timeout },
     )
     .toBeGreaterThanOrEqual(minimumCount)

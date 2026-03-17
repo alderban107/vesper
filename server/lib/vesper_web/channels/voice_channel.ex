@@ -69,6 +69,18 @@ defmodule VesperWeb.VoiceChannel do
     {:noreply, socket}
   end
 
+  def handle_in("media_state", %{"slot" => slot, "active" => active}, socket)
+      when is_binary(slot) and is_boolean(active) do
+    :ok =
+      Voice.set_media_slot_active(socket.assigns.room_id, socket.assigns.user_id, slot, active)
+
+    broadcast!(socket, "voice_state_update", %{
+      participants: Voice.get_participants(socket.assigns.room_id)
+    })
+
+    {:noreply, socket}
+  end
+
   # Voice E2EE key exchange — server relays MLS ciphertext without reading it
   def handle_in("voice_key", payload, socket) do
     broadcast_from!(socket, "voice_key", Map.put(payload, "sender_id", socket.assigns.user_id))

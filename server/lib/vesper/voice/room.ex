@@ -63,6 +63,10 @@ defmodule Vesper.Voice.Room do
     GenServer.cast(via(room_id), {:set_muted, user_id, muted})
   end
 
+  def set_media_slot_active(room_id, user_id, slot, active) do
+    GenServer.call(via(room_id), {:set_media_slot_active, user_id, slot, active})
+  end
+
   def call_ring(room_id, caller_id) do
     GenServer.call(via(room_id), {:call_ring, caller_id})
   end
@@ -239,6 +243,27 @@ defmodule Vesper.Voice.Room do
 
   def handle_call({:call_reject, _user_id}, _from, state) do
     {:reply, :ok, state}
+  end
+
+  def handle_call({:set_media_slot_active, user_id, slot, active}, _from, state) do
+    case {Map.get(state.participants, user_id), normalize_media_slot(slot)} do
+      {nil, _normalized_slot} ->
+        {:reply, :ok, state}
+
+      {_participant, nil} ->
+        {:reply, :ok, state}
+
+      {participant, normalized_slot} ->
+        next_track_id =
+          if active do
+            Map.get(participant, media_track_field(normalized_slot))
+          else
+            nil
+          end
+
+        updated = Map.put(participant, media_track_field(normalized_slot), next_track_id)
+        {:reply, :ok, put_in(state.participants[user_id], updated)}
+    end
   end
 
   @impl true
@@ -703,4 +728,14 @@ defmodule Vesper.Voice.Room do
   defp media_track_field(:share_audio), do: :share_audio_track_id
   defp media_track_field(:camera_video), do: :camera_video_track_id
   defp media_track_field(:share_video), do: :share_video_track_id
+
+  defp normalize_media_slot("voice_audio"), do: :voice_audio
+  defp normalize_media_slot("share_audio"), do: :share_audio
+  defp normalize_media_slot("camera_video"), do: :camera_video
+  defp normalize_media_slot("share_video"), do: :share_video
+  defp normalize_media_slot(:voice_audio), do: :voice_audio
+  defp normalize_media_slot(:share_audio), do: :share_audio
+  defp normalize_media_slot(:camera_video), do: :camera_video
+  defp normalize_media_slot(:share_video), do: :share_video
+  defp normalize_media_slot(_slot), do: nil
 end

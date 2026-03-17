@@ -579,6 +579,33 @@ function parsePublishMap(rawPublishMap: unknown): Partial<Record<VoiceMediaSlot,
   return parsed
 }
 
+function trackFieldValue(
+  participant: VoiceParticipant,
+  key: keyof VoiceParticipant,
+  fallback: string | null
+): string | null {
+  if (Object.prototype.hasOwnProperty.call(participant, key)) {
+    const value = participant[key]
+    return typeof value === 'string' ? value : null
+  }
+
+  return fallback
+}
+
+function pushVoiceMediaState(
+  roomId: string | null,
+  roomType: 'channel' | 'dm' | null,
+  slot: VoiceMediaSlot,
+  active: boolean
+): void {
+  if (!roomId || !roomType) {
+    return
+  }
+
+  const topic = roomType === 'dm' ? `voice:dm:${roomId}` : `voice:channel:${roomId}`
+  pushToChannel(topic, 'media_state', { slot, active })
+}
+
 function startStatsPolling(
   set: (partial: Partial<VoiceState>) => void,
   get: () => VoiceState
@@ -853,6 +880,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
         localVideoStream: currentState.localShareStream,
         videoMode: deriveVideoMode(false, screenShareEnabled)
       })
+      pushVoiceMediaState(currentState.roomId, currentState.roomType, 'camera_video', false)
       return
     }
 
@@ -914,6 +942,8 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
         localVideoStream: get().localCameraStream,
         videoMode: deriveVideoMode(cameraEnabled, false)
       })
+      pushVoiceMediaState(currentState.roomId, currentState.roomType, 'share_video', false)
+      pushVoiceMediaState(currentState.roomId, currentState.roomType, 'share_audio', false)
       return
     }
 
@@ -1446,18 +1476,35 @@ async function initVoice(
       const previousByUserId = new Map(previousParticipants.map((participant) => [participant.user_id, participant]))
       const nextParticipants = (data.participants as VoiceParticipant[]).map((participant) => {
         const previous = previousByUserId.get(participant.user_id)
+        const voiceAudioTrackId = trackFieldValue(
+          participant,
+          'voice_audio_track_id',
+          previous?.voice_audio_track_id ?? previous?.audio_track_id ?? null
+        )
+        const shareAudioTrackId = trackFieldValue(
+          participant,
+          'share_audio_track_id',
+          previous?.share_audio_track_id ?? null
+        )
+        const cameraVideoTrackId = trackFieldValue(
+          participant,
+          'camera_video_track_id',
+          previous?.camera_video_track_id ?? null
+        )
+        const shareVideoTrackId = trackFieldValue(
+          participant,
+          'share_video_track_id',
+          previous?.share_video_track_id ?? null
+        )
+
         return {
           ...participant,
-          audio_track_id: participant.voice_audio_track_id ?? previous?.audio_track_id ?? null,
-          voice_audio_track_id: participant.voice_audio_track_id ?? previous?.voice_audio_track_id ?? null,
-          share_audio_track_id: participant.share_audio_track_id ?? previous?.share_audio_track_id ?? null,
-          camera_video_track_id: participant.camera_video_track_id ?? previous?.camera_video_track_id ?? null,
-          share_video_track_id: participant.share_video_track_id ?? previous?.share_video_track_id ?? null,
-          video_track_id:
-            participant.share_video_track_id ??
-            participant.camera_video_track_id ??
-            previous?.video_track_id ??
-            null
+          audio_track_id: voiceAudioTrackId,
+          voice_audio_track_id: voiceAudioTrackId,
+          share_audio_track_id: shareAudioTrackId,
+          camera_video_track_id: cameraVideoTrackId,
+          share_video_track_id: shareVideoTrackId,
+          video_track_id: shareVideoTrackId ?? cameraVideoTrackId ?? null
         }
       })
 
