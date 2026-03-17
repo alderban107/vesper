@@ -7078,6 +7078,724 @@ body,
   }
 }
 
+.vesper-voice-participant-list-discord {
+  padding: 0 0.75rem 0.25rem 1.9rem;
+}
+
+.vesper-voice-participant-discord {
+  border-radius: 0.9rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 86%, transparent);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent),
+    color-mix(in srgb, var(--color-bg-secondary) 82%, transparent);
+}
+
+.vesper-call-overlay-discord {
+  width: min(26rem, calc(100vw - 2rem));
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-shell {
+  padding: 0.95rem;
+  border-radius: 1.5rem;
+  background:
+    radial-gradient(circle at top, rgba(88, 101, 242, 0.11), transparent 40%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent),
+    color-mix(in srgb, var(--color-bg-secondary) 94%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.9rem;
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-header-main {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-status-dot {
+  margin-top: 0.36rem;
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-header-copy {
+  min-width: 0;
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-title {
+  font-size: 0.96rem;
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-subtitle,
+.vesper-call-overlay-discord .vesper-call-overlay-error {
+  font-size: 0.76rem;
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-connection {
+  align-items: flex-end;
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-quality {
+  padding: 0.18rem 0.45rem;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-count {
+  font-size: 0.64rem;
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.8rem;
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-metric {
+  padding: 0.3rem 0.55rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 74%, transparent);
+  color: var(--color-text-faint);
+  font-size: 0.66rem;
+  font-weight: 700;
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-grid {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.85rem;
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-grid-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-grid-dual,
+.vesper-call-overlay-discord .vesper-call-overlay-grid-multi {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-tile {
+  position: relative;
+  min-height: 8.8rem;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  border-radius: 1rem;
+  background: #0f111a;
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-tile-speaking {
+  border-color: rgba(59, 165, 92, 0.5);
+  box-shadow: inset 0 0 0 1px rgba(59, 165, 92, 0.18);
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-tile-video {
+  width: 100%;
+  height: 100%;
+  min-height: 8.8rem;
+  object-fit: cover;
+  background: #0f111a;
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-tile-video-mirror {
+  transform: scaleX(-1);
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-tile-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0f111a;
+  z-index: 1;
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-tile-preview {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: blur(18px) brightness(0.66);
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-tile-fallback {
+  position: relative;
+  z-index: 1;
+  width: 3rem;
+  height: 3rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-base) 84%, transparent);
+  color: white;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.92rem;
+  font-weight: 800;
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-tile-top,
+.vesper-call-overlay-discord .vesper-call-overlay-tile-bottom {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-tile-top {
+  top: 0;
+  padding: 0.55rem;
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-tile-bottom {
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+  padding: 0.65rem 0.6rem;
+  background: linear-gradient(180deg, transparent, rgba(6, 8, 12, 0.9));
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-tile-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-tile-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.18rem 0.46rem;
+  border-radius: 999px;
+  background: rgba(17, 19, 27, 0.72);
+  color: white;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  backdrop-filter: blur(10px);
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-tile-name {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  color: white;
+  font-size: 0.74rem;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-tile-state {
+  flex: 0 0 auto;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-presence-strip {
+  display: flex;
+  gap: 0.5rem;
+  overflow-x: auto;
+  margin-top: 0.8rem;
+  padding-bottom: 0.12rem;
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-presence-pill {
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: 0.4rem 0.52rem;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 68%, transparent);
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-footer {
+  margin-top: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-controls {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  padding: 0.45rem;
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--color-bg-base) 58%, transparent);
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-control {
+  min-height: 2.7rem;
+  border-radius: 0.82rem;
+  background: #2b2d31;
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-control:hover:not(:disabled) {
+  background: #35373c;
+}
+
+.vesper-call-overlay-discord .vesper-call-overlay-share-audio {
+  margin-top: 0;
+  padding: 0.22rem 0.3rem;
+}
+
+.vesper-voice-room-discord {
+  background:
+    radial-gradient(circle at top, rgba(88, 101, 242, 0.08), transparent 34%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent),
+    color-mix(in srgb, var(--color-bg-primary) 96%, transparent);
+}
+
+.vesper-voice-room-discord .vesper-voice-room-discord-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(20rem, 24rem);
+  gap: 1rem;
+  align-items: start;
+}
+
+.vesper-voice-room-discord .vesper-voice-room-discord-main,
+.vesper-voice-room-discord .vesper-voice-room-discord-sidebar {
+  min-width: 0;
+}
+
+.vesper-voice-room-discord .vesper-voice-room-discord-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.vesper-voice-room-discord .vesper-voice-room-discord-surface,
+.vesper-voice-room-discord .vesper-voice-room-discord-card {
+  border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+  border-radius: 1.4rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent),
+    color-mix(in srgb, var(--color-bg-secondary) 82%, transparent);
+  box-shadow: 0 22px 44px rgba(0, 0, 0, 0.14);
+}
+
+.vesper-voice-room-discord .vesper-voice-room-discord-surface {
+  padding: 1rem;
+}
+
+.vesper-voice-room-discord .vesper-voice-room-discord-card {
+  padding: 0.95rem;
+}
+
+.vesper-voice-room-discord .vesper-voice-room-discord-surface-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.95rem;
+}
+
+.vesper-voice-room-discord .vesper-voice-room-discord-focus {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.18rem;
+  padding: 0.58rem 0.72rem;
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 72%, transparent);
+}
+
+.vesper-voice-room-discord .vesper-voice-room-discord-focus-kicker {
+  color: var(--color-text-faint);
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.vesper-voice-room-discord .vesper-voice-room-discord-focus-name {
+  color: var(--color-text-primary);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.vesper-voice-room-discord .vesper-voice-call-grid,
+.vesper-voice-room-discord .vesper-voice-avatar-grid {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.vesper-voice-room-discord .vesper-voice-call-grid-single,
+.vesper-voice-room-discord .vesper-voice-avatar-grid.vesper-voice-call-grid-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.vesper-voice-room-discord .vesper-voice-call-grid-dual,
+.vesper-voice-room-discord .vesper-voice-avatar-grid.vesper-voice-call-grid-dual,
+.vesper-voice-room-discord .vesper-voice-call-grid-quad,
+.vesper-voice-room-discord .vesper-voice-avatar-grid.vesper-voice-call-grid-quad {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.vesper-voice-room-discord .vesper-voice-call-grid-crowded,
+.vesper-voice-room-discord .vesper-voice-avatar-grid.vesper-voice-call-grid-crowded {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.vesper-voice-room-discord .vesper-voice-call-tile {
+  position: relative;
+  min-height: 16rem;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--color-border) 86%, transparent);
+  border-radius: 1.15rem;
+  overflow: hidden;
+  background: #0f111a;
+  text-align: left;
+  color: inherit;
+  transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.vesper-voice-room-discord .vesper-voice-call-tile:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--color-accent) 25%, var(--color-border) 75%);
+}
+
+.vesper-voice-room-discord .vesper-voice-call-tile-active {
+  border-color: rgba(88, 101, 242, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(88, 101, 242, 0.22);
+}
+
+.vesper-voice-room-discord .vesper-voice-call-tile-media,
+.vesper-voice-room-discord .vesper-voice-call-tile-video {
+  width: 100%;
+  height: 100%;
+  min-height: 16rem;
+}
+
+.vesper-voice-room-discord .vesper-voice-call-tile-video {
+  object-fit: cover;
+}
+
+.vesper-voice-room-discord .vesper-voice-call-tile-top,
+.vesper-voice-room-discord .vesper-voice-call-tile-bottom {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.vesper-voice-room-discord .vesper-voice-call-tile-top {
+  top: 0;
+  padding: 0.65rem;
+}
+
+.vesper-voice-room-discord .vesper-voice-call-tile-bottom {
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+  padding: 0.7rem 0.75rem;
+  background: linear-gradient(180deg, transparent, rgba(6, 8, 12, 0.92));
+}
+
+.vesper-voice-room-discord .vesper-voice-call-tile-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.32rem;
+}
+
+.vesper-voice-room-discord .vesper-voice-call-tile-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.46rem;
+  border-radius: 999px;
+  background: rgba(17, 19, 27, 0.72);
+  color: white;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  backdrop-filter: blur(10px);
+}
+
+.vesper-voice-room-discord .vesper-voice-call-tile-name {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  color: white;
+  font-size: 0.8rem;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vesper-voice-room-discord .vesper-voice-call-tile-meta {
+  flex: 0 0 auto;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.vesper-voice-room-discord .vesper-voice-avatar-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 1rem 0.85rem 0.9rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  border-radius: 1.15rem;
+  background:
+    radial-gradient(circle at top, rgba(255, 255, 255, 0.03), transparent 48%),
+    color-mix(in srgb, var(--color-bg-tertiary) 58%, transparent);
+  text-align: center;
+}
+
+.vesper-voice-room-discord .vesper-voice-avatar-tile-speaking {
+  border-color: rgba(59, 165, 92, 0.5);
+  box-shadow: inset 0 0 0 1px rgba(59, 165, 92, 0.18);
+}
+
+.vesper-voice-room-discord .vesper-voice-avatar-tile-shell {
+  position: relative;
+}
+
+.vesper-voice-room-discord .vesper-voice-avatar-tile-ring {
+  padding: 0.28rem;
+  border-radius: 999px;
+  background: rgba(59, 165, 92, 0.16);
+}
+
+.vesper-voice-room-discord .vesper-voice-avatar-tile-avatar {
+  width: 4.5rem;
+  height: 4.5rem;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--color-bg-base) 82%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-primary);
+  font-size: 1.05rem;
+  font-weight: 800;
+}
+
+.vesper-voice-room-discord .vesper-voice-avatar-tile-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.vesper-voice-room-discord .vesper-voice-avatar-tile-status {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 999px;
+  background: rgba(127, 29, 29, 0.95);
+  color: white;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-bg-secondary) 92%, transparent);
+}
+
+.vesper-voice-room-discord .vesper-voice-avatar-tile-live {
+  position: absolute;
+  left: -0.15rem;
+  top: -0.15rem;
+  padding: 0.18rem 0.38rem;
+  border-radius: 0.45rem;
+  background: #d22c39;
+  color: white;
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.vesper-voice-room-discord .vesper-voice-avatar-tile-name {
+  width: 100%;
+  color: var(--color-text-primary);
+  font-size: 0.86rem;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vesper-voice-room-discord .vesper-voice-avatar-tile-meta {
+  color: var(--color-text-faint);
+  font-size: 0.74rem;
+}
+
+.vesper-voice-room-discord .vesper-voice-room-discord-audio-strip {
+  margin-top: 0.9rem;
+}
+
+.vesper-voice-room-discord .vesper-voice-room-discord-audio-list {
+  display: flex;
+  gap: 0.5rem;
+  overflow-x: auto;
+  padding-bottom: 0.12rem;
+}
+
+.vesper-voice-room-discord .vesper-voice-room-discord-status {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.vesper-voice-room-discord .vesper-voice-room-discord-status-dot {
+  margin-top: 0;
+}
+
+.vesper-voice-room-discord .vesper-voice-room-discord-status-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.12rem;
+}
+
+.vesper-voice-room-discord .vesper-voice-room-discord-status-label {
+  color: var(--color-text-primary);
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.vesper-voice-room-discord .vesper-voice-room-discord-status-meta {
+  color: var(--color-text-faint);
+  font-size: 0.76rem;
+}
+
+.vesper-voice-room-discord .vesper-voice-room-actions {
+  margin-top: 0.9rem;
+  justify-content: flex-start;
+}
+
+.vesper-voice-room-discord .vesper-voice-room-button {
+  min-height: 2.55rem;
+  border-radius: 0.9rem;
+  background: #2b2d31;
+}
+
+.vesper-voice-room-discord .vesper-voice-room-button:hover {
+  background: #35373c;
+}
+
+.vesper-voice-room-discord .vesper-voice-room-button-primary {
+  background: #5865f2;
+  color: white;
+}
+
+.vesper-voice-room-discord .vesper-voice-room-button-primary:hover {
+  background: #4f5bda;
+}
+
+.vesper-voice-room-discord .vesper-voice-room-button-danger {
+  background: rgba(210, 44, 57, 0.16);
+  color: #fda4af;
+}
+
+.vesper-voice-room-discord .vesper-voice-room-button-active {
+  background: rgba(59, 165, 92, 0.18);
+  color: #86efac;
+}
+
+.vesper-voice-room-discord .vesper-voice-room-discord-roster {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.vesper-voice-room-discord .vesper-voice-roster-card {
+  padding: 0.82rem;
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 60%, transparent);
+}
+
+.vesper-voice-room-discord .vesper-voice-room-discord-settings summary {
+  cursor: pointer;
+  color: var(--color-text-primary);
+  font-size: 0.88rem;
+  font-weight: 800;
+  list-style: none;
+}
+
+.vesper-voice-room-discord .vesper-voice-room-discord-settings summary::-webkit-details-marker {
+  display: none;
+}
+
+.vesper-voice-room-discord .vesper-voice-room-discord-settings[open] summary {
+  margin-bottom: 0.85rem;
+}
+
+@media (max-width: 1080px) {
+  .vesper-voice-room-discord .vesper-voice-room-discord-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 720px) {
+  .vesper-voice-participant-list-discord {
+    padding-left: 1.2rem;
+    padding-right: 0.55rem;
+  }
+
+  .vesper-call-overlay-discord {
+    width: auto;
+  }
+
+  .vesper-call-overlay-discord .vesper-call-overlay-grid-dual,
+  .vesper-call-overlay-discord .vesper-call-overlay-grid-multi {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .vesper-call-overlay-discord .vesper-call-overlay-controls {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .vesper-voice-room-discord .vesper-voice-room-discord-surface,
+  .vesper-voice-room-discord .vesper-voice-room-discord-card {
+    padding: 0.85rem;
+  }
+
+  .vesper-voice-room-discord .vesper-voice-room-discord-surface-header {
+    flex-direction: column;
+  }
+
+  .vesper-voice-room-discord .vesper-voice-call-grid-dual,
+  .vesper-voice-room-discord .vesper-voice-call-grid-quad,
+  .vesper-voice-room-discord .vesper-voice-call-grid-crowded,
+  .vesper-voice-room-discord .vesper-voice-avatar-grid.vesper-voice-call-grid-dual,
+  .vesper-voice-room-discord .vesper-voice-avatar-grid.vesper-voice-call-grid-quad,
+  .vesper-voice-room-discord .vesper-voice-avatar-grid.vesper-voice-call-grid-crowded {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .vesper-voice-room-discord .vesper-voice-call-tile {
+    min-height: 13rem;
+  }
+
+  .vesper-voice-room-discord .vesper-voice-call-tile-media,
+  .vesper-voice-room-discord .vesper-voice-call-tile-video {
+    min-height: 13rem;
+  }
+}
+
 .vesper-channel-unread-badge {
   min-width: 1.2rem;
   height: 1.2rem;
