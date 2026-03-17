@@ -19,6 +19,7 @@ import {
   hasLocalVideoPreview,
   hasRemoteVideo,
   getVoiceParticipants,
+  waitForVoiceParticipants,
 } from '../helpers/voice'
 import { USERS, CHANNELS } from '../fixtures/test-data'
 
@@ -90,8 +91,8 @@ test.describe('P1: Voice and video', () => {
     await joinVoiceChannel(bob.page, CHANNELS.voice)
 
     // Participant roster should converge
-    const aliceParticipants = await getVoiceParticipants(alice.page)
-    const bobParticipants = await getVoiceParticipants(bob.page)
+    const aliceParticipants = await waitForVoiceParticipants(alice.page, 2)
+    const bobParticipants = await waitForVoiceParticipants(bob.page, 2)
     expect(aliceParticipants.length).toBeGreaterThanOrEqual(2)
     expect(bobParticipants.length).toBeGreaterThanOrEqual(2)
 
@@ -102,11 +103,10 @@ test.describe('P1: Voice and video', () => {
 
     // Alice disconnects and rejoins
     await disconnectCall(alice.page)
-    await alice.page.waitForTimeout(2_000)
     await joinVoiceChannel(alice.page, CHANNELS.voice)
 
     // Participant list should update
-    const participantsAfter = await getVoiceParticipants(bob.page)
+    const participantsAfter = await waitForVoiceParticipants(bob.page, 2)
     expect(participantsAfter.length).toBeGreaterThanOrEqual(2)
 
     // Clean up
@@ -137,7 +137,9 @@ test.describe('P1: Voice and video', () => {
 
     // Stop camera
     await toggleCamera(alice.page)
-    await alice.page.waitForTimeout(2_000)
+    await expect
+      .poll(async () => hasRemoteVideo(bob.page, USERS.alice.username), { timeout: 15_000 })
+      .toBe(false)
 
     // Remote feed should clear
     const remoteAfter = await hasRemoteVideo(bob.page, USERS.alice.username)
@@ -145,7 +147,6 @@ test.describe('P1: Voice and video', () => {
 
     // No stale "camera live" UI after reconnect
     await disconnectCall(alice.page)
-    await alice.page.waitForTimeout(2_000)
     await joinVoiceChannel(alice.page, CHANNELS.voice)
     const localAfterReconnect = await hasLocalVideoPreview(alice.page)
     expect(localAfterReconnect).toBe(false)

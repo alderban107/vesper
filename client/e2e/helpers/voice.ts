@@ -4,7 +4,7 @@
  * Covers: R-HARNESS-7 (deterministic fake media)
  */
 
-import type { Page } from '@playwright/test'
+import { expect, type Page } from '@playwright/test'
 
 /** Start a DM call with the current conversation partner. */
 export async function startDmCall(page: Page): Promise<void> {
@@ -33,7 +33,7 @@ export async function rejectIncomingCall(page: Page): Promise<void> {
 /** Disconnect from the current call. */
 export async function disconnectCall(page: Page): Promise<void> {
   await page.click('[data-testid="disconnect-call"]')
-  // Wait for call UI to settle — call-overlay hides (DM) or voice-connected disappears (channel)
+  // Wait for the connected call UI to disappear for either DM or channel voice.
   await Promise.race([
     page.waitForSelector('[data-testid="call-overlay"]', { state: 'hidden', timeout: 10_000 }).catch(() => {}),
     page.waitForSelector('[data-testid="voice-connected"]', { state: 'detached', timeout: 10_000 }).catch(() => {}),
@@ -44,6 +44,7 @@ export async function disconnectCall(page: Page): Promise<void> {
 export async function joinVoiceChannel(page: Page, channelName: string): Promise<void> {
   await page.click(`.vesper-channel-row-voice:has-text("${channelName}")`)
   await page.waitForSelector('[data-testid="voice-channel-panel"]', { timeout: 15_000 })
+  await page.waitForSelector('[data-testid="disconnect-call"]', { timeout: 15_000 })
 }
 
 /** Toggle mute in a voice call. */
@@ -68,14 +69,69 @@ export async function hasLocalVideoPreview(page: Page): Promise<boolean> {
   return page.locator('[data-testid="local-video"]').isVisible()
 }
 
+/** Wait for the local camera preview to reach the requested visibility state. */
+export async function waitForLocalVideoPreview(
+  page: Page,
+  visible: boolean,
+  timeout = 15_000,
+): Promise<void> {
+  await expect
+    .poll(async () => hasLocalVideoPreview(page), { timeout })
+    .toBe(visible)
+}
+
 /** Check if remote video is rendering for a participant. */
 export async function hasRemoteVideo(page: Page, username: string): Promise<boolean> {
   return page.locator(`[data-testid="remote-video-${username}"]`).isVisible()
 }
 
+/** Wait for a participant's remote video to reach the requested visibility state. */
+export async function waitForRemoteVideo(
+  page: Page,
+  username: string,
+  visible: boolean,
+  timeout = 15_000,
+): Promise<void> {
+  await expect
+    .poll(async () => hasRemoteVideo(page, username), { timeout })
+    .toBe(visible)
+}
+
 /** Get voice participant names. */
 export async function getVoiceParticipants(page: Page): Promise<string[]> {
   const participants = page.locator('[data-testid="voice-participant-name"]')
+  return participants.allTextContents()
+}
+
+/** Wait until the voice roster reaches the requested visible participant count. */
+export async function waitForVoiceParticipants(
+  page: Page,
+  minimumCount: number,
+  timeout = 15_000,
+): Promise<string[]> {
+  const participants = page.locator('[data-testid="voice-participant-name"]')
+
+  await expect
+    .poll(
+      async () =>
+        participants.evaluateAll((elements) =>
+          elements.filter((element) => {
+            if (!(element instanceof HTMLElement)) {
+              return false
+            }
+
+            const style = window.getComputedStyle(element)
+            if (style.visibility === 'hidden' || style.display === 'none') {
+              return false
+            }
+
+            return element.getClientRects().length > 0
+          }).length,
+        ),
+      { timeout },
+    )
+    .toBeGreaterThanOrEqual(minimumCount)
+
   return participants.allTextContents()
 }
 
