@@ -18,8 +18,9 @@ import {
   toggleCamera,
   hasLocalVideoPreview,
   hasRemoteVideo,
-  getVoiceParticipants,
   waitForVoiceParticipants,
+  waitForLocalVideoPreview,
+  waitForRemoteVideo,
 } from '../helpers/voice'
 import { USERS, CHANNELS } from '../fixtures/test-data'
 
@@ -123,23 +124,21 @@ test.describe('P1: Voice and video', () => {
 
     // Alice turns on camera
     await toggleCamera(alice.page)
+    await waitForLocalVideoPreview(alice.page, true)
 
     // Local preview should appear
     const localPreview = await hasLocalVideoPreview(alice.page)
     expect(localPreview).toBe(true)
 
     // Bob should see remote video
-    await bob.page.waitForSelector(`[data-testid="remote-video-${USERS.alice.username}"]`, {
-      timeout: 15_000,
-    })
+    await waitForRemoteVideo(bob.page, USERS.alice.username, true)
     const remoteVideo = await hasRemoteVideo(bob.page, USERS.alice.username)
     expect(remoteVideo).toBe(true)
 
     // Stop camera
     await toggleCamera(alice.page)
-    await expect
-      .poll(async () => hasRemoteVideo(bob.page, USERS.alice.username), { timeout: 15_000 })
-      .toBe(false)
+    await waitForLocalVideoPreview(alice.page, false)
+    await waitForRemoteVideo(bob.page, USERS.alice.username, false)
 
     // Remote feed should clear
     const remoteAfter = await hasRemoteVideo(bob.page, USERS.alice.username)
@@ -148,6 +147,7 @@ test.describe('P1: Voice and video', () => {
     // No stale "camera live" UI after reconnect
     await disconnectCall(alice.page)
     await joinVoiceChannel(alice.page, CHANNELS.voice)
+    await waitForLocalVideoPreview(alice.page, false)
     const localAfterReconnect = await hasLocalVideoPreview(alice.page)
     expect(localAfterReconnect).toBe(false)
 
