@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useDmStore } from '../../stores/dmStore'
 import { useMessageStore, type Message } from '../../stores/messageStore'
 import { useUnreadStore } from '../../stores/unreadStore'
@@ -12,16 +12,23 @@ export default function DmMessageList(): React.JSX.Element {
   const allMessages = useMessageStore((s) =>
     conversationId ? (s.messagesByChannel[conversationId] ?? EMPTY_MESSAGES) : EMPTY_MESSAGES
   )
-  const messages = allMessages.filter((message) => !message.parent_message_id)
+  const messages = useMemo(
+    () => allMessages.filter((message) => !message.parent_message_id),
+    [allMessages]
+  )
   const typingUsers = useMessageStore((s) =>
     conversationId ? (s.typingUsers[conversationId] ?? EMPTY_TYPING) : EMPTY_TYPING
   )
   const hasMore = useMessageStore((s) =>
     conversationId ? s.hasMore[conversationId] ?? true : false
   )
+  const hasNewer = useMessageStore((s) =>
+    conversationId ? s.hasNewer[conversationId] ?? false : false
+  )
   const joinDmChat = useMessageStore((s) => s.joinDmChat)
   const leaveDmChat = useMessageStore((s) => s.leaveDmChat)
   const fetchOlderDmMessages = useMessageStore((s) => s.fetchOlderDmMessages)
+  const fetchNewerDmMessages = useMessageStore((s) => s.fetchNewerDmMessages)
   const markDmRead = useUnreadStore((s) => s.markDmRead)
 
   const prevConvRef = useRef<string | null>(null)
@@ -42,14 +49,22 @@ export default function DmMessageList(): React.JSX.Element {
     }
   }
 
+  const handleLoadNewer = (): void => {
+    if (hasNewer && conversationId) {
+      fetchNewerDmMessages(conversationId)
+    }
+  }
+
   return (
     <MessageFeed
       messages={messages}
       messageLookup={allMessages}
       typingUsers={typingUsers}
       hasMore={hasMore}
+      hasNewer={hasNewer}
       emptyState="No messages yet. Say something!"
       onLoadMore={handleLoadMore}
+      onLoadNewer={handleLoadNewer}
       onMarkRead={(messageId) => {
         if (conversationId) {
           markDmRead(conversationId, messageId)

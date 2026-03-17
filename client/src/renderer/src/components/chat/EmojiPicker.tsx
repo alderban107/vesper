@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { Search, X } from 'lucide-react'
 import { CATEGORIES, EMOJIS, type EmojiCategory } from '../../data/emojis'
 import { useServerStore } from '../../stores/serverStore'
@@ -35,7 +36,11 @@ export type PickerEmoji =
 interface Props {
   onSelect: (emoji: string, item?: PickerEmoji) => void
   onClose: () => void
+  anchorRef?: RefObject<HTMLElement | null>
 }
+
+const PICKER_WIDTH = 432
+const PICKER_HEIGHT = 496
 
 function readRecentEmoji(): string[] {
   try {
@@ -52,10 +57,15 @@ function saveRecentEmoji(value: string): void {
   localStorage.setItem('vesper.recent-emoji', JSON.stringify(next))
 }
 
-export default function EmojiPicker({ onSelect, onClose }: Props): React.JSX.Element {
+export default function EmojiPicker({
+  onSelect,
+  onClose,
+  anchorRef
+}: Props): React.JSX.Element {
   const [search, setSearch] = useState('')
   const [activeCategory, setActiveCategory] = useState<PickerCategoryId>('Recent')
   const [hoveredEmoji, setHoveredEmoji] = useState<PickerEmoji | null>(null)
+  const [portalStyle, setPortalStyle] = useState<React.CSSProperties | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const pickerRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
@@ -75,7 +85,51 @@ export default function EmojiPicker({ onSelect, onClose }: Props): React.JSX.Ele
   }, [activeServerId, fetchServerEmojis])
 
   useEffect(() => {
+    if (!anchorRef?.current) {
+      setPortalStyle(null)
+      return
+    }
+
+    const updatePosition = (): void => {
+      const anchor = anchorRef.current
+      if (!anchor) {
+        return
+      }
+
+      const rect = anchor.getBoundingClientRect()
+      const clampedLeft = Math.min(
+        Math.max(8, rect.left - PICKER_WIDTH + rect.width),
+        Math.max(8, window.innerWidth - PICKER_WIDTH - 8)
+      )
+      const preferredTop = rect.top - PICKER_HEIGHT - 12
+      const fallbackTop = rect.bottom + 12
+      const top =
+        preferredTop >= 8
+          ? preferredTop
+          : Math.min(fallbackTop, Math.max(8, window.innerHeight - PICKER_HEIGHT - 8))
+
+      setPortalStyle({
+        left: `${clampedLeft}px`,
+        top: `${top}px`
+      })
+    }
+
+    updatePosition()
+    window.addEventListener('resize', updatePosition)
+    window.addEventListener('scroll', updatePosition, true)
+
+    return () => {
+      window.removeEventListener('resize', updatePosition)
+      window.removeEventListener('scroll', updatePosition, true)
+    }
+  }, [anchorRef])
+
+  useEffect(() => {
     const handlePointerOutside = (event: PointerEvent): void => {
+      if (anchorRef?.current?.contains(event.target as Node)) {
+        return
+      }
+
       if (pickerRef.current && !pickerRef.current.contains(event.target as Node)) {
         onClose()
       }
@@ -94,7 +148,7 @@ export default function EmojiPicker({ onSelect, onClose }: Props): React.JSX.Ele
       document.removeEventListener('pointerdown', handlePointerOutside)
       document.removeEventListener('keydown', handleEscape)
     }
-  }, [onClose])
+  }, [anchorRef, onClose])
 
   const pickerSections = useMemo(() => {
     const unicodeItems: PickerEmoji[] = EMOJIS.map((emoji) => ({
@@ -173,6 +227,36 @@ export default function EmojiPicker({ onSelect, onClose }: Props): React.JSX.Ele
     }
   }, [activeCategory, pickerSections])
 
+  useEffect(() => {
+    if (!listRef.current || search.trim()) {
+      return
+    }
+
+    const sections = listRef.current.querySelectorAll<HTMLElement>('[data-category-id]')
+    if (sections.length === 0) {
+      return
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visibleEntries = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((left, right) => left.boundingClientRect.top - right.boundingClientRect.top)
+        const nextCategoryId = visibleEntries[0]?.target.getAttribute('data-category-id')
+        if (nextCategoryId) {
+          setActiveCategory(nextCategoryId as PickerCategoryId)
+        }
+      },
+      {
+        root: listRef.current,
+        threshold: 0.15
+      }
+    )
+
+    sections.forEach((section) => observer.observe(section))
+    return () => observer.disconnect()
+  }, [pickerSections, search])
+
   const categoryButtons = useMemo(() => {
     const buttons: Array<{ id: PickerCategoryId; label: string; icon: string }> = []
     if (pickerSections.some((section) => section.id === 'Recent')) {
@@ -189,11 +273,12 @@ export default function EmojiPicker({ onSelect, onClose }: Props): React.JSX.Ele
     return buttons
   }, [pickerSections])
 
-  const handleCategoryClick = (categoryId: PickerCategoryId): void => {
+  const handleCategoryClick = useCallback((categoryId: PickerCategoryId): void => {
     setActiveCategory(categoryId)
+    setSearch('')
     const section = listRef.current?.querySelector<HTMLElement>(`[data-category-id="${categoryId}"]`)
     section?.scrollIntoView({ block: 'start', behavior: 'smooth' })
-  }
+  }, [])
 
   const handleSelect = (item: PickerEmoji): void => {
     const recentKey = item.type === 'custom' ? item.id : item.value
@@ -202,7 +287,7 @@ export default function EmojiPicker({ onSelect, onClose }: Props): React.JSX.Ele
     onClose()
   }
 
-  return (
+  const pickerContent = (
     <div ref={pickerRef} data-testid="emoji-picker" className="vesper-emoji-picker">
       <div className="vesper-emoji-picker-header">
         <div className="vesper-emoji-picker-search">
@@ -318,5 +403,16 @@ export default function EmojiPicker({ onSelect, onClose }: Props): React.JSX.Ele
         )}
       </div>
     </div>
+  )
+
+  if (!portalStyle) {
+    return pickerContent
+  }
+
+  return createPortal(
+    <div className="vesper-emoji-picker-portal" style={portalStyle}>
+      {pickerContent}
+    </div>,
+    document.body
   )
 }

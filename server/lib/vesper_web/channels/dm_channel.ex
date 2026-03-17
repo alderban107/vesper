@@ -38,6 +38,12 @@ defmodule VesperWeb.DmChannel do
         %{"ciphertext" => ciphertext, "mls_epoch" => epoch} = params,
         socket
       ) do
+    client_nonce =
+      case Map.get(params, "client_nonce") do
+        value when is_binary(value) and value != "" -> value
+        _ -> nil
+      end
+
     with {:ok, decoded} <- safe_decode64(ciphertext),
          {:ok, parent_message_id} <-
            resolve_parent_message_id(params, :conversation_id, socket.assigns.conversation_id) do
@@ -50,15 +56,19 @@ defmodule VesperWeb.DmChannel do
         }
         |> maybe_add_parent_id(parent_message_id)
 
-      case Chat.create_message(attrs) do
-        {:ok, message} ->
-          message = maybe_link_attachments(message, params)
+        case Chat.create_message(attrs) do
+          {:ok, message} ->
+            message = maybe_link_attachments(message, params)
 
-          broadcast!(
-            socket,
-            "new_message",
-            encrypted_message_payload(message, :conversation_id)
-          )
+            broadcast!(
+              socket,
+              "new_message",
+              encrypted_message_payload(
+                message,
+                :conversation_id,
+                if(client_nonce, do: %{client_nonce: client_nonce}, else: %{})
+              )
+            )
 
           # Run notifications async to avoid blocking the channel process
           conversation_id = socket.assigns.conversation_id

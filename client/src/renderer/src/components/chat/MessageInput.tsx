@@ -14,35 +14,54 @@ import { useCryptoStore } from '../../stores/cryptoStore'
 import { pushToChannel } from '../../api/socket'
 import { useAuthStore } from '../../stores/authStore'
 import EmojiPicker from './EmojiPicker'
-import MentionAutocomplete from './MentionAutocomplete'
+import ComposerAutocomplete from './ComposerAutocomplete'
 import ComposerShell from './message/ComposerShell'
 import type { StagedFile } from './message/ComposerShell'
 import { formatCustomEmojiToken } from '../../utils/emoji'
 import { extractVideoThumbnail } from '../../utils/videoThumbnail'
 import { extractAudioMetadata } from '../../utils/audioMetadata'
+import {
+  applyAutocompleteSelection,
+  buildChannelSuggestions,
+  buildEmojiSuggestions,
+  buildMentionSuggestions,
+  detectComposerTrigger,
+  type ComposerTriggerMatch
+} from './composerAutocompleteUtils'
+import type { Message } from '../../stores/messageStore'
 
 let stagedIdCounter = 0
+const EMPTY_MESSAGES: Message[] = []
 
 export default function MessageInput(): React.JSX.Element {
   const [content, setContent] = useState('')
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
-  const [mentionQuery, setMentionQuery] = useState<string | null>(null)
-  const [mentionStart, setMentionStart] = useState(0)
+  const [trigger, setTrigger] = useState<ComposerTriggerMatch | null>(null)
+  const [selectedAutocompleteIndex, setSelectedAutocompleteIndex] = useState(0)
   const [uploading, setUploading] = useState(false)
   const [stagedFiles, setStagedFiles] = useState<StagedFile[]>([])
   const activeChannelId = useServerStore((s) => s.activeChannelId)
+  const servers = useServerStore((s) => s.servers)
+  const activeServerId = useServerStore((s) => s.activeServerId)
   const sendMessage = useMessageStore((s) => s.sendMessage)
   const sendTypingStart = useMessageStore((s) => s.sendTypingStart)
   const sendTypingStop = useMessageStore((s) => s.sendTypingStop)
   const replyingTo = useMessageStore((s) => s.replyingTo)
   const setReplyingTo = useMessageStore((s) => s.setReplyingTo)
+  const setEditingMessage = useMessageStore((s) => s.setEditingMessage)
   const encryptionError = useMessageStore((s) => s.encryptionError)
   const canUseE2EE = useAuthStore((s) => s.canUseE2EE)
+  const myUserId = useAuthStore((s) => s.user?.id)
+  const messages = useMessageStore((s) =>
+    activeChannelId ? (s.messagesByChannel[activeChannelId] ?? EMPTY_MESSAGES) : EMPTY_MESSAGES
+  )
+  const activeServer = servers.find((server) => server.id === activeServerId)
 
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isTypingRef = useRef(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const emojiButtonRef = useRef<HTMLButtonElement>(null)
   const dragDepthRef = useRef(0)
   const [dragActive, setDragActive] = useState(false)
 
@@ -220,6 +239,50 @@ export default function MessageInput(): React.JSX.Element {
     return false
   }
 
+  const autocompleteItems = trigger
+    ? (
+        trigger.type === 'mention'
+          ? buildMentionSuggestions(trigger.query, useServerStore.getState().members)
+          : trigger.type === 'channel'
+            ? buildChannelSuggestions(trigger.query, activeServer)
+            : buildEmojiSuggestions(trigger.query, activeServer)
+      )
+    : []
+
+  const commitAutocompleteSelection = (index: number): void => {
+    if (!trigger) {
+      return
+    }
+
+    const item = autocompleteItems[index]
+    if (!item) {
+      return
+    }
+
+    const cursorPos = textareaRef.current?.selectionStart ?? content.length
+    const next = applyAutocompleteSelection(
+      content,
+      trigger.start,
+      cursorPos,
+      item.value,
+      item.type !== 'emoji'
+    )
+    setContent(next.value)
+    setTrigger(null)
+    setSelectedAutocompleteIndex(0)
+
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus()
+      textareaRef.current?.setSelectionRange(next.caret, next.caret)
+    })
+  }
+
+  const updateAutocompleteState = (value: string, cursorPos: number): void => {
+    const nextTrigger = detectComposerTrigger(value, cursorPos)
+    setTrigger(nextTrigger)
+    setSelectedAutocompleteIndex(0)
+  }
+
   const handleSubmit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault()
     if (!activeChannelId) return
@@ -256,7 +319,8 @@ export default function MessageInput(): React.JSX.Element {
       setContent('')
     }
 
-    setMentionQuery(null)
+    setTrigger(null)
+    setSelectedAutocompleteIndex(0)
 
     if (typingTimeoutRef.current) {
       clearTimeout(typingTimeoutRef.current)
@@ -268,17 +332,63 @@ export default function MessageInput(): React.JSX.Element {
   }
 
   const handleKeyDown = (e: React.KeyboardEvent): void => {
-    // Let mention autocomplete handle keys when open
-    if (mentionQuery !== null && (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'Tab' || e.key === 'Enter')) {
-      return // MentionAutocomplete handles these via document listener
+    if (trigger && autocompleteItems.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSelectedAutocompleteIndex((current) => (current + 1) % autocompleteItems.length)
+        return
+      }
+
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSelectedAutocompleteIndex((current) =>
+          current <= 0 ? autocompleteItems.length - 1 : current - 1
+        )
+        return
+      }
+
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault()
+        commitAutocompleteSelection(selectedAutocompleteIndex)
+        return
+      }
+
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setTrigger(null)
+        return
+      }
     }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       void handleSubmit(e)
     }
+    if (
+      e.key === 'ArrowUp' &&
+      !e.shiftKey &&
+      !e.altKey &&
+      !e.metaKey &&
+      !e.ctrlKey &&
+      !content &&
+      stagedFiles.length === 0 &&
+      !replyingTo &&
+      !uploading &&
+      textareaRef.current?.selectionStart === 0
+    ) {
+      const lastEditableMessage = [...messages]
+        .reverse()
+        .find((message) => message.sender_id === myUserId && !message.parent_message_id)
+
+      if (lastEditableMessage) {
+        e.preventDefault()
+        setEditingMessage(lastEditableMessage)
+      }
+      return
+    }
     if (e.key === 'Escape') {
-      if (mentionQuery !== null) {
-        setMentionQuery(null)
+      if (trigger !== null) {
+        setTrigger(null)
       } else if (replyingTo) {
         setReplyingTo(null)
       }
@@ -289,26 +399,7 @@ export default function MessageInput(): React.JSX.Element {
     const value = e.target.value
     setContent(value)
     handleTyping()
-
-    // Check for @ mention trigger
-    const cursorPos = e.target.selectionStart
-    const textBeforeCursor = value.slice(0, cursorPos)
-    const atMatch = textBeforeCursor.match(/(^|\s)@(\w*)$/)
-
-    if (atMatch) {
-      setMentionQuery(atMatch[2])
-      setMentionStart(cursorPos - atMatch[2].length - 1) // position of @
-    } else {
-      setMentionQuery(null)
-    }
-  }
-
-  const handleMentionSelect = (syntax: string, _displayText: string): void => {
-    const before = content.slice(0, mentionStart)
-    const after = content.slice(mentionStart + (mentionQuery?.length ?? 0) + 1)
-    setContent(before + syntax + ' ' + after)
-    setMentionQuery(null)
-    textareaRef.current?.focus()
+    updateAutocompleteState(value, e.target.selectionStart)
   }
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>): void => {
@@ -374,14 +465,17 @@ export default function MessageInput(): React.JSX.Element {
           </div>
         </div>
       )}
-      {/* Mention autocomplete */}
-      {mentionQuery !== null && (
+      {trigger && autocompleteItems.length > 0 && (
         <div className="relative mb-1">
-          <div data-testid="mention-autocomplete" className="absolute bottom-0 left-0 z-50">
-            <MentionAutocomplete
-              query={mentionQuery}
-              onSelect={handleMentionSelect}
-              onClose={() => setMentionQuery(null)}
+          <div data-testid="mention-autocomplete" className="absolute bottom-0 left-0 right-0 z-50">
+            <ComposerAutocomplete
+              items={autocompleteItems}
+              selectedIndex={selectedAutocompleteIndex}
+              onSelect={(item) => {
+                const index = autocompleteItems.findIndex((entry) => entry.id === item.id)
+                commitAutocompleteSelection(index)
+              }}
+              onHover={setSelectedAutocompleteIndex}
             />
           </div>
         </div>
@@ -413,6 +507,7 @@ export default function MessageInput(): React.JSX.Element {
           />
           <div className="relative">
             <button
+              ref={emojiButtonRef}
               type="button"
               onClick={() => setShowEmojiPicker(!showEmojiPicker)}
               className="vesper-composer-icon-button"
@@ -421,16 +516,15 @@ export default function MessageInput(): React.JSX.Element {
               <Smile className="w-5 h-5" />
             </button>
             {showEmojiPicker && (
-              <div className="absolute bottom-12 left-0 z-50">
-                <EmojiPicker
-                  onSelect={(emoji, item) => {
-                    const value = item?.type === 'custom' ? formatCustomEmojiToken(item) : emoji
-                    setContent((prev) => prev + value)
-                    setShowEmojiPicker(false)
-                  }}
-                  onClose={() => setShowEmojiPicker(false)}
-                />
-              </div>
+              <EmojiPicker
+                anchorRef={emojiButtonRef}
+                onSelect={(emoji, item) => {
+                  const value = item?.type === 'custom' ? formatCustomEmojiToken(item) : emoji
+                  setContent((prev) => prev + value)
+                  setShowEmojiPicker(false)
+                }}
+                onClose={() => setShowEmojiPicker(false)}
+              />
             )}
           </div>
           <textarea
@@ -438,6 +532,8 @@ export default function MessageInput(): React.JSX.Element {
             data-testid="message-input"
             value={content}
             onChange={handleChange}
+            onClick={(event) => updateAutocompleteState(event.currentTarget.value, event.currentTarget.selectionStart)}
+            onKeyUp={(event) => updateAutocompleteState(event.currentTarget.value, event.currentTarget.selectionStart)}
             onKeyDown={handleKeyDown}
             placeholder="Message this channel"
             rows={1}

@@ -59,6 +59,8 @@ const recentWelcomeProcessed = new Map<string, number>()
 const WELCOME_RECOVERY_SUPPRESSION_MS = 30_000
 const scopeMessageRefreshTokens = new Map<string, number>()
 const historySyncRetryTimers = new Map<string, number>()
+const MESSAGE_PAGE_SIZE = 50
+const MAX_RESIDENT_MESSAGES_PER_SCOPE = 400
 
 function clearHistorySyncRetry(scopeId: string): void {
   const timerId = historySyncRetryTimers.get(scopeId)
@@ -140,6 +142,10 @@ function beginScopeMessageRefresh(scopeId: string): number {
 
 function isCurrentScopeMessageRefresh(scopeId: string, token: number): boolean {
   return scopeMessageRefreshTokens.get(scopeId) === token
+}
+
+function generateClientNonce(): string {
+  return `client-${crypto.randomUUID()}`
 }
 
 export interface MessageSender {
@@ -229,6 +235,45 @@ function getMessageSearchText(message: Message): string {
   ]
 
   return [parsedText, parsedFileName, ...attachmentNames].join(' ').trim()
+}
+
+function dedupeMessages(messages: Message[]): Message[] {
+  return messages.filter(
+    (message, index, all) => all.findIndex((entry) => entry.id === message.id) === index
+  )
+}
+
+function applyMessageWindow(
+  messages: Message[],
+  direction: 'replace' | 'prepend' | 'append'
+): {
+  messages: Message[]
+  trimmedOlder: boolean
+  trimmedNewer: boolean
+} {
+  const deduped = dedupeMessages(messages)
+
+  if (deduped.length <= MAX_RESIDENT_MESSAGES_PER_SCOPE) {
+    return {
+      messages: deduped,
+      trimmedOlder: false,
+      trimmedNewer: false
+    }
+  }
+
+  if (direction === 'prepend') {
+    return {
+      messages: deduped.slice(0, MAX_RESIDENT_MESSAGES_PER_SCOPE),
+      trimmedOlder: false,
+      trimmedNewer: true
+    }
+  }
+
+  return {
+    messages: deduped.slice(-MAX_RESIDENT_MESSAGES_PER_SCOPE),
+    trimmedOlder: true,
+    trimmedNewer: false
+  }
 }
 
 function canUseEncryptedFeatures(): boolean {
@@ -1001,16 +1046,42 @@ interface RawReaction {
   inserted_at: string
 }
 
-function groupReactions(reactions?: RawReaction[]): ReactionGroup[] | undefined {
+async function resolveReactionGroups(
+  targetId: string,
+  reactions?: RawReaction[]
+): Promise<ReactionGroup[] | undefined> {
   if (!reactions || reactions.length === 0) return undefined
   const groups = new Map<string, string[]>()
-  for (const r of reactions) {
-    const key = r.emoji
+  for (const reaction of reactions) {
+    let key = reaction.emoji
+
+    if (reaction.ciphertext && typeof reaction.ciphertext === 'string') {
+      const sentPlaintext = getSentMessage(reaction.ciphertext)
+      if (sentPlaintext) {
+        key = sentPlaintext
+      } else {
+        try {
+          const decrypted = await useCryptoStore
+            .getState()
+            .decryptForChannel(targetId, reaction.ciphertext)
+          if (decrypted) {
+            key = decrypted
+          }
+        } catch {
+          // Ignore reaction decrypt failures and fall back below.
+        }
+      }
+    }
+
+    if (!key || key === 'encrypted') {
+      continue
+    }
+
     const existing = groups.get(key)
     if (existing) {
-      existing.push(r.sender_id)
+      existing.push(reaction.sender_id)
     } else {
-      groups.set(key, [r.sender_id])
+      groups.set(key, [reaction.sender_id])
     }
   }
   return Array.from(groups, ([emoji, senderIds]) => ({ emoji, senderIds }))
@@ -1033,6 +1104,8 @@ export interface Message {
   encrypted?: boolean
   decryptionFailed?: boolean
   edited_at?: string
+  client_nonce?: string
+  delivery_state?: 'sending' | 'sent' | 'failed'
 }
 
 export interface RecallSearchResult {
@@ -1073,6 +1146,7 @@ interface MessageState {
   messagesByChannel: Record<string, Message[]>
   typingUsers: Record<string, TypingUser[]>
   hasMore: Record<string, boolean>
+  hasNewer: Record<string, boolean>
   replyingTo: Message | null
   editingMessage: Message | null
   encryptionError: string | null
@@ -1089,6 +1163,7 @@ interface MessageState {
   leaveChannelChat: (channelId: string) => void
   fetchMessages: (channelId: string) => Promise<void>
   fetchOlderMessages: (channelId: string) => Promise<void>
+  fetchNewerMessages: (channelId: string) => Promise<void>
   sendMessage: (channelId: string, content: string, parentMessageId?: string) => Promise<void>
   sendTypingStart: (channelId: string) => void
   sendTypingStop: (channelId: string) => void
@@ -1098,6 +1173,7 @@ interface MessageState {
   leaveDmChat: (conversationId: string) => void
   fetchDmMessages: (conversationId: string) => Promise<void>
   fetchOlderDmMessages: (conversationId: string) => Promise<void>
+  fetchNewerDmMessages: (conversationId: string) => Promise<void>
   sendDmMessage: (conversationId: string, content: string, parentMessageId?: string) => Promise<void>
   sendDmTypingStart: (conversationId: string) => void
   sendDmTypingStop: (conversationId: string) => void
@@ -1139,6 +1215,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   messagesByChannel: {},
   typingUsers: {},
   hasMore: {},
+  hasNewer: {},
   replyingTo: null,
   editingMessage: null,
   encryptionError: null,
@@ -1358,27 +1435,32 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   fetchMessages: async (channelId) => {
     const refreshToken = beginScopeMessageRefresh(channelId)
     try {
-      const res = await apiFetch(`/api/v1/channels/${channelId}/messages?limit=50`)
+      const res = await apiFetch(`/api/v1/channels/${channelId}/messages?limit=${MESSAGE_PAGE_SIZE}`)
       if (res.ok) {
         const data = await res.json()
         const rawMessages = (data.messages as Record<string, unknown>[]).reverse()
         const messages = await Promise.all(
           rawMessages.map((m) => processIncomingMessage(channelId, m))
         )
+        const windowed = applyMessageWindow(messages, 'replace')
 
         if (!isCurrentScopeMessageRefresh(channelId, refreshToken)) {
           return
         }
 
-        scheduleExpiryTimers(channelId, messages)
+        scheduleExpiryTimers(channelId, windowed.messages)
         set((s) => ({
           messagesByChannel: {
             ...s.messagesByChannel,
-            [channelId]: messages
+            [channelId]: windowed.messages
           },
           hasMore: {
             ...s.hasMore,
-            [channelId]: data.messages.length === 50
+            [channelId]: data.messages.length === MESSAGE_PAGE_SIZE || windowed.trimmedOlder
+          },
+          hasNewer: {
+            ...s.hasNewer,
+            [channelId]: windowed.trimmedNewer
           }
         }))
         maybeRecoverEncryptedScope(
@@ -1405,7 +1487,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const oldest = existing[0]
     try {
       const res = await apiFetch(
-        `/api/v1/channels/${channelId}/messages?limit=50&before=${oldest.inserted_at}`
+        `/api/v1/channels/${channelId}/messages?limit=${MESSAGE_PAGE_SIZE}&before=${oldest.inserted_at}`
       )
       if (res.ok) {
         const data = await res.json()
@@ -1413,14 +1495,20 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         const olderMessages = await Promise.all(
           rawMessages.map((m) => processIncomingMessage(channelId, m))
         )
+        const mergedWindow = applyMessageWindow([...olderMessages, ...existing], 'prepend')
         set((s) => ({
           messagesByChannel: {
             ...s.messagesByChannel,
-            [channelId]: [...olderMessages, ...existing]
+            [channelId]: mergedWindow.messages
           },
           hasMore: {
             ...s.hasMore,
-            [channelId]: data.messages.length === 50
+            [channelId]: data.messages.length === MESSAGE_PAGE_SIZE
+          },
+          hasNewer: {
+            ...s.hasNewer,
+            [channelId]:
+              (s.hasNewer[channelId] ?? false) || mergedWindow.trimmedNewer
           }
         }))
         maybeRecoverEncryptedScope(
@@ -1434,6 +1522,46 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           null,
           'older_message_fetch'
         )
+      }
+    } catch {
+      // ignore
+    }
+  },
+
+  fetchNewerMessages: async (channelId) => {
+    const existing = get().messagesByChannel[channelId] || []
+    if (existing.length === 0) {
+      await get().fetchMessages(channelId)
+      return
+    }
+
+    const newest = existing[existing.length - 1]
+    try {
+      const res = await apiFetch(
+        `/api/v1/channels/${channelId}/messages?limit=${MESSAGE_PAGE_SIZE}&after=${newest.inserted_at}`
+      )
+      if (res.ok) {
+        const data = await res.json()
+        const rawMessages = (data.messages as Record<string, unknown>[]).reverse()
+        const newerMessages = await Promise.all(
+          rawMessages.map((m) => processIncomingMessage(channelId, m))
+        )
+        const mergedWindow = applyMessageWindow([...existing, ...newerMessages], 'append')
+        scheduleExpiryTimers(channelId, mergedWindow.messages)
+        set((s) => ({
+          messagesByChannel: {
+            ...s.messagesByChannel,
+            [channelId]: mergedWindow.messages
+          },
+          hasMore: {
+            ...s.hasMore,
+            [channelId]: (s.hasMore[channelId] ?? false) || mergedWindow.trimmedOlder
+          },
+          hasNewer: {
+            ...s.hasNewer,
+            [channelId]: data.messages.length === MESSAGE_PAGE_SIZE
+          }
+        }))
       }
     } catch {
       // ignore
@@ -1456,13 +1584,25 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const activeServer = useServerStore.getState().servers.find(
       (s) => s.id === useServerStore.getState().activeServerId
     )
+    const clientNonce = generateClientNonce()
     const resolvedContent = replaceEmojiShortcodes(content, activeServer?.emojis ?? [])
     const payloadStr = encodePayload({ v: 1, type: 'text', text: resolvedContent })
     const topic = `chat:channel:${channelId}`
+    const optimisticMessage = buildOptimisticMessage({
+      targetId: channelId,
+      content: resolvedContent,
+      parentMessageId: parentId,
+      channelId,
+      serverId: activeServer?.id ?? null,
+      clientNonce
+    })
+
+    upsertOptimisticMessage(channelId, optimisticMessage, set)
 
     if (!crypto.hasGroup(channelId)) {
       const ready = await ensureChannelGroupReady(channelId)
       if (!ready) {
+        updateOptimisticMessageState(channelId, clientNonce, 'failed', set)
         set({ encryptionError: 'Message could not be encrypted. Please try again.' })
         return
       }
@@ -1473,12 +1613,18 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       const encrypted = await crypto.encryptForChannel(channelId, payloadStr)
       if (encrypted) {
         cacheSentPlaintext(encrypted.ciphertext, resolvedContent)
-        pushToChannel(topic, 'new_message', {
+        const pushed = await pushToChannelWithAck(topic, 'new_message', {
           ciphertext: encrypted.ciphertext,
           mls_epoch: encrypted.epoch,
+          client_nonce: clientNonce,
           ...(parentId && { parent_message_id: parentId }),
           ...(mentionedUserIds.length > 0 && { mentioned_user_ids: mentionedUserIds })
         })
+        if (!pushed) {
+          updateOptimisticMessageState(channelId, clientNonce, 'failed', set)
+          set({ encryptionError: 'Message could not be sent. Please try again.' })
+          return
+        }
         set({
           ...(shouldClearInlineReply ? { replyingTo: null } : {}),
           encryptionError: null
@@ -1487,6 +1633,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       }
     }
 
+    updateOptimisticMessageState(channelId, clientNonce, 'failed', set)
     set({ encryptionError: 'Message could not be encrypted. Please try again.' })
   },
 
@@ -1771,7 +1918,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const refreshToken = beginScopeMessageRefresh(conversationId)
     try {
       const res = await apiFetch(
-        `/api/v1/conversations/${conversationId}/messages?limit=50`
+        `/api/v1/conversations/${conversationId}/messages?limit=${MESSAGE_PAGE_SIZE}`
       )
       if (res.ok) {
         const data = await res.json()
@@ -1779,20 +1926,26 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         const messages = await Promise.all(
           rawMessages.map((m) => processIncomingMessage(conversationId, m))
         )
+        const windowed = applyMessageWindow(messages, 'replace')
 
         if (!isCurrentScopeMessageRefresh(conversationId, refreshToken)) {
           return
         }
 
-        scheduleExpiryTimers(conversationId, messages)
+        scheduleExpiryTimers(conversationId, windowed.messages)
         set((s) => ({
           messagesByChannel: {
             ...s.messagesByChannel,
-            [conversationId]: messages
+            [conversationId]: windowed.messages
           },
           hasMore: {
             ...s.hasMore,
-            [conversationId]: data.messages.length === 50
+            [conversationId]:
+              data.messages.length === MESSAGE_PAGE_SIZE || windowed.trimmedOlder
+          },
+          hasNewer: {
+            ...s.hasNewer,
+            [conversationId]: windowed.trimmedNewer
           }
         }))
         maybeRecoverEncryptedScope(
@@ -1819,7 +1972,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const oldest = existing[0]
     try {
       const res = await apiFetch(
-        `/api/v1/conversations/${conversationId}/messages?limit=50&before=${oldest.inserted_at}`
+        `/api/v1/conversations/${conversationId}/messages?limit=${MESSAGE_PAGE_SIZE}&before=${oldest.inserted_at}`
       )
       if (res.ok) {
         const data = await res.json()
@@ -1827,14 +1980,20 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         const olderMessages = await Promise.all(
           rawMessages.map((m) => processIncomingMessage(conversationId, m))
         )
+        const mergedWindow = applyMessageWindow([...olderMessages, ...existing], 'prepend')
         set((s) => ({
           messagesByChannel: {
             ...s.messagesByChannel,
-            [conversationId]: [...olderMessages, ...existing]
+            [conversationId]: mergedWindow.messages
           },
           hasMore: {
             ...s.hasMore,
-            [conversationId]: data.messages.length === 50
+            [conversationId]: data.messages.length === MESSAGE_PAGE_SIZE
+          },
+          hasNewer: {
+            ...s.hasNewer,
+            [conversationId]:
+              (s.hasNewer[conversationId] ?? false) || mergedWindow.trimmedNewer
           }
         }))
         maybeRecoverEncryptedScope(
@@ -1854,6 +2013,47 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     }
   },
 
+  fetchNewerDmMessages: async (conversationId) => {
+    const existing = get().messagesByChannel[conversationId] || []
+    if (existing.length === 0) {
+      await get().fetchDmMessages(conversationId)
+      return
+    }
+
+    const newest = existing[existing.length - 1]
+    try {
+      const res = await apiFetch(
+        `/api/v1/conversations/${conversationId}/messages?limit=${MESSAGE_PAGE_SIZE}&after=${newest.inserted_at}`
+      )
+      if (res.ok) {
+        const data = await res.json()
+        const rawMessages = (data.messages as Record<string, unknown>[]).reverse()
+        const newerMessages = await Promise.all(
+          rawMessages.map((m) => processIncomingMessage(conversationId, m))
+        )
+        const mergedWindow = applyMessageWindow([...existing, ...newerMessages], 'append')
+        scheduleExpiryTimers(conversationId, mergedWindow.messages)
+        set((s) => ({
+          messagesByChannel: {
+            ...s.messagesByChannel,
+            [conversationId]: mergedWindow.messages
+          },
+          hasMore: {
+            ...s.hasMore,
+            [conversationId]:
+              (s.hasMore[conversationId] ?? false) || mergedWindow.trimmedOlder
+          },
+          hasNewer: {
+            ...s.hasNewer,
+            [conversationId]: data.messages.length === MESSAGE_PAGE_SIZE
+          }
+        }))
+      }
+    } catch {
+      // ignore
+    }
+  },
+
   sendDmMessage: async (conversationId, content, parentMessageId) => {
     if (!canUseEncryptedFeatures()) {
       set({
@@ -1867,7 +2067,17 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const replyingTo = get().replyingTo
     const parentId = parentMessageId ?? replyingTo?.id ?? undefined
     const shouldClearInlineReply = !parentMessageId
+    const clientNonce = generateClientNonce()
     const payloadStr = encodePayload({ v: 1, type: 'text', text: content })
+    const optimisticMessage = buildOptimisticMessage({
+      targetId: conversationId,
+      content,
+      parentMessageId: parentId,
+      conversationId,
+      clientNonce
+    })
+
+    upsertOptimisticMessage(conversationId, optimisticMessage, set)
 
     // For DMs, wait briefly for the other participant to join the group.
     // When both parties are on new devices, the group creator may have a solo
@@ -1888,11 +2098,17 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
     if (encrypted) {
       cacheSentPlaintext(encrypted.ciphertext, content)
-      pushToChannel(topic, 'new_message', {
+      const pushed = await pushToChannelWithAck(topic, 'new_message', {
         ciphertext: encrypted.ciphertext,
         mls_epoch: encrypted.epoch,
+        client_nonce: clientNonce,
         ...(parentId && { parent_message_id: parentId })
       })
+      if (!pushed) {
+        updateOptimisticMessageState(conversationId, clientNonce, 'failed', set)
+        set({ encryptionError: 'Message could not be sent. Please try again.' })
+        return
+      }
       if (shouldClearInlineReply) {
         set({ replyingTo: null })
       }
@@ -1931,11 +2147,17 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
     if (freshEncrypted) {
       cacheSentPlaintext(freshEncrypted.ciphertext, content)
-      pushToChannel(topic, 'new_message', {
+      const pushed = await pushToChannelWithAck(topic, 'new_message', {
         ciphertext: freshEncrypted.ciphertext,
         mls_epoch: freshEncrypted.epoch,
+        client_nonce: clientNonce,
         ...(parentId && { parent_message_id: parentId })
       })
+      if (!pushed) {
+        updateOptimisticMessageState(conversationId, clientNonce, 'failed', set)
+        set({ encryptionError: 'Message could not be sent. Please try again.' })
+        return
+      }
       if (shouldClearInlineReply) {
         set({ replyingTo: null })
       }
@@ -1943,6 +2165,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       return
     }
 
+    updateOptimisticMessageState(conversationId, clientNonce, 'failed', set)
     set({ encryptionError: 'Conversation encryption is still syncing. Please try again.' })
   },
 
@@ -2063,18 +2286,26 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       return
     }
 
+    const replyTarget = get().replyingTo
+    const threadParentId = parent.id
+    const replyTargetId =
+      replyTarget &&
+      (replyTarget.id === threadParentId || replyTarget.parent_message_id === threadParentId)
+        ? replyTarget.id
+        : threadParentId
+
     const trimmed = content.trim()
     if (!trimmed) {
       return
     }
 
     if (parent.channel_id) {
-      await get().sendMessage(parent.channel_id, trimmed, parent.id)
+      await get().sendMessage(parent.channel_id, trimmed, replyTargetId)
       return
     }
 
     if (parent.conversation_id) {
-      await get().sendDmMessage(parent.conversation_id, trimmed, parent.id)
+      await get().sendDmMessage(parent.conversation_id, trimmed, replyTargetId)
     }
   },
 
@@ -2617,6 +2848,132 @@ async function handleReactionUpdate(
 
 }
 
+function buildOptimisticMessage(args: {
+  targetId: string
+  content: string
+  parentMessageId?: string
+  channelId?: string | null
+  conversationId?: string | null
+  serverId?: string | null
+  clientNonce: string
+}): Message {
+  const currentUser = useAuthStore.getState().user
+
+  return {
+    id: `local:${args.clientNonce}`,
+    content: args.content,
+    channel_id: args.channelId ?? null,
+    conversation_id: args.conversationId ?? null,
+    server_id: args.serverId ?? null,
+    sender_id: currentUser?.id ?? null,
+    sender: currentUser
+      ? {
+          id: currentUser.id,
+          username: currentUser.username,
+          display_name: currentUser.display_name,
+          avatar_url: currentUser.avatar_url
+        }
+      : null,
+    inserted_at: new Date().toISOString(),
+    expires_at: null,
+    parent_message_id: args.parentMessageId ?? null,
+    attachments: [],
+    reactions: [],
+    encrypted: true,
+    decryptionFailed: false,
+    client_nonce: args.clientNonce,
+    delivery_state: 'sending'
+  }
+}
+
+function upsertOptimisticMessage(
+  targetId: string,
+  message: Message,
+  set: (fn: (s: MessageState) => Partial<MessageState>) => void
+): void {
+  set((s) => {
+    const existing = s.messagesByChannel[targetId] ?? []
+    const nextWindow = applyMessageWindow([...existing, message], 'append')
+    return {
+      messagesByChannel: {
+        ...s.messagesByChannel,
+        [targetId]: nextWindow.messages
+      },
+      hasMore: {
+        ...s.hasMore,
+        [targetId]: (s.hasMore[targetId] ?? false) || nextWindow.trimmedOlder
+      }
+    }
+  })
+}
+
+function updateOptimisticMessageState(
+  targetId: string,
+  clientNonce: string,
+  deliveryState: 'sending' | 'sent' | 'failed',
+  set: (fn: (s: MessageState) => Partial<MessageState>) => void
+): void {
+  set((s) => ({
+    messagesByChannel: {
+      ...s.messagesByChannel,
+      [targetId]: (s.messagesByChannel[targetId] ?? []).map((message) =>
+        message.client_nonce === clientNonce
+          ? { ...message, delivery_state: deliveryState }
+          : message
+      )
+    }
+  }))
+}
+
+function mergeIncomingMessage(
+  targetId: string,
+  incoming: Message,
+  set: (fn: (s: MessageState) => Partial<MessageState>) => void
+): void {
+  set((s) => {
+    const existing = s.messagesByChannel[targetId] ?? []
+    const optimisticIndex = incoming.client_nonce
+      ? existing.findIndex((message) => message.client_nonce === incoming.client_nonce)
+      : -1
+
+    if (optimisticIndex !== -1) {
+      const updated = [...existing]
+      updated[optimisticIndex] = {
+        ...incoming,
+        delivery_state: 'sent'
+      }
+      const nextWindow = applyMessageWindow(updated, 'append')
+      return {
+        messagesByChannel: {
+          ...s.messagesByChannel,
+          [targetId]: nextWindow.messages
+        },
+        hasMore: {
+          ...s.hasMore,
+          [targetId]: (s.hasMore[targetId] ?? false) || nextWindow.trimmedOlder
+        }
+      }
+    }
+
+    if (existing.some((message) => message.id === incoming.id)) {
+      return s
+    }
+
+    const nextWindow = applyMessageWindow([...existing, incoming], 'append')
+
+    return {
+      messagesByChannel: {
+        ...s.messagesByChannel,
+        [targetId]: nextWindow.messages
+      },
+      hasMore: {
+        ...s.hasMore,
+        [targetId]: (s.hasMore[targetId] ?? false) || nextWindow.trimmedOlder
+      }
+    }
+  })
+}
+
 /**
  * Handle a new real-time message (from WebSocket broadcast).
  */
@@ -2691,12 +3048,7 @@ async function handleNewMessage(
     }
   }
 
-  set((s) => ({
-    messagesByChannel: {
-      ...s.messagesByChannel,
-      [targetId]: [...(s.messagesByChannel[targetId] || []), processed]
-    }
-  }))
+  mergeIncomingMessage(targetId, { ...processed, delivery_state: 'sent' }, set)
 }
 
 /**
@@ -2778,10 +3130,12 @@ async function processIncomingMessage(
       expires_at: (msg.expires_at as string) || null,
       parent_message_id: (msg.parent_message_id as string) || null,
       attachments: (msg.attachments as Attachment[] | undefined) ?? [],
-      reactions: groupReactions(msg.reactions as RawReaction[] | undefined),
+      reactions: await resolveReactionGroups(targetId, msg.reactions as RawReaction[] | undefined),
       encrypted: true,
       decryptionFailed: !plaintext,
-      edited_at: (msg.edited_at as string) || undefined
+      edited_at: (msg.edited_at as string) || undefined,
+      client_nonce: (msg.client_nonce as string) || undefined,
+      delivery_state: 'sent'
     }
   }
 
@@ -2797,8 +3151,10 @@ async function processIncomingMessage(
     expires_at: (msg.expires_at as string) || null,
     parent_message_id: (msg.parent_message_id as string) || null,
     attachments: (msg.attachments as Attachment[] | undefined) ?? [],
-    reactions: groupReactions(msg.reactions as RawReaction[] | undefined),
-    edited_at: (msg.edited_at as string) || undefined
+    reactions: await resolveReactionGroups(targetId, msg.reactions as RawReaction[] | undefined),
+    edited_at: (msg.edited_at as string) || undefined,
+    client_nonce: (msg.client_nonce as string) || undefined,
+    delivery_state: 'sent'
   }
 
   const plaintextSearchText = getMessageSearchText(plaintextMessage)

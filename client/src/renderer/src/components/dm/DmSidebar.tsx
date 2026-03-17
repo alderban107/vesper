@@ -4,6 +4,7 @@ import { useDmStore, type DmConversation } from '../../stores/dmStore'
 import { useAuthStore } from '../../stores/authStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useUnreadStore } from '../../stores/unreadStore'
+import { usePresenceStore } from '../../stores/presenceStore'
 import Avatar from '../ui/Avatar'
 
 export default function DmSidebar(): React.JSX.Element {
@@ -15,6 +16,7 @@ export default function DmSidebar(): React.JSX.Element {
   const closeMobileNav = useUIStore((s) => s.closeMobileNav)
   const currentUserId = useAuthStore((s) => s.user?.id)
   const dmUnreads = useUnreadStore((s) => s.dmUnreads)
+  const getPresenceStatus = usePresenceStore((s) => s.getStatus)
   const isMobileLayout = typeof window !== 'undefined' && window.innerWidth <= 768
 
   useEffect(() => {
@@ -62,6 +64,8 @@ export default function DmSidebar(): React.JSX.Element {
         ) : (
           conversations.map((conv) => {
             const unread = dmUnreads[conv.id] || 0
+            const otherParticipant = conv.participants.find((p) => p.user_id !== currentUserId)
+            const liveStatus = otherParticipant ? getPresenceStatus(otherParticipant.user_id) : undefined
             return (
               <button
                 data-testid="dm-row"
@@ -75,23 +79,11 @@ export default function DmSidebar(): React.JSX.Element {
               >
                 <div className="shrink-0">
                   <Avatar
-                    userId={(() => {
-                      const others = conv.participants.filter((p) => p.user_id !== currentUserId)
-                      return others[0]?.user_id || conv.id
-                    })()}
-                    avatarUrl={(() => {
-                      const others = conv.participants.filter((p) => p.user_id !== currentUserId)
-                      return others[0]?.user?.avatar_url
-                    })()}
+                    userId={otherParticipant?.user_id || conv.id}
+                    avatarUrl={otherParticipant?.user?.avatar_url}
                     displayName={getDisplayName(conv)}
                     size="sm"
-                    status={(() => {
-                      const others = conv.participants.filter((p) => p.user_id !== currentUserId)
-                      const status = others[0]?.user?.status
-                      return status === 'online' || status === 'idle' || status === 'dnd' || status === 'offline'
-                        ? status
-                        : undefined
-                    })()}
+                    status={liveStatus}
                   />
                 </div>
                 <div className="min-w-0 flex-1">

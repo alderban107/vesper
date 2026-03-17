@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useServerStore } from '../../stores/serverStore'
 import { useMessageStore, type Message } from '../../stores/messageStore'
 import { useUnreadStore } from '../../stores/unreadStore'
@@ -12,16 +12,23 @@ export default function MessageList(): React.JSX.Element {
   const allMessages = useMessageStore((s) =>
     activeChannelId ? (s.messagesByChannel[activeChannelId] ?? EMPTY_MESSAGES) : EMPTY_MESSAGES
   )
-  const messages = allMessages.filter((message) => !message.parent_message_id)
+  const messages = useMemo(
+    () => allMessages.filter((message) => !message.parent_message_id),
+    [allMessages]
+  )
   const typingUsers = useMessageStore((s) =>
     activeChannelId ? (s.typingUsers[activeChannelId] ?? EMPTY_TYPING) : EMPTY_TYPING
   )
   const hasMore = useMessageStore((s) =>
     activeChannelId ? s.hasMore[activeChannelId] ?? true : false
   )
+  const hasNewer = useMessageStore((s) =>
+    activeChannelId ? s.hasNewer[activeChannelId] ?? false : false
+  )
   const joinChannelChat = useMessageStore((s) => s.joinChannelChat)
   const leaveChannelChat = useMessageStore((s) => s.leaveChannelChat)
   const fetchOlderMessages = useMessageStore((s) => s.fetchOlderMessages)
+  const fetchNewerMessages = useMessageStore((s) => s.fetchNewerMessages)
   const markChannelRead = useUnreadStore((s) => s.markChannelRead)
 
   const prevChannelRef = useRef<string | null>(null)
@@ -43,14 +50,22 @@ export default function MessageList(): React.JSX.Element {
     }
   }
 
+  const handleLoadNewer = (): void => {
+    if (hasNewer && activeChannelId) {
+      fetchNewerMessages(activeChannelId)
+    }
+  }
+
   return (
     <MessageFeed
       messages={messages}
       messageLookup={allMessages}
       typingUsers={typingUsers}
       hasMore={hasMore}
+      hasNewer={hasNewer}
       emptyState="No messages yet. Say something!"
       onLoadMore={handleLoadMore}
+      onLoadNewer={handleLoadNewer}
       onMarkRead={(messageId) => {
         if (activeChannelId) {
           markChannelRead(activeChannelId, messageId)

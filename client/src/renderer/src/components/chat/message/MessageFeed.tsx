@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { forwardRef, type HTMLAttributes, useEffect, useMemo, useRef, useState } from 'react'
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { useMessageStore, type Message } from '../../../stores/messageStore'
 import { useServerStore } from '../../../stores/serverStore'
 import { useDmStore } from '../../../stores/dmStore'
@@ -16,19 +17,37 @@ interface Props {
   messageLookup?: Message[]
   typingUsers: TypingUser[]
   hasMore: boolean
+  hasNewer: boolean
   emptyState: string
   onLoadMore: () => void
+  onLoadNewer: () => void
   onMarkRead: (messageId: string) => void
   isThreadView?: boolean
 }
+
+const PREPEND_BASE_INDEX = 100_000
+
+const FeedScroller = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>(
+  function FeedScroller({ className, ...props }, ref) {
+    return <div ref={ref} {...props} className={className ? `vesper-message-feed ${className}` : 'vesper-message-feed'} />
+  }
+)
+
+const FeedList = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>(
+  function FeedList({ className, ...props }, ref) {
+    return <div ref={ref} {...props} className={className ? `vesper-message-feed-inner ${className}` : 'vesper-message-feed-inner'} />
+  }
+)
 
 export default function MessageFeed({
   messages,
   messageLookup,
   typingUsers,
   hasMore,
+  hasNewer,
   emptyState,
   onLoadMore,
+  onLoadNewer,
   onMarkRead,
   isThreadView = false
 }: Props): React.JSX.Element {
@@ -37,13 +56,17 @@ export default function MessageFeed({
   const pendingJumpTarget = useMessageStore((s) => s.pendingJumpTarget)
   const clearPendingJumpTarget = useMessageStore((s) => s.clearPendingJumpTarget)
 
-  const bottomRef = useRef<HTMLDivElement>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
+  const virtuosoRef = useRef<VirtuosoHandle | null>(null)
   const onLoadMoreRef = useRef(onLoadMore)
+  const onLoadNewerRef = useRef(onLoadNewer)
+  const onMarkReadRef = useRef(onMarkRead)
   const lastJumpRequestIdRef = useRef<number | null>(null)
   const jumpAttemptsRef = useRef(0)
   const highlightTimeoutRef = useRef<number | null>(null)
+  const previousMessagesRef = useRef<Message[]>(messages)
+  const previousIdentityRef = useRef<string | null>(null)
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null)
+  const [firstItemIndex, setFirstItemIndex] = useState(PREPEND_BASE_INDEX)
 
   const currentTargetId = selectedConversationId ?? activeChannelId
   const pendingForCurrentTarget = Boolean(
@@ -52,10 +75,22 @@ export default function MessageFeed({
       currentTargetId &&
       pendingJumpTarget.targetId === currentTargetId
   )
+  const feedIdentity = isThreadView
+    ? `thread:${messageLookup?.[0]?.id ?? 'none'}`
+    : `scope:${currentTargetId ?? 'none'}`
+  const lastMessageId = messages[messages.length - 1]?.id ?? null
 
   useEffect(() => {
     onLoadMoreRef.current = onLoadMore
   }, [onLoadMore])
+
+  useEffect(() => {
+    onLoadNewerRef.current = onLoadNewer
+  }, [onLoadNewer])
+
+  useEffect(() => {
+    onMarkReadRef.current = onMarkRead
+  }, [onMarkRead])
 
   useEffect(() => {
     const nextRequestId = pendingJumpTarget?.requestId ?? null
@@ -74,50 +109,79 @@ export default function MessageFeed({
   }, [])
 
   useEffect(() => {
-    if (pendingForCurrentTarget) {
+    if (previousIdentityRef.current !== feedIdentity) {
+      previousIdentityRef.current = feedIdentity
+      previousMessagesRef.current = messages
+      setFirstItemIndex(PREPEND_BASE_INDEX - messages.length)
+      setHighlightedMessageId(null)
+      jumpAttemptsRef.current = 0
       return
     }
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages.length, pendingForCurrentTarget])
+
+    const previousMessages = previousMessagesRef.current
+    const previousFirstId = previousMessages[0]?.id
+    const previousLastId = previousMessages[previousMessages.length - 1]?.id
+    const nextFirstId = messages[0]?.id
+    const nextLastId = messages[messages.length - 1]?.id
+    const nextFirstPreviousIndex = nextFirstId
+      ? previousMessages.findIndex((message) => message.id === nextFirstId)
+      : -1
+
+    if (
+      previousMessages.length > 0 &&
+      nextFirstId &&
+      nextFirstId !== previousFirstId &&
+      nextFirstPreviousIndex > 0
+    ) {
+      setFirstItemIndex((value) => value + nextFirstPreviousIndex)
+    } else if (
+      previousMessages.length > 0 &&
+      messages.length > previousMessages.length &&
+      previousFirstId &&
+      nextFirstId !== previousFirstId &&
+      previousLastId === nextLastId
+    ) {
+      const prependedCount = messages.findIndex((message) => message.id === previousFirstId)
+      if (prependedCount > 0) {
+        setFirstItemIndex((value) => value - prependedCount)
+      }
+    }
+
+    previousMessagesRef.current = messages
+  }, [feedIdentity, messages])
 
   useEffect(() => {
-    if (pendingForCurrentTarget) {
+    if (pendingForCurrentTarget || !lastMessageId) {
       return
     }
 
-    const lastMessage = messages[messages.length - 1]
-    if (lastMessage) {
-      onMarkRead(lastMessage.id)
-    }
-  }, [messages, onMarkRead, pendingForCurrentTarget])
+    onMarkReadRef.current(lastMessageId)
+  }, [lastMessageId, pendingForCurrentTarget])
 
   useEffect(() => {
     if (!pendingForCurrentTarget || !pendingJumpTarget || isThreadView) {
       return
     }
 
-    const messageExists = messages.some((message) => message.id === pendingJumpTarget.messageId)
-    if (messageExists) {
-      const container = containerRef.current
-      const targetElement = container?.querySelector<HTMLElement>(
-        `[data-message-id="${pendingJumpTarget.messageId}"]`
-      )
-
-      if (targetElement) {
-        targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
-        if (highlightTimeoutRef.current !== null) {
-          window.clearTimeout(highlightTimeoutRef.current)
-        }
-        setHighlightedMessageId(pendingJumpTarget.messageId)
-        highlightTimeoutRef.current = window.setTimeout(() => {
-          setHighlightedMessageId((current) =>
-            current === pendingJumpTarget.messageId ? null : current
-          )
-          highlightTimeoutRef.current = null
-        }, 2200)
-        clearPendingJumpTarget()
-        jumpAttemptsRef.current = 0
+    const targetIndex = messages.findIndex((message) => message.id === pendingJumpTarget.messageId)
+    if (targetIndex !== -1) {
+      virtuosoRef.current?.scrollToIndex({
+        index: firstItemIndex + targetIndex,
+        align: 'center',
+        behavior: 'smooth'
+      })
+      if (highlightTimeoutRef.current !== null) {
+        window.clearTimeout(highlightTimeoutRef.current)
       }
+      setHighlightedMessageId(pendingJumpTarget.messageId)
+      highlightTimeoutRef.current = window.setTimeout(() => {
+        setHighlightedMessageId((current) =>
+          current === pendingJumpTarget.messageId ? null : current
+        )
+        highlightTimeoutRef.current = null
+      }, 2200)
+      clearPendingJumpTarget()
+      jumpAttemptsRef.current = 0
       return
     }
 
@@ -137,17 +201,6 @@ export default function MessageFeed({
     pendingForCurrentTarget,
     pendingJumpTarget
   ])
-
-  const handleScroll = (): void => {
-    const container = containerRef.current
-    if (!container || !hasMore) {
-      return
-    }
-
-    if (container.scrollTop === 0) {
-      onLoadMore()
-    }
-  }
 
   const formatDayLabel = (isoString: string): string => {
     const date = new Date(isoString)
@@ -170,48 +223,83 @@ export default function MessageFeed({
     })
   }
 
-  const shouldShowDateDivider = (message: Message, index: number): boolean => {
-    if (index === 0) {
+  const lookup = messageLookup ?? messages
+
+  const shouldShowDateDivider = (message: Message, relativeIndex: number): boolean => {
+    if (relativeIndex === 0) {
       return true
     }
 
-    return new Date(message.inserted_at).toDateString() !== new Date(messages[index - 1].inserted_at).toDateString()
+    const previousMessage = messages[relativeIndex - 1]
+    if (!previousMessage) {
+      return true
+    }
+
+    return new Date(message.inserted_at).toDateString() !== new Date(previousMessage.inserted_at).toDateString()
   }
 
+  const followOutput = useMemo(
+    () =>
+      (atBottom: boolean): 'auto' | false =>
+        !pendingForCurrentTarget && atBottom ? 'auto' : false,
+    [pendingForCurrentTarget]
+  )
+
   return (
-    <div
-      ref={containerRef}
-      onScroll={handleScroll}
-      className="vesper-message-feed"
-    >
-      {messages.length === 0 ? (
+    messages.length === 0 ? (
+      <div className="vesper-message-feed">
         <div className="vesper-message-empty-state">
           <p>{emptyState}</p>
         </div>
-      ) : (
-        <div className="vesper-message-feed-inner">
-          {messages.map((message, index) => (
+      </div>
+    ) : (
+      <Virtuoso
+        ref={virtuosoRef}
+        key={feedIdentity}
+        data={messages}
+        firstItemIndex={firstItemIndex}
+        initialTopMostItemIndex={Math.max(firstItemIndex + messages.length - 1, firstItemIndex)}
+        followOutput={followOutput}
+        startReached={() => {
+          if (hasMore) {
+            onLoadMoreRef.current()
+          }
+        }}
+        endReached={() => {
+          if (hasNewer) {
+            onLoadNewerRef.current()
+          }
+        }}
+        increaseViewportBy={{ top: 600, bottom: 800 }}
+        computeItemKey={(_index, message) => message.id}
+        className="vesper-message-feed-root"
+        components={{
+          Scroller: FeedScroller,
+          List: FeedList,
+          Footer: () => <TypingIndicator typingUsers={typingUsers} />
+        }}
+        itemContent={(index, message) => {
+          const relativeIndex = index - firstItemIndex
+          const previousMessage = relativeIndex > 0 ? messages[relativeIndex - 1] : null
+
+          return (
             <div
-              key={message.id}
               data-message-id={message.id}
               className={highlightedMessageId === message.id ? 'vesper-message-jump-target' : undefined}
             >
-              {shouldShowDateDivider(message, index) && (
+              {shouldShowDateDivider(message, relativeIndex) && (
                 <DateDivider label={formatDayLabel(message.inserted_at)} />
               )}
               <MessageItem
                 message={message}
-                messages={messageLookup ?? messages}
-                previousMessage={index > 0 ? messages[index - 1] : null}
+                messages={lookup}
+                previousMessage={previousMessage}
+                isThreadView={isThreadView}
               />
             </div>
-          ))}
-        </div>
-      )}
-
-      <TypingIndicator typingUsers={typingUsers} />
-
-      <div ref={bottomRef} />
-    </div>
+          )
+        }}
+      />
+    )
   )
 }

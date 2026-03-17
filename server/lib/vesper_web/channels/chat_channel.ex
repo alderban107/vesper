@@ -37,6 +37,12 @@ defmodule VesperWeb.ChatChannel do
         %{"ciphertext" => ciphertext, "mls_epoch" => epoch} = params,
         socket
       ) do
+    client_nonce =
+      case Map.get(params, "client_nonce") do
+        value when is_binary(value) and value != "" -> value
+        _ -> nil
+      end
+
     start_time = System.monotonic_time()
 
     if Servers.user_can_send_messages_in_channel?(
@@ -59,7 +65,15 @@ defmodule VesperWeb.ChatChannel do
         case Chat.create_message(attrs) do
           {:ok, message} ->
             message = maybe_link_attachments(message, params)
-            broadcast!(socket, "new_message", encrypted_message_payload(message, :channel_id))
+            broadcast!(
+              socket,
+              "new_message",
+              encrypted_message_payload(
+                message,
+                :channel_id,
+                if(client_nonce, do: %{client_nonce: client_nonce}, else: %{})
+              )
+            )
 
             :telemetry.execute(
               [:vesper, :chat, :message, :send],

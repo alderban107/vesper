@@ -47,6 +47,7 @@ export function resetAllStores(): void {
     messagesByChannel: {},
     typingUsers: {},
     hasMore: {},
+    hasNewer: {},
     replyingTo: null,
     editingMessage: null,
     encryptionError: null,

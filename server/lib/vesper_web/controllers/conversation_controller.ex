@@ -78,6 +78,12 @@ defmodule VesperWeb.ConversationController do
             before -> Keyword.put(opts, :before, before)
           end
 
+        opts =
+          case params["after"] do
+            nil -> opts
+            after_cursor -> Keyword.put(opts, :after, after_cursor)
+          end
+
         messages = Chat.list_conversation_messages(conversation_id, opts)
         json(conn, %{messages: Enum.map(messages, &message_json/1)})
     end

@@ -100,7 +100,7 @@ defmodule VesperWeb.ChannelHelpers do
 
   def maybe_link_attachments(message, _params), do: message
 
-  def encrypted_message_payload(message, id_field) do
+  def encrypted_message_payload(message, id_field, extra \\ %{}) do
     payload = %{
       id: message.id,
       ciphertext: Base.encode64(message.ciphertext),
@@ -114,7 +114,9 @@ defmodule VesperWeb.ChannelHelpers do
       reactions: reactions_json(message)
     }
 
-    Map.put(payload, id_field, Map.get(message, id_field))
+    payload
+    |> Map.put(id_field, Map.get(message, id_field))
+    |> Map.merge(extra)
   end
 
   def handle_edit_message(id, ciphertext_b64, epoch, socket) do

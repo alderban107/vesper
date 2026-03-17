@@ -301,6 +301,7 @@ defmodule Vesper.Chat do
   def list_channel_messages(channel_id, opts \\ []) do
     limit = Keyword.get(opts, :limit, 50)
     before = Keyword.get(opts, :before)
+    after_cursor = Keyword.get(opts, :after)
 
     query =
       from(m in Message,
@@ -317,12 +318,20 @@ defmodule Vesper.Chat do
         query
       end
 
+    query =
+      if after_cursor do
+        from(m in query, where: m.inserted_at > ^after_cursor)
+      else
+        query
+      end
+
     Repo.all(query)
   end
 
   def list_conversation_messages(conversation_id, opts \\ []) do
     limit = Keyword.get(opts, :limit, 50)
     before = Keyword.get(opts, :before)
+    after_cursor = Keyword.get(opts, :after)
 
     query =
       from(m in Message,
@@ -335,6 +344,13 @@ defmodule Vesper.Chat do
     query =
       if before do
         from(m in query, where: m.inserted_at < ^before)
+      else
+        query
+      end
+
+    query =
+      if after_cursor do
+        from(m in query, where: m.inserted_at > ^after_cursor)
       else
         query
       end

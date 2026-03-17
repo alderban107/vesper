@@ -347,7 +347,10 @@ interface ServerState {
   deleteServerEmoji: (serverId: string, emojiId: string) => Promise<boolean>
 
   updateChannelTtl: (channelId: string, ttl: number | null) => void
-  updateMemberUser: (userId: string, userData: { display_name: string | null; username: string }) => void
+  updateMemberUser: (
+    userId: string,
+    userData: { display_name: string | null; username: string; avatar_url?: string | null }
+  ) => void
 
   getActiveServer: () => Server | undefined
   getActiveChannel: () => Channel | undefined
@@ -1007,7 +1010,16 @@ export const useServerStore = create<ServerState>((set, get) => ({
     set((s) => ({
       members: s.members.map((m) =>
         m.user_id === userId
-          ? { ...m, user: { ...m.user, display_name: userData.display_name, username: userData.username } }
+          ? {
+              ...m,
+              user: {
+                ...m.user,
+                display_name: userData.display_name,
+                username: userData.username,
+                avatar_url:
+                  userData.avatar_url === undefined ? m.user.avatar_url : userData.avatar_url
+              }
+            }
           : m
       )
     }))

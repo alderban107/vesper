@@ -79,16 +79,37 @@ export const useDmStore = create<DmState>((set, get) => ({
       const res = await apiFetch('/api/v1/conversations')
       if (res.ok) {
         const data = await res.json()
-        const conversations = data.conversations as DmConversation[]
-        const selectedConversationId = get().selectedConversationId
-        const restoredConversation = conversations.find((conversation) => conversation.id === selectedConversationId)
+        const incomingConversations = data.conversations as DmConversation[]
 
-        set({
-          conversations,
-          selectedConversationId: restoredConversation?.id ?? null
+        set((state) => {
+          const mergedById = new Map<string, DmConversation>()
+
+          for (const conversation of state.conversations) {
+            mergedById.set(conversation.id, conversation)
+          }
+
+          for (const conversation of incomingConversations) {
+            mergedById.set(conversation.id, conversation)
+          }
+
+          const conversations = [...mergedById.values()].sort((left, right) => {
+            const leftTs = left.last_message?.inserted_at ?? left.inserted_at
+            const rightTs = right.last_message?.inserted_at ?? right.inserted_at
+            return new Date(rightTs).getTime() - new Date(leftTs).getTime()
+          })
+
+          const selectedConversationId = state.selectedConversationId
+          const restoredConversation = selectedConversationId
+            ? mergedById.get(selectedConversationId) ?? null
+            : null
+
+          writeStoredConversationId(restoredConversation?.id ?? null)
+
+          return {
+            conversations,
+            selectedConversationId: restoredConversation?.id ?? null
+          }
         })
-
-        writeStoredConversationId(restoredConversation?.id ?? null)
       }
     } catch {
       // ignore

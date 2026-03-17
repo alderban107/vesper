@@ -27,6 +27,12 @@ defmodule VesperWeb.MessageController do
             before -> Keyword.put(opts, :before, before)
           end
 
+        opts =
+          case params["after"] do
+            nil -> opts
+            after_cursor -> Keyword.put(opts, :after, after_cursor)
+          end
+
         messages = Chat.list_channel_messages(channel_id, opts)
 
         json(conn, %{

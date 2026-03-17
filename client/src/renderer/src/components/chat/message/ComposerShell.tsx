@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { FileIcon, X } from 'lucide-react'
-import type { Message } from '../../../stores/messageStore'
+import { parseMessageContent, type Message } from '../../../stores/messageStore'
 
 export interface StagedFile {
   file: File
@@ -25,6 +25,16 @@ function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function getReplyPreview(message: Message): string {
+  const parsed = parseMessageContent(message.content || '')
+
+  if (parsed.type === 'file') {
+    return parsed.text || parsed.file.name || 'Sent a file'
+  }
+
+  return parsed.text || ''
 }
 
 export default function ComposerShell({
@@ -85,7 +95,7 @@ export default function ComposerShell({
             <div className="vesper-composer-reply-copy">
               <span className="vesper-composer-reply-label">Replying to</span>
               <span className="vesper-composer-reply-author">{getReplyAuthor(replyingTo)}</span>
-              <span className="vesper-composer-reply-preview">{replyingTo.content?.slice(0, 96)}</span>
+              <span className="vesper-composer-reply-preview">{getReplyPreview(replyingTo).slice(0, 96)}</span>
             </div>
             <button
               type="button"

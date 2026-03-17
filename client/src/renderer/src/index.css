@@ -176,6 +176,28 @@
   transition: background-color 0.16s ease;
 }
 
+.vesper-message-row-sending {
+  opacity: 0.68;
+}
+
+.vesper-message-row-failed {
+  opacity: 0.88;
+}
+
+.vesper-message-row-failed .vesper-message-content {
+  color: var(--color-text-primary);
+}
+
+.vesper-message-delivery-note {
+  margin-top: 0.2rem;
+  font-size: 0.72rem;
+  color: var(--color-text-faint);
+}
+
+.vesper-message-row-failed .vesper-message-delivery-note {
+  color: var(--color-error);
+}
+
 .vesper-avatar-shell {
   position: relative;
   display: inline-flex;
@@ -538,7 +560,9 @@
 }
 
 .vesper-message-content {
-  line-height: 1.45;
+  line-height: 1.375;
+  word-wrap: break-word;
+  user-select: text;
 }
 
 .vesper-message-reply {
@@ -572,35 +596,57 @@
 
 .vesper-message-reactions {
   display: flex;
+  flex-direction: row;
   flex-wrap: wrap;
-  gap: 0.35rem;
-  margin-top: 0.55rem;
+  align-items: center;
+  gap: 0.25rem;
+  margin-top: 0.25rem;
+  margin-bottom: 0.12rem;
 }
 
 .vesper-message-reaction {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  border: 1px solid var(--color-border);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--color-bg-secondary) 74%, transparent);
-  padding: 0.26rem 0.6rem;
+  align-self: center;
+  gap: 0.25rem;
+  min-width: 2.5rem;
+  height: 1.75rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 92%, transparent);
+  border-radius: 0.5rem;
+  background: color-mix(in srgb, var(--color-bg-secondary) 82%, transparent);
+  padding: 0 0.5rem;
   font-size: 0.74rem;
   color: var(--color-text-muted);
   cursor: pointer;
-  transition: border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease;
+  opacity: 0.84;
+  transition: border-color 0.12s ease, background-color 0.12s ease, color 0.12s ease, opacity 0.2s linear;
 }
 
 .vesper-message-reaction:hover {
-  border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
+  opacity: 1;
+  border-color: color-mix(in srgb, var(--color-border) 30%, var(--color-accent) 35%);
+  background: color-mix(in srgb, var(--color-bg-tertiary) 64%, transparent);
   color: var(--color-text-primary);
 }
 
 .vesper-message-reaction-active {
-  border-color: color-mix(in srgb, var(--color-accent) 58%, transparent);
-  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  opacity: 1;
+  border-color: rgba(200, 162, 78, 0.5);
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
   color: var(--color-accent-text);
-  box-shadow: 0 0 16px rgba(200, 162, 78, 0.16);
+}
+
+.vesper-message-reaction-count {
+  min-width: 0.56rem;
+  text-align: center;
+  white-space: nowrap;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.vesper-message-reaction-active .vesper-message-reaction-count {
+  color: color-mix(in srgb, white 84%, var(--color-accent) 16%);
 }
 
 .vesper-message-row-thread-active {
@@ -2675,22 +2721,151 @@
   color: var(--color-text-faintest);
 }
 
+.vesper-composer-autocomplete {
+  width: min(28rem, 100%);
+  border: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
+  border-radius: 1rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent),
+    color-mix(in srgb, var(--color-bg-secondary) 96%, transparent);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+.vesper-composer-autocomplete-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 0.9rem;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  color: var(--color-text-secondary);
+}
+
+.vesper-composer-autocomplete-item-selected {
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  color: var(--color-text-primary);
+}
+
+.vesper-composer-autocomplete-icon {
+  width: 1.9rem;
+  height: 1.9rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  color: var(--color-accent);
+  font-size: 0.95rem;
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+
+.vesper-composer-autocomplete-copy {
+  min-width: 0;
+}
+
+.vesper-composer-autocomplete-label {
+  font-size: 0.9rem;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vesper-composer-autocomplete-sublabel {
+  margin-top: 0.1rem;
+  font-size: 0.72rem;
+  color: var(--color-text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vesper-inline-mention {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  border: 0;
+  border-radius: 0.45rem;
+  padding: 0.05rem 0.38rem;
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  color: var(--color-accent);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.vesper-inline-mention:hover {
+  background: color-mix(in srgb, var(--color-accent) 28%, transparent);
+  color: var(--color-accent-text-hover);
+}
+
+.vesper-inline-mention-everyone {
+  cursor: default;
+}
+
+.vesper-inline-channel-mention {
+  color: var(--color-text-primary);
+}
+
+.vesper-emoji,
+.vesper-emoji-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  vertical-align: middle;
+}
+
+.vesper-emoji-button {
+  cursor: pointer;
+}
+
+.vesper-emoji-text {
+  display: block;
+  line-height: 1;
+}
+
+.vesper-emoji-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  aspect-ratio: 1 / 1;
+}
+
 .vesper-inline-custom-emoji {
   display: inline-block;
   width: 1.35rem;
   height: 1.35rem;
   margin: 0 0.08rem;
   vertical-align: -0.28rem;
-  object-fit: contain;
 }
 
 .vesper-message-reaction-emoji {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 1rem;
-  min-height: 1rem;
+  width: 1rem;
+  height: 1rem;
+  position: relative;
+  top: -1px;
+}
+
+.vesper-message-reaction-emoji .vesper-emoji-text {
   font-size: 1rem;
+}
+
+.vesper-message-reaction-emoji .vesper-emoji-image {
+  position: relative;
+  top: 1px;
 }
 
 .vesper-inline-image-shell {

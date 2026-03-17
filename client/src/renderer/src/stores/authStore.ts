@@ -31,6 +31,77 @@ interface User {
   status: string
 }
 
+function cacheBustAssetUrl(url: string | null | undefined): string | null {
+  if (!url) {
+    return null
+  }
+
+  const separator = url.includes('?') ? '&' : '?'
+  return `${url}${separator}v=${Date.now()}`
+}
+
+async function syncUpdatedUserCaches(user: User): Promise<void> {
+  const [{ useServerStore }, { useDmStore }, { useMessageStore }] = await Promise.all([
+    import('./serverStore'),
+    import('./dmStore'),
+    import('./messageStore')
+  ])
+
+  useServerStore.getState().updateMemberUser(user.id, {
+    display_name: user.display_name,
+    username: user.username,
+    avatar_url: user.avatar_url
+  })
+
+  useDmStore.setState((state) => ({
+    conversations: state.conversations.map((conversation) => ({
+      ...conversation,
+      participants: conversation.participants.map((participant) =>
+        participant.user_id === user.id
+          ? {
+              ...participant,
+              user: {
+                ...participant.user,
+                username: user.username,
+                display_name: user.display_name,
+                avatar_url: user.avatar_url,
+                status: user.status
+              }
+            }
+          : participant
+      )
+    }))
+  }))
+
+  useMessageStore.setState((state) => ({
+    messagesByChannel: Object.fromEntries(
+      Object.entries(state.messagesByChannel).map(([targetId, messages]) => [
+        targetId,
+        messages.map((message) =>
+          message.sender_id === user.id
+            ? {
+                ...message,
+                sender: message.sender
+                  ? {
+                      ...message.sender,
+                      username: user.username,
+                      display_name: user.display_name,
+                      avatar_url: user.avatar_url
+                    }
+                  : {
+                      id: user.id,
+                      username: user.username,
+                      display_name: user.display_name,
+                      avatar_url: user.avatar_url
+                    }
+              }
+            : message
+        )
+      ])
+    )
+  }))
+}
+
 export interface AuthDevice {
   id: string
   client_id: string
@@ -748,6 +819,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (res.ok) {
         const data = await res.json()
         set({ user: data.user })
+        await syncUpdatedUserCaches(data.user as User)
         const serverId = useServerStore.getState().activeServerId
         if (serverId) {
           useServerStore.getState().fetchMembers(serverId)
@@ -768,7 +840,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const res = await apiUpload('/api/v1/auth/avatar', formData)
       if (res.ok) {
         const data = await res.json()
-        set({ user: data.user })
+        const nextUser = {
+          ...(data.user as User),
+          avatar_url: cacheBustAssetUrl((data.user as User).avatar_url)
+        }
+        set({ user: nextUser })
+        await syncUpdatedUserCaches(nextUser)
         const serverId = useServerStore.getState().activeServerId
         if (serverId) {
           useServerStore.getState().fetchMembers(serverId)
@@ -789,7 +866,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const res = await apiUpload('/api/v1/auth/banner', formData)
       if (res.ok) {
         const data = await res.json()
-        set({ user: data.user })
+        const nextUser = {
+          ...(data.user as User),
+          banner_url: cacheBustAssetUrl((data.user as User).banner_url)
+        }
+        set({ user: nextUser })
+        await syncUpdatedUserCaches(nextUser)
         const serverId = useServerStore.getState().activeServerId
         if (serverId) {
           useServerStore.getState().fetchMembers(serverId)

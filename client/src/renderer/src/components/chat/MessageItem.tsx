@@ -31,6 +31,7 @@ interface Props {
   message: Message
   messages?: Message[]
   previousMessage?: Message | null
+  isThreadView?: boolean
 }
 
 function formatTime(isoString: string): string {
@@ -59,7 +60,11 @@ function extractUrls(text: string): string[] {
   return [...new Set(matches)].slice(0, 3)
 }
 
-function getMessageGroupState(message: Message, previousMessage?: Message | null): boolean {
+function getMessageGroupState(
+  message: Message,
+  previousMessage?: Message | null,
+  isThreadView = false
+): boolean {
   if (!previousMessage) {
     return true
   }
@@ -72,11 +77,11 @@ function getMessageGroupState(message: Message, previousMessage?: Message | null
     return true
   }
 
-  if (message.parent_message_id) {
+  if (!isThreadView && message.parent_message_id) {
     return true
   }
 
-  if (previousMessage.parent_message_id) {
+  if (!isThreadView && previousMessage.parent_message_id) {
     return true
   }
 
@@ -155,10 +160,16 @@ function useExpiryLabel(expiresAt: string | null): string | null {
   return formatExpiryTooltip(expiresAt, nowMs)
 }
 
-export default function MessageItem({ message, messages, previousMessage }: Props): React.JSX.Element {
+export default function MessageItem({
+  message,
+  messages,
+  previousMessage,
+  isThreadView = false
+}: Props): React.JSX.Element {
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
   const [editText, setEditText] = useState('')
   const editRef = useRef<HTMLTextAreaElement>(null)
+  const reactionAnchorRef = useRef<HTMLDivElement>(null)
   const members = useServerStore((s) => s.members)
   const myUser = useAuthStore((s) => s.user)
   const myId = myUser?.id
@@ -259,9 +270,11 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
     void openThread(threadAnchorMessage)
   }
 
-  const startsGroup = getMessageGroupState(message, previousMessage)
+  const startsGroup = getMessageGroupState(message, previousMessage, isThreadView)
   const expiryLabel = useExpiryLabel(message.expires_at)
   const isFocusedMessage = focusedMessageId === message.id
+  const isSending = message.delivery_state === 'sending'
+  const isFailed = message.delivery_state === 'failed'
 
   useEffect(() => {
     if (!isFocusedMessage) {
@@ -349,7 +362,20 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
 
   // Text content for display (caption for file messages, full text for text messages)
   const displayText = parsed.type === 'file' ? parsed.text : parsed.text
-  const replyPreview = parentMessage?.content?.slice(0, 72) || 'View message'
+  const replyPreview = (() => {
+    if (!parentMessage) {
+      return 'View message'
+    }
+
+    const parentParsed = parseMessageContent(parentMessage.content || '')
+    if (parentParsed.type === 'file') {
+      return parentParsed.text || parentParsed.file.name || 'Sent a file'
+    }
+
+    return parentParsed.text || 'View message'
+  })()
+  const truncatedReplyPreview =
+    replyPreview.length > 72 ? `${replyPreview.slice(0, 72)}...` : replyPreview
   const replyAuthorName = (() => {
     if (!parentMessage) {
       return ''
@@ -370,7 +396,7 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
       className={
         `${startsGroup
           ? 'vesper-message-row vesper-message-row-start group'
-          : 'vesper-message-row vesper-message-row-grouped group'}${isActiveThread ? ' vesper-message-row-thread-active' : ''}${isFocusedMessage ? ' ring-1 ring-accent/60 bg-accent/5 rounded-xl' : ''}`
+          : 'vesper-message-row vesper-message-row-grouped group'}${isActiveThread ? ' vesper-message-row-thread-active' : ''}${isFocusedMessage ? ' ring-1 ring-accent/60 bg-accent/5 rounded-xl' : ''}${isSending ? ' vesper-message-row-sending' : ''}${isFailed ? ' vesper-message-row-failed' : ''}`
       }
       onContextMenu={(e) => msgMenu.onContextMenu(e, message)}
     >
@@ -397,6 +423,7 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
       <div className="vesper-message-body">
         <div className="vesper-message-toolbar-slot">
           <div
+            ref={reactionAnchorRef}
             className={
               showEmojiPicker
                 ? 'vesper-message-toolbar-anchor vesper-message-toolbar-anchor-active'
@@ -416,6 +443,7 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
             {showEmojiPicker && (
               <div className="vesper-message-emoji-popout">
                 <EmojiPicker
+                  anchorRef={reactionAnchorRef}
                   onSelect={(emoji, item) => handleReaction(item?.type === 'custom' ? formatCustomEmojiToken(item) : emoji)}
                   onClose={() => setShowEmojiPicker(false)}
                 />
@@ -424,10 +452,10 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
           </div>
         </div>
 
-        {parentMessage && (
+        {!isThreadView && parentMessage && (
           <MessageReplyPreview
             authorName={replyAuthorName}
-            preview={replyPreview + ((parentMessage.content?.length || 0) > 72 ? '...' : '')}
+            preview={truncatedReplyPreview}
           />
         )}
 
@@ -468,6 +496,12 @@ export default function MessageItem({ message, messages, previousMessage }: Prop
                 {message.edited_at && (
                   <span data-testid="edited-marker" className="ml-1.5 text-xs text-text-faintest">(edited)</span>
                 )}
+              </div>
+            )}
+
+            {(isSending || isFailed) && (
+              <div className="vesper-message-delivery-note">
+                {isSending ? 'Sending...' : 'Not sent yet'}
               </div>
             )}
 
