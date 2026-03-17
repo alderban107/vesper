@@ -17,13 +17,19 @@ interface AudioPlayerProps {
   name: string
   sizeLabel: string
   onDownload: () => void
+  coverUrl?: string
+  title?: string
+  artist?: string
 }
 
 export default function AudioPlayer({
   src,
   name,
   sizeLabel,
-  onDownload
+  onDownload,
+  coverUrl,
+  title,
+  artist
 }: AudioPlayerProps): React.JSX.Element {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const rangeId = useId()
@@ -102,18 +108,33 @@ export default function AudioPlayer({
     audio.pause()
   }
 
+  const displayName = title || name
+  const displaySub = artist || sizeLabel
+
   return (
     <div className="vesper-audio-player">
       <audio ref={audioRef} preload="metadata" src={src} />
 
       <div className="vesper-audio-preview-header">
         <div className="vesper-audio-preview-meta">
-          <span className="vesper-audio-preview-icon">
-            <Volume2 className="w-4 h-4" />
-          </span>
+          {coverUrl ? (
+            <img
+              src={coverUrl}
+              alt="Album art"
+              className="vesper-audio-cover-thumb"
+            />
+          ) : (
+            <span className="vesper-audio-preview-icon">
+              <Volume2 className="w-4 h-4" />
+            </span>
+          )}
           <div className="vesper-audio-preview-copy">
-            <span className="vesper-audio-preview-name">{name}</span>
-            <span className="vesper-audio-preview-size">{sizeLabel}</span>
+            <span className="vesper-audio-preview-name">{displayName}</span>
+            {artist ? (
+              <span className="vesper-audio-preview-artist">{artist}</span>
+            ) : (
+              <span className="vesper-audio-preview-size">{sizeLabel}</span>
+            )}
           </div>
         </div>
         <button

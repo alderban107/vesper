@@ -52,7 +52,10 @@ defmodule VesperWeb.Endpoint do
   plug Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
     pass: ["*/*"],
-    json_decoder: Phoenix.json_library()
+    json_decoder: Phoenix.json_library(),
+    # Max request body size — must match FileStorage.max_upload_size/0.
+    # See "File upload limits" in the project README for details.
+    length: 52_428_800
 
   plug Plug.MethodOverride
   plug Plug.Head

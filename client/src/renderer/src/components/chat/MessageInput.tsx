@@ -9,6 +9,7 @@ import {
 import { apiUpload } from '../../api/client'
 import { encryptFile } from '../../crypto/fileEncryption'
 import { encodePayload } from '../../crypto/payload'
+import type { FilePayload } from '../../crypto/payload'
 import { useCryptoStore } from '../../stores/cryptoStore'
 import { pushToChannel } from '../../api/socket'
 import { useAuthStore } from '../../stores/authStore'
@@ -17,6 +18,8 @@ import MentionAutocomplete from './MentionAutocomplete'
 import ComposerShell from './message/ComposerShell'
 import type { StagedFile } from './message/ComposerShell'
 import { formatCustomEmojiToken } from '../../utils/emoji'
+import { extractVideoThumbnail } from '../../utils/videoThumbnail'
+import { extractAudioMetadata } from '../../utils/audioMetadata'
 
 let stagedIdCounter = 0
 
@@ -91,18 +94,98 @@ export default function MessageInput(): React.JSX.Element {
     const data = await res.json()
     const attachmentId = data.attachment.id
 
+    // Build the file payload fields
+    const fileFields: FilePayload['file'] = {
+      id: attachmentId,
+      name: file.name,
+      content_type: file.type || 'application/octet-stream',
+      size: file.size,
+      key: encrypted.key,
+      iv: encrypted.iv
+    }
+
+    // Video thumbnail extraction + upload
+    const isVideo = file.type.startsWith('video/')
+    if (isVideo) {
+      try {
+        const thumb = await extractVideoThumbnail(file)
+        if (thumb) {
+          const thumbData = await thumb.blob.arrayBuffer()
+          const thumbEncrypted = await encryptFile(thumbData)
+          const thumbBlob = new Blob([thumbEncrypted.ciphertext])
+          const thumbForm = new FormData()
+          thumbForm.append('file', thumbBlob, 'thumbnail.jpg')
+          thumbForm.append('encrypted', 'true')
+
+          const thumbRes = await apiUpload('/api/v1/attachments', thumbForm)
+          if (thumbRes.ok) {
+            const thumbJson = await thumbRes.json()
+            fileFields.thumbnail = {
+              id: thumbJson.attachment.id,
+              key: thumbEncrypted.key,
+              iv: thumbEncrypted.iv
+            }
+            fileFields.duration = thumb.duration
+          }
+        }
+      } catch {
+        // Thumbnail extraction failed — video still uploads without one
+      }
+    }
+
+    const attachmentIds = [attachmentId]
+    if (fileFields.thumbnail) {
+      attachmentIds.push(fileFields.thumbnail.id)
+    }
+
+    // Audio metadata extraction + cover art upload
+    const isAudio = file.type.startsWith('audio/')
+    if (isAudio) {
+      try {
+        const meta = await extractAudioMetadata(file)
+        if (meta) {
+          if (meta.duration) {
+            fileFields.duration = meta.duration
+          }
+          const audioMeta: NonNullable<FilePayload['file']['audio_metadata']> = {}
+          if (meta.title) audioMeta.title = meta.title
+          if (meta.artist) audioMeta.artist = meta.artist
+          if (meta.album) audioMeta.album = meta.album
+
+          if (meta.coverBlob) {
+            const coverData = await meta.coverBlob.arrayBuffer()
+            const coverEncrypted = await encryptFile(coverData)
+            const coverBlob = new Blob([coverEncrypted.ciphertext])
+            const coverForm = new FormData()
+            coverForm.append('file', coverBlob, 'cover.jpg')
+            coverForm.append('encrypted', 'true')
+
+            const coverRes = await apiUpload('/api/v1/attachments', coverForm)
+            if (coverRes.ok) {
+              const coverJson = await coverRes.json()
+              audioMeta.cover = {
+                id: coverJson.attachment.id,
+                key: coverEncrypted.key,
+                iv: coverEncrypted.iv
+              }
+              attachmentIds.push(coverJson.attachment.id)
+            }
+          }
+
+          if (audioMeta.title || audioMeta.artist || audioMeta.album || audioMeta.cover) {
+            fileFields.audio_metadata = audioMeta
+          }
+        }
+      } catch {
+        // Metadata extraction failed — audio still uploads without metadata
+      }
+    }
+
     const envelope = encodePayload({
       v: 1,
       type: 'file',
       text: text || undefined,
-      file: {
-        id: attachmentId,
-        name: file.name,
-        content_type: file.type || 'application/octet-stream',
-        size: file.size,
-        key: encrypted.key,
-        iv: encrypted.iv
-      }
+      file: fileFields
     })
 
     const topic = `chat:channel:${activeChannelId}`
@@ -126,7 +209,7 @@ export default function MessageInput(): React.JSX.Element {
         pushToChannel(topic, 'new_message', {
           ciphertext: enc.ciphertext,
           mls_epoch: enc.epoch,
-          attachment_ids: [attachmentId],
+          attachment_ids: attachmentIds,
           ...(parentId && { parent_message_id: parentId })
         })
         return true

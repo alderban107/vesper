@@ -168,6 +168,22 @@ export interface FileMessageContent {
     size: number
     key: string
     iv: string
+    duration?: number
+    thumbnail?: {
+      id: string
+      key: string
+      iv: string
+    }
+    audio_metadata?: {
+      title?: string
+      artist?: string
+      album?: string
+      cover?: {
+        id: string
+        key: string
+        iv: string
+      }
+    }
   }
 }
 

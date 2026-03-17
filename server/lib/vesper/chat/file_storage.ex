@@ -32,7 +32,7 @@ defmodule Vesper.Chat.FileStorage do
   end
 
   def max_upload_size do
-    Application.get_env(:vesper, :max_upload_size, 26_214_400)
+    Application.get_env(:vesper, :max_upload_size, 52_428_800)
   end
 
   def avatar_dir do

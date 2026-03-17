@@ -7,7 +7,9 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
-      '@': resolve(__dirname, 'src/renderer/src')
+      '@': resolve(__dirname, 'src/renderer/src'),
+      // music-metadata-browser uses Node.js Buffer internally
+      buffer: 'buffer/'
     }
   },
   build: {
