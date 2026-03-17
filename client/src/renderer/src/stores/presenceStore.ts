@@ -26,9 +26,13 @@ let detachActivityListeners: (() => void) | null = null
 let presenceSourcesByTopic = new Map<string, Record<string, PresenceStatus>>()
 let pendingScopeMutations = new Set<string>()
 let scopeMutationRefreshPromise: Promise<void> | null = null
+let recentUnreadMessageKeys = new Map<string, number>()
+let unreadRefreshPromise: Promise<void> | null = null
+let unreadRefreshRequested = false
 
 const HEARTBEAT_INTERVAL = 30_000 // 30 seconds
 const IDLE_TIMEOUT = 300_000 // 5 minutes
+const UNREAD_EVENT_DEDUPE_WINDOW_MS = 15_000
 
 const PRESENCE_PRIORITY: Record<PresenceStatus, number> = {
   online: 4,
@@ -133,23 +137,59 @@ async function flushScopeMutations(): Promise<void> {
           import('./syncStore')
         ])
 
-        const previousSyncToken = useSyncStore.getState().token
-
-        await useSyncStore.getState().syncNow()
+        let previousSyncToken = useSyncStore.getState().token
+        if (!previousSyncToken) {
+          await useSyncStore.getState().syncNow()
+          previousSyncToken = useSyncStore.getState().token
+        }
 
         const messageState = useMessageStore.getState()
         const trackedScopeIds = new Set([
           messageState.activeScopeId,
           ...messageState.recentScopeIds
         ].filter((scopeId): scopeId is string => Boolean(scopeId)))
+        const changedScopeKinds = new Set(
+          scopeKeys
+            .map((scopeKey) => scopeKey.split(':', 2)[0] ?? null)
+            .filter((kind): kind is 'channel' | 'dm' => kind === 'channel' || kind === 'dm')
+        )
 
-        const shouldRefreshTrackedScopes = scopeKeys.some((scopeKey) => {
-          const [, scopeId] = scopeKey.split(':', 2)
-          return trackedScopeIds.has(scopeId)
-        })
+        const changedTrackedScopeIds = [
+          ...new Set(
+            scopeKeys
+            .map((scopeKey) => scopeKey.split(':', 2)[1] ?? null)
+            .filter(
+              (scopeId): scopeId is string =>
+                Boolean(scopeId) &&
+                trackedScopeIds.has(scopeId) &&
+                scopeId !== messageState.activeScopeId
+            )
+          )
+        ]
 
-        if (shouldRefreshTrackedScopes) {
-          await useMessageStore.getState().syncRecentScopes(previousSyncToken)
+        if (changedTrackedScopeIds.length > 0) {
+          await useMessageStore.getState().syncRecentScopes(previousSyncToken, {
+            scopeIds: changedTrackedScopeIds
+          })
+        }
+
+        const refreshTasks: Promise<unknown>[] = []
+
+        if (changedScopeKinds.has('dm')) {
+          const [{ useDmStore }, { useUnreadStore }] = await Promise.all([
+            import('./dmStore'),
+            import('./unreadStore')
+          ])
+
+          refreshTasks.push(useDmStore.getState().fetchConversations())
+          refreshTasks.push(useUnreadStore.getState().fetchUnreadCounts())
+        } else if (changedScopeKinds.has('channel')) {
+          const { useUnreadStore } = await import('./unreadStore')
+          refreshTasks.push(useUnreadStore.getState().fetchUnreadCounts())
+        }
+
+        if (refreshTasks.length > 0) {
+          await Promise.all(refreshTasks)
         }
       }
     } finally {
@@ -167,6 +207,50 @@ function queueScopeMutation(kind: 'channel' | 'dm', scopeId: string): void {
 
 export function queueScopeMutationHint(kind: 'channel' | 'dm', scopeId: string): void {
   queueScopeMutation(kind, scopeId)
+}
+
+function claimUnreadMessageKey(
+  kind: 'channel' | 'dm',
+  scopeId: string,
+  messageId: string
+): boolean {
+  const now = Date.now()
+
+  for (const [key, seenAt] of recentUnreadMessageKeys) {
+    if (now - seenAt > UNREAD_EVENT_DEDUPE_WINDOW_MS) {
+      recentUnreadMessageKeys.delete(key)
+    }
+  }
+
+  const dedupeKey = `${kind}:${scopeId}:${messageId}`
+  if (recentUnreadMessageKeys.has(dedupeKey)) {
+    return false
+  }
+
+  recentUnreadMessageKeys.set(dedupeKey, now)
+  return true
+}
+
+function scheduleUnreadCountsRefresh(): void {
+  unreadRefreshRequested = true
+
+  if (unreadRefreshPromise) {
+    return
+  }
+
+  unreadRefreshPromise = (async () => {
+    try {
+      while (unreadRefreshRequested) {
+        unreadRefreshRequested = false
+        const { useUnreadStore } = await import('./unreadStore')
+        await useUnreadStore.getState().fetchUnreadCounts()
+      }
+    } finally {
+      unreadRefreshPromise = null
+    }
+  })()
+
+  void unreadRefreshPromise.catch(() => {})
 }
 
 function resetIdleTimer(): void {
@@ -249,7 +333,10 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
         })
       } else if (event === 'dm_message') {
         triggerUrgentBackgroundSync()
-        import('./dmStore').then(({ useDmStore }) => {
+        Promise.all([
+          import('./dmStore'),
+          import('./unreadStore')
+        ]).then(([{ useDmStore }, { useUnreadStore }]) => {
           const data = payload as {
             conversation_id: string
             message_id: string
@@ -269,6 +356,73 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
           if (!applied) {
             void useDmStore.getState().fetchConversations()
           }
+
+          if (
+            useDmStore.getState().selectedConversationId !== data.conversation_id &&
+            claimUnreadMessageKey('dm', data.conversation_id, data.message_id)
+          ) {
+            useUnreadStore.getState().incrementDm(data.conversation_id)
+          }
+        })
+      } else if (event === 'dm_typing_start') {
+        import('./messageStore').then(({ useMessageStore }) => {
+          const data = payload as {
+            conversation_id: string
+            payload?: {
+              user_id?: string
+              username?: string
+            }
+          }
+
+          const conversationId = data.conversation_id
+          const typingUser = data.payload
+          if (!conversationId || !typingUser?.user_id) {
+            return
+          }
+
+          useMessageStore.setState((state) => {
+            const current = state.typingUsers[conversationId] || []
+            if (current.some((entry) => entry.user_id === typingUser.user_id)) {
+              return state
+            }
+
+            return {
+              typingUsers: {
+                ...state.typingUsers,
+                [conversationId]: [
+                  ...current,
+                  {
+                    user_id: typingUser.user_id,
+                    username: typingUser.username ?? 'Someone'
+                  }
+                ]
+              }
+            }
+          })
+        })
+      } else if (event === 'dm_typing_stop') {
+        import('./messageStore').then(({ useMessageStore }) => {
+          const data = payload as {
+            conversation_id: string
+            payload?: {
+              user_id?: string
+            }
+          }
+
+          const conversationId = data.conversation_id
+          const userId = data.payload?.user_id
+          if (!conversationId || !userId) {
+            return
+          }
+
+          useMessageStore.setState((state) => ({
+            typingUsers: {
+              ...state.typingUsers,
+              [conversationId]: (state.typingUsers[conversationId] || []).filter(
+                (entry) => entry.user_id !== userId
+              )
+            }
+          }))
         })
       } else if (
         event === 'mls_history_request_pending' ||
@@ -323,11 +477,15 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
           import('./dmStore'),
           import('./unreadStore')
         ]).then(([{ useDmStore }, { useUnreadStore }]) => {
-          if (useDmStore.getState().selectedConversationId !== data.conversation_id) {
+          if (
+            useDmStore.getState().selectedConversationId !== data.conversation_id &&
+            claimUnreadMessageKey('dm', data.conversation_id, data.message_id)
+          ) {
             useUnreadStore.getState().incrementDm(data.conversation_id)
           }
-          queueScopeMutation('dm', data.conversation_id)
         })
+        scheduleUnreadCountsRefresh()
+        queueScopeMutation('dm', data.conversation_id)
       } else if (event === 'scope_mutation') {
         const data = payload as { kind: 'channel' | 'dm'; scope_id: string }
         queueScopeMutation(data.kind, data.scope_id)

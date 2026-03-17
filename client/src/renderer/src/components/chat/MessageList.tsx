@@ -76,7 +76,10 @@ export default function MessageList(): React.JSX.Element {
       onLoadMore={handleLoadMore}
       onLoadNewer={handleLoadNewer}
       onMarkRead={(messageId) => {
-        if (activeChannelId) {
+        if (
+          activeChannelId &&
+          useServerStore.getState().activeChannelId === activeChannelId
+        ) {
           markChannelRead(activeChannelId, messageId)
         }
       }}

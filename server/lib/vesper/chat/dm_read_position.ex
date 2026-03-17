@@ -9,7 +9,7 @@ defmodule Vesper.Chat.DmReadPosition do
     belongs_to :user, Vesper.Accounts.User
     belongs_to :conversation, Vesper.Chat.DmConversation
     belongs_to :last_read_message, Vesper.Chat.Message
-    field :last_read_at, :utc_datetime
+    field :last_read_at, :utc_datetime_usec
   end
 
   def changeset(position, attrs) do

@@ -66,6 +66,7 @@ function registerChannel(
     'message_pinned', 'message_unpinned',
     'mention',
     'new_conversation', 'dm_message',
+    'dm_typing_start', 'dm_typing_stop',
     'scope_mutation',
     'mls_history_request_pending', 'mls_history_bundle_pending',
     'unread_update', 'dm_unread_update',

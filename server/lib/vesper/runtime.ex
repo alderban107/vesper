@@ -285,7 +285,9 @@ defmodule Vesper.Runtime do
 
   defp update_room_last_mutation(room_id, inserted_at, room_seq) do
     from(room in Room,
-      where: room.id == ^room_id and (is_nil(room.last_mutation_seq) or room.last_mutation_seq < ^room_seq)
+      where:
+        room.id == ^room_id and
+          (is_nil(room.last_mutation_seq) or room.last_mutation_seq < ^room_seq)
     )
     |> Repo.update_all(
       set: [
@@ -353,7 +355,10 @@ defmodule Vesper.Runtime do
     end
   end
 
-  defp append_user_sync_events(%Room{kind: :channel, server_id: server_id, channel_id: channel_id}, event_type)
+  defp append_user_sync_events(
+         %Room{kind: :channel, server_id: server_id, channel_id: channel_id},
+         event_type
+       )
        when is_binary(server_id) and is_binary(channel_id) do
     user_ids = Servers.list_member_ids(server_id)
     Sync.append_scope_events(user_ids, event_type, "channel", channel_id)

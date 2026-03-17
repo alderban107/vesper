@@ -35,8 +35,11 @@ defmodule Vesper.SyncCursor do
     else
       _ ->
         case DateTime.from_iso8601(decoded) do
-          {:ok, parsed, _offset} -> %{synced_at: DateTime.add(parsed, -1, :second), user_sync_event_id: nil}
-          _ -> nil
+          {:ok, parsed, _offset} ->
+            %{synced_at: DateTime.add(parsed, -1, :second), user_sync_event_id: nil}
+
+          _ ->
+            nil
         end
     end
   end

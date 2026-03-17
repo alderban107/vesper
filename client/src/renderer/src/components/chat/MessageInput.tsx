@@ -4,7 +4,9 @@ import { useServerStore } from '../../stores/serverStore'
 import {
   useMessageStore,
   cacheSentPlaintext,
-  ensureChannelGroupReady
+  ensureChannelGroupReady,
+  pushToChannelWithAck,
+  waitForChannelMembershipReady
 } from '../../stores/messageStore'
 import { apiUpload } from '../../api/client'
 import { encryptFile } from '../../crypto/fileEncryption'
@@ -212,7 +214,7 @@ export default function MessageInput(): React.JSX.Element {
     const replyTo = useMessageStore.getState().replyingTo
     const parentId = replyTo?.id || undefined
     if (!crypto.hasGroup(activeChannelId)) {
-      const ready = await ensureChannelGroupReady(activeChannelId)
+      const ready = await ensureChannelGroupReady(activeChannelId, true)
       if (!ready) {
         useMessageStore.setState({
           encryptionError: 'File could not be encrypted. Please try again.'
@@ -222,16 +224,19 @@ export default function MessageInput(): React.JSX.Element {
     }
 
     if (crypto.hasGroup(activeChannelId)) {
+      await waitForChannelMembershipReady(activeChannelId, topic)
       const enc = await crypto.encryptForChannel(activeChannelId, envelope)
       if (enc) {
         cacheSentPlaintext(enc.ciphertext, envelope)
-        pushToChannel(topic, 'new_message', {
+        const pushed = await pushToChannelWithAck(topic, 'new_message', {
           ciphertext: enc.ciphertext,
           mls_epoch: enc.epoch,
           attachment_ids: attachmentIds,
           ...(parentId && { parent_message_id: parentId })
         })
-        return true
+        if (pushed) {
+          return true
+        }
       }
     }
 

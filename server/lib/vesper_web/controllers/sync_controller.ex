@@ -26,8 +26,14 @@ defmodule VesperWeb.SyncController do
             channel_ids: Servers.list_changed_channel_ids_since(user.id, since),
             conversation_ids: Chat.list_changed_conversation_ids_since(user.id, since),
             read_changes:
-              Enum.map(Chat.list_channels_with_read_changes_since(user.id, since), &{:channel, &1}) ++
-                Enum.map(Chat.list_conversations_with_read_changes_since(user.id, since), &{:dm, &1})
+              Enum.map(
+                Chat.list_channels_with_read_changes_since(user.id, since),
+                &{:channel, &1}
+              ) ++
+                Enum.map(
+                  Chat.list_conversations_with_read_changes_since(user.id, since),
+                  &{:dm, &1}
+                )
           }
       end
 

@@ -22,7 +22,12 @@ defmodule VesperWeb.ChannelController do
     if role in ~w(owner admin) do
       case Servers.create_channel(server_id, params) do
         {:ok, channel} ->
-          Sync.append_scope_events(Servers.list_member_ids(server_id), "server", "server", server_id)
+          Sync.append_scope_events(
+            Servers.list_member_ids(server_id),
+            "server",
+            "server",
+            server_id
+          )
 
           VesperWeb.Endpoint.broadcast!(
             "presence:server:#{server_id}",
@@ -128,7 +133,13 @@ defmodule VesperWeb.ChannelController do
         conn |> put_status(:not_found) |> json(%{error: "not found"})
       else
         Servers.delete_channel(channel)
-        Sync.append_scope_events(Servers.list_member_ids(server_id), "server", "server", server_id)
+
+        Sync.append_scope_events(
+          Servers.list_member_ids(server_id),
+          "server",
+          "server",
+          server_id
+        )
 
         VesperWeb.Endpoint.broadcast!(
           "presence:server:#{server_id}",

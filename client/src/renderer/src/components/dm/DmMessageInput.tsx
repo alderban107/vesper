@@ -124,6 +124,7 @@ export default function DmMessageInput(): React.JSX.Element {
         if (result.welcomeBytes) {
           pushToChannel(topic, 'mls_welcome', {
             recipient_id: participant.user_id,
+            recipient_device_id: preferredDeviceId,
             welcome_data: result.welcomeBytes,
             key_package_ref: result.keyPackageRef
           })

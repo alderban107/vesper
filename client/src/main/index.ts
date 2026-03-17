@@ -9,6 +9,8 @@ import {
   getGroupState,
   setGroupState,
   deleteGroupState,
+  getGroupSyncCursor,
+  setGroupSyncCursor,
   getIdentityKeys,
   setIdentityKeys,
   deleteIdentityKeys,
@@ -186,6 +188,14 @@ function registerIpcHandlers(): void {
   ipcMain.handle('cryptoDb:deleteGroupState', (_, groupId: string) =>
     deleteGroupState(groupId)
   )
+  ipcMain.handle('cryptoDb:getGroupSyncCursor', (_, groupId: string) =>
+    getGroupSyncCursor(groupId)
+  )
+  ipcMain.handle(
+    'cryptoDb:setGroupSyncCursor',
+    (_, groupId: string, lastEventSeq: number) =>
+      setGroupSyncCursor(groupId, lastEventSeq)
+  )
 
   // Key packages
   ipcMain.handle('cryptoDb:getLocalKeyPackages', () => getLocalKeyPackages())
@@ -265,6 +275,7 @@ function registerIpcHandlers(): void {
         server_id: string | null
         sender_id: string | null
         sender_username: string | null
+        parent_message_id: string | null
         ciphertext: Uint8Array | null
         decrypted_content: string | null
         mls_epoch: number | null

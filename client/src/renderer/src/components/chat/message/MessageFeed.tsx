@@ -253,6 +253,7 @@ export default function MessageFeed({
         <div className="vesper-message-empty-state">
           <p>{isLoading ? 'Loading messages...' : emptyState}</p>
         </div>
+        <TypingIndicator typingUsers={typingUsers} />
       </div>
     ) : (
       <Virtuoso

@@ -182,6 +182,36 @@ export async function ackPendingHistoryBundle(bundleId: string): Promise<void> {
   })
 }
 
+/**
+ * Fetch durable MLS control-plane events for an encrypted scope after a local cursor.
+ */
+export async function fetchMlsEvents(
+  scopeId: string,
+  afterSeq: number,
+  limit = 200
+): Promise<
+  Array<{
+    seq: number
+    event_type: 'mls_commit' | 'mls_remove'
+    payload: {
+      commit_data?: string
+      removed_user_id?: string
+    }
+    sender_id: string
+    sender_device_id: string | null
+  }>
+> {
+  const params = new URLSearchParams({
+    after_seq: String(Math.max(0, afterSeq)),
+    limit: String(limit)
+  })
+  const res = await apiFetch(`/api/v1/mls-events/${encodeURIComponent(scopeId)}?${params}`)
+  if (!res.ok) return []
+
+  const data = await res.json()
+  return data.events || []
+}
+
 // --- Helpers ---
 
 function uint8ToBase64(arr: Uint8Array): string {

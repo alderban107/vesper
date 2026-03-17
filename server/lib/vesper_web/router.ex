@@ -145,6 +145,9 @@ defmodule VesperWeb.Router do
     get("/pending-welcomes/:channel_id", PendingWelcomeController, :index)
     delete("/pending-welcomes/:id", PendingWelcomeController, :delete)
 
+    # Durable MLS control-plane event replay
+    get("/mls-events/:channel_id", MlsEventController, :index)
+
     # Pending MLS resync requests
     get("/pending-resync-requests/:channel_id", PendingResyncRequestController, :index)
     delete("/pending-resync-requests/:id", PendingResyncRequestController, :delete)

@@ -73,21 +73,24 @@ defmodule VesperWeb.DmChannel do
             )
           )
 
-          # Run notifications async to avoid blocking the channel process
+          notify_scope_mutation(
+            socket.assigns.participant_ids,
+            "dm",
+            socket.assigns.conversation_id
+          )
+
           conversation_id = socket.assigns.conversation_id
           sender_id = socket.assigns.user_id
           participant_ids = socket.assigns.participant_ids
           sender_info = socket.assigns.sender_info
 
-          Task.Supervisor.start_child(Vesper.NotificationSupervisor, fn ->
-            notify_participants(
-              conversation_id,
-              sender_id,
-              participant_ids,
-              sender_info,
-              message
-            )
-          end)
+          notify_participants(
+            conversation_id,
+            sender_id,
+            participant_ids,
+            sender_info,
+            message
+          )
 
           {:reply, :ok, socket}
 
@@ -403,11 +406,13 @@ defmodule VesperWeb.DmChannel do
 
   def handle_in("typing_start", _payload, socket) do
     broadcast_from!(socket, "typing_start", typing_start_payload(socket))
+    broadcast_dm_typing(socket, "dm_typing_start", typing_start_payload(socket))
     {:noreply, socket}
   end
 
   def handle_in("typing_stop", _payload, socket) do
     broadcast_from!(socket, "typing_stop", %{user_id: socket.assigns.user_id})
+    broadcast_dm_typing(socket, "dm_typing_stop", %{user_id: socket.assigns.user_id})
     {:noreply, socket}
   end
 
@@ -480,13 +485,27 @@ defmodule VesperWeb.DmChannel do
 
   def handle_in("mls_commit", %{"commit_data" => commit_data}, socket)
       when is_binary(commit_data) do
-    broadcast!(socket, "mls_commit", %{
-      commit_data: commit_data,
-      sender_id: socket.assigns.user_id,
-      sender_device_id: socket.assigns.device_client_id
-    })
+    case Encryption.store_mls_event(%{
+           group_id: socket.assigns.conversation_id,
+           conversation_id: socket.assigns.conversation_id,
+           event_type: "mls_commit",
+           payload: %{commit_data: commit_data},
+           sender_id: socket.assigns.user_id,
+           sender_device_id: socket.assigns.device_client_id
+         }) do
+      {:ok, event} ->
+        broadcast!(socket, "mls_commit", %{
+          seq: event.id,
+          commit_data: commit_data,
+          sender_id: socket.assigns.user_id,
+          sender_device_id: socket.assigns.device_client_id
+        })
 
-    {:noreply, socket}
+        {:noreply, socket}
+
+      {:error, _changeset} ->
+        {:reply, {:error, %{reason: "could not store commit"}}, socket}
+    end
   end
 
   def handle_in(
@@ -495,14 +514,31 @@ defmodule VesperWeb.DmChannel do
         socket
       )
       when is_binary(removed_user_id) and is_binary(commit_data) do
-    broadcast!(socket, "mls_remove", %{
-      removed_user_id: removed_user_id,
-      commit_data: commit_data,
-      sender_id: socket.assigns.user_id,
-      sender_device_id: socket.assigns.device_client_id
-    })
+    case Encryption.store_mls_event(%{
+           group_id: socket.assigns.conversation_id,
+           conversation_id: socket.assigns.conversation_id,
+           event_type: "mls_remove",
+           payload: %{
+             removed_user_id: removed_user_id,
+             commit_data: commit_data
+           },
+           sender_id: socket.assigns.user_id,
+           sender_device_id: socket.assigns.device_client_id
+         }) do
+      {:ok, event} ->
+        broadcast!(socket, "mls_remove", %{
+          seq: event.id,
+          removed_user_id: removed_user_id,
+          commit_data: commit_data,
+          sender_id: socket.assigns.user_id,
+          sender_device_id: socket.assigns.device_client_id
+        })
 
-    {:noreply, socket}
+        {:noreply, socket}
+
+      {:error, _changeset} ->
+        {:reply, {:error, %{reason: "could not store remove"}}, socket}
+    end
   end
 
   def handle_in(
@@ -567,13 +603,10 @@ defmodule VesperWeb.DmChannel do
           device_id: requester_device_id
         })
 
-        VesperWeb.Endpoint.broadcast(
-          "user:#{socket.assigns.user_id}",
-          "mls_history_request_pending",
-          %{
-            scope_id: socket.assigns.conversation_id,
-            topic: "dm:#{socket.assigns.conversation_id}"
-          }
+        notify_history_request_pending(
+          socket.assigns.conversation_id,
+          socket.assigns.user_id,
+          "dm:#{socket.assigns.conversation_id}"
         )
 
         {:noreply, socket}
@@ -685,7 +718,19 @@ defmodule VesperWeb.DmChannel do
     :ok
   end
 
-  defp append_dm_urgent_events(message, sender_id, participant_ids) when is_list(participant_ids) do
+  defp notify_history_request_pending(conversation_id, requester_id, topic) do
+    for user_id <- Chat.list_participant_ids(conversation_id), user_id != requester_id do
+      VesperWeb.Endpoint.broadcast("user:#{user_id}", "mls_history_request_pending", %{
+        scope_id: conversation_id,
+        topic: topic
+      })
+    end
+
+    :ok
+  end
+
+  defp append_dm_urgent_events(message, sender_id, participant_ids)
+       when is_list(participant_ids) do
     urgent_events =
       participant_ids
       |> Enum.reject(&(&1 == sender_id))
@@ -709,5 +754,17 @@ defmodule VesperWeb.DmChannel do
       end)
 
     Sync.append_urgent_events(urgent_events)
+  end
+
+  defp broadcast_dm_typing(socket, event, payload) do
+    conversation_id = socket.assigns.conversation_id
+
+    for participant_id <- socket.assigns.participant_ids,
+        participant_id != socket.assigns.user_id do
+      VesperWeb.Endpoint.broadcast("user:#{participant_id}", event, %{
+        conversation_id: conversation_id,
+        payload: payload
+      })
+    end
   end
 end

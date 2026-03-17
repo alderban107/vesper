@@ -84,7 +84,12 @@ defmodule Vesper.Sync do
   def list_scope_changes_since(user_id, after_event_id) when is_binary(user_id) do
     list_events_since(user_id, after_event_id)
     |> Enum.reduce(
-      %{channels: MapSet.new(), conversations: MapSet.new(), reads: MapSet.new(), servers: MapSet.new()},
+      %{
+        channels: MapSet.new(),
+        conversations: MapSet.new(),
+        reads: MapSet.new(),
+        servers: MapSet.new()
+      },
       fn event, acc ->
         case {event.scope_kind, event.scope_id, event.event_type} do
           {"server", scope_id, "server"} ->

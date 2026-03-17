@@ -213,8 +213,7 @@ defmodule Vesper.Servers do
               role_ids = Map.get(role_ids_by_membership, membership.id, [])
 
               {role_allow, role_deny} =
-                channel.id
-                |> Map.get(role_overrides_by_channel, [])
+                Map.get(role_overrides_by_channel, channel.id, [])
                 |> Enum.reduce({0, 0}, fn {_channel_id, role_id, allow, deny},
                                           {acc_allow, acc_deny} ->
                   if role_id in role_ids do

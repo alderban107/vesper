@@ -5,7 +5,14 @@
 
 import { test, expect } from '@playwright/test'
 import { createUserContext, login, type UserContext } from '../helpers/auth'
-import { createDm, selectDm, sendDmMessage, startDmTyping, clearDmComposer } from '../helpers/dm'
+import {
+  createDm,
+  openDmView,
+  selectDm,
+  sendDmMessage,
+  startDmTyping,
+  clearDmComposer
+} from '../helpers/dm'
 import { createServer, createChannel, getInviteCode, joinServerWithCode, selectServer, selectChannel } from '../helpers/server'
 import { sendChannelMessage, startChannelTyping, clearChannelComposer } from '../helpers/channel'
 import { hardRefresh } from '../helpers/navigation'
@@ -49,7 +56,7 @@ test.describe('P1: Typing and unread behavior', () => {
 
   test('DM unread badge increments and clears (R-DM-4)', async () => {
     // Bob navigates away from Alice's DM
-    await bob.page.click('[data-testid="sidebar"] button[title="Direct Messages"]')
+    await openDmView(bob.page)
 
     // Alice sends a message
     await sendDmMessage(alice.page, 'Unread test message alpha')

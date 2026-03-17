@@ -49,6 +49,97 @@ defmodule Vesper.ChatPaginationTest do
     end
   end
 
+  describe "unread counts" do
+    test "channel unread counts use room sequence when messages share a timestamp" do
+      owner = insert_user()
+      reader = insert_user()
+      server = insert_server(owner)
+      channel = insert_channel(server)
+
+      assert {:ok, _room} = Runtime.ensure_room_for_channel(channel)
+
+      inserted_at = ~U[2026-03-16 12:00:00Z]
+
+      first =
+        insert_message(owner, channel, %{
+          id: "00000000-0000-0000-0000-000000000101",
+          inserted_at: inserted_at
+        })
+
+      second =
+        insert_message(owner, channel, %{
+          id: "00000000-0000-0000-0000-000000000102",
+          inserted_at: inserted_at
+        })
+
+      assert {:ok, _} = Runtime.project_message(first)
+      assert {:ok, _} = Runtime.project_message(second)
+      assert {:ok, _} = Chat.mark_channel_read(reader.id, channel.id, first.id)
+
+      assert Chat.get_channel_unread_counts(reader.id, [channel.id]) == %{channel.id => 1}
+    end
+
+    test "dm unread counts use room sequence when messages share a timestamp" do
+      sender = insert_user()
+      reader = insert_user()
+      {:ok, conversation} = Chat.create_conversation(sender.id, [reader.id])
+
+      inserted_at = ~U[2026-03-16 12:00:00Z]
+
+      first =
+        Repo.insert!(%Vesper.Chat.Message{
+          id: "00000000-0000-0000-0000-000000000201",
+          ciphertext: <<1>>,
+          mls_epoch: 0,
+          sender_id: sender.id,
+          conversation_id: conversation.id,
+          inserted_at: inserted_at,
+          updated_at: inserted_at
+        })
+
+      second =
+        Repo.insert!(%Vesper.Chat.Message{
+          id: "00000000-0000-0000-0000-000000000202",
+          ciphertext: <<2>>,
+          mls_epoch: 0,
+          sender_id: sender.id,
+          conversation_id: conversation.id,
+          inserted_at: inserted_at,
+          updated_at: inserted_at
+        })
+
+      assert {:ok, _} = Runtime.project_message(first)
+      assert {:ok, _} = Runtime.project_message(second)
+      assert {:ok, _} = Chat.mark_dm_read(reader.id, conversation.id, first.id)
+
+      assert Chat.get_dm_unread_counts(reader.id, [conversation.id]) == %{conversation.id => 1}
+    end
+
+    test "read changes stay visible to sync cursors within the same second" do
+      user = insert_user()
+      peer = insert_user()
+      {:ok, conversation} = Chat.create_conversation(user.id, [peer.id])
+
+      message =
+        Repo.insert!(%Vesper.Chat.Message{
+          id: "00000000-0000-0000-0000-000000000301",
+          ciphertext: <<3>>,
+          mls_epoch: 0,
+          sender_id: peer.id,
+          conversation_id: conversation.id,
+          inserted_at: ~U[2026-03-16 12:00:00Z],
+          updated_at: ~U[2026-03-16 12:00:00Z]
+        })
+
+      assert {:ok, _} = Runtime.project_message(message)
+
+      since = capture_same_second_since()
+
+      assert {:ok, _} = Chat.mark_dm_read(user.id, conversation.id, message.id)
+      assert Chat.list_conversations_with_read_changes_since(user.id, since) == [conversation.id]
+    end
+  end
+
   describe "scope sync events" do
     test "lists mutation events for a scope in insertion order" do
       user = insert_user()
@@ -147,6 +238,24 @@ defmodule Vesper.ChatPaginationTest do
       )
 
       assert Chat.list_changed_conversation_ids_since(user.id, older) == [conversation.id]
+    end
+  end
+
+  defp capture_same_second_since do
+    now = DateTime.utc_now()
+    micros = elem(now.microsecond, 0)
+
+    cond do
+      micros > 850_000 ->
+        Process.sleep(200)
+        capture_same_second_since()
+
+      micros < 100_000 ->
+        Process.sleep(120)
+        capture_same_second_since()
+
+      true ->
+        DateTime.add(now, -100_000, :microsecond)
     end
   end
 end

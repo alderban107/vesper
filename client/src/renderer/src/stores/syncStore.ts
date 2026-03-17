@@ -53,6 +53,15 @@ function writeStoredUrgentSyncToken(token: string | null): void {
   localStorage.removeItem(URGENT_SYNC_TOKEN_KEY)
 }
 
+export function persistSyncTokens(token: string | null, urgentToken: string | null = token): void {
+  writeStoredSyncToken(token)
+  writeStoredUrgentSyncToken(urgentToken)
+  useSyncStore.setState({
+    token,
+    urgentToken
+  })
+}
+
 interface ChannelActivityPatch {
   channel_id: string
   message_id: string | null
@@ -168,9 +177,7 @@ export const useSyncStore = create<SyncState>((set, get) => ({
                 }
               }
 
-              writeStoredSyncToken(nextToken)
-              writeStoredUrgentSyncToken(nextToken)
-              set({ token: nextToken, urgentToken: nextToken })
+              persistSyncTokens(nextToken, nextToken)
             }
           } catch {
             // ignore
@@ -227,8 +234,7 @@ export const useSyncStore = create<SyncState>((set, get) => ({
           await processUrgentSyncEvents(events)
         }
 
-        writeStoredUrgentSyncToken(nextToken)
-        set({ urgentToken: nextToken })
+        persistSyncTokens(get().token, nextToken)
       } catch {
         // ignore
       } finally {
@@ -240,8 +246,6 @@ export const useSyncStore = create<SyncState>((set, get) => ({
   },
 
   resetToken: () => {
-    writeStoredSyncToken(null)
-    writeStoredUrgentSyncToken(null)
-    set({ token: null, urgentToken: null })
+    persistSyncTokens(null, null)
   }
 }))

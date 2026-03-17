@@ -161,6 +161,7 @@ interface AuthState {
 
 const KEY_PACKAGE_TARGET = 20
 const KEY_PACKAGE_THRESHOLD = 5
+let keyPackageReplenishPromise: Promise<void> | null = null
 
 function buildSessionBody(extra: Record<string, unknown>): Record<string, unknown> {
   const device = getLocalDeviceIdentity()
@@ -911,48 +912,62 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   replenishKeyPackages: async () => {
-    const state = get()
-    if (!state.user || !state.canUseE2EE) {
-      return
+    if (keyPackageReplenishPromise) {
+      return keyPackageReplenishPromise
     }
 
-    try {
-      // New device: no local key packages means any server-side packages are
-      // from previous devices. Purge them so fetchKeyPackage always returns
-      // a package matching the current device's private keys.
-      const localPackages = await loadKeyPackages()
-      if (localPackages.length === 0) {
-        await purgeMyKeyPackages(getLocalDeviceIdentity().id)
-      }
-
-      const count = await getMyKeyPackageCount(getLocalDeviceIdentity().id)
-      if (count >= KEY_PACKAGE_THRESHOLD) {
+    keyPackageReplenishPromise = (async () => {
+      const state = get()
+      if (!state.user || !state.canUseE2EE) {
         return
       }
 
-      await initCipherSuite()
-      const identity = await loadIdentity(state.user.id)
-      if (!identity?.signaturePrivateKey) {
-        return
+      try {
+        // New device: no local key packages means any server-side packages are
+        // from previous devices. Purge them so fetchKeyPackage always returns
+        // a package matching the current device's private keys.
+        const localPackages = await loadKeyPackages()
+        if (localPackages.length === 0) {
+          await purgeMyKeyPackages(getLocalDeviceIdentity().id)
+        }
+
+        const count = await getMyKeyPackageCount(getLocalDeviceIdentity().id)
+        if (count >= KEY_PACKAGE_THRESHOLD) {
+          return
+        }
+
+        await initCipherSuite()
+        const identity = await loadIdentity(state.user.id)
+        if (!identity?.signaturePrivateKey) {
+          return
+        }
+
+        const toGenerate = KEY_PACKAGE_TARGET - count
+        const pairs = await createKeyPackageBatch(
+          getCurrentMlsCredentialIdentity(state.user.id),
+          toGenerate,
+          {
+            signKey: identity.signaturePrivateKey,
+            publicKey: identity.publicIdentityKey
+          }
+        )
+
+        await saveKeyPackages(
+          pairs.map((pair) => ({
+            publicData: encodeKeyPackageBytes(pair.publicPackage),
+            privateData: serializePrivatePackage(pair.privatePackage)
+          }))
+        )
+
+        const publicPackageBytes = pairs.map((pair) => encodeKeyPackageBytes(pair.publicPackage))
+        await uploadKeyPackages(publicPackageBytes, getLocalDeviceIdentity().id)
+      } catch {
+        console.warn('Failed to replenish key packages')
       }
+    })().finally(() => {
+      keyPackageReplenishPromise = null
+    })
 
-      const toGenerate = KEY_PACKAGE_TARGET - count
-      const pairs = await createKeyPackageBatch(getCurrentMlsCredentialIdentity(state.user.id), toGenerate, {
-        signKey: identity.signaturePrivateKey,
-        publicKey: identity.publicIdentityKey
-      })
-
-      await saveKeyPackages(
-        pairs.map((pair) => ({
-          publicData: encodeKeyPackageBytes(pair.publicPackage),
-          privateData: serializePrivatePackage(pair.privatePackage)
-        }))
-      )
-
-      const publicPackageBytes = pairs.map((pair) => encodeKeyPackageBytes(pair.publicPackage))
-      await uploadKeyPackages(publicPackageBytes, getLocalDeviceIdentity().id)
-    } catch {
-      console.warn('Failed to replenish key packages')
-    }
+    return keyPackageReplenishPromise
   }
 }))

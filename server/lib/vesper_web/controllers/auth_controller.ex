@@ -401,7 +401,10 @@ defmodule VesperWeb.AuthController do
       push_platform: device.push_platform,
       background_sync_capable: device.background_sync_capable,
       notification_public_key:
-        if(device.notification_public_key, do: Base.encode64(device.notification_public_key), else: nil),
+        if(device.notification_public_key,
+          do: Base.encode64(device.notification_public_key),
+          else: nil
+        ),
       inserted_at: device.inserted_at
     }
   end

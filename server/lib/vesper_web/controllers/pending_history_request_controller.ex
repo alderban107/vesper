@@ -4,18 +4,13 @@ defmodule VesperWeb.PendingHistoryRequestController do
   alias Vesper.Encryption
   alias Vesper.Servers
 
-  @doc "GET /api/v1/pending-history-requests/:channel_id — fetch pending same-user history requests for the current MLS scope"
+  @doc "GET /api/v1/pending-history-requests/:channel_id — fetch pending history requests for the current MLS scope"
   def index(conn, %{"channel_id" => scope_id}) do
     user = conn.assigns.current_user
 
     case authorized_scope(user.id, scope_id) do
       {:ok, authorized_group_id} ->
-        requests =
-          authorized_group_id
-          |> Encryption.get_pending_history_requests()
-          |> Enum.filter(&(&1.requester_id == user.id))
-
-        render_requests(conn, requests)
+        render_requests(conn, Encryption.get_pending_history_requests(authorized_group_id))
 
       {:error, :invalid_scope} ->
         conn |> put_status(:bad_request) |> json(%{error: "invalid scope"})
@@ -36,9 +31,6 @@ defmodule VesperWeb.PendingHistoryRequestController do
     cond do
       is_nil(request) ->
         json(conn, %{ok: true})
-
-      request.requester_id != user.id ->
-        conn |> put_status(:forbidden) |> json(%{error: "forbidden"})
 
       match?({:error, _}, authorized_scope(user.id, request.group_id)) ->
         conn |> put_status(:forbidden) |> json(%{error: "forbidden"})

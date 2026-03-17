@@ -91,16 +91,19 @@ defmodule VesperWeb.ChatChannel do
               %{channel_id: socket.assigns.channel_id}
             )
 
-            # Run notifications async under supervision
+            notify_scope_mutation(
+              socket.assigns.server_id,
+              "channel",
+              socket.assigns.channel_id
+            )
+
             channel_id = socket.assigns.channel_id
             sender_id = socket.assigns.user_id
             server_id = socket.assigns.server_id
             member_ids = MemberCache.get_member_ids(server_id)
 
-            Task.Supervisor.start_child(Vesper.NotificationSupervisor, fn ->
-              notify_unread(channel_id, message, sender_id, member_ids)
-              notify_mentions(mentioned, channel_id, sender_id, server_id, member_ids)
-            end)
+            notify_unread(channel_id, message, sender_id, member_ids)
+            notify_mentions(mentioned, channel_id, sender_id, server_id, member_ids)
 
             {:reply, :ok, socket}
 
@@ -538,13 +541,27 @@ defmodule VesperWeb.ChatChannel do
 
   def handle_in("mls_commit", %{"commit_data" => commit_data}, socket)
       when is_binary(commit_data) do
-    broadcast!(socket, "mls_commit", %{
-      commit_data: commit_data,
-      sender_id: socket.assigns.user_id,
-      sender_device_id: socket.assigns.device_client_id
-    })
+    case Encryption.store_mls_event(%{
+           group_id: socket.assigns.channel_id,
+           channel_id: socket.assigns.channel_id,
+           event_type: "mls_commit",
+           payload: %{commit_data: commit_data},
+           sender_id: socket.assigns.user_id,
+           sender_device_id: socket.assigns.device_client_id
+         }) do
+      {:ok, event} ->
+        broadcast!(socket, "mls_commit", %{
+          seq: event.id,
+          commit_data: commit_data,
+          sender_id: socket.assigns.user_id,
+          sender_device_id: socket.assigns.device_client_id
+        })
 
-    {:noreply, socket}
+        {:noreply, socket}
+
+      {:error, _changeset} ->
+        {:reply, {:error, %{reason: "could not store commit"}}, socket}
+    end
   end
 
   def handle_in(
@@ -553,14 +570,31 @@ defmodule VesperWeb.ChatChannel do
         socket
       )
       when is_binary(removed_user_id) and is_binary(commit_data) do
-    broadcast!(socket, "mls_remove", %{
-      removed_user_id: removed_user_id,
-      commit_data: commit_data,
-      sender_id: socket.assigns.user_id,
-      sender_device_id: socket.assigns.device_client_id
-    })
+    case Encryption.store_mls_event(%{
+           group_id: socket.assigns.channel_id,
+           channel_id: socket.assigns.channel_id,
+           event_type: "mls_remove",
+           payload: %{
+             removed_user_id: removed_user_id,
+             commit_data: commit_data
+           },
+           sender_id: socket.assigns.user_id,
+           sender_device_id: socket.assigns.device_client_id
+         }) do
+      {:ok, event} ->
+        broadcast!(socket, "mls_remove", %{
+          seq: event.id,
+          removed_user_id: removed_user_id,
+          commit_data: commit_data,
+          sender_id: socket.assigns.user_id,
+          sender_device_id: socket.assigns.device_client_id
+        })
 
-    {:noreply, socket}
+        {:noreply, socket}
+
+      {:error, _changeset} ->
+        {:reply, {:error, %{reason: "could not store remove"}}, socket}
+    end
   end
 
   def handle_in(
@@ -625,13 +659,11 @@ defmodule VesperWeb.ChatChannel do
           device_id: requester_device_id
         })
 
-        VesperWeb.Endpoint.broadcast(
-          "user:#{socket.assigns.user_id}",
-          "mls_history_request_pending",
-          %{
-            scope_id: socket.assigns.channel_id,
-            topic: "chat:channel:#{socket.assigns.channel_id}"
-          }
+        notify_history_request_pending(
+          socket.assigns.server_id,
+          socket.assigns.channel_id,
+          socket.assigns.user_id,
+          "chat:channel:#{socket.assigns.channel_id}"
         )
 
         {:noreply, socket}
@@ -785,6 +817,21 @@ defmodule VesperWeb.ChatChannel do
     :ok
   end
 
+  defp notify_history_request_pending(server_id, channel_id, requester_id, topic) do
+    server_id
+    |> Servers.list_member_ids()
+    |> Enum.reject(&(&1 == requester_id))
+    |> Enum.filter(&Servers.user_can_view_channel?(&1, channel_id))
+    |> Enum.each(fn user_id ->
+      VesperWeb.Endpoint.broadcast("user:#{user_id}", "mls_history_request_pending", %{
+        scope_id: channel_id,
+        topic: topic
+      })
+    end)
+
+    :ok
+  end
+
   defp maybe_add_expires_at(attrs, ttl) when is_integer(ttl) and ttl > 0 do
     expires_at =
       DateTime.utc_now()
@@ -796,7 +843,8 @@ defmodule VesperWeb.ChatChannel do
 
   defp maybe_add_expires_at(attrs, _ttl), do: attrs
 
-  defp normalize_mentioned_user_ids(mentioned_user_ids, sender_id) when is_list(mentioned_user_ids) do
+  defp normalize_mentioned_user_ids(mentioned_user_ids, sender_id)
+       when is_list(mentioned_user_ids) do
     mentioned_user_ids
     |> Enum.filter(&(is_binary(&1) and &1 not in [sender_id, "everyone"]))
     |> Enum.uniq()
@@ -807,7 +855,8 @@ defmodule VesperWeb.ChatChannel do
   defp append_channel_urgent_events(message, sender_id, mentioned_user_ids) do
     reply_target_user_id =
       case message.parent_message_id && Chat.get_message(message.parent_message_id) do
-        %{sender_id: parent_sender_id} when is_binary(parent_sender_id) and parent_sender_id != sender_id ->
+        %{sender_id: parent_sender_id}
+        when is_binary(parent_sender_id) and parent_sender_id != sender_id ->
           parent_sender_id
 
         _ ->

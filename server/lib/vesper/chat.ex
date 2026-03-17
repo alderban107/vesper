@@ -717,7 +717,7 @@ defmodule Vesper.Chat do
   # --- Read Positions ---
 
   def mark_channel_read(user_id, channel_id, message_id) do
-    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    now = DateTime.utc_now()
 
     result =
       %ChannelReadPosition{}
@@ -740,7 +740,7 @@ defmodule Vesper.Chat do
   end
 
   def mark_dm_read(user_id, conversation_id, message_id) do
-    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    now = DateTime.utc_now()
 
     result =
       %DmReadPosition{}
@@ -784,15 +784,21 @@ defmodule Vesper.Chat do
     if channel_ids == [] do
       %{}
     else
-      # Single query: LEFT JOIN read positions, count messages newer than last_read_at
-      # (or all messages if no read position exists)
       from(m in Message,
+        join: event in RoomEvent,
+        on: event.message_id == m.id and event.event_type == "vesper.message",
         left_join: p in ChannelReadPosition,
         on: p.channel_id == m.channel_id and p.user_id == ^user_id,
+        left_join: last_event in RoomEvent,
+        on:
+          last_event.message_id == p.last_read_message_id and
+            last_event.event_type == "vesper.message" and
+            last_event.room_id == event.room_id,
         where:
           m.channel_id in ^channel_ids and
             m.sender_id != ^user_id and
-            (is_nil(p.last_read_at) or m.inserted_at > p.last_read_at),
+            (is_nil(p.last_read_message_id) or is_nil(last_event.room_seq) or
+               event.room_seq > last_event.room_seq),
         group_by: m.channel_id,
         select: {m.channel_id, count(m.id)}
       )
@@ -814,14 +820,21 @@ defmodule Vesper.Chat do
     if conversation_ids == [] do
       %{}
     else
-      # Single query: LEFT JOIN read positions, count messages newer than last_read_at
       from(m in Message,
+        join: event in RoomEvent,
+        on: event.message_id == m.id and event.event_type == "vesper.message",
         left_join: p in DmReadPosition,
         on: p.conversation_id == m.conversation_id and p.user_id == ^user_id,
+        left_join: last_event in RoomEvent,
+        on:
+          last_event.message_id == p.last_read_message_id and
+            last_event.event_type == "vesper.message" and
+            last_event.room_id == event.room_id,
         where:
           m.conversation_id in ^conversation_ids and
             m.sender_id != ^user_id and
-            (is_nil(p.last_read_at) or m.inserted_at > p.last_read_at),
+            (is_nil(p.last_read_message_id) or is_nil(last_event.room_seq) or
+               event.room_seq > last_event.room_seq),
         group_by: m.conversation_id,
         select: {m.conversation_id, count(m.id)}
       )

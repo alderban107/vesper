@@ -9,6 +9,39 @@ alias VesperWeb.Endpoint
 import Ecto.Query
 import Plug.Conn
 
+env_int = fn name, default ->
+  case System.get_env(name) do
+    nil ->
+      default
+
+    value ->
+      case Integer.parse(value) do
+        {parsed, _rest} when parsed > 0 -> parsed
+        _ -> default
+      end
+  end
+end
+
+run_count = env_int.("BENCH_RUNS", 10)
+channel_count = env_int.("BENCH_CHANNEL_COUNT", 400)
+channel_messages_per_scope = env_int.("BENCH_CHANNEL_MESSAGES", 8)
+conversation_count = env_int.("BENCH_DM_COUNT", 120)
+conversation_messages_per_scope = env_int.("BENCH_DM_MESSAGES", 6)
+channel_read_positions = env_int.("BENCH_CHANNEL_READ_POSITIONS", min(80, channel_count))
+conversation_read_positions = env_int.("BENCH_DM_READ_POSITIONS", min(40, conversation_count))
+channel_mutation_count = env_int.("BENCH_CHANNEL_MUTATIONS", min(120, channel_count))
+conversation_mutation_count = env_int.("BENCH_DM_MUTATIONS", min(60, conversation_count))
+delta_channel_message_count = env_int.("BENCH_DELTA_CHANNEL_MESSAGES", min(24, channel_count))
+delta_conversation_message_count = env_int.("BENCH_DELTA_DM_MESSAGES", min(12, conversation_count))
+delta_channel_mutation_count = env_int.("BENCH_DELTA_CHANNEL_MUTATIONS", min(16, channel_count))
+delta_conversation_mutation_count = env_int.("BENCH_DELTA_DM_MUTATIONS", min(8, conversation_count))
+scope_sync_channel_count = env_int.("BENCH_SCOPE_SYNC_CHANNELS", min(12, channel_count))
+scope_sync_conversation_count = env_int.("BENCH_SCOPE_SYNC_DMS", min(8, conversation_count))
+
+IO.puts(
+  "config|runs=#{run_count}|channels=#{channel_count}|channel_messages=#{channel_messages_per_scope}|dms=#{conversation_count}|dm_messages=#{conversation_messages_per_scope}|channel_mutations=#{channel_mutation_count}|dm_mutations=#{conversation_mutation_count}"
+)
+
 now = DateTime.utc_now() |> DateTime.truncate(:second)
 uid = Ecto.UUID.generate()
 server_id = Ecto.UUID.generate()
@@ -56,7 +89,7 @@ Repo.insert!(%Membership{
 })
 
 channel_ids =
-  for idx <- 1..400 do
+  for idx <- 1..channel_count do
     channel =
       Repo.insert!(%Channel{
         id: Ecto.UUID.generate(),
@@ -70,7 +103,7 @@ channel_ids =
 
     {:ok, _room} = Vesper.Runtime.ensure_room_for_channel(channel)
 
-    for midx <- 1..8 do
+    for midx <- 1..channel_messages_per_scope do
       inserted = DateTime.add(now, -(idx * 10 + midx), :second)
 
       message =
@@ -92,7 +125,7 @@ channel_ids =
   end
 
 conversation_ids =
-  for idx <- 1..120 do
+  for idx <- 1..conversation_count do
     conversation =
       Repo.insert!(%DmConversation{
         id: Ecto.UUID.generate(),
@@ -110,7 +143,7 @@ conversation_ids =
       joined_at: now
     })
 
-    for midx <- 1..6 do
+    for midx <- 1..conversation_messages_per_scope do
       inserted = DateTime.add(now, -(idx * 10 + midx), :second)
 
       message =
@@ -131,7 +164,7 @@ conversation_ids =
     conversation.id
   end
 
-for channel_id <- Enum.take(channel_ids, 80) do
+for channel_id <- Enum.take(channel_ids, channel_read_positions) do
   Repo.insert!(%Vesper.Chat.ChannelReadPosition{
     id: Ecto.UUID.generate(),
     user_id: user.id,
@@ -140,7 +173,7 @@ for channel_id <- Enum.take(channel_ids, 80) do
   })
 end
 
-for conversation_id <- Enum.take(conversation_ids, 40) do
+for conversation_id <- Enum.take(conversation_ids, conversation_read_positions) do
   Repo.insert!(%DmReadPosition{
     id: Ecto.UUID.generate(),
     user_id: user.id,
@@ -152,14 +185,14 @@ end
 scope_since = DateTime.add(now, -3600, :second)
 mutation_since = DateTime.add(now, -60, :second)
 
-for channel_id <- Enum.take(channel_ids, 120) do
+for channel_id <- Enum.take(channel_ids, channel_mutation_count) do
   {:ok, _event} =
     Vesper.Runtime.append_scope_event("channel", channel_id, user.id, "message_edited", %{
       message_id: Ecto.UUID.generate()
     })
 end
 
-for conversation_id <- Enum.take(conversation_ids, 60) do
+for conversation_id <- Enum.take(conversation_ids, conversation_mutation_count) do
   {:ok, _event} =
     Vesper.Runtime.append_scope_event("dm", conversation_id, user.id, "message_deleted", %{
       message_id: Ecto.UUID.generate()
@@ -178,7 +211,7 @@ build_conn = fn method, path, body ->
 end
 
 measure = fn label, fun ->
-  runs = 10
+  runs = run_count
 
   {times, sizes} =
     Enum.reduce(1..runs, {[], []}, fn _, {time_acc, size_acc} ->
@@ -199,42 +232,42 @@ measure = fn label, fun ->
   )
 end
 
-measure.("list_user_channel_ids_400", fn ->
+measure.("list_user_channel_ids_#{channel_count}", fn ->
   result = Servers.list_user_channel_ids(user.id)
   {byte_size(:erlang.term_to_binary(result)), result}
 end)
 
-measure.("latest_channel_messages_400", fn ->
+measure.("latest_channel_messages_#{channel_count}", fn ->
   result = Chat.get_latest_channel_messages(channel_ids)
   {byte_size(:erlang.term_to_binary(result)), result}
 end)
 
-measure.("channel_activity_snapshots_400", fn ->
+measure.("channel_activity_snapshots_#{channel_count}", fn ->
   result = Servers.list_channel_activity_snapshots(user.id, channel_ids)
   {byte_size(:erlang.term_to_binary(result)), result}
 end)
 
-measure.("channel_unreads_400", fn ->
+measure.("channel_unreads_#{channel_count}", fn ->
   result = Chat.get_channel_unread_counts_snapshot(user.id, channel_ids)
   {byte_size(:erlang.term_to_binary(result)), result}
 end)
 
-measure.("latest_conversation_messages_120", fn ->
+measure.("latest_conversation_messages_#{conversation_count}", fn ->
   result = Chat.get_latest_conversation_messages(conversation_ids)
   {byte_size(:erlang.term_to_binary(result)), result}
 end)
 
-measure.("dm_unreads_120", fn ->
+measure.("dm_unreads_#{conversation_count}", fn ->
   result = Chat.get_dm_unread_counts_snapshot(user.id, conversation_ids)
   {byte_size(:erlang.term_to_binary(result)), result}
 end)
 
-measure.("list_changed_channel_ids_120", fn ->
+measure.("list_changed_channel_ids_#{channel_mutation_count}", fn ->
   result = Servers.list_changed_channel_ids_since(user.id, mutation_since)
   {byte_size(:erlang.term_to_binary(result)), result}
 end)
 
-measure.("list_changed_conversation_ids_60", fn ->
+measure.("list_changed_conversation_ids_#{conversation_mutation_count}", fn ->
   result = Chat.list_changed_conversation_ids_since(user.id, mutation_since)
   {byte_size(:erlang.term_to_binary(result)), result}
 end)
@@ -252,8 +285,8 @@ end)
 
 delta_token_conn = build_conn.("GET", "/api/v1/sync", nil) |> Endpoint.call([])
 delta_token = Jason.decode!(delta_token_conn.resp_body)["token"]
-scope_channel_ids = Enum.take(channel_ids, 12)
-scope_conversation_ids = Enum.take(conversation_ids, 8)
+scope_channel_ids = Enum.take(channel_ids, scope_sync_channel_count)
+scope_conversation_ids = Enum.take(conversation_ids, scope_sync_conversation_count)
 
 scope_after_seqs =
   Map.new(scope_channel_ids, fn channel_id ->
@@ -267,7 +300,7 @@ scope_after_seqs =
     end)
   )
 
-for channel_id <- Enum.take(channel_ids, 24) do
+for channel_id <- Enum.take(channel_ids, delta_channel_message_count) do
   inserted = DateTime.add(now, 30, :second)
 
   message =
@@ -285,7 +318,7 @@ for channel_id <- Enum.take(channel_ids, 24) do
   Vesper.Runtime.project_message(message)
 end
 
-for conversation_id <- Enum.take(conversation_ids, 12) do
+for conversation_id <- Enum.take(conversation_ids, delta_conversation_message_count) do
   inserted = DateTime.add(now, 30, :second)
 
   message =
@@ -303,14 +336,14 @@ for conversation_id <- Enum.take(conversation_ids, 12) do
   Vesper.Runtime.project_message(message)
 end
 
-for channel_id <- Enum.take(channel_ids, 16) do
+for channel_id <- Enum.take(channel_ids, delta_channel_mutation_count) do
   {:ok, _event} =
     Vesper.Runtime.append_scope_event("channel", channel_id, user.id, "reaction_update", %{
       message_id: Ecto.UUID.generate()
     })
 end
 
-for conversation_id <- Enum.take(conversation_ids, 8) do
+for conversation_id <- Enum.take(conversation_ids, delta_conversation_mutation_count) do
   {:ok, _event} =
     Vesper.Runtime.append_scope_event("dm", conversation_id, user.id, "reaction_update", %{
       message_id: Ecto.UUID.generate()
@@ -346,7 +379,7 @@ scope_body =
         end)
   })
 
-measure.("http_scope_sync_20", fn ->
+measure.("http_scope_sync_#{scope_sync_channel_count + scope_sync_conversation_count}", fn ->
   conn = build_conn.("POST", "/api/v1/sync/scopes", scope_body) |> Endpoint.call([])
   if conn.status != 200, do: raise("scope sync failed with #{conn.status}")
   {byte_size(conn.resp_body), Jason.decode!(conn.resp_body)}

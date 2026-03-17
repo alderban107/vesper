@@ -4,6 +4,7 @@ defmodule VesperWeb.ScopeSyncController do
   alias Vesper.Chat
   alias Vesper.Runtime
   alias Vesper.Servers
+  alias Vesper.Sync
   alias Vesper.SyncCursor
 
   @default_limit 50
@@ -16,7 +17,14 @@ defmodule VesperWeb.ScopeSyncController do
     since = cursor && cursor.synced_at
     scopes = normalize_scopes(params["scopes"])
 
+    token =
+      SyncCursor.encode(%{
+        synced_at: DateTime.utc_now(),
+        user_sync_event_id: Sync.latest_event_id_for_user(user.id)
+      })
+
     json(conn, %{
+      token: token,
       scopes:
         scopes
         |> Enum.flat_map(&sync_scope(user.id, &1, limit, since))
@@ -86,6 +94,7 @@ defmodule VesperWeb.ScopeSyncController do
         if Servers.user_is_member?(user_id, channel.server_id) and
              Servers.user_can_view_channel?(user_id, channel) do
           room = Runtime.get_room_for_channel(channel_id)
+
           {messages, events, has_more} =
             cond do
               is_integer(after_seq) ->
@@ -94,7 +103,9 @@ defmodule VesperWeb.ScopeSyncController do
                   after_seq,
                   limit,
                   fn query_limit ->
-                    Chat.list_channel_messages_after_seq(channel_id, after_seq, limit: query_limit)
+                    Chat.list_channel_messages_after_seq(channel_id, after_seq,
+                      limit: query_limit
+                    )
                   end,
                   fn query_limit ->
                     Runtime.list_scope_events_after_seq(
@@ -107,11 +118,14 @@ defmodule VesperWeb.ScopeSyncController do
                 )
 
               true ->
-                messages = Chat.list_channel_messages(channel_id, limit: limit, after: after_cursor)
+                messages =
+                  Chat.list_channel_messages(channel_id, limit: limit, after: after_cursor)
 
                 events =
                   if since do
-                    Runtime.list_scope_events("channel", channel_id, since, limit: max(limit * 4, 100))
+                    Runtime.list_scope_events("channel", channel_id, since,
+                      limit: max(limit * 4, 100)
+                    )
                   else
                     []
                   end
@@ -173,7 +187,9 @@ defmodule VesperWeb.ScopeSyncController do
 
             events =
               if since do
-                Runtime.list_scope_events("dm", conversation_id, since, limit: max(limit * 4, 100))
+                Runtime.list_scope_events("dm", conversation_id, since,
+                  limit: max(limit * 4, 100)
+                )
               else
                 []
               end
@@ -206,31 +222,9 @@ defmodule VesperWeb.ScopeSyncController do
         {[], [], false}
 
       true ->
-        message_limit =
-          if room && room.last_message_seq && room.last_message_seq > after_seq, do: limit, else: 0
-
-        mutation_limit =
-          if room && room.last_mutation_seq && room.last_mutation_seq > after_seq,
-            do: event_limit,
-            else: 0
-
-        messages =
-          if message_limit > 0 do
-            list_messages.(message_limit)
-          else
-            []
-          end
-
-        events =
-          if mutation_limit > 0 do
-            list_events.(mutation_limit)
-          else
-            []
-          end
-
-        has_more =
-          (message_limit > 0 and length(messages) == message_limit) or
-            (mutation_limit > 0 and length(events) == mutation_limit)
+        messages = list_messages.(limit)
+        events = list_events.(event_limit)
+        has_more = length(messages) == limit or length(events) == event_limit
 
         {messages, events, has_more}
     end

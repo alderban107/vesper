@@ -75,7 +75,10 @@ export default function DmMessageList(): React.JSX.Element {
       onLoadMore={handleLoadMore}
       onLoadNewer={handleLoadNewer}
       onMarkRead={(messageId) => {
-        if (conversationId) {
+        if (
+          conversationId &&
+          useDmStore.getState().selectedConversationId === conversationId
+        ) {
           markDmRead(conversationId, messageId)
         }
       }}
