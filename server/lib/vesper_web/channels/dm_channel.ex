@@ -56,19 +56,19 @@ defmodule VesperWeb.DmChannel do
         }
         |> maybe_add_parent_id(parent_message_id)
 
-        case Chat.create_message(attrs) do
-          {:ok, message} ->
-            message = maybe_link_attachments(message, params)
+      case Chat.create_message(attrs) do
+        {:ok, message} ->
+          message = maybe_link_attachments(message, params)
 
-            broadcast!(
-              socket,
-              "new_message",
-              encrypted_message_payload(
-                message,
-                :conversation_id,
-                if(client_nonce, do: %{client_nonce: client_nonce}, else: %{})
-              )
+          broadcast!(
+            socket,
+            "new_message",
+            encrypted_message_payload(
+              message,
+              :conversation_id,
+              if(client_nonce, do: %{client_nonce: client_nonce}, else: %{})
             )
+          )
 
           # Run notifications async to avoid blocking the channel process
           conversation_id = socket.assigns.conversation_id

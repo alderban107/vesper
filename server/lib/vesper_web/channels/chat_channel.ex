@@ -65,6 +65,7 @@ defmodule VesperWeb.ChatChannel do
         case Chat.create_message(attrs) do
           {:ok, message} ->
             message = maybe_link_attachments(message, params)
+
             broadcast!(
               socket,
               "new_message",
