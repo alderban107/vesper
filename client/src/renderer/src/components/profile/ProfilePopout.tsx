@@ -1,6 +1,7 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { MessageCircle, Settings2, Shield, X } from 'lucide-react'
 import Avatar from '../ui/Avatar'
+import FloatingSurface from '../ui/FloatingSurface'
 import type { PresenceStatus } from '../../stores/presenceStore'
 import { useAuthStore } from '../../stores/authStore'
 
@@ -34,10 +35,6 @@ const STATUS_COPY: Record<PresenceStatus, string> = {
 
 type ProfileTab = 'about' | 'details'
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max)
-}
-
 export default function ProfilePopout({
   user,
   anchorRect,
@@ -46,94 +43,23 @@ export default function ProfilePopout({
   onMessage,
   onOpenSettings
 }: Props): React.JSX.Element {
-  const popoutRef = useRef<HTMLDivElement>(null)
-  const [positionStyle, setPositionStyle] = useState<React.CSSProperties>({})
   const [activeTab, setActiveTab] = useState<ProfileTab>('about')
   const myBannerUrl = useAuthStore((s) => s.user?.banner_url ?? null)
   const resolvedBannerUrl = user.bannerUrl ?? (user.isCurrentUser ? myBannerUrl : null)
   const bannerStyle = resolvedBannerUrl ? { backgroundImage: `url("${resolvedBannerUrl}")` } : undefined
 
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        onClose()
-      }
-    }
-
-    const handleMouseDown = (event: MouseEvent): void => {
-      if (popoutRef.current && !popoutRef.current.contains(event.target as Node)) {
-        onClose()
-      }
-    }
-
-    document.addEventListener('keydown', handleKeyDown)
-    document.addEventListener('mousedown', handleMouseDown)
-
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown)
-      document.removeEventListener('mousedown', handleMouseDown)
-    }
-  }, [onClose])
-
-  useLayoutEffect(() => {
-    const updatePosition = (): void => {
-      if (!anchorRect || !popoutRef.current) {
-        setPositionStyle({})
-        return
-      }
-
-      const popoutRect = popoutRef.current.getBoundingClientRect()
-      const width = popoutRect.width || 320
-      const height = popoutRect.height || 420
-      const viewportWidth = window.innerWidth
-      const viewportHeight = window.innerHeight
-
-      if (placement === 'top-right') {
-        const prefersAbove = anchorRect.top - height - 8 >= 16
-        const left = clamp(anchorRect.right - width + 20, 16, viewportWidth - width - 16)
-        const top = prefersAbove
-          ? anchorRect.top - height - 8
-          : anchorRect.bottom + 12
-
-        setPositionStyle({
-          left: `${left}px`,
-          top: `${clamp(top, 16, viewportHeight - height - 16)}px`
-        })
-        return
-      }
-
-      const prefersLeft = anchorRect.right + width + 16 > viewportWidth
-      const left = prefersLeft
-        ? anchorRect.left - width - 16
-        : anchorRect.right + 16
-      const centeredTop = anchorRect.top + (anchorRect.height - height) / 2
-
-      setPositionStyle({
-        left: `${clamp(left, 16, viewportWidth - width - 16)}px`,
-        top: `${clamp(centeredTop, 16, viewportHeight - height - 16)}px`
-      })
-    }
-
-    updatePosition()
-    window.addEventListener('resize', updatePosition)
-    window.addEventListener('scroll', updatePosition, true)
-
-    return () => {
-      window.removeEventListener('resize', updatePosition)
-      window.removeEventListener('scroll', updatePosition, true)
-    }
-  }, [anchorRect, placement])
-
   return (
-    <div className="vesper-profile-popout-layer">
-      <div
-        ref={popoutRef}
-        className="vesper-profile-popout"
-        style={positionStyle}
-        role="dialog"
-        aria-modal="true"
-        aria-label={`${user.displayName} profile`}
-      >
+    <FloatingSurface
+      anchorRect={anchorRect}
+      placement={placement === 'top-right' ? 'top-end' : 'right-start'}
+      offset={placement === 'top-right' ? 12 : 16}
+      minWidth={320}
+      maxWidth={368}
+      className="vesper-profile-popout-layer"
+      onClose={onClose}
+      ariaLabel={`${user.displayName} profile`}
+    >
+      <div className="vesper-profile-popout">
         <div
           className={`vesper-profile-popout-banner${resolvedBannerUrl ? ' vesper-profile-popout-banner-image' : ''}`}
           style={bannerStyle}
@@ -281,6 +207,6 @@ export default function ProfilePopout({
           </div>
         </div>
       </div>
-    </div>
+    </FloatingSurface>
   )
 }

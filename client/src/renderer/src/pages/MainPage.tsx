@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { SendHorizonal, Star, X } from 'lucide-react'
 import Sidebar from '../components/layout/Sidebar'
 import Header from '../components/layout/Header'
@@ -29,6 +29,8 @@ import { useAuthStore } from '../stores/authStore'
 import { usePresenceStore } from '../stores/presenceStore'
 import { useUnreadStore } from '../stores/unreadStore'
 import { parseMessageContent, useMessageStore, type Message } from '../stores/messageStore'
+import { useSyncStore } from '../stores/syncStore'
+import { onSocketOpen } from '../api/socket'
 
 const EMPTY_MESSAGES: Message[] = []
 const EMPTY_TYPING_USERS: { user_id: string; username: string }[] = []
@@ -111,6 +113,8 @@ export default function MainPage(): React.JSX.Element {
   const joinPresence = usePresenceStore((s) => s.joinPresence)
   const joinAllServerPresence = usePresenceStore((s) => s.joinAllServerPresence)
   const fetchUnreadCounts = useUnreadStore((s) => s.fetchUnreadCounts)
+  const syncNow = useSyncStore((s) => s.syncNow)
+  const syncRecentScopes = useMessageStore((s) => s.syncRecentScopes)
   const activeThreadParentId = useMessageStore((s) => s.activeThreadParentId)
   const activeThreadParent = useMessageStore((s) => s.activeThreadParent)
   const threadLoading = useMessageStore((s) => s.threadLoading)
@@ -132,11 +136,29 @@ export default function MainPage(): React.JSX.Element {
     return EMPTY_MESSAGES
   })
   const [threadReply, setThreadReply] = useState('')
+  const sawInitialSocketOpenRef = useRef(false)
 
   useEffect(() => {
     fetchServers()
     fetchUnreadCounts()
   }, [fetchServers, fetchUnreadCounts])
+
+  useEffect(() => {
+    void syncNow(true)
+
+    return onSocketOpen(() => {
+      if (!sawInitialSocketOpenRef.current) {
+        sawInitialSocketOpenRef.current = true
+        return
+      }
+
+      void (async () => {
+        const previousSyncToken = useSyncStore.getState().token
+        await syncNow()
+        await syncRecentScopes(previousSyncToken)
+      })()
+    })
+  }, [syncNow, syncRecentScopes])
 
   useEffect(() => {
     if (currentUser?.id) {

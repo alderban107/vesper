@@ -16,6 +16,7 @@ interface Props {
   messages: Message[]
   messageLookup?: Message[]
   typingUsers: TypingUser[]
+  isLoading?: boolean
   hasMore: boolean
   hasNewer: boolean
   emptyState: string
@@ -43,6 +44,7 @@ export default function MessageFeed({
   messages,
   messageLookup,
   typingUsers,
+  isLoading = false,
   hasMore,
   hasNewer,
   emptyState,
@@ -249,7 +251,7 @@ export default function MessageFeed({
     messages.length === 0 ? (
       <div className="vesper-message-feed">
         <div className="vesper-message-empty-state">
-          <p>{emptyState}</p>
+          <p>{isLoading ? 'Loading messages...' : emptyState}</p>
         </div>
       </div>
     ) : (

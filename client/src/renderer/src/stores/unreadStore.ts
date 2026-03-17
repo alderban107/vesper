@@ -7,6 +7,8 @@ interface UnreadState {
 
   setChannelUnreads: (counts: Record<string, number>) => void
   setDmUnreads: (counts: Record<string, number>) => void
+  mergeChannelUnreads: (counts: Record<string, number>) => void
+  mergeDmUnreads: (counts: Record<string, number>) => void
   incrementChannel: (channelId: string) => void
   incrementDm: (conversationId: string) => void
   clearChannel: (channelId: string) => void
@@ -22,6 +24,20 @@ export const useUnreadStore = create<UnreadState>((set) => ({
 
   setChannelUnreads: (counts) => set({ channelUnreads: counts }),
   setDmUnreads: (counts) => set({ dmUnreads: counts }),
+  mergeChannelUnreads: (counts) =>
+    set((s) => ({
+      channelUnreads: {
+        ...s.channelUnreads,
+        ...counts
+      }
+    })),
+  mergeDmUnreads: (counts) =>
+    set((s) => ({
+      dmUnreads: {
+        ...s.dmUnreads,
+        ...counts
+      }
+    })),
 
   incrementChannel: (channelId) =>
     set((s) => ({

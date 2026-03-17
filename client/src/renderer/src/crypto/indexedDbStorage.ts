@@ -263,9 +263,12 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
     async getCachedMessages(channelId: string) {
       const db = await getDb()
       const store = tx(db, STORES.messageCache, 'readonly')
-      const index = store.index('channel_id')
-      const results = await req(index.getAll(channelId))
-      return results.sort(
+      const results = await req(store.getAll())
+      const filtered = results.filter(
+        (message: { channel_id: string | null; conversation_id: string | null }) =>
+          message.channel_id === channelId || message.conversation_id === channelId
+      )
+      return filtered.sort(
         (a: { inserted_at: string }, b: { inserted_at: string }) =>
           a.inserted_at.localeCompare(b.inserted_at)
       )
@@ -274,8 +277,13 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
     async clearMessageCache(channelId: string) {
       const db = await getDb()
       const store = tx(db, STORES.messageCache, 'readwrite')
-      const index = store.index('channel_id')
-      const keys = await req(index.getAllKeys(channelId))
+      const records = await req(store.getAll())
+      const keys = records
+        .filter(
+          (message: { id: string; channel_id: string | null; conversation_id: string | null }) =>
+            message.channel_id === channelId || message.conversation_id === channelId
+        )
+        .map((message: { id: string }) => message.id)
       for (const key of keys) {
         store.delete(key)
       }

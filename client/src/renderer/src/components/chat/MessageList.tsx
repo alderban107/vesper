@@ -19,6 +19,12 @@ export default function MessageList(): React.JSX.Element {
   const typingUsers = useMessageStore((s) =>
     activeChannelId ? (s.typingUsers[activeChannelId] ?? EMPTY_TYPING) : EMPTY_TYPING
   )
+  const isLoading = useMessageStore((s) =>
+    activeChannelId ? (s.loadingByScope[activeChannelId] ?? false) : false
+  )
+  const hasLoaded = useMessageStore((s) =>
+    activeChannelId ? (s.loadedByScope[activeChannelId] ?? false) : false
+  )
   const hasMore = useMessageStore((s) =>
     activeChannelId ? s.hasMore[activeChannelId] ?? true : false
   )
@@ -27,6 +33,7 @@ export default function MessageList(): React.JSX.Element {
   )
   const joinChannelChat = useMessageStore((s) => s.joinChannelChat)
   const leaveChannelChat = useMessageStore((s) => s.leaveChannelChat)
+  const activateScope = useMessageStore((s) => s.activateScope)
   const fetchOlderMessages = useMessageStore((s) => s.fetchOlderMessages)
   const fetchNewerMessages = useMessageStore((s) => s.fetchNewerMessages)
   const markChannelRead = useUnreadStore((s) => s.markChannelRead)
@@ -39,10 +46,11 @@ export default function MessageList(): React.JSX.Element {
       leaveChannelChat(prevChannelRef.current)
     }
     if (activeChannelId) {
+      activateScope(activeChannelId, 'channel')
       joinChannelChat(activeChannelId)
     }
     prevChannelRef.current = activeChannelId
-  }, [activeChannelId, joinChannelChat, leaveChannelChat])
+  }, [activeChannelId, activateScope, joinChannelChat, leaveChannelChat])
 
   const handleLoadMore = (): void => {
     if (hasMore && activeChannelId) {
@@ -61,6 +69,7 @@ export default function MessageList(): React.JSX.Element {
       messages={messages}
       messageLookup={allMessages}
       typingUsers={typingUsers}
+      isLoading={Boolean(activeChannelId) && (!hasLoaded || isLoading)}
       hasMore={hasMore}
       hasNewer={hasNewer}
       emptyState="No messages yet. Say something!"

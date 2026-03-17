@@ -436,7 +436,9 @@ export default function MessageItem({
               onThread={handleOpenThread}
               onReact={() => setShowEmojiPicker((value) => !value)}
               onEdit={handleStartEdit}
-              onDelete={handleDelete}
+              onMore={(event) => {
+                msgMenu.openFromElement(event.currentTarget, message)
+              }}
               expiryLabel={expiryLabel}
               threadLabel={threadActionLabel}
             />
@@ -547,6 +549,7 @@ export default function MessageItem({
         <ContextMenu
           x={msgMenu.menu.x}
           y={msgMenu.menu.y}
+          anchorRect={msgMenu.menu.anchorRect}
           items={getMessageItems()}
           onClose={msgMenu.closeMenu}
         />

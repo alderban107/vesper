@@ -466,19 +466,17 @@ export default function MessageInput(): React.JSX.Element {
         </div>
       )}
       {trigger && autocompleteItems.length > 0 && (
-        <div className="relative mb-1">
-          <div data-testid="mention-autocomplete" className="absolute bottom-0 left-0 right-0 z-50">
-            <ComposerAutocomplete
-              items={autocompleteItems}
-              selectedIndex={selectedAutocompleteIndex}
-              onSelect={(item) => {
-                const index = autocompleteItems.findIndex((entry) => entry.id === item.id)
-                commitAutocompleteSelection(index)
-              }}
-              onHover={setSelectedAutocompleteIndex}
-            />
-          </div>
-        </div>
+        <ComposerAutocomplete
+          anchorRef={textareaRef}
+          query={trigger.query}
+          items={autocompleteItems}
+          selectedIndex={selectedAutocompleteIndex}
+          onSelect={(item) => {
+            const index = autocompleteItems.findIndex((entry) => entry.id === item.id)
+            commitAutocompleteSelection(index)
+          }}
+          onHover={setSelectedAutocompleteIndex}
+        />
       )}
 
       <ComposerShell

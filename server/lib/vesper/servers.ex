@@ -19,6 +19,8 @@ defmodule Vesper.Servers do
   }
 
   alias Vesper.Runtime
+  alias Vesper.Runtime.Room
+  alias Vesper.Servers.PermissionsCache
 
   @channel_override_view_channel 1024
 
@@ -97,6 +99,262 @@ defmodule Vesper.Servers do
       preload: [:channels, :emojis]
     )
     |> Repo.all()
+  end
+
+  def list_user_servers_by_ids(user, server_ids) when is_list(server_ids) do
+    if server_ids == [] do
+      []
+    else
+      from(s in Server,
+        join: m in Membership,
+        on: m.server_id == s.id,
+        where: m.user_id == ^user.id and s.id in ^server_ids,
+        preload: [:channels, :emojis]
+      )
+      |> Repo.all()
+    end
+  end
+
+  def list_user_channel_ids(user_id) do
+    channels =
+      from(c in Channel,
+        join: m in Membership,
+        on: m.server_id == c.server_id,
+        where: m.user_id == ^user_id,
+        select: c
+      )
+      |> Repo.all()
+
+    channels
+    |> filter_viewable_channels(user_id)
+    |> Enum.map(& &1.id)
+  end
+
+  def list_viewable_channels(user_id, channel_ids) when is_list(channel_ids) do
+    channels =
+      from(c in Channel,
+        where: c.id in ^channel_ids,
+        select: c
+      )
+      |> Repo.all()
+
+    filter_viewable_channels(channels, user_id)
+  end
+
+  defp filter_viewable_channels(channels, user_id) when is_list(channels) do
+    if channels == [] do
+      []
+    else
+      server_ids = channels |> Enum.map(& &1.server_id) |> Enum.uniq()
+
+      memberships =
+        from(m in Membership,
+          where: m.user_id == ^user_id and m.server_id in ^server_ids
+        )
+        |> Repo.all()
+        |> Map.new(&{&1.server_id, &1})
+
+      membership_ids = memberships |> Map.values() |> Enum.map(& &1.id)
+
+      role_ids_by_membership =
+        if membership_ids == [] do
+          %{}
+        else
+          from(mr in MemberRole,
+            where: mr.membership_id in ^membership_ids,
+            select: {mr.membership_id, mr.role_id}
+          )
+          |> Repo.all()
+          |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+        end
+
+      channel_ids = Enum.map(channels, & &1.id)
+
+      role_overrides_by_channel =
+        if channel_ids == [] do
+          %{}
+        else
+          from(override in ChannelRolePermission,
+            where: override.channel_id in ^channel_ids,
+            select: {override.channel_id, override.role_id, override.allow, override.deny}
+          )
+          |> Repo.all()
+          |> Enum.group_by(&elem(&1, 0))
+        end
+
+      user_overrides_by_channel =
+        if channel_ids == [] do
+          %{}
+        else
+          from(override in ChannelUserPermission,
+            where: override.channel_id in ^channel_ids and override.user_id == ^user_id,
+            select: {override.channel_id, override.allow, override.deny}
+          )
+          |> Repo.all()
+          |> Map.new(fn {channel_id, allow, deny} -> {channel_id, {allow, deny}} end)
+        end
+
+      server_permissions =
+        server_ids
+        |> Enum.map(fn server_id -> {server_id, PermissionsCache.get(user_id, server_id)} end)
+        |> Map.new()
+
+      Enum.filter(channels, fn channel ->
+        case Map.get(memberships, channel.server_id) do
+          nil ->
+            false
+
+          membership ->
+            server_permission_bits = Map.get(server_permissions, channel.server_id, 0)
+
+            if Permissions.has_permission?(server_permission_bits, Permissions.administrator()) do
+              true
+            else
+              role_ids = Map.get(role_ids_by_membership, membership.id, [])
+
+              {role_allow, role_deny} =
+                channel.id
+                |> Map.get(role_overrides_by_channel, [])
+                |> Enum.reduce({0, 0}, fn {_channel_id, role_id, allow, deny},
+                                          {acc_allow, acc_deny} ->
+                  if role_id in role_ids do
+                    {acc_allow ||| allow, acc_deny ||| deny}
+                  else
+                    {acc_allow, acc_deny}
+                  end
+                end)
+
+              base_allowed = true
+
+              role_adjusted =
+                apply_permission_override(
+                  base_allowed,
+                  role_allow,
+                  role_deny,
+                  @channel_override_view_channel
+                )
+
+              {user_allow, user_deny} = Map.get(user_overrides_by_channel, channel.id, {0, 0})
+
+              apply_permission_override(
+                role_adjusted,
+                user_allow,
+                user_deny,
+                @channel_override_view_channel
+              )
+            end
+        end
+      end)
+    end
+  end
+
+  def list_user_servers_since(user, since) do
+    server_ids =
+      from(s in Server,
+        join: m in Membership,
+        on: m.server_id == s.id,
+        where: m.user_id == ^user.id and (m.joined_at > ^since or s.updated_at > ^since),
+        select: s.id
+      )
+      |> Repo.all()
+
+    changed_channel_server_ids =
+      from(c in Channel,
+        join: m in Membership,
+        on: m.server_id == c.server_id,
+        where: m.user_id == ^user.id and c.updated_at > ^since,
+        select: c.server_id,
+        distinct: true
+      )
+      |> Repo.all()
+
+    changed_server_ids =
+      server_ids
+      |> Kernel.++(changed_channel_server_ids)
+      |> Enum.uniq()
+
+    if changed_server_ids == [] do
+      []
+    else
+      from(s in Server,
+        where: s.id in ^changed_server_ids,
+        preload: [:channels, :emojis]
+      )
+      |> Repo.all()
+    end
+  end
+
+  def list_recent_channel_activity(user_id, since) do
+    recent_messages =
+      from(room in Room,
+        join: c in Channel,
+        on: c.id == room.channel_id,
+        join: mem in Membership,
+        on: mem.server_id == c.server_id,
+        join: m in Vesper.Chat.Message,
+        on: m.id == room.last_message_id,
+        where:
+          room.kind == :channel and
+            mem.user_id == ^user_id and
+            room.last_message_at > ^since,
+        select: {room.channel_id, m}
+      )
+      |> Repo.all()
+
+    recent_messages_by_channel =
+      recent_messages
+      |> Enum.map(&elem(&1, 1))
+      |> Repo.preload(:sender)
+      |> Map.new(&{&1.id, &1})
+
+    visible_channel_ids =
+      list_viewable_channels(
+        user_id,
+        Enum.map(recent_messages, &elem(&1, 0))
+      )
+      |> Enum.map(& &1.id)
+      |> MapSet.new()
+
+    Enum.flat_map(recent_messages, fn {channel_id, message} ->
+      if MapSet.member?(visible_channel_ids, channel_id) do
+        [%{channel_id: channel_id, message: Map.fetch!(recent_messages_by_channel, message.id)}]
+      else
+        []
+      end
+    end)
+  end
+
+  def list_changed_channel_ids_since(user_id, since) do
+    channel_ids =
+      from(room in Room,
+        join: c in Channel,
+        on: c.id == room.channel_id,
+        join: mem in Membership,
+        on: mem.server_id == c.server_id,
+        where:
+          room.kind == :channel and
+            mem.user_id == ^user_id and
+            room.last_mutation_at > ^since,
+        select: room.channel_id,
+        distinct: true
+      )
+      |> Repo.all()
+
+    list_viewable_channels(user_id, channel_ids)
+    |> Enum.map(& &1.id)
+  end
+
+  def list_channel_activity_snapshots(user_id, channel_ids) when is_list(channel_ids) do
+    visible_channels = list_viewable_channels(user_id, channel_ids)
+
+    latest_messages =
+      visible_channels
+      |> Enum.map(& &1.id)
+      |> Vesper.Chat.get_latest_channel_messages()
+
+    Enum.map(visible_channels, fn channel ->
+      %{channel_id: channel.id, message: Map.get(latest_messages, channel.id)}
+    end)
   end
 
   def get_server(id) do

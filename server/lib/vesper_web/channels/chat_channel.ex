@@ -5,6 +5,8 @@ defmodule VesperWeb.ChatChannel do
   alias Vesper.Servers.{MemberCache, Permissions, PermissionsCache}
   alias Vesper.Chat
   alias Vesper.Encryption
+  alias Vesper.Runtime
+  alias Vesper.Sync
   import VesperWeb.ChannelHelpers
 
   @impl true
@@ -65,6 +67,13 @@ defmodule VesperWeb.ChatChannel do
         case Chat.create_message(attrs) do
           {:ok, message} ->
             message = maybe_link_attachments(message, params)
+            mentioned = params["mentioned_user_ids"]
+
+            append_channel_urgent_events(
+              message,
+              socket.assigns.user_id,
+              normalize_mentioned_user_ids(mentioned, socket.assigns.user_id)
+            )
 
             broadcast!(
               socket,
@@ -87,10 +96,9 @@ defmodule VesperWeb.ChatChannel do
             sender_id = socket.assigns.user_id
             server_id = socket.assigns.server_id
             member_ids = MemberCache.get_member_ids(server_id)
-            mentioned = params["mentioned_user_ids"]
 
             Task.Supervisor.start_child(Vesper.NotificationSupervisor, fn ->
-              notify_unread(channel_id, message.id, sender_id, member_ids)
+              notify_unread(channel_id, message, sender_id, member_ids)
               notify_mentions(mentioned, channel_id, sender_id, server_id, member_ids)
             end)
 
@@ -136,13 +144,29 @@ defmodule VesperWeb.ChatChannel do
            %{ciphertext: ciphertext, mls_epoch: mls_epoch}
          ) do
       :ok ->
-        broadcast!(socket, "reaction_update", %{
+        payload = %{
           action: "add",
           message_id: message_id,
           ciphertext: ciphertext,
           mls_epoch: mls_epoch,
           sender_id: socket.assigns.user_id
-        })
+        }
+
+        room_seq =
+          Runtime.append_scope_event(
+            "channel",
+            socket.assigns.channel_id,
+            socket.assigns.user_id,
+            "reaction_update",
+            payload
+          )
+          |> case do
+            {:ok, event} -> event.room_seq
+            _ -> nil
+          end
+
+        broadcast!(socket, "reaction_update", Map.put(payload, :room_seq, room_seq))
+        notify_scope_mutation(socket.assigns.server_id, "channel", socket.assigns.channel_id)
 
         {:reply, :ok, socket}
 
@@ -162,12 +186,28 @@ defmodule VesperWeb.ChatChannel do
            socket.assigns.channel_id
          ) do
       :ok ->
-        broadcast!(socket, "reaction_update", %{
+        payload = %{
           action: "add",
           message_id: message_id,
           emoji: emoji,
           sender_id: socket.assigns.user_id
-        })
+        }
+
+        room_seq =
+          Runtime.append_scope_event(
+            "channel",
+            socket.assigns.channel_id,
+            socket.assigns.user_id,
+            "reaction_update",
+            payload
+          )
+          |> case do
+            {:ok, event} -> event.room_seq
+            _ -> nil
+          end
+
+        broadcast!(socket, "reaction_update", Map.put(payload, :room_seq, room_seq))
+        notify_scope_mutation(socket.assigns.server_id, "channel", socket.assigns.channel_id)
 
         {:reply, :ok, socket}
 
@@ -194,13 +234,29 @@ defmodule VesperWeb.ChatChannel do
            %{ciphertext: ciphertext, mls_epoch: mls_epoch}
          ) do
       :ok ->
-        broadcast!(socket, "reaction_update", %{
+        payload = %{
           action: "remove",
           message_id: message_id,
           ciphertext: ciphertext,
           mls_epoch: mls_epoch,
           sender_id: socket.assigns.user_id
-        })
+        }
+
+        room_seq =
+          Runtime.append_scope_event(
+            "channel",
+            socket.assigns.channel_id,
+            socket.assigns.user_id,
+            "reaction_update",
+            payload
+          )
+          |> case do
+            {:ok, event} -> event.room_seq
+            _ -> nil
+          end
+
+        broadcast!(socket, "reaction_update", Map.put(payload, :room_seq, room_seq))
+        notify_scope_mutation(socket.assigns.server_id, "channel", socket.assigns.channel_id)
 
         {:reply, :ok, socket}
 
@@ -220,12 +276,28 @@ defmodule VesperWeb.ChatChannel do
            socket.assigns.channel_id
          ) do
       :ok ->
-        broadcast!(socket, "reaction_update", %{
+        payload = %{
           action: "remove",
           message_id: message_id,
           emoji: emoji,
           sender_id: socket.assigns.user_id
-        })
+        }
+
+        room_seq =
+          Runtime.append_scope_event(
+            "channel",
+            socket.assigns.channel_id,
+            socket.assigns.user_id,
+            "reaction_update",
+            payload
+          )
+          |> case do
+            {:ok, event} -> event.room_seq
+            _ -> nil
+          end
+
+        broadcast!(socket, "reaction_update", Map.put(payload, :room_seq, room_seq))
+        notify_scope_mutation(socket.assigns.server_id, "channel", socket.assigns.channel_id)
 
         {:reply, :ok, socket}
 
@@ -241,7 +313,21 @@ defmodule VesperWeb.ChatChannel do
       ) do
     case handle_edit_message(id, ciphertext, epoch, socket) do
       {:ok, payload} ->
-        broadcast!(socket, "message_edited", payload)
+        room_seq =
+          Runtime.append_scope_event(
+            "channel",
+            socket.assigns.channel_id,
+            socket.assigns.user_id,
+            "message_edited",
+            payload
+          )
+          |> case do
+            {:ok, event} -> event.room_seq
+            _ -> nil
+          end
+
+        broadcast!(socket, "message_edited", Map.put(payload, :room_seq, room_seq))
+        notify_scope_mutation(socket.assigns.server_id, "channel", socket.assigns.channel_id)
         {:reply, :ok, socket}
 
       {:error, reason} ->
@@ -251,8 +337,30 @@ defmodule VesperWeb.ChatChannel do
 
   def handle_in("delete_message", %{"message_id" => id}, socket) do
     case handle_delete_message(id, socket.assigns.user_id) do
-      :ok ->
-        broadcast!(socket, "message_deleted", %{message_id: id})
+      {:ok, _deleted_message} ->
+        latest_message = Chat.get_latest_channel_message(socket.assigns.channel_id)
+
+        payload = %{
+          message_id: id,
+          channel_id: socket.assigns.channel_id,
+          latest_message: activity_message_json(latest_message)
+        }
+
+        room_seq =
+          Runtime.append_scope_event(
+            "channel",
+            socket.assigns.channel_id,
+            socket.assigns.user_id,
+            "message_deleted",
+            payload
+          )
+          |> case do
+            {:ok, event} -> event.room_seq
+            _ -> nil
+          end
+
+        broadcast!(socket, "message_deleted", Map.put(payload, :room_seq, room_seq))
+        notify_scope_mutation(socket.assigns.server_id, "channel", socket.assigns.channel_id)
         {:reply, :ok, socket}
 
       {:error, reason} ->
@@ -268,11 +376,27 @@ defmodule VesperWeb.ChatChannel do
     if PermissionsCache.has_permission?(user_id, server_id, Permissions.manage_messages()) do
       case Chat.pin_message(channel_id, message_id, user_id) do
         {:ok, _pin} ->
-          broadcast!(socket, "message_pinned", %{
+          payload = %{
             channel_id: channel_id,
             message_id: message_id,
             pinned_by: user_id
-          })
+          }
+
+          room_seq =
+            Runtime.append_scope_event(
+              "channel",
+              channel_id,
+              socket.assigns.user_id,
+              "message_pinned",
+              payload
+            )
+            |> case do
+              {:ok, event} -> event.room_seq
+              _ -> nil
+            end
+
+          broadcast!(socket, "message_pinned", Map.put(payload, :room_seq, room_seq))
+          notify_scope_mutation(server_id, "channel", channel_id)
 
           {:reply, :ok, socket}
 
@@ -292,10 +416,26 @@ defmodule VesperWeb.ChatChannel do
     if PermissionsCache.has_permission?(user_id, server_id, Permissions.manage_messages()) do
       case Chat.unpin_message(channel_id, message_id) do
         {:ok, _} ->
-          broadcast!(socket, "message_unpinned", %{
+          payload = %{
             channel_id: channel_id,
             message_id: message_id
-          })
+          }
+
+          room_seq =
+            Runtime.append_scope_event(
+              "channel",
+              channel_id,
+              socket.assigns.user_id,
+              "message_unpinned",
+              payload
+            )
+            |> case do
+              {:ok, event} -> event.room_seq
+              _ -> nil
+            end
+
+          broadcast!(socket, "message_unpinned", Map.put(payload, :room_seq, room_seq))
+          notify_scope_mutation(server_id, "channel", channel_id)
 
           {:reply, :ok, socket}
 
@@ -485,6 +625,15 @@ defmodule VesperWeb.ChatChannel do
           device_id: requester_device_id
         })
 
+        VesperWeb.Endpoint.broadcast(
+          "user:#{socket.assigns.user_id}",
+          "mls_history_request_pending",
+          %{
+            scope_id: socket.assigns.channel_id,
+            topic: "chat:channel:#{socket.assigns.channel_id}"
+          }
+        )
+
         {:noreply, socket}
 
       {:error, _changeset} ->
@@ -524,6 +673,11 @@ defmodule VesperWeb.ChatChannel do
           recipient_id: recipient_id,
           recipient_device_id: recipient_device_id,
           sender_id: socket.assigns.user_id
+        })
+
+        VesperWeb.Endpoint.broadcast("user:#{recipient_id}", "mls_history_bundle_pending", %{
+          scope_id: socket.assigns.channel_id,
+          topic: "chat:channel:#{socket.assigns.channel_id}"
         })
 
         {:noreply, socket}
@@ -602,7 +756,7 @@ defmodule VesperWeb.ChatChannel do
   # Guard against clients sending a non-list value (e.g. a bare string) for mentioned_user_ids.
   defp notify_mentions(_non_list, _channel_id, _sender_id, _server_id, _member_ids), do: :ok
 
-  defp notify_unread(channel_id, message_id, sender_id, member_ids) do
+  defp notify_unread(channel_id, message, sender_id, member_ids) do
     recipients = MapSet.delete(member_ids, sender_id)
 
     :telemetry.execute(
@@ -614,9 +768,21 @@ defmodule VesperWeb.ChatChannel do
     for uid <- recipients do
       VesperWeb.Endpoint.broadcast("user:#{uid}", "unread_update", %{
         channel_id: channel_id,
-        message_id: message_id
+        message_id: message.id,
+        inserted_at: message.inserted_at,
+        sender_id: message.sender_id,
+        sender: sender_json(message.sender)
       })
     end
+  end
+
+  defp notify_scope_mutation(server_id, kind, scope_id) do
+    VesperWeb.Endpoint.broadcast("presence:server:#{server_id}", "scope_mutation", %{
+      kind: kind,
+      scope_id: scope_id
+    })
+
+    :ok
   end
 
   defp maybe_add_expires_at(attrs, ttl) when is_integer(ttl) and ttl > 0 do
@@ -629,4 +795,66 @@ defmodule VesperWeb.ChatChannel do
   end
 
   defp maybe_add_expires_at(attrs, _ttl), do: attrs
+
+  defp normalize_mentioned_user_ids(mentioned_user_ids, sender_id) when is_list(mentioned_user_ids) do
+    mentioned_user_ids
+    |> Enum.filter(&(is_binary(&1) and &1 not in [sender_id, "everyone"]))
+    |> Enum.uniq()
+  end
+
+  defp normalize_mentioned_user_ids(_mentioned_user_ids, _sender_id), do: []
+
+  defp append_channel_urgent_events(message, sender_id, mentioned_user_ids) do
+    reply_target_user_id =
+      case message.parent_message_id && Chat.get_message(message.parent_message_id) do
+        %{sender_id: parent_sender_id} when is_binary(parent_sender_id) and parent_sender_id != sender_id ->
+          parent_sender_id
+
+        _ ->
+          nil
+      end
+
+    urgent_targets =
+      mentioned_user_ids
+      |> Enum.reduce(%{}, fn user_id, acc ->
+        Map.put(acc, user_id, %{
+          mentions_you: true,
+          reply_to_you: user_id == reply_target_user_id,
+          urgent_reason: if(user_id == reply_target_user_id, do: "mention_reply", else: "mention")
+        })
+      end)
+      |> then(fn targets ->
+        if is_binary(reply_target_user_id) and not Map.has_key?(targets, reply_target_user_id) do
+          Map.put(targets, reply_target_user_id, %{
+            mentions_you: false,
+            reply_to_you: true,
+            urgent_reason: "reply"
+          })
+        else
+          targets
+        end
+      end)
+
+    urgent_events =
+      Enum.map(urgent_targets, fn {user_id, flags} ->
+        %{
+          user_id: user_id,
+          scope_kind: "channel",
+          scope_id: message.channel_id,
+          payload: %{
+            message_id: message.id,
+            room_seq: message.room_seq,
+            sender_id: message.sender_id,
+            sender: sender_json(message.sender),
+            parent_message_id: message.parent_message_id,
+            urgent_reason: flags.urgent_reason,
+            mentions_you: flags.mentions_you,
+            reply_to_you: flags.reply_to_you,
+            is_dm: false
+          }
+        }
+      end)
+
+    Sync.append_urgent_events(urgent_events)
+  end
 end

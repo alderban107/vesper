@@ -1,6 +1,7 @@
 defmodule VesperWeb.ConversationController do
   use VesperWeb, :controller
   alias Vesper.Chat
+  alias Vesper.Sync
   import VesperWeb.ControllerHelpers, only: [parse_int: 2]
 
   def create(conn, %{"participant_ids" => participant_ids} = params) do
@@ -9,6 +10,13 @@ defmodule VesperWeb.ConversationController do
 
     case Chat.create_conversation(user.id, participant_ids, opts) do
       {:ok, conversation} ->
+        Sync.append_scope_events(
+          Enum.map(conversation.participants, & &1.user_id),
+          "conversation_upsert",
+          "dm",
+          conversation.id
+        )
+
         # Notify other participants of the new conversation
         conv_payload = conversation_json(conversation)
 
@@ -129,6 +137,7 @@ defmodule VesperWeb.ConversationController do
   defp message_json(message) do
     base = %{
       id: message.id,
+      room_seq: message.room_seq,
       conversation_id: message.conversation_id,
       sender_id: message.sender_id,
       sender: sender_json(message.sender),

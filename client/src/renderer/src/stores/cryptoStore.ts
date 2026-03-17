@@ -33,8 +33,10 @@ import { deserializePrivatePackage } from '../crypto/keySerialization'
 import { fetchKeyPackage, fetchPendingWelcomes, ackPendingWelcome } from '../api/crypto'
 import { base64ToUint8, uint8ToBase64 } from '../api/crypto'
 import { useAuthStore } from './authStore'
-import { withGroupLock } from '../crypto/groupLock'
+import { withGroupLock, type GroupLockPriority } from '../crypto/groupLock'
 import { cacheSentMessage } from '../crypto/decryptionCache'
+
+const BACKGROUND_DECRYPT_CHUNK_SIZE = 8
 
 function isAlreadyMemberValidationError(error: unknown): boolean {
   return (
@@ -139,7 +141,17 @@ interface CryptoState {
     epoch: number
   } | null>
   /** Decrypt a ciphertext message from a channel */
-  decryptForChannel: (channelId: string, ciphertext: string) => Promise<string | null>
+  decryptForChannel: (
+    channelId: string,
+    ciphertext: string,
+    priority?: GroupLockPriority
+  ) => Promise<string | null>
+  /** Decrypt a batch of ciphertext messages while holding the room lock once */
+  decryptBatchForChannel: (
+    channelId: string,
+    ciphertexts: string[],
+    priority?: GroupLockPriority
+  ) => Promise<Array<string | null>>
   /** Check if a channel has an active MLS group */
   hasGroup: (channelId: string) => boolean
   /** Count current MLS members for a channel */
@@ -665,7 +677,7 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
     })
   },
 
-  decryptForChannel: async (channelId, ciphertext) => {
+  decryptForChannel: async (channelId, ciphertext, priority = 'normal') => {
     if (!useAuthStore.getState().canUseE2EE) return null
     if (!get().groupStates[channelId]) return null
 
@@ -692,7 +704,77 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
       } catch {
         return null
       }
-    })
+    }, priority)
+  },
+
+  decryptBatchForChannel: async (channelId, ciphertexts, priority = 'background') => {
+    if (!useAuthStore.getState().canUseE2EE) {
+      return ciphertexts.map(() => null)
+    }
+    if (!get().groupStates[channelId] || ciphertexts.length === 0) {
+      return ciphertexts.map(() => null)
+    }
+
+    const chunkSize =
+      priority === 'background' ? BACKGROUND_DECRYPT_CHUNK_SIZE : ciphertexts.length
+    const plaintexts = ciphertexts.map(() => null) as Array<string | null>
+
+    for (let index = 0; index < ciphertexts.length; index += chunkSize) {
+      const chunk = ciphertexts.slice(index, index + chunkSize)
+
+      const chunkPlaintexts = await withGroupLock(channelId, async () => {
+        const initialState = get().groupStates[channelId]
+        if (!initialState) {
+          return chunk.map(() => null)
+        }
+
+        try {
+          await initCipherSuite()
+
+          let workingState = initialState
+          let stateChanged = false
+          const currentPlaintexts: Array<string | null> = []
+
+          for (const ciphertext of chunk) {
+            try {
+              const result = await decryptMessage(workingState, base64ToUint8(ciphertext))
+              if (!result) {
+                currentPlaintexts.push(null)
+                continue
+              }
+
+              workingState = result.newState
+              stateChanged = true
+              currentPlaintexts.push(result.plaintext)
+            } catch {
+              currentPlaintexts.push(null)
+            }
+          }
+
+          if (stateChanged) {
+            const serialized = serializeGroupState(workingState)
+            await saveGroupState(channelId, serialized, Number(workingState.groupContext.epoch))
+            set((s) => ({
+              groupStates: { ...s.groupStates, [channelId]: workingState }
+            }))
+          }
+
+          return currentPlaintexts
+        } catch {
+          return chunk.map(() => null)
+        }
+      }, priority)
+
+      chunkPlaintexts.forEach((plaintext, chunkIndex) => {
+        plaintexts[index + chunkIndex] = plaintext
+      })
+
+      if (priority === 'background' && index + chunkSize < ciphertexts.length) {
+        await new Promise((resolve) => window.setTimeout(resolve, 0))
+      }
+    }
+
+    return plaintexts
   },
 
   hasGroup: (channelId) => {

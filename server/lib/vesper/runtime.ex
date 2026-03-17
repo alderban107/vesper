@@ -1,7 +1,11 @@
 defmodule Vesper.Runtime do
+  import Ecto.Query
+
+  alias Vesper.{Chat, Sync}
   alias Vesper.Chat.{DmConversation, Message}
   alias Vesper.Repo
   alias Vesper.Runtime.{Room, RoomEvent, RoomRelation}
+  alias Vesper.Servers
   alias Vesper.Servers.Channel
 
   def get_room(id), do: Repo.get(Room, id)
@@ -46,11 +50,116 @@ defmodule Vesper.Runtime do
   end
 
   def project_message(%Message{} = message) do
-    with {:ok, room} <- room_for_message(message),
-         {:ok, event} <- ensure_message_event(room, message) do
-      maybe_create_thread_relation(event, message)
+    with {:ok, room} <- room_for_message(message) do
+      Repo.transaction(fn ->
+        with {:ok, event} <- ensure_message_event(room, message) do
+          case maybe_create_thread_relation(event, message) do
+            {:ok, _event} = result ->
+              update_room_last_message(room.id, message.id, message.inserted_at, event.room_seq)
+              append_user_sync_events(room, "message")
+              result
+
+            error ->
+              Repo.rollback(error)
+          end
+        else
+          error ->
+            Repo.rollback(error)
+        end
+      end)
+      |> case do
+        {:ok, {:ok, event}} -> {:ok, event}
+        {:error, error} -> error
+      end
     end
   end
+
+  def append_scope_event(scope_kind, scope_id, sender_id, event_type, content)
+      when is_map(content) do
+    with {:ok, room} <- room_for_scope(scope_kind, scope_id) do
+      Repo.transaction(fn ->
+        room_seq = next_room_seq!(room.id)
+
+        %RoomEvent{}
+        |> RoomEvent.changeset(%{
+          room_id: room.id,
+          room_seq: room_seq,
+          sender_id: sender_id,
+          event_type: event_type,
+          content: content
+        })
+        |> Repo.insert()
+        |> case do
+          {:ok, event} = result ->
+            update_room_last_mutation(room.id, event.inserted_at, room_seq)
+            append_user_sync_events(room, "mutation")
+            result
+
+          error ->
+            Repo.rollback(error)
+        end
+      end)
+      |> case do
+        {:ok, {:ok, event}} -> {:ok, event}
+        {:error, error} -> error
+      end
+    end
+  end
+
+  def list_scope_events(scope_kind, scope_id, since, opts \\ []) do
+    limit = Keyword.get(opts, :limit, 200)
+
+    with {:ok, room} <- room_for_scope(scope_kind, scope_id) do
+      from(e in RoomEvent,
+        where:
+          e.room_id == ^room.id and
+            e.event_type != "vesper.message" and
+            e.inserted_at > ^since,
+        order_by: [asc: e.room_seq],
+        limit: ^limit
+      )
+      |> Repo.all()
+    else
+      _ -> []
+    end
+  end
+
+  def list_scope_events_after_seq(scope_kind, scope_id, after_seq, opts \\ [])
+      when is_integer(after_seq) do
+    limit = Keyword.get(opts, :limit, 200)
+
+    with {:ok, room} <- room_for_scope(scope_kind, scope_id) do
+      from(e in RoomEvent,
+        where:
+          e.room_id == ^room.id and
+            e.event_type != "vesper.message" and
+            e.room_seq > ^after_seq,
+        order_by: [asc: e.room_seq],
+        limit: ^limit
+      )
+      |> Repo.all()
+    else
+      _ -> []
+    end
+  end
+
+  def refresh_room_last_message_for_scope("channel", scope_id) when is_binary(scope_id) do
+    with %Room{} = room <- Repo.get_by(Room, channel_id: scope_id) do
+      refresh_room_last_message(room.id, channel_id: scope_id)
+    else
+      _ -> :ok
+    end
+  end
+
+  def refresh_room_last_message_for_scope("dm", scope_id) when is_binary(scope_id) do
+    with %Room{} = room <- Repo.get_by(Room, conversation_id: scope_id) do
+      refresh_room_last_message(room.id, conversation_id: scope_id)
+    else
+      _ -> :ok
+    end
+  end
+
+  def refresh_room_last_message_for_scope(_scope_kind, _scope_id), do: :ok
 
   defp room_for_message(%Message{channel_id: channel_id}) when not is_nil(channel_id) do
     case get_room_for_channel(channel_id) do
@@ -69,15 +178,34 @@ defmodule Vesper.Runtime do
 
   defp room_for_message(_message), do: {:error, :room_not_found}
 
+  defp room_for_scope("channel", scope_id) do
+    case get_room_for_channel(scope_id) do
+      %Room{} = room -> {:ok, room}
+      nil -> {:error, :room_not_found}
+    end
+  end
+
+  defp room_for_scope("dm", scope_id) do
+    case get_room_for_conversation(scope_id) do
+      %Room{} = room -> {:ok, room}
+      nil -> {:error, :room_not_found}
+    end
+  end
+
+  defp room_for_scope(_scope_kind, _scope_id), do: {:error, :room_not_found}
+
   defp ensure_message_event(%Room{} = room, %Message{} = message) do
     case Repo.get_by(RoomEvent, message_id: message.id) do
       %RoomEvent{} = event ->
         {:ok, event}
 
       nil ->
+        room_seq = next_room_seq!(room.id)
+
         %RoomEvent{}
         |> RoomEvent.changeset(%{
           room_id: room.id,
+          room_seq: room_seq,
           sender_id: message.sender_id,
           message_id: message.id,
           event_type: "vesper.message",
@@ -136,4 +264,109 @@ defmodule Vesper.Runtime do
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp update_room_last_message(room_id, message_id, inserted_at, room_seq) do
+    from(room in Room,
+      where:
+        room.id == ^room_id and
+          (is_nil(room.last_message_seq) or room.last_message_seq <= ^room_seq)
+    )
+    |> Repo.update_all(
+      set: [
+        last_message_id: message_id,
+        last_message_at: inserted_at,
+        last_message_seq: room_seq,
+        updated_at: DateTime.utc_now() |> DateTime.truncate(:second)
+      ]
+    )
+
+    :ok
+  end
+
+  defp update_room_last_mutation(room_id, inserted_at, room_seq) do
+    from(room in Room,
+      where: room.id == ^room_id and (is_nil(room.last_mutation_seq) or room.last_mutation_seq < ^room_seq)
+    )
+    |> Repo.update_all(
+      set: [
+        last_mutation_at: inserted_at,
+        last_mutation_seq: room_seq,
+        updated_at: DateTime.utc_now() |> DateTime.truncate(:second)
+      ]
+    )
+
+    :ok
+  end
+
+  defp refresh_room_last_message(room_id, scope_filter) do
+    latest_message =
+      Message
+      |> where(^scope_filter)
+      |> order_by([message], desc: message.inserted_at, desc: message.id)
+      |> limit(1)
+      |> Repo.one()
+
+    attrs =
+      case latest_message do
+        %Message{} = message ->
+          [
+            last_message_id: message.id,
+            last_message_at: message.inserted_at,
+            last_message_seq: latest_message_seq(room_id, message.id),
+            updated_at: DateTime.utc_now() |> DateTime.truncate(:second)
+          ]
+
+        nil ->
+          [
+            last_message_id: nil,
+            last_message_at: nil,
+            last_message_seq: nil,
+            updated_at: DateTime.utc_now() |> DateTime.truncate(:second)
+          ]
+      end
+
+    from(room in Room, where: room.id == ^room_id)
+    |> Repo.update_all(set: attrs)
+
+    :ok
+  end
+
+  defp latest_message_seq(room_id, message_id) do
+    from(event in RoomEvent,
+      where: event.room_id == ^room_id and event.message_id == ^message_id,
+      select: event.room_seq,
+      limit: 1
+    )
+    |> Repo.one()
+  end
+
+  defp next_room_seq!(room_id) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    case Repo.query(
+           "UPDATE rooms SET current_seq = current_seq + 1, updated_at = $2 WHERE id = $1 RETURNING current_seq",
+           [Ecto.UUID.dump!(room_id), now]
+         ) do
+      {:ok, %Postgrex.Result{rows: [[room_seq]]}} -> room_seq
+      {:ok, _result} -> raise "could not allocate room sequence for #{room_id}"
+      {:error, error} -> raise error
+    end
+  end
+
+  defp append_user_sync_events(%Room{kind: :channel, server_id: server_id, channel_id: channel_id}, event_type)
+       when is_binary(server_id) and is_binary(channel_id) do
+    user_ids = Servers.list_member_ids(server_id)
+    Sync.append_scope_events(user_ids, event_type, "channel", channel_id)
+  end
+
+  defp append_user_sync_events(
+         %Room{kind: :dm, conversation_id: conversation_id},
+         event_type
+       )
+       when is_binary(conversation_id) do
+    user_ids = Chat.list_participant_ids(conversation_id)
+    Sync.append_scope_events(user_ids, event_type, "dm", conversation_id)
+  end
+
+  defp append_user_sync_events(_room, _event_type), do: :ok
 end

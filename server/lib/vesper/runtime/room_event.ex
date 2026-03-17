@@ -11,6 +11,7 @@ defmodule Vesper.Runtime.RoomEvent do
     field :ciphertext, :binary
     field :encryption_algorithm, :string
     field :mls_epoch, :integer
+    field :room_seq, :integer
 
     belongs_to :room, Vesper.Runtime.Room
     belongs_to :sender, Vesper.Accounts.User
@@ -29,7 +30,8 @@ defmodule Vesper.Runtime.RoomEvent do
       :content,
       :ciphertext,
       :encryption_algorithm,
-      :mls_epoch
+      :mls_epoch,
+      :room_seq
     ])
     |> validate_required([:room_id, :event_type])
   end

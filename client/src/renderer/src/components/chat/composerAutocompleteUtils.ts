@@ -3,6 +3,7 @@ import type { DmConversation } from '../../stores/dmStore'
 import type { ComposerAutocompleteItem } from './ComposerAutocomplete'
 import { EMOJIS } from '../../data/emojis'
 import { formatCustomEmojiToken } from '../../utils/emoji'
+import { usePresenceStore } from '../../stores/presenceStore'
 
 export interface ComposerTriggerMatch {
   type: 'mention' | 'channel' | 'emoji'
@@ -47,7 +48,7 @@ export function buildMentionSuggestions(
   if ('everyone'.startsWith(normalized) || normalized === '') {
     items.push({
       id: 'everyone',
-      label: '@everyone',
+      label: 'everyone',
       sublabel: 'Notify all members',
       value: '<@everyone>',
       type: 'everyone'
@@ -76,7 +77,10 @@ export function buildMentionSuggestions(
       label: displayName || username,
       sublabel: username && displayName !== username ? `@${username}` : undefined,
       value: `<@${member.user_id}>`,
-      type: 'user'
+      type: 'user',
+      avatarUrl: member.user?.avatar_url,
+      avatarUserId: member.user_id,
+      status: usePresenceStore.getState().getStatus(member.user_id)
     })
   }
 
@@ -102,7 +106,10 @@ export function buildMentionSuggestions(
         label: displayName,
         sublabel: username && displayName !== username ? `@${username}` : undefined,
         value: `<@${participant.user_id}>`,
-        type: 'user'
+        type: 'user',
+        avatarUrl: participant.user.avatar_url,
+        avatarUserId: participant.user_id,
+        status: usePresenceStore.getState().getStatus(participant.user_id)
       })
     }
   }
@@ -122,10 +129,11 @@ export function buildChannelSuggestions(
     .slice(0, 8)
     .map((channel: Channel) => ({
       id: channel.id,
-      label: `#${channel.name}`,
+      label: channel.name,
       sublabel: channel.topic || undefined,
       value: `<#${channel.id}>`,
-      type: 'channel'
+      type: 'channel',
+      channelType: channel.type
     }))
 }
 

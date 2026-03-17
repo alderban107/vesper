@@ -112,6 +112,10 @@ export interface AuthDevice {
   trusted_at: string | null
   revoked_at: string | null
   last_seen_at: string | null
+  push_token?: string | null
+  push_platform?: string | null
+  background_sync_capable?: boolean
+  notification_public_key?: string | null
   inserted_at: string
 }
 
@@ -337,6 +341,21 @@ async function hashRecoveryMnemonic(mnemonic: string): Promise<string> {
     .join('')
 }
 
+async function registerCurrentDeviceNotificationCapability(): Promise<void> {
+  try {
+    await apiFetch('/api/v1/auth/devices/current/notifications', {
+      method: 'PUT',
+      body: JSON.stringify({
+        push_platform:
+          typeof window !== 'undefined' && 'electron' in window ? 'electron' : 'web',
+        background_sync_capable: true
+      })
+    })
+  } catch {
+    // ignore notification capability registration failures
+  }
+}
+
 export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
   currentDevice: null,
@@ -427,6 +446,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         canUseE2EE: true
       })
 
+      void registerCurrentDeviceNotificationCapability()
       void get().fetchDevices().catch(() => {})
 
       return true
@@ -488,8 +508,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         canUseE2EE
       })
 
+      void registerCurrentDeviceNotificationCapability()
       if (canUseE2EE) {
         void get().replenishKeyPackages().catch(() => {})
+        void refreshActiveEncryptedViews().catch(() => {})
       }
 
       void get().fetchDevices().catch(() => {})
@@ -560,8 +582,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         canUseE2EE
       })
 
+      void registerCurrentDeviceNotificationCapability()
       if (canUseE2EE) {
         void get().replenishKeyPackages().catch(() => {})
+        void refreshActiveEncryptedViews().catch(() => {})
       }
 
       void get().fetchDevices().catch(() => {})
@@ -715,6 +739,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         error: null
       })
 
+      void registerCurrentDeviceNotificationCapability()
       await get().fetchDevices()
       await get().replenishKeyPackages()
       await refreshActiveEncryptedViews()

@@ -1,52 +1,96 @@
-/**
- * Per-group async mutex to prevent concurrent MLS state mutations.
- *
- * MLS state is ratcheted on every encrypt/decrypt/commit operation.
- * Without serialization, concurrent operations can read stale state,
- * produce conflicting updates, and corrupt the group.
- */
+export type GroupLockPriority = 'urgent' | 'normal' | 'background'
 
-const locks = new Map<string, Promise<void>>()
+type QueueTask<T> = {
+  fn: () => Promise<T>
+  priority: GroupLockPriority
+  resolve: (value: T | PromiseLike<T>) => void
+  reject: (reason?: unknown) => void
+}
 
-/**
- * Acquire an exclusive lock for the given group ID.
- * Returns a release function. All MLS state-mutating operations
- * for a group must be wrapped in this lock.
- *
- * Usage:
- *   const release = await acquireGroupLock(channelId)
- *   try {
- *     // ... mutate MLS state ...
- *   } finally {
- *     release()
- *   }
- */
-export async function acquireGroupLock(groupId: string): Promise<() => void> {
-  // Wait for any existing lock on this group
-  while (locks.has(groupId)) {
-    await locks.get(groupId)
+type GroupQueue = {
+  running: boolean
+  urgent: QueueTask<unknown>[]
+  normal: QueueTask<unknown>[]
+  background: QueueTask<unknown>[]
+}
+
+const queues = new Map<string, GroupQueue>()
+
+function getOrCreateQueue(groupId: string): GroupQueue {
+  const existing = queues.get(groupId)
+  if (existing) {
+    return existing
   }
 
-  let release!: () => void
-  const promise = new Promise<void>((resolve) => {
-    release = resolve
-  })
-  locks.set(groupId, promise)
+  const created: GroupQueue = {
+    running: false,
+    urgent: [],
+    normal: [],
+    background: []
+  }
 
-  return () => {
-    locks.delete(groupId)
-    release()
+  queues.set(groupId, created)
+  return created
+}
+
+function nextTask(queue: GroupQueue): QueueTask<unknown> | undefined {
+  return queue.urgent.shift() ?? queue.normal.shift() ?? queue.background.shift()
+}
+
+function maybeCleanupQueue(groupId: string, queue: GroupQueue): void {
+  if (
+    !queue.running &&
+    queue.urgent.length === 0 &&
+    queue.normal.length === 0 &&
+    queue.background.length === 0
+  ) {
+    queues.delete(groupId)
   }
 }
 
-/**
- * Convenience wrapper: execute a function while holding the group lock.
- */
-export async function withGroupLock<T>(groupId: string, fn: () => Promise<T>): Promise<T> {
-  const release = await acquireGroupLock(groupId)
-  try {
-    return await fn()
-  } finally {
-    release()
+function runNext(groupId: string): void {
+  const queue = queues.get(groupId)
+  if (!queue || queue.running) {
+    return
   }
+
+  const task = nextTask(queue)
+  if (!task) {
+    maybeCleanupQueue(groupId, queue)
+    return
+  }
+
+  queue.running = true
+
+  void task.fn()
+    .then(task.resolve, task.reject)
+    .finally(() => {
+      const current = queues.get(groupId)
+      if (!current) {
+        return
+      }
+
+      current.running = false
+      runNext(groupId)
+      maybeCleanupQueue(groupId, current)
+    })
+}
+
+export function withGroupLock<T>(
+  groupId: string,
+  fn: () => Promise<T>,
+  priority: GroupLockPriority = 'normal'
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const queue = getOrCreateQueue(groupId)
+    const task: QueueTask<T> = {
+      fn,
+      priority,
+      resolve,
+      reject
+    }
+
+    queue[priority].push(task as QueueTask<unknown>)
+    runNext(groupId)
+  })
 }

@@ -21,9 +21,153 @@ let heartbeatInterval: ReturnType<typeof setInterval> | null = null
 let idleTimeout: ReturnType<typeof setTimeout> | null = null
 let userTopic: string | null = null
 let serverPresenceTopics: Set<string> = new Set()
+let activityListenersAttached = false
+let detachActivityListeners: (() => void) | null = null
+let presenceSourcesByTopic = new Map<string, Record<string, PresenceStatus>>()
+let pendingScopeMutations = new Set<string>()
+let scopeMutationRefreshPromise: Promise<void> | null = null
 
 const HEARTBEAT_INTERVAL = 30_000 // 30 seconds
 const IDLE_TIMEOUT = 300_000 // 5 minutes
+
+const PRESENCE_PRIORITY: Record<PresenceStatus, number> = {
+  online: 4,
+  dnd: 3,
+  idle: 2,
+  offline: 1
+}
+
+function normalizePresenceStatus(status: string | undefined): PresenceStatus {
+  if (status === 'online' || status === 'idle' || status === 'dnd') {
+    return status
+  }
+
+  return 'offline'
+}
+
+function recomputePresenceStatuses(): Record<string, PresenceStatus> {
+  const statuses: Record<string, PresenceStatus> = {}
+
+  for (const source of presenceSourcesByTopic.values()) {
+    for (const [userId, status] of Object.entries(source)) {
+      const existing = statuses[userId]
+      if (!existing || PRESENCE_PRIORITY[status] > PRESENCE_PRIORITY[existing]) {
+        statuses[userId] = status
+      }
+    }
+  }
+
+  return statuses
+}
+
+function replaceTopicPresence(
+  topic: string,
+  state: Record<string, { metas: Array<{ status: string }> }>
+): void {
+  const nextTopicState: Record<string, PresenceStatus> = {}
+
+  for (const [userId, data] of Object.entries(state)) {
+    nextTopicState[userId] = normalizePresenceStatus(data.metas[0]?.status)
+  }
+
+  if (Object.keys(nextTopicState).length === 0) {
+    presenceSourcesByTopic.delete(topic)
+    return
+  }
+
+  presenceSourcesByTopic.set(topic, nextTopicState)
+}
+
+function applyTopicPresenceDiff(
+  topic: string,
+  diff: {
+    joins: Record<string, { metas: Array<{ status: string }> }>
+    leaves: Record<string, unknown>
+  }
+): void {
+  const nextTopicState = { ...(presenceSourcesByTopic.get(topic) ?? {}) }
+
+  for (const userId of Object.keys(diff.leaves)) {
+    if (!(userId in diff.joins)) {
+      delete nextTopicState[userId]
+    }
+  }
+
+  for (const [userId, data] of Object.entries(diff.joins)) {
+    nextTopicState[userId] = normalizePresenceStatus(data.metas[0]?.status)
+  }
+
+  if (Object.keys(nextTopicState).length === 0) {
+    presenceSourcesByTopic.delete(topic)
+    return
+  }
+
+  presenceSourcesByTopic.set(topic, nextTopicState)
+}
+
+function clearTopicPresence(topic: string): void {
+  if (!presenceSourcesByTopic.delete(topic)) {
+    return
+  }
+
+  usePresenceStore.setState({ statuses: recomputePresenceStatuses() })
+}
+
+async function flushScopeMutations(): Promise<void> {
+  if (scopeMutationRefreshPromise) {
+    await scopeMutationRefreshPromise
+    return
+  }
+
+  scopeMutationRefreshPromise = (async () => {
+    try {
+      while (pendingScopeMutations.size > 0) {
+        const scopeKeys = [...pendingScopeMutations]
+        pendingScopeMutations.clear()
+
+        const [
+          { useMessageStore },
+          { useSyncStore }
+        ] = await Promise.all([
+          import('./messageStore'),
+          import('./syncStore')
+        ])
+
+        const previousSyncToken = useSyncStore.getState().token
+
+        await useSyncStore.getState().syncNow()
+
+        const messageState = useMessageStore.getState()
+        const trackedScopeIds = new Set([
+          messageState.activeScopeId,
+          ...messageState.recentScopeIds
+        ].filter((scopeId): scopeId is string => Boolean(scopeId)))
+
+        const shouldRefreshTrackedScopes = scopeKeys.some((scopeKey) => {
+          const [, scopeId] = scopeKey.split(':', 2)
+          return trackedScopeIds.has(scopeId)
+        })
+
+        if (shouldRefreshTrackedScopes) {
+          await useMessageStore.getState().syncRecentScopes(previousSyncToken)
+        }
+      }
+    } finally {
+      scopeMutationRefreshPromise = null
+    }
+  })()
+
+  await scopeMutationRefreshPromise
+}
+
+function queueScopeMutation(kind: 'channel' | 'dm', scopeId: string): void {
+  pendingScopeMutations.add(`${kind}:${scopeId}`)
+  void flushScopeMutations().catch(() => {})
+}
+
+export function queueScopeMutationHint(kind: 'channel' | 'dm', scopeId: string): void {
+  queueScopeMutation(kind, scopeId)
+}
 
 function resetIdleTimer(): void {
   if (idleTimeout) clearTimeout(idleTimeout)
@@ -39,6 +183,10 @@ function resetIdleTimer(): void {
 }
 
 function setupActivityListeners(): void {
+  if (activityListenersAttached) {
+    return
+  }
+
   const onActivity = (): void => {
     const store = usePresenceStore.getState()
     if (store.myStatus === 'idle' && userTopic) {
@@ -50,6 +198,27 @@ function setupActivityListeners(): void {
 
   window.addEventListener('mousemove', onActivity, { passive: true })
   window.addEventListener('keydown', onActivity, { passive: true })
+  activityListenersAttached = true
+  detachActivityListeners = () => {
+    window.removeEventListener('mousemove', onActivity)
+    window.removeEventListener('keydown', onActivity)
+    activityListenersAttached = false
+    detachActivityListeners = null
+  }
+}
+
+function shouldUseUrgentBackgroundSync(): boolean {
+  return typeof document !== 'undefined' && (document.hidden || !document.hasFocus())
+}
+
+function triggerUrgentBackgroundSync(): void {
+  if (!shouldUseUrgentBackgroundSync()) {
+    return
+  }
+
+  import('./syncStore').then(({ useSyncStore }) => {
+    void useSyncStore.getState().syncUrgentNow()
+  })
 }
 
 export const usePresenceStore = create<PresenceState>((set, get) => ({
@@ -64,57 +233,91 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
     joinChannel(topic, (event, payload) => {
       if (event === 'presence_state') {
         const state = payload as Record<string, { metas: Array<{ status: string }> }>
-        const statuses: Record<string, PresenceStatus> = {}
-        for (const [uid, data] of Object.entries(state)) {
-          statuses[uid] = (data.metas[0]?.status || 'offline') as PresenceStatus
-        }
-        set((s) => ({ statuses: { ...s.statuses, ...statuses }, connected: true }))
+        replaceTopicPresence(topic, state)
+        set({ statuses: recomputePresenceStatuses(), connected: true })
       } else if (event === 'presence_diff') {
         const diff = payload as {
           joins: Record<string, { metas: Array<{ status: string }> }>
           leaves: Record<string, unknown>
         }
-
-        set((s) => {
-          const newStatuses = { ...s.statuses }
-          // Process leaves first, but skip users who are also in joins
-          // (Phoenix sends both for metadata updates — join has the new state)
-          for (const uid of Object.keys(diff.leaves)) {
-            if (!(uid in diff.joins)) {
-              newStatuses[uid] = 'offline'
-            }
-          }
-          for (const [uid, data] of Object.entries(diff.joins)) {
-            newStatuses[uid] = (data.metas[0]?.status || 'online') as PresenceStatus
-          }
-          return { statuses: newStatuses }
-        })
+        applyTopicPresenceDiff(topic, diff)
+        set({ statuses: recomputePresenceStatuses() })
       } else if (event === 'new_conversation') {
         import('./dmStore').then(({ useDmStore }) => {
           const data = payload as { conversation: DmConversation }
           useDmStore.getState().addConversation(data.conversation)
         })
       } else if (event === 'dm_message') {
-        // A DM was sent to us — refresh conversation list so it appears
+        triggerUrgentBackgroundSync()
         import('./dmStore').then(({ useDmStore }) => {
-          useDmStore.getState().fetchConversations()
+          const data = payload as {
+            conversation_id: string
+            message_id: string
+            sender_id: string | null
+            sender?: { id: string; username: string } | null
+            inserted_at: string
+          }
+
+          const applied = useDmStore.getState().applyConversationActivity({
+            conversationId: data.conversation_id,
+            messageId: data.message_id,
+            senderId: data.sender_id,
+            sender: data.sender ?? null,
+            insertedAt: data.inserted_at
+          })
+
+          if (!applied) {
+            void useDmStore.getState().fetchConversations()
+          }
+        })
+      } else if (
+        event === 'mls_history_request_pending' ||
+        event === 'mls_history_bundle_pending'
+      ) {
+        import('./messageStore').then(({ processPendingHistoryScope }) => {
+          const data = payload as {
+            scope_id: string
+            topic: string
+          }
+
+          void processPendingHistoryScope(data.scope_id, data.topic).catch(() => {})
         })
       } else if (event === 'unread_update') {
-        const data = payload as { channel_id: string; message_id: string }
+        triggerUrgentBackgroundSync()
+        const data = payload as {
+          channel_id: string
+          message_id: string
+          inserted_at?: string
+          sender_id: string | null
+          sender?: {
+            id: string
+            username: string
+            display_name?: string | null
+            avatar_url?: string | null
+          } | null
+        }
         Promise.all([
           import('./serverStore'),
           import('./unreadStore')
         ]).then(([{ useServerStore }, { useUnreadStore }]) => {
+          if (data.inserted_at) {
+            useServerStore.getState().applyChannelActivity({
+              channelId: data.channel_id,
+              messageId: data.message_id,
+              insertedAt: data.inserted_at,
+              senderId: data.sender_id,
+              sender: data.sender ?? null
+            })
+          }
           if (useServerStore.getState().activeChannelId !== data.channel_id) {
             useUnreadStore.getState().incrementChannel(data.channel_id)
           }
+          queueScopeMutation('channel', data.channel_id)
         })
       } else if (event === 'mention') {
-        const data = payload as { channel_id: string; sender_id: string }
-        if (Notification.permission === 'granted') {
-          new Notification('Vesper', { body: 'You were mentioned in a channel' })
-        }
+        triggerUrgentBackgroundSync()
       } else if (event === 'dm_unread_update') {
+        triggerUrgentBackgroundSync()
         const data = payload as { conversation_id: string; message_id: string }
         Promise.all([
           import('./dmStore'),
@@ -123,7 +326,11 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
           if (useDmStore.getState().selectedConversationId !== data.conversation_id) {
             useUnreadStore.getState().incrementDm(data.conversation_id)
           }
+          queueScopeMutation('dm', data.conversation_id)
         })
+      } else if (event === 'scope_mutation') {
+        const data = payload as { kind: 'channel' | 'dm'; scope_id: string }
+        queueScopeMutation(data.kind, data.scope_id)
       } else if (event === 'device_approval_requested' || event === 'device_updated') {
         import('./authStore').then(({ useAuthStore }) => {
           const data = payload as {
@@ -166,6 +373,7 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
     // Leave servers we're no longer in
     for (const topic of serverPresenceTopics) {
       if (!newTopics.has(topic)) {
+        clearTopicPresence(topic)
         leaveChannel(topic)
       }
     }
@@ -178,29 +386,15 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
       joinChannel(topic, (event, payload) => {
         if (event === 'presence_state') {
           const state = payload as Record<string, { metas: Array<{ status: string }> }>
-          const statuses: Record<string, PresenceStatus> = {}
-          for (const [uid, data] of Object.entries(state)) {
-            statuses[uid] = (data.metas[0]?.status || 'offline') as PresenceStatus
-          }
-          set((s) => ({ statuses: { ...s.statuses, ...statuses } }))
+          replaceTopicPresence(topic, state)
+          set({ statuses: recomputePresenceStatuses() })
         } else if (event === 'presence_diff') {
           const diff = payload as {
             joins: Record<string, { metas: Array<{ status: string }> }>
             leaves: Record<string, unknown>
           }
-
-          set((s) => {
-            const newStatuses = { ...s.statuses }
-            for (const uid of Object.keys(diff.leaves)) {
-              if (!(uid in diff.joins)) {
-                newStatuses[uid] = 'offline'
-              }
-            }
-            for (const [uid, data] of Object.entries(diff.joins)) {
-              newStatuses[uid] = (data.metas[0]?.status || 'online') as PresenceStatus
-            }
-            return { statuses: newStatuses }
-          })
+          applyTopicPresenceDiff(topic, diff)
+          set({ statuses: recomputePresenceStatuses() })
         } else if (event === 'emoji_created') {
           const emoji = payload as { id: string; name: string; url: string; animated: boolean; server_id: string }
           useServerStore.setState((s) => ({
@@ -219,8 +413,42 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
                 : srv
             )
           }))
-        } else if (event === 'channels_updated') {
-          void useServerStore.getState().refreshServerChannels(serverId)
+        } else if (
+          event === 'channel_created' ||
+          event === 'channel_updated' ||
+          event === 'channel_deleted' ||
+          event === 'channels_updated'
+        ) {
+          const data = payload as {
+            action?: 'created' | 'updated' | 'deleted'
+            channel?: import('./serverStore').Channel | null
+            channel_id?: string | null
+          }
+          const action =
+            data.action ??
+            (event === 'channel_created'
+              ? 'created'
+              : event === 'channel_updated'
+                ? 'updated'
+                : event === 'channel_deleted'
+                  ? 'deleted'
+                  : null)
+
+          const applied =
+            action != null &&
+            useServerStore.getState().applyChannelMutation({
+              serverId,
+              action,
+              channel: data.channel ?? null,
+              channelId: data.channel_id ?? null
+            })
+
+          if (!applied) {
+            void useServerStore.getState().refreshServerChannels(serverId)
+          }
+        } else if (event === 'scope_mutation') {
+          const data = payload as { kind: 'channel' | 'dm'; scope_id: string }
+          queueScopeMutation(data.kind, data.scope_id)
         }
       })
     }
@@ -230,6 +458,7 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
 
   leaveAllServerPresence: () => {
     for (const topic of serverPresenceTopics) {
+      clearTopicPresence(topic)
       leaveChannel(topic)
     }
     serverPresenceTopics.clear()
@@ -261,7 +490,15 @@ export function cleanupPresenceTimers(): void {
     idleTimeout = null
   }
   if (userTopic) {
+    clearTopicPresence(userTopic)
     leaveChannel(userTopic)
     userTopic = null
   }
+  detachActivityListeners?.()
+  for (const topic of serverPresenceTopics) {
+    clearTopicPresence(topic)
+    leaveChannel(topic)
+  }
+  serverPresenceTopics.clear()
+  presenceSourcesByTopic.clear()
 }

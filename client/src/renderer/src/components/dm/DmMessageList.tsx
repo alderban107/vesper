@@ -19,6 +19,12 @@ export default function DmMessageList(): React.JSX.Element {
   const typingUsers = useMessageStore((s) =>
     conversationId ? (s.typingUsers[conversationId] ?? EMPTY_TYPING) : EMPTY_TYPING
   )
+  const isLoading = useMessageStore((s) =>
+    conversationId ? (s.loadingByScope[conversationId] ?? false) : false
+  )
+  const hasLoaded = useMessageStore((s) =>
+    conversationId ? (s.loadedByScope[conversationId] ?? false) : false
+  )
   const hasMore = useMessageStore((s) =>
     conversationId ? s.hasMore[conversationId] ?? true : false
   )
@@ -27,6 +33,7 @@ export default function DmMessageList(): React.JSX.Element {
   )
   const joinDmChat = useMessageStore((s) => s.joinDmChat)
   const leaveDmChat = useMessageStore((s) => s.leaveDmChat)
+  const activateScope = useMessageStore((s) => s.activateScope)
   const fetchOlderDmMessages = useMessageStore((s) => s.fetchOlderDmMessages)
   const fetchNewerDmMessages = useMessageStore((s) => s.fetchNewerDmMessages)
   const markDmRead = useUnreadStore((s) => s.markDmRead)
@@ -38,10 +45,11 @@ export default function DmMessageList(): React.JSX.Element {
       leaveDmChat(prevConvRef.current)
     }
     if (conversationId) {
+      activateScope(conversationId, 'dm')
       joinDmChat(conversationId)
     }
     prevConvRef.current = conversationId
-  }, [conversationId, joinDmChat, leaveDmChat])
+  }, [activateScope, conversationId, joinDmChat, leaveDmChat])
 
   const handleLoadMore = (): void => {
     if (hasMore && conversationId) {
@@ -60,6 +68,7 @@ export default function DmMessageList(): React.JSX.Element {
       messages={messages}
       messageLookup={allMessages}
       typingUsers={typingUsers}
+      isLoading={Boolean(conversationId) && (!hasLoaded || isLoading)}
       hasMore={hasMore}
       hasNewer={hasNewer}
       emptyState="No messages yet. Say something!"

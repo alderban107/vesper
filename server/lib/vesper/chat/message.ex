@@ -11,6 +11,7 @@ defmodule Vesper.Chat.Message do
     field :mls_epoch, :integer
     field :expires_at, :utc_datetime
     field :edited_at, :utc_datetime
+    field :room_seq, :integer, virtual: true
 
     belongs_to :channel, Vesper.Servers.Channel
     belongs_to :conversation, Vesper.Chat.DmConversation

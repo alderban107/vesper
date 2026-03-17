@@ -262,6 +262,34 @@ defmodule VesperWeb.AuthController do
     })
   end
 
+  def update_current_device_notifications(conn, params) do
+    device = conn.assigns.current_device
+
+    if is_nil(device) do
+      conn
+      |> put_status(:unprocessable_entity)
+      |> json(%{error: "current device is unavailable"})
+    else
+      case extract_notification_attrs(params) do
+        {:ok, attrs} ->
+          case Accounts.update_device_notifications(device, attrs) do
+            {:ok, updated_device} ->
+              json(conn, %{current_device: device_json(updated_device)})
+
+            {:error, changeset} ->
+              conn
+              |> put_status(:unprocessable_entity)
+              |> json(%{errors: format_errors(changeset)})
+          end
+
+        {:error, :invalid_base64} ->
+          conn
+          |> put_status(:bad_request)
+          |> json(%{error: "invalid base64 encoding in notification_public_key"})
+      end
+    end
+  end
+
   def approve_device(conn, %{"id" => id}) do
     user = conn.assigns.current_user
 
@@ -369,6 +397,11 @@ defmodule VesperWeb.AuthController do
       trusted_at: device.trusted_at,
       revoked_at: device.revoked_at,
       last_seen_at: device.last_seen_at,
+      push_token: device.push_token,
+      push_platform: device.push_platform,
+      background_sync_capable: device.background_sync_capable,
+      notification_public_key:
+        if(device.notification_public_key, do: Base.encode64(device.notification_public_key), else: nil),
       inserted_at: device.inserted_at
     }
   end
@@ -458,6 +491,63 @@ defmodule VesperWeb.AuthController do
     case params[key] do
       nil -> acc
       value -> Map.put(acc, field, value)
+    end
+  end
+
+  defp extract_notification_attrs(params) do
+    attrs =
+      %{}
+      |> maybe_put_notification_string(params, "push_token", :push_token)
+      |> maybe_put_notification_string(params, "push_platform", :push_platform)
+      |> maybe_put_background_sync_capable(params)
+
+    case Map.fetch(params, "notification_public_key") do
+      {:ok, nil} ->
+        {:ok, Map.put(attrs, :notification_public_key, nil)}
+
+      {:ok, value} when is_binary(value) ->
+        trimmed = String.trim(value)
+
+        cond do
+          trimmed == "" ->
+            {:ok, Map.put(attrs, :notification_public_key, nil)}
+
+          true ->
+            case Base.decode64(trimmed) do
+              {:ok, decoded} -> {:ok, Map.put(attrs, :notification_public_key, decoded)}
+              :error -> {:error, :invalid_base64}
+            end
+        end
+
+      _ ->
+        {:ok, attrs}
+    end
+  end
+
+  defp maybe_put_notification_string(attrs, params, key, field) do
+    case Map.fetch(params, key) do
+      {:ok, nil} ->
+        Map.put(attrs, field, nil)
+
+      {:ok, value} when is_binary(value) ->
+        trimmed = String.trim(value)
+        Map.put(attrs, field, if(trimmed == "", do: nil, else: trimmed))
+
+      _ ->
+        attrs
+    end
+  end
+
+  defp maybe_put_background_sync_capable(attrs, params) do
+    case Map.fetch(params, "background_sync_capable") do
+      {:ok, value} when value in [true, false] ->
+        Map.put(attrs, :background_sync_capable, value)
+
+      {:ok, value} when is_binary(value) ->
+        Map.put(attrs, :background_sync_capable, value in ["true", "1", "yes", "on"])
+
+      _ ->
+        attrs
     end
   end
 

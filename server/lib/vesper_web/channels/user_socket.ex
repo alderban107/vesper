@@ -9,6 +9,7 @@ defmodule VesperWeb.UserSocket do
   channel "voice:dm:*", VesperWeb.VoiceChannel
   channel "user:*", VesperWeb.UserChannel
   channel "presence:server:*", VesperWeb.ServerPresenceChannel
+  channel "scope:dm:*", VesperWeb.ScopeChannel
 
   @impl true
   def connect(%{"token" => token}, socket, _connect_info) do
