@@ -87,7 +87,7 @@ defmodule Vesper.Chat.FileStorage do
   end
 
   defp upload_dir do
-    Application.app_dir(:vesper, @upload_dir)
+    Application.get_env(:vesper, :upload_dir) || Application.app_dir(:vesper, @upload_dir)
   end
 
   defp ensure_upload_dir! do

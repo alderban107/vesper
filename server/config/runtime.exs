@@ -140,6 +140,12 @@ if config_env() == :prod do
   # File expiry (default 30 days)
   config :vesper, :file_expiry_days, String.to_integer(System.get_env("FILE_EXPIRY_DAYS") || "30")
 
+  # Upload directory — absolute path for file storage. In releases,
+  # Application.app_dir resolves to a versioned path inside the release
+  # (e.g. /app/lib/vesper-0.1.0/priv/uploads) which is wiped on container
+  # recreation. Default to a stable path that Docker volumes can mount.
+  config :vesper, :upload_dir, System.get_env("UPLOAD_DIR") || "/app/priv/uploads"
+
   # CORS — restrict to the configured origin in production.
   # Set CORS_ORIGIN to your frontend URL (e.g. "https://app.example.com").
   # WARNING: leaving CORS_ORIGIN unset allows all origins ("*"), which is

@@ -38,8 +38,11 @@ ENV LANG=en_US.UTF-8
 
 WORKDIR /app
 
-# Create uploads directory (including avatars subdirectory)
-RUN mkdir -p /app/priv/uploads/avatars
+# Create uploads directory at a stable path for Docker volume mounts.
+# FileStorage writes here in production (configured in runtime.exs).
+# The release's Application.app_dir would resolve to a versioned path
+# (e.g. /app/lib/vesper-0.1.0/priv/uploads) which is wiped on image updates.
+RUN mkdir -p /app/priv/uploads/avatars /app/priv/uploads/banners
 
 # Copy the release from build stage
 COPY --from=build /app/_build/prod/rel/vesper ./
