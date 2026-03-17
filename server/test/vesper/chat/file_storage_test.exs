@@ -95,3 +95,4 @@ defmodule Vesper.Chat.FileStorageTest do
     end
   end
 end
+
