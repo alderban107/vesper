@@ -72,10 +72,12 @@ if config_env() == :prod do
 
   port = String.to_integer(System.get_env("PORT") || "4000")
 
-  # Trust WebSocket connections from the web client origin (defaults to same-host only)
+  # Trust WebSocket connections from the web client origin.
+  # Must agree with the CORS plug config below — when CORS_ORIGIN is unset,
+  # both default to allowing all origins for easy local dev.
   check_origin =
     case System.get_env("CORS_ORIGIN") do
-      nil -> true
+      nil -> false
       "*" -> false
       origins -> String.split(origins, ",") |> Enum.map(&String.trim/1)
     end
