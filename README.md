@@ -33,13 +33,10 @@ Pre-built multi-arch images (`linux/amd64`, `linux/arm64`) are published to GHCR
    cp .env.example .env
    ```
 
-2. Edit `.env` and configure:
+2. Edit `.env` and configure — see [Environment Variables](#environment-variables) for the full reference. At minimum, set:
    - `SECRET_KEY_BASE` — generate with `mix phx.gen.secret` or `openssl rand -base64 48`
    - `POSTGRES_PASSWORD` — database password
    - `TURN_PASSWORD` — password for the TURN server (voice relay)
-   - `PHX_HOST` — your server's hostname (default: `localhost`)
-   - `APP_PORT` — external port (default: `4000`)
-   - `API_URL` — full URL to the API server (for the web client, e.g. `https://vesper.yourdomain.com`)
 
 3. Start the stack:
    ```bash
@@ -166,6 +163,80 @@ doc/
 docker-compose.yml       full stack (PostgreSQL, Phoenix, web client, coturn)
 turnserver.conf          coturn configuration for voice relay
 ```
+
+## Environment Variables
+
+All variables are set in `.env` (loaded by Docker Compose) or exported in the shell when running from source. Copy `.env.example` as a starting point.
+
+<details>
+<summary>Full environment variable reference</summary>
+
+### Database
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `POSTGRES_USER` | `vesper` | No | PostgreSQL username |
+| `POSTGRES_PASSWORD` | — | **Yes** | PostgreSQL password |
+| `POSTGRES_DB` | `vesper_prod` | No | PostgreSQL database name |
+| `DATABASE_URL` | — | **Yes** (prod) | Full Ecto connection string, e.g. `ecto://user:pass@host/db`. Only used in production; dev/test use compiled config. |
+| `POOL_SIZE` | `10` | No | Database connection pool size |
+| `ECTO_IPV6` | — | No | Set to `true` or `1` to connect to PostgreSQL over IPv6 |
+
+### Server
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `SECRET_KEY_BASE` | — | **Yes** (prod) | Secret for signing cookies and tokens. Generate with `mix phx.gen.secret` or `openssl rand -base64 48`. |
+| `PHX_HOST` | `localhost` | No | Hostname for URL generation (e.g. `vesper.yourdomain.com`) |
+| `APP_PORT` | `4000` | No | External port the API server listens on |
+| `PHX_SERVER` | — | No | Set to `true` to start the HTTP server (set automatically in Docker) |
+| `JWT_SECRET` | same as `SECRET_KEY_BASE` | No | Separate secret for JWT signing, if desired |
+| `DNS_CLUSTER_QUERY` | — | No | DNS query for clustering in multi-node deployments |
+
+### CORS & Origins
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `CORS_ORIGIN` | `*` (prod) | No | Allowed origin for CORS and WebSocket connections. Set to your frontend URL in production (e.g. `https://app.example.com`). Use a comma-separated list for multiple origins. When unset, CORS allows all origins and a warning is logged. |
+
+### Voice / WebRTC
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `TURN_PASSWORD` | — | **Yes** | Shared secret for the TURN relay server |
+| `TURN_SERVER_URL` | `turn:coturn:3478` | No | TURN server URL. For proxied web deployments, use `turns:your-host:443?transport=tcp`. |
+| `TURN_USERNAME` | `vesper` | No | TURN username |
+| `VOICE_ICE_TRANSPORT_POLICY` | `relay` if TURN is set, else `all` | No | ICE transport policy: `all` (STUN + TURN) or `relay` (TURN only) |
+
+### File Storage
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `FILE_EXPIRY_DAYS` | `30` | No | Number of days uploaded files are retained before cleanup |
+
+### Web Client (Docker)
+
+These apply to the `web` service in Docker Compose.
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `API_URL` | — | No | Full URL to the API server (e.g. `https://vesper.yourdomain.com`). Injected into the web client at container startup. When empty, the client connects to the same host it's served from. |
+| `WEB_PORT` | `8080` | No | External port the web client is served on |
+
+### Development & Testing
+
+These are not needed for production deployments.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TEST_DB_HOST` | `localhost` | PostgreSQL host for test database |
+| `TEST_DB_USER` | `postgres` | PostgreSQL user for test database |
+| `TEST_DB_PASS` | `postgres` | PostgreSQL password for test database |
+| `VESPER_E2E` | — | Set to `1` to run the server in E2E test mode (real connection pool instead of Ecto sandbox) |
+| `MIX_TEST_PARTITION` | — | Appended to test database name for parallel test runs |
+| `ELECTRON_RENDERER_URL` | — | Dev server URL for Electron hot reload |
+
+</details>
 
 ## File Upload Limits
 
