@@ -78,6 +78,11 @@ const SCHEMA_SQL = `
     epoch INTEGER NOT NULL DEFAULT 0
   );
 
+  CREATE TABLE IF NOT EXISTS mls_group_sync_state (
+    group_id TEXT PRIMARY KEY,
+    last_event_seq INTEGER NOT NULL DEFAULT 0
+  );
+
   CREATE TABLE IF NOT EXISTS local_key_packages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     key_package_public BLOB NOT NULL,
@@ -92,6 +97,7 @@ const SCHEMA_SQL = `
     server_id TEXT,
     sender_id TEXT,
     sender_username TEXT,
+    parent_message_id TEXT,
     ciphertext BLOB,
     decrypted_content TEXT,
     mls_epoch INTEGER,
@@ -290,6 +296,7 @@ function ensureMessageCacheColumns(): void {
   ensureColumn('message_cache', 'conversation_id', 'TEXT')
   ensureColumn('message_cache', 'server_id', 'TEXT')
   ensureColumn('message_cache', 'decrypted_content', 'TEXT')
+  ensureColumn('message_cache', 'parent_message_id', 'TEXT')
 }
 
 function ensureMessageCacheIndexes(): void {
@@ -356,6 +363,26 @@ export function setGroupState(groupId: string, state: Buffer, epoch: number): vo
 
 export function deleteGroupState(groupId: string): void {
   getDb().prepare('DELETE FROM mls_groups WHERE group_id = ?').run(groupId)
+  getDb().prepare('DELETE FROM mls_group_sync_state WHERE group_id = ?').run(groupId)
+}
+
+export function getGroupSyncCursor(groupId: string): number {
+  const row = getDb()
+    .prepare('SELECT last_event_seq FROM mls_group_sync_state WHERE group_id = ?')
+    .get(groupId) as { last_event_seq: number } | undefined
+
+  return row?.last_event_seq ?? 0
+}
+
+export function setGroupSyncCursor(groupId: string, lastEventSeq: number): void {
+  getDb()
+    .prepare(
+      `INSERT INTO mls_group_sync_state (group_id, last_event_seq)
+       VALUES (?, ?)
+       ON CONFLICT(group_id) DO UPDATE SET
+         last_event_seq = MAX(mls_group_sync_state.last_event_seq, excluded.last_event_seq)`
+    )
+    .run(groupId, lastEventSeq)
 }
 
 // --- Local Key Packages ---
@@ -410,6 +437,7 @@ export function cacheMessage(msg: {
   server_id: string | null
   sender_id: string | null
   sender_username: string | null
+  parent_message_id: string | null
   ciphertext: Buffer | null
   decrypted_content: string | null
   mls_epoch: number | null
@@ -424,20 +452,22 @@ export function cacheMessage(msg: {
         server_id,
         sender_id,
         sender_username,
+        parent_message_id,
         ciphertext,
         decrypted_content,
         mls_epoch,
         inserted_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
-        channel_id = excluded.channel_id,
-        conversation_id = excluded.conversation_id,
-        server_id = excluded.server_id,
-        sender_id = excluded.sender_id,
-        sender_username = excluded.sender_username,
-        ciphertext = excluded.ciphertext,
-        decrypted_content = excluded.decrypted_content,
-        mls_epoch = excluded.mls_epoch,
+        channel_id = COALESCE(excluded.channel_id, message_cache.channel_id),
+        conversation_id = COALESCE(excluded.conversation_id, message_cache.conversation_id),
+        server_id = COALESCE(excluded.server_id, message_cache.server_id),
+        sender_id = COALESCE(excluded.sender_id, message_cache.sender_id),
+        sender_username = COALESCE(excluded.sender_username, message_cache.sender_username),
+        parent_message_id = COALESCE(excluded.parent_message_id, message_cache.parent_message_id),
+        ciphertext = COALESCE(excluded.ciphertext, message_cache.ciphertext),
+        decrypted_content = COALESCE(excluded.decrypted_content, message_cache.decrypted_content),
+        mls_epoch = COALESCE(excluded.mls_epoch, message_cache.mls_epoch),
         inserted_at = excluded.inserted_at`
     )
     .run(
@@ -447,6 +477,7 @@ export function cacheMessage(msg: {
       msg.server_id,
       msg.sender_id,
       msg.sender_username,
+      msg.parent_message_id,
       msg.ciphertext,
       msg.decrypted_content,
       msg.mls_epoch,
@@ -491,6 +522,7 @@ export function getCachedMessages(channelId: string): Array<{
   server_id: string | null
   sender_id: string | null
   sender_username: string | null
+  parent_message_id: string | null
   ciphertext: Buffer | null
   decrypted_content: string | null
   mls_epoch: number | null

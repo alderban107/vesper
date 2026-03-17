@@ -1,16 +1,35 @@
 import { useState } from 'react'
-import { Star, KeyRound, Lock, Loader2, ArrowLeft } from 'lucide-react'
+import { ArrowLeft, ArrowRight, KeyRound, Loader2, Lock, ShieldCheck, Smartphone } from 'lucide-react'
 import { apiFetch, setTokens } from '../api/client'
 import { getLocalDeviceIdentity } from '../auth/deviceIdentity'
 import { connectSocket } from '../api/socket'
 import { uint8ToBase64, base64ToUint8 } from '../api/crypto'
 import { decryptWithRecoveryKey, createEncryptedKeyBundle, recoveryKeyToBytes } from '../crypto/identity'
 import { initStorage, saveIdentity } from '../crypto/storage'
+import AuthShell from '../components/auth/AuthShell'
 import { useAuthStore } from '../stores/authStore'
 
 interface Props {
   onBack: () => void
 }
+
+const recoveryFeatures = [
+  {
+    icon: KeyRound,
+    label: 'Recovery key restore',
+    description: 'Bring your encrypted identity onto a replacement device.'
+  },
+  {
+    icon: Smartphone,
+    label: 'Device continuity',
+    description: 'Recovered access keeps your future logins attached to the same account state.'
+  },
+  {
+    icon: ShieldCheck,
+    label: 'No plaintext fallback',
+    description: 'Recovery works from your key material, not a server-side copy of your messages.'
+  }
+]
 
 export default function RecoveryPage({ onBack }: Props): React.JSX.Element {
   const [mnemonic, setMnemonic] = useState('')
@@ -22,8 +41,8 @@ export default function RecoveryPage({ onBack }: Props): React.JSX.Element {
   const [recoveryKeyHash, setRecoveryKeyHash] = useState<string | null>(null)
   const [privateKeys, setPrivateKeys] = useState<Uint8Array | null>(null)
 
-  const handleVerifyMnemonic = async (e: React.FormEvent): Promise<void> => {
-    e.preventDefault()
+  const handleVerifyMnemonic = async (event: React.FormEvent): Promise<void> => {
+    event.preventDefault()
     setError(null)
     setLoading(true)
 
@@ -32,16 +51,16 @@ export default function RecoveryPage({ onBack }: Props): React.JSX.Element {
       const hashBuffer = await crypto.subtle.digest('SHA-256', keyBytes)
       const hashArray = new Uint8Array(hashBuffer)
       const hash = Array.from(hashArray)
-        .map((b) => b.toString(16).padStart(2, '0'))
+        .map((byte) => byte.toString(16).padStart(2, '0'))
         .join('')
 
-      const res = await apiFetch('/api/v1/auth/recover', {
+      const response = await apiFetch('/api/v1/auth/recover', {
         method: 'POST',
         body: JSON.stringify({ recovery_key_hash: hash })
       })
 
-      const data = await res.json()
-      if (!res.ok) {
+      const data = await response.json()
+      if (!response.ok) {
         setError(data.error || 'Invalid recovery key')
         setLoading(false)
         return
@@ -60,8 +79,8 @@ export default function RecoveryPage({ onBack }: Props): React.JSX.Element {
     setLoading(false)
   }
 
-  const handleSetNewPassword = async (e: React.FormEvent): Promise<void> => {
-    e.preventDefault()
+  const handleSetNewPassword = async (event: React.FormEvent): Promise<void> => {
+    event.preventDefault()
     setError(null)
 
     if (newPassword !== confirmPassword) {
@@ -82,7 +101,7 @@ export default function RecoveryPage({ onBack }: Props): React.JSX.Element {
       const newBundle = await createEncryptedKeyBundle(privateKeys, newPassword)
       const device = getLocalDeviceIdentity()
 
-      const res = await apiFetch('/api/v1/auth/recover/reset', {
+      const response = await apiFetch('/api/v1/auth/recover/reset', {
         method: 'POST',
         body: JSON.stringify({
           recovery_key_hash: recoveryKeyHash,
@@ -96,8 +115,8 @@ export default function RecoveryPage({ onBack }: Props): React.JSX.Element {
         })
       })
 
-      const data = await res.json()
-      if (!res.ok) {
+      const data = await response.json()
+      if (!response.ok) {
         setError(data.error || 'Failed to reset password')
         setLoading(false)
         return
@@ -135,54 +154,51 @@ export default function RecoveryPage({ onBack }: Props): React.JSX.Element {
   }
 
   return (
-    <div className="h-screen bg-gradient-to-br from-bg-base via-bg-primary to-bg-base flex items-center justify-center">
+    <AuthShell
+      formEyebrow={step === 'mnemonic' ? 'Account recovery' : 'Reset password'}
+      formTitle={step === 'mnemonic' ? 'Recover your account' : 'Set a new password'}
+      formDescription={
+        step === 'mnemonic'
+          ? 'Enter your recovery key to restore access to the encrypted identity tied to this account.'
+          : 'Your key checked out. Set a fresh password to re-encrypt local account data on this device.'
+      }
+      panelEyebrow="Recovery path"
+      panelTitle="Losing a device should be stressful, not fatal."
+      panelDescription="Recovery keeps history portable without giving the server plaintext access to your messages or keys."
+      features={recoveryFeatures}
+    >
       {step === 'mnemonic' ? (
-        <form
-          onSubmit={handleVerifyMnemonic}
-          className="glass-card rounded-2xl p-8 w-[480px] animate-scale-in"
-        >
-          <div className="flex items-center justify-center gap-2 mb-4">
-            <Star className="w-7 h-7 text-accent" />
-            <h1 className="text-2xl font-bold text-gradient">Vesper</h1>
-          </div>
+        <form onSubmit={handleVerifyMnemonic} className="vesper-auth-form">
+          {error && <div className="vesper-auth-error">{error}</div>}
 
-          <h2 className="text-lg font-semibold text-text-primary text-center mb-1">Account Recovery</h2>
-          <p className="text-text-muted text-sm mb-6 text-center">
-            Enter your 24-word recovery key to restore access to your account.
-          </p>
-
-          {error && (
-            <div className="bg-error-bg text-error text-sm rounded-lg p-3 mb-4 animate-fade-in">{error}</div>
-          )}
-
-          <label className="block mb-6">
-            <span className="text-text-muted text-sm font-medium">Recovery Key</span>
-            <div className="relative mt-1">
-              <KeyRound className="absolute left-3 top-3 w-4 h-4 text-text-faint" />
+          <label className="vesper-auth-field">
+            <span className="vesper-auth-label">Recovery key</span>
+            <div className="vesper-auth-textarea-wrap">
+              <KeyRound className="vesper-auth-input-icon vesper-auth-textarea-icon" />
               <textarea
                 value={mnemonic}
-                onChange={(e) => setMnemonic(e.target.value)}
+                onChange={(event) => setMnemonic(event.target.value)}
                 placeholder="Enter your 24 recovery words separated by spaces"
-                rows={4}
-                className="block w-full rounded-lg bg-bg-base/50 border border-border text-text-primary pl-10 pr-3 py-2.5 input-focus font-mono text-sm resize-none"
+                rows={5}
+                className="vesper-auth-textarea input-focus"
                 autoFocus
               />
             </div>
           </label>
 
-          <div className="flex gap-3">
-            <button
-              type="button"
-              onClick={onBack}
-              className="flex items-center gap-1.5 px-4 py-2.5 text-text-muted hover:text-text-primary text-sm transition-colors"
-            >
+          <div className="vesper-auth-callout">
+            Recovery works against your encrypted recovery bundle, then rebinds this device into the same account.
+          </div>
+
+          <div className="vesper-auth-actions">
+            <button type="button" onClick={onBack} className="vesper-auth-tertiary-button">
               <ArrowLeft className="w-4 h-4" />
               Back
             </button>
             <button
               type="submit"
               disabled={loading || !mnemonic.trim()}
-              className="flex-1 glow-accent hover:glow-accent-hover disabled:opacity-40 disabled:shadow-none text-bg-base font-semibold py-2.5 rounded-lg transition-all flex items-center justify-center gap-2"
+              className="vesper-auth-submit glow-accent hover:glow-accent-hover disabled:opacity-40 disabled:shadow-none"
             >
               {loading ? (
                 <>
@@ -190,73 +206,70 @@ export default function RecoveryPage({ onBack }: Props): React.JSX.Element {
                   Verifying...
                 </>
               ) : (
-                'Verify Recovery Key'
+                <>
+                  Verify recovery key
+                  <ArrowRight className="w-4 h-4" />
+                </>
               )}
             </button>
           </div>
         </form>
       ) : (
-        <form
-          onSubmit={handleSetNewPassword}
-          className="glass-card rounded-2xl p-8 w-96 animate-scale-in"
-        >
-          <div className="flex items-center justify-center gap-2 mb-4">
-            <Star className="w-7 h-7 text-accent" />
-            <h1 className="text-2xl font-bold text-gradient">Vesper</h1>
-          </div>
+        <form onSubmit={handleSetNewPassword} className="vesper-auth-form">
+          {error && <div className="vesper-auth-error">{error}</div>}
 
-          <h2 className="text-lg font-semibold text-text-primary text-center mb-1">Set New Password</h2>
-          <p className="text-text-muted text-sm mb-6 text-center">
-            Recovery key verified. Choose a new password to re-encrypt your keys.
-          </p>
-
-          {error && (
-            <div className="bg-error-bg text-error text-sm rounded-lg p-3 mb-4 animate-fade-in">{error}</div>
-          )}
-
-          <label className="block mb-4">
-            <span className="text-text-muted text-sm font-medium">New Password</span>
-            <div className="relative mt-1">
-              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-faint" />
+          <label className="vesper-auth-field">
+            <span className="vesper-auth-label">New password</span>
+            <div className="vesper-auth-input-wrap">
+              <Lock className="vesper-auth-input-icon" />
               <input
                 type="password"
                 value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-                className="block w-full rounded-lg bg-bg-base/50 border border-border text-text-primary pl-10 pr-3 py-2.5 input-focus"
+                onChange={(event) => setNewPassword(event.target.value)}
+                className="vesper-auth-input input-focus"
+                placeholder="Create a new password"
                 autoFocus
               />
             </div>
           </label>
 
-          <label className="block mb-6">
-            <span className="text-text-muted text-sm font-medium">Confirm Password</span>
-            <div className="relative mt-1">
-              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-faint" />
+          <label className="vesper-auth-field">
+            <span className="vesper-auth-label">Confirm password</span>
+            <div className="vesper-auth-input-wrap">
+              <Lock className="vesper-auth-input-icon" />
               <input
                 type="password"
                 value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                className="block w-full rounded-lg bg-bg-base/50 border border-border text-text-primary pl-10 pr-3 py-2.5 input-focus"
+                onChange={(event) => setConfirmPassword(event.target.value)}
+                className="vesper-auth-input input-focus"
+                placeholder="Repeat your new password"
               />
             </div>
           </label>
 
+          <div className="vesper-auth-callout">
+            This password encrypts local key material for this device. Your recovery key still matters if you lose it again.
+          </div>
+
           <button
             type="submit"
             disabled={loading || !newPassword || !confirmPassword}
-            className="w-full glow-accent hover:glow-accent-hover disabled:opacity-40 disabled:shadow-none text-bg-base font-semibold py-2.5 rounded-lg transition-all flex items-center justify-center gap-2"
+            className="vesper-auth-submit glow-accent hover:glow-accent-hover disabled:opacity-40 disabled:shadow-none"
           >
             {loading ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />
-                Saving...
+                Updating password...
               </>
             ) : (
-              'Set Password'
+              <>
+                Finish recovery
+                <ArrowRight className="w-4 h-4" />
+              </>
             )}
           </button>
         </form>
       )}
-    </div>
+    </AuthShell>
   )
 }

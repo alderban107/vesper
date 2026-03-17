@@ -271,6 +271,7 @@ export default function Sidebar(): React.JSX.Element {
   }
 
   const handleDmClick = (): void => {
+    selectConversation(null)
     setActiveServer(null)
     setActiveChannel(null)
     fetchConversations()

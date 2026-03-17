@@ -31,13 +31,14 @@ export default function MessageReactionBar({
             type="button"
             onClick={() => onToggleReaction(reaction.emoji)}
             className={isMine ? 'vesper-message-reaction vesper-message-reaction-active' : 'vesper-message-reaction'}
+            title={`${reaction.senderIds.length} reaction${reaction.senderIds.length === 1 ? '' : 's'}`}
           >
             <EmojiGlyph
               value={reaction.emoji}
               customEmojis={customEmojis}
               className="vesper-message-reaction-emoji"
             />
-            <span>{reaction.senderIds.length}</span>
+            <span className="vesper-message-reaction-count">{reaction.senderIds.length}</span>
           </button>
         )
       })}

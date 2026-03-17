@@ -6,15 +6,8 @@ defmodule VesperWeb.UnreadController do
   def index(conn, _params) do
     user = conn.assigns.current_user
 
-    # Get all server channel IDs the user is a member of
-    channel_ids =
-      Servers.list_user_servers(user)
-      |> Enum.flat_map(fn server -> Enum.map(server.channels, & &1.id) end)
-
-    # Get all DM conversation IDs the user participates in
-    conversation_ids =
-      Chat.list_conversations(user.id)
-      |> Enum.map(fn %{conversation: conv} -> conv.id end)
+    channel_ids = Servers.list_user_channel_ids(user.id)
+    conversation_ids = Chat.list_user_conversation_ids(user.id)
 
     channel_counts = Chat.get_channel_unread_counts(user.id, channel_ids)
     dm_counts = Chat.get_dm_unread_counts(user.id, conversation_ids)

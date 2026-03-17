@@ -13,6 +13,10 @@ const ENCRYPTION_POLL_INTERVAL = 500
 export async function openDmView(page: Page): Promise<void> {
   await page.click('[data-testid="sidebar"] button[title="Direct Messages"]')
   await page.waitForSelector('text=Direct Messages', { timeout: 5_000 })
+  await page.waitForFunction(() => {
+    const composer = document.querySelector('.vesper-composer-textarea')
+    return !composer
+  }, { timeout: 5_000 })
 }
 
 /** Create a new DM with a user by username. */

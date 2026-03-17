@@ -1,4 +1,4 @@
-import { MessageSquare, MoreHorizontal, Pencil, Reply, SmilePlus, Trash2 } from 'lucide-react'
+import { MessageSquare, MoreHorizontal, Pencil, Reply, SmilePlus } from 'lucide-react'
 
 interface Props {
   canEdit: boolean
@@ -6,8 +6,7 @@ interface Props {
   onThread?: () => void
   onReact: () => void
   onEdit: () => void
-  onDelete: () => void
-  onMore?: () => void
+  onMore?: (event: React.MouseEvent<HTMLButtonElement>) => void
   expiryLabel?: string | null
   threadLabel?: string
 }
@@ -18,7 +17,6 @@ export default function MessageActions({
   onThread,
   onReact,
   onEdit,
-  onDelete,
   onMore,
   expiryLabel,
   threadLabel
@@ -78,16 +76,6 @@ export default function MessageActions({
             <Pencil className="w-4 h-4" />
           </button>
 
-          <button
-            data-testid="delete-message"
-            type="button"
-            onClick={onDelete}
-            className="vesper-message-action-button vesper-message-action-button-danger"
-            title="Delete message"
-            aria-label="Delete message"
-          >
-            <Trash2 className="w-4 h-4" />
-          </button>
         </>
       )}
 
@@ -95,7 +83,7 @@ export default function MessageActions({
         <button
           data-testid="message-menu-button"
           type="button"
-          onClick={onMore}
+          onClick={(event) => onMore(event)}
           className="vesper-message-action-button"
           title="More actions"
           aria-label="More actions"

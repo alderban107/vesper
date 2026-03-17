@@ -31,6 +31,77 @@ interface User {
   status: string
 }
 
+function cacheBustAssetUrl(url: string | null | undefined): string | null {
+  if (!url) {
+    return null
+  }
+
+  const separator = url.includes('?') ? '&' : '?'
+  return `${url}${separator}v=${Date.now()}`
+}
+
+async function syncUpdatedUserCaches(user: User): Promise<void> {
+  const [{ useServerStore }, { useDmStore }, { useMessageStore }] = await Promise.all([
+    import('./serverStore'),
+    import('./dmStore'),
+    import('./messageStore')
+  ])
+
+  useServerStore.getState().updateMemberUser(user.id, {
+    display_name: user.display_name,
+    username: user.username,
+    avatar_url: user.avatar_url
+  })
+
+  useDmStore.setState((state) => ({
+    conversations: state.conversations.map((conversation) => ({
+      ...conversation,
+      participants: conversation.participants.map((participant) =>
+        participant.user_id === user.id
+          ? {
+              ...participant,
+              user: {
+                ...participant.user,
+                username: user.username,
+                display_name: user.display_name,
+                avatar_url: user.avatar_url,
+                status: user.status
+              }
+            }
+          : participant
+      )
+    }))
+  }))
+
+  useMessageStore.setState((state) => ({
+    messagesByChannel: Object.fromEntries(
+      Object.entries(state.messagesByChannel).map(([targetId, messages]) => [
+        targetId,
+        messages.map((message) =>
+          message.sender_id === user.id
+            ? {
+                ...message,
+                sender: message.sender
+                  ? {
+                      ...message.sender,
+                      username: user.username,
+                      display_name: user.display_name,
+                      avatar_url: user.avatar_url
+                    }
+                  : {
+                      id: user.id,
+                      username: user.username,
+                      display_name: user.display_name,
+                      avatar_url: user.avatar_url
+                    }
+              }
+            : message
+        )
+      ])
+    )
+  }))
+}
+
 export interface AuthDevice {
   id: string
   client_id: string
@@ -41,6 +112,10 @@ export interface AuthDevice {
   trusted_at: string | null
   revoked_at: string | null
   last_seen_at: string | null
+  push_token?: string | null
+  push_platform?: string | null
+  background_sync_capable?: boolean
+  notification_public_key?: string | null
   inserted_at: string
 }
 
@@ -86,6 +161,7 @@ interface AuthState {
 
 const KEY_PACKAGE_TARGET = 20
 const KEY_PACKAGE_THRESHOLD = 5
+let keyPackageReplenishPromise: Promise<void> | null = null
 
 function buildSessionBody(extra: Record<string, unknown>): Record<string, unknown> {
   const device = getLocalDeviceIdentity()
@@ -266,6 +342,21 @@ async function hashRecoveryMnemonic(mnemonic: string): Promise<string> {
     .join('')
 }
 
+async function registerCurrentDeviceNotificationCapability(): Promise<void> {
+  try {
+    await apiFetch('/api/v1/auth/devices/current/notifications', {
+      method: 'PUT',
+      body: JSON.stringify({
+        push_platform:
+          typeof window !== 'undefined' && 'electron' in window ? 'electron' : 'web',
+        background_sync_capable: true
+      })
+    })
+  } catch {
+    // ignore notification capability registration failures
+  }
+}
+
 export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
   currentDevice: null,
@@ -356,6 +447,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         canUseE2EE: true
       })
 
+      void registerCurrentDeviceNotificationCapability()
       void get().fetchDevices().catch(() => {})
 
       return true
@@ -417,8 +509,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         canUseE2EE
       })
 
+      void registerCurrentDeviceNotificationCapability()
       if (canUseE2EE) {
         void get().replenishKeyPackages().catch(() => {})
+        void refreshActiveEncryptedViews().catch(() => {})
       }
 
       void get().fetchDevices().catch(() => {})
@@ -489,8 +583,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         canUseE2EE
       })
 
+      void registerCurrentDeviceNotificationCapability()
       if (canUseE2EE) {
         void get().replenishKeyPackages().catch(() => {})
+        void refreshActiveEncryptedViews().catch(() => {})
       }
 
       void get().fetchDevices().catch(() => {})
@@ -644,6 +740,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         error: null
       })
 
+      void registerCurrentDeviceNotificationCapability()
       await get().fetchDevices()
       await get().replenishKeyPackages()
       await refreshActiveEncryptedViews()
@@ -748,6 +845,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (res.ok) {
         const data = await res.json()
         set({ user: data.user })
+        await syncUpdatedUserCaches(data.user as User)
         const serverId = useServerStore.getState().activeServerId
         if (serverId) {
           useServerStore.getState().fetchMembers(serverId)
@@ -768,7 +866,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const res = await apiUpload('/api/v1/auth/avatar', formData)
       if (res.ok) {
         const data = await res.json()
-        set({ user: data.user })
+        const nextUser = {
+          ...(data.user as User),
+          avatar_url: cacheBustAssetUrl((data.user as User).avatar_url)
+        }
+        set({ user: nextUser })
+        await syncUpdatedUserCaches(nextUser)
         const serverId = useServerStore.getState().activeServerId
         if (serverId) {
           useServerStore.getState().fetchMembers(serverId)
@@ -789,7 +892,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const res = await apiUpload('/api/v1/auth/banner', formData)
       if (res.ok) {
         const data = await res.json()
-        set({ user: data.user })
+        const nextUser = {
+          ...(data.user as User),
+          banner_url: cacheBustAssetUrl((data.user as User).banner_url)
+        }
+        set({ user: nextUser })
+        await syncUpdatedUserCaches(nextUser)
         const serverId = useServerStore.getState().activeServerId
         if (serverId) {
           useServerStore.getState().fetchMembers(serverId)
@@ -804,48 +912,62 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   replenishKeyPackages: async () => {
-    const state = get()
-    if (!state.user || !state.canUseE2EE) {
-      return
+    if (keyPackageReplenishPromise) {
+      return keyPackageReplenishPromise
     }
 
-    try {
-      // New device: no local key packages means any server-side packages are
-      // from previous devices. Purge them so fetchKeyPackage always returns
-      // a package matching the current device's private keys.
-      const localPackages = await loadKeyPackages()
-      if (localPackages.length === 0) {
-        await purgeMyKeyPackages(getLocalDeviceIdentity().id)
-      }
-
-      const count = await getMyKeyPackageCount(getLocalDeviceIdentity().id)
-      if (count >= KEY_PACKAGE_THRESHOLD) {
+    keyPackageReplenishPromise = (async () => {
+      const state = get()
+      if (!state.user || !state.canUseE2EE) {
         return
       }
 
-      await initCipherSuite()
-      const identity = await loadIdentity(state.user.id)
-      if (!identity?.signaturePrivateKey) {
-        return
+      try {
+        // New device: no local key packages means any server-side packages are
+        // from previous devices. Purge them so fetchKeyPackage always returns
+        // a package matching the current device's private keys.
+        const localPackages = await loadKeyPackages()
+        if (localPackages.length === 0) {
+          await purgeMyKeyPackages(getLocalDeviceIdentity().id)
+        }
+
+        const count = await getMyKeyPackageCount(getLocalDeviceIdentity().id)
+        if (count >= KEY_PACKAGE_THRESHOLD) {
+          return
+        }
+
+        await initCipherSuite()
+        const identity = await loadIdentity(state.user.id)
+        if (!identity?.signaturePrivateKey) {
+          return
+        }
+
+        const toGenerate = KEY_PACKAGE_TARGET - count
+        const pairs = await createKeyPackageBatch(
+          getCurrentMlsCredentialIdentity(state.user.id),
+          toGenerate,
+          {
+            signKey: identity.signaturePrivateKey,
+            publicKey: identity.publicIdentityKey
+          }
+        )
+
+        await saveKeyPackages(
+          pairs.map((pair) => ({
+            publicData: encodeKeyPackageBytes(pair.publicPackage),
+            privateData: serializePrivatePackage(pair.privatePackage)
+          }))
+        )
+
+        const publicPackageBytes = pairs.map((pair) => encodeKeyPackageBytes(pair.publicPackage))
+        await uploadKeyPackages(publicPackageBytes, getLocalDeviceIdentity().id)
+      } catch {
+        console.warn('Failed to replenish key packages')
       }
+    })().finally(() => {
+      keyPackageReplenishPromise = null
+    })
 
-      const toGenerate = KEY_PACKAGE_TARGET - count
-      const pairs = await createKeyPackageBatch(getCurrentMlsCredentialIdentity(state.user.id), toGenerate, {
-        signKey: identity.signaturePrivateKey,
-        publicKey: identity.publicIdentityKey
-      })
-
-      await saveKeyPackages(
-        pairs.map((pair) => ({
-          publicData: encodeKeyPackageBytes(pair.publicPackage),
-          privateData: serializePrivatePackage(pair.privatePackage)
-        }))
-      )
-
-      const publicPackageBytes = pairs.map((pair) => encodeKeyPackageBytes(pair.publicPackage))
-      await uploadKeyPackages(publicPackageBytes, getLocalDeviceIdentity().id)
-    } catch {
-      console.warn('Failed to replenish key packages')
-    }
+    return keyPackageReplenishPromise
   }
 }))

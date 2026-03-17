@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { SendHorizonal, Star, X } from 'lucide-react'
 import Sidebar from '../components/layout/Sidebar'
 import Header from '../components/layout/Header'
@@ -28,7 +28,9 @@ import { useVoiceStore } from '../stores/voiceStore'
 import { useAuthStore } from '../stores/authStore'
 import { usePresenceStore } from '../stores/presenceStore'
 import { useUnreadStore } from '../stores/unreadStore'
-import { useMessageStore, type Message } from '../stores/messageStore'
+import { parseMessageContent, useMessageStore, type Message } from '../stores/messageStore'
+import { useSyncStore } from '../stores/syncStore'
+import { onSocketOpen } from '../api/socket'
 
 const EMPTY_MESSAGES: Message[] = []
 const EMPTY_TYPING_USERS: { user_id: string; username: string }[] = []
@@ -47,6 +49,16 @@ function mergeThreadReplies(primary: Message[], secondary: Message[]): Message[]
   return [...merged.values()].sort(
     (a, b) => new Date(a.inserted_at).getTime() - new Date(b.inserted_at).getTime()
   )
+}
+
+function getReplyPreview(message: Message): string {
+  const parsed = parseMessageContent(message.content || '')
+
+  if (parsed.type === 'file') {
+    return parsed.text || parsed.file.name || 'Sent a file'
+  }
+
+  return parsed.text || 'View message'
 }
 
 function useIsMobileLayout(): boolean {
@@ -101,12 +113,16 @@ export default function MainPage(): React.JSX.Element {
   const joinPresence = usePresenceStore((s) => s.joinPresence)
   const joinAllServerPresence = usePresenceStore((s) => s.joinAllServerPresence)
   const fetchUnreadCounts = useUnreadStore((s) => s.fetchUnreadCounts)
+  const syncNow = useSyncStore((s) => s.syncNow)
+  const syncRecentScopes = useMessageStore((s) => s.syncRecentScopes)
   const activeThreadParentId = useMessageStore((s) => s.activeThreadParentId)
   const activeThreadParent = useMessageStore((s) => s.activeThreadParent)
   const threadLoading = useMessageStore((s) => s.threadLoading)
   const threadError = useMessageStore((s) => s.threadError)
   const closeThread = useMessageStore((s) => s.closeThread)
   const sendThreadReply = useMessageStore((s) => s.sendThreadReply)
+  const replyingTo = useMessageStore((s) => s.replyingTo)
+  const setReplyingTo = useMessageStore((s) => s.setReplyingTo)
   const threadRepliesFromApi = useMessageStore((s) =>
     activeThreadParentId ? (s.threadRepliesByParent[activeThreadParentId] ?? EMPTY_MESSAGES) : EMPTY_MESSAGES
   )
@@ -120,11 +136,29 @@ export default function MainPage(): React.JSX.Element {
     return EMPTY_MESSAGES
   })
   const [threadReply, setThreadReply] = useState('')
+  const sawInitialSocketOpenRef = useRef(false)
 
   useEffect(() => {
     fetchServers()
     fetchUnreadCounts()
   }, [fetchServers, fetchUnreadCounts])
+
+  useEffect(() => {
+    void syncNow(true)
+
+    return onSocketOpen(() => {
+      if (!sawInitialSocketOpenRef.current) {
+        sawInitialSocketOpenRef.current = true
+        return
+      }
+
+      void (async () => {
+        const previousSyncToken = useSyncStore.getState().token
+        await syncNow()
+        await syncRecentScopes(previousSyncToken)
+      })()
+    })
+  }, [syncNow, syncRecentScopes])
 
   useEffect(() => {
     if (currentUser?.id) {
@@ -191,7 +225,8 @@ export default function MainPage(): React.JSX.Element {
 
   useEffect(() => {
     setThreadReply('')
-  }, [activeThreadParentId])
+    setReplyingTo(null)
+  }, [activeThreadParentId, setReplyingTo])
 
   const submitThreadReply = (): void => {
     const trimmed = threadReply.trim()
@@ -252,8 +287,10 @@ export default function MainPage(): React.JSX.Element {
                 messageLookup={threadMessageLookup}
                 typingUsers={EMPTY_TYPING_USERS}
                 hasMore={false}
+                hasNewer={false}
                 emptyState={threadLoading ? 'Loading thread...' : 'No replies yet. Start the thread.'}
                 onLoadMore={() => {}}
+                onLoadNewer={() => {}}
                 onMarkRead={() => {}}
                 isThreadView
               />
@@ -262,6 +299,27 @@ export default function MainPage(): React.JSX.Element {
         </div>
 
         <form onSubmit={handleThreadSubmit} className="vesper-thread-composer">
+          {replyingTo && (
+            <div className="vesper-composer-reply">
+              <div className="vesper-composer-reply-copy">
+                <span className="vesper-composer-reply-label">Replying to</span>
+                <span className="vesper-composer-reply-author">
+                  {replyingTo.sender?.display_name || replyingTo.sender?.username || 'Unknown'}
+                </span>
+                <span className="vesper-composer-reply-preview">
+                  {getReplyPreview(replyingTo).slice(0, 96)}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setReplyingTo(null)}
+                className="vesper-composer-reply-close"
+                aria-label="Cancel reply"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
           <textarea
             value={threadReply}
             onChange={(event) => setThreadReply(event.target.value)}

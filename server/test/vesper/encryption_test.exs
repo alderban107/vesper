@@ -98,4 +98,35 @@ defmodule Vesper.EncryptionTest do
       assert Enum.map(requests, & &1.request_id) == ["request-a", "request-b"]
     end
   end
+
+  describe "durable MLS events" do
+    test "lists replayable MLS events in sequence order after a cursor" do
+      sender = insert_user()
+      group_id = Ecto.UUID.generate()
+
+      assert {:ok, first_event} =
+               Encryption.store_mls_event(%{
+                 group_id: group_id,
+                 event_type: "mls_commit",
+                 payload: %{commit_data: "commit-a"},
+                 sender_id: sender.id,
+                 sender_device_id: "device-a"
+               })
+
+      assert {:ok, second_event} =
+               Encryption.store_mls_event(%{
+                 group_id: group_id,
+                 event_type: "mls_remove",
+                 payload: %{removed_user_id: sender.id, commit_data: "commit-b"},
+                 sender_id: sender.id,
+                 sender_device_id: "device-b"
+               })
+
+      events = Encryption.list_mls_events_after(group_id, first_event.id)
+
+      assert Enum.map(events, & &1.id) == [second_event.id]
+      assert Enum.map(events, & &1.event_type) == ["mls_remove"]
+      assert Enum.map(events, & &1.payload["commit_data"]) == ["commit-b"]
+    end
+  end
 end

@@ -42,6 +42,10 @@ defmodule Vesper.Voice do
     Room.set_muted(room_id, user_id, muted)
   end
 
+  def set_media_slot_active(room_id, user_id, slot, active) do
+    Room.set_media_slot_active(room_id, user_id, slot, active)
+  end
+
   def call_ring(room_id, caller_id) do
     Room.call_ring(room_id, caller_id)
   end

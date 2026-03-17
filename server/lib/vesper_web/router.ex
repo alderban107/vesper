@@ -45,6 +45,12 @@ defmodule VesperWeb.Router do
     get("/auth/me", AuthController, :me)
     get("/auth/devices", AuthController, :devices)
 
+    put(
+      "/auth/devices/current/notifications",
+      AuthController,
+      :update_current_device_notifications
+    )
+
     post(
       "/auth/devices/approve-with-recovery",
       AuthController,
@@ -92,7 +98,9 @@ defmodule VesperWeb.Router do
     get("/channels/:id/messages", MessageController, :index)
     put("/channels/:id/read", MessageController, :mark_read)
     get("/channels/:id/pins", MessageController, :pins)
+    get("/messages", MessageController, :batch)
     get("/messages/:id/thread", MessageController, :thread)
+    get("/messages/:id", MessageController, :show)
 
     # DM conversations
     resources("/conversations", ConversationController, only: [:create, :index, :show])
@@ -101,6 +109,9 @@ defmodule VesperWeb.Router do
 
     # Unread counts
     get("/unread", UnreadController, :index)
+    get("/sync", SyncController, :index)
+    get("/sync/urgent", UrgentSyncController, :index)
+    post("/sync/scopes", ScopeSyncController, :create)
 
     # Attachments
     post("/attachments", AttachmentController, :create)
@@ -133,6 +144,9 @@ defmodule VesperWeb.Router do
     # Pending welcomes
     get("/pending-welcomes/:channel_id", PendingWelcomeController, :index)
     delete("/pending-welcomes/:id", PendingWelcomeController, :delete)
+
+    # Durable MLS control-plane event replay
+    get("/mls-events/:channel_id", MlsEventController, :index)
 
     # Pending MLS resync requests
     get("/pending-resync-requests/:channel_id", PendingResyncRequestController, :index)

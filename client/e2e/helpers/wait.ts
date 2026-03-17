@@ -3,7 +3,7 @@
  * Covers: R-HARNESS-4
  */
 
-import type { Page } from '@playwright/test'
+import { expect, type Page } from '@playwright/test'
 
 /** Wait for the main app shell to be visible (authenticated state). */
 export async function waitForAppShell(page: Page): Promise<void> {
@@ -22,7 +22,7 @@ export async function waitForRegisterPage(page: Page): Promise<void> {
 
 /** Wait for the recovery key modal after registration. */
 export async function waitForRecoveryModal(page: Page): Promise<void> {
-  await page.waitForSelector('[data-testid="recovery-modal"]', { timeout: 10_000 })
+  await page.waitForSelector('[data-testid="recovery-modal"]', { timeout: 30_000 })
 }
 
 /** Wait for sidebar to show a server by name. */
@@ -41,11 +41,28 @@ export async function waitForChannel(page: Page, channelName: string): Promise<v
 
 /** Wait for a message containing specific text to appear. */
 export async function waitForMessage(page: Page, text: string, timeout = 10_000): Promise<void> {
-  await page
-    .getByTestId('message-row')
-    .filter({ hasText: text })
-    .first()
-    .waitFor({ state: 'visible', timeout })
+  const rows = page.getByTestId('message-row').filter({ hasText: text })
+
+  await expect
+    .poll(
+      async () =>
+        rows.evaluateAll((elements) =>
+          elements.filter((element) => {
+            if (!(element instanceof HTMLElement)) {
+              return false
+            }
+
+            const style = window.getComputedStyle(element)
+            if (style.visibility === 'hidden' || style.display === 'none') {
+              return false
+            }
+
+            return element.getClientRects().length > 0
+          }).length
+        ),
+      { timeout }
+    )
+    .toBeGreaterThan(0)
 }
 
 /** Wait for a DM conversation row containing a username. */

@@ -202,6 +202,12 @@ defmodule Vesper.Accounts do
     |> Repo.update()
   end
 
+  def update_device_notifications(%Device{} = device, attrs) when is_map(attrs) do
+    device
+    |> Device.changeset(attrs)
+    |> Repo.update()
+  end
+
   def change_password(user, old_password, new_password, new_bundle_attrs) do
     if User.verify_password(user, old_password) do
       changeset =

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Headphones,
   HeadphoneOff,
+  Headphones,
   Mic,
   MicOff,
   PhoneOff,
@@ -13,7 +13,7 @@ import {
 } from 'lucide-react'
 import { useAuthStore } from '../../stores/authStore'
 import { useServerStore } from '../../stores/serverStore'
-import { useVoiceStore, type VoiceParticipant } from '../../stores/voiceStore'
+import { useVoiceStore } from '../../stores/voiceStore'
 import type { VideoPublishProfile } from '../../voice/webrtc'
 import Avatar from '../ui/Avatar'
 
@@ -52,7 +52,6 @@ interface ParticipantCard {
   hasCamera: boolean
   hasShare: boolean
   hasShareAudio: boolean
-  focusStreamKey: string | null
 }
 
 const CAMERA_PRESETS: Record<Exclude<CameraPresetId, 'custom'>, VideoPublishProfile> = {
@@ -136,12 +135,30 @@ function formatProfile(profile: VideoPublishProfile): string {
 }
 
 function getInitials(displayName: string): string {
-  return displayName
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? '')
-    .join('') || '?'
+  return (
+    displayName
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase() ?? '')
+      .join('') || '?'
+  )
+}
+
+function getCallGridClass(count: number): string {
+  if (count <= 1) {
+    return 'vesper-voice-call-grid-single'
+  }
+
+  if (count === 2) {
+    return 'vesper-voice-call-grid-dual'
+  }
+
+  if (count <= 4) {
+    return 'vesper-voice-call-grid-quad'
+  }
+
+  return 'vesper-voice-call-grid-crowded'
 }
 
 function VoiceVideoSurface({
@@ -165,6 +182,7 @@ function VoiceVideoSurface({
 }): React.JSX.Element {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const [ready, setReady] = useState(false)
+  const initials = getInitials(displayName)
 
   useEffect(() => {
     if (!videoRef.current) {
@@ -183,15 +201,8 @@ function VoiceVideoSurface({
     }
   }, [stream])
 
-  const initials = displayName
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? '')
-    .join('') || '?'
-
   return (
-    <div data-testid={testId} className="vesper-voice-video-surface">
+    <div className="vesper-voice-video-surface">
       {!ready && (
         <div className="vesper-voice-video-surface-overlay">
           {avatarUrl ? (
@@ -202,6 +213,7 @@ function VoiceVideoSurface({
       )}
       <video
         ref={videoRef}
+        data-testid={testId}
         autoPlay
         playsInline
         muted={muted}
@@ -213,7 +225,9 @@ function VoiceVideoSurface({
 }
 
 export default function VoiceChannelPanel(): React.JSX.Element | null {
-  const activeServer = useServerStore((s) => s.servers.find((server) => server.id === s.activeServerId))
+  const activeServer = useServerStore((s) =>
+    s.servers.find((server) => server.id === s.activeServerId)
+  )
   const activeChannel = useServerStore((s) => {
     const server = s.servers.find((entry) => entry.id === s.activeServerId)
     return server?.channels.find((channel) => channel.id === s.activeChannelId)
@@ -251,6 +265,7 @@ export default function VoiceChannelPanel(): React.JSX.Element | null {
   const joinVoiceChannel = useVoiceStore((s) => s.joinVoiceChannel)
   const disconnect = useVoiceStore((s) => s.disconnect)
   const myUserId = useAuthStore((s) => s.user?.id ?? null)
+
   const [cameraPreset, setCameraPreset] = useState<CameraPresetId>('camera_balanced')
   const [sharePreset, setSharePreset] = useState<SharePresetId>('screen_balanced')
   const [cameraCustom, setCameraCustom] = useState<CustomProfileState>({
@@ -275,14 +290,15 @@ export default function VoiceChannelPanel(): React.JSX.Element | null {
     roomType === 'channel' &&
     roomId === activeChannel.id &&
     (voiceState === 'connected' || voiceState === 'in_call')
-  const isConnecting = roomType === 'channel' && roomId === activeChannel.id && voiceState === 'connecting'
+  const isConnecting =
+    roomType === 'channel' && roomId === activeChannel.id && voiceState === 'connecting'
   const cameraProfile = resolveCameraProfile(cameraPreset, cameraCustom)
   const shareProfile = resolveShareProfile(sharePreset, shareCustom)
   const connectionQualityLabel = {
     good: 'Good',
     fair: 'Fair',
     poor: 'Poor',
-    unknown: 'No Data'
+    unknown: 'No data'
   }[connectionQuality]
 
   const formatMetric = (value: number | null, suffix: string): string =>
@@ -304,37 +320,37 @@ export default function VoiceChannelPanel(): React.JSX.Element | null {
     return `${value.toFixed(value >= 100 ? 0 : 1)} kbps`
   }
 
-  const participantCards = useMemo<ParticipantCard[]>(() => participants.map((participant) => {
-    const member = members.find((entry) => entry.user_id === participant.user_id)
-    const displayName = member?.user.display_name || member?.user.username || participant.user_id.slice(0, 8)
-    const isLocal = participant.user_id === myUserId
-    const hasCamera = isLocal
-      ? Boolean(localCameraStream || participant.camera_video_track_id)
-      : Boolean(participant.camera_video_track_id)
-    const hasShare = isLocal
-      ? Boolean(localShareStream || participant.share_video_track_id)
-      : Boolean(participant.share_video_track_id)
-    const hasShareAudio = isLocal
-      ? Boolean(participant.share_audio_track_id || (localShareStream && shareAudioPreferred))
-      : Boolean(participant.share_audio_track_id)
+  const participantCards = useMemo<ParticipantCard[]>(
+    () =>
+      participants.map((participant) => {
+        const member = members.find((entry) => entry.user_id === participant.user_id)
+        const displayName =
+          member?.user.display_name || member?.user.username || participant.user_id.slice(0, 8)
+        const isLocal = participant.user_id === myUserId
+        const hasCamera = isLocal
+          ? Boolean(localCameraStream || participant.camera_video_track_id)
+          : Boolean(participant.camera_video_track_id)
+        const hasShare = isLocal
+          ? Boolean(localShareStream || participant.share_video_track_id)
+          : Boolean(participant.share_video_track_id)
+        const hasShareAudio = isLocal
+          ? Boolean(participant.share_audio_track_id || (localShareStream && shareAudioPreferred))
+          : Boolean(participant.share_audio_track_id)
 
-    return {
-      id: participant.user_id,
-      displayName,
-      avatarUrl: member?.user.avatar_url ?? null,
-      speaking: participant.speaking ?? false,
-      muted: participant.muted,
-      isLocal,
-      hasCamera,
-      hasShare,
-      hasShareAudio,
-      focusStreamKey: hasShare
-        ? `${participant.user_id}:share_video`
-        : hasCamera
-          ? `${participant.user_id}:camera_video`
-          : null
-    }
-  }), [localCameraStream, localShareStream, members, myUserId, participants, shareAudioPreferred])
+        return {
+          id: participant.user_id,
+          displayName,
+          avatarUrl: member?.user.avatar_url ?? null,
+          speaking: participant.speaking ?? false,
+          muted: participant.muted,
+          isLocal,
+          hasCamera,
+          hasShare,
+          hasShareAudio
+        }
+      }),
+    [localCameraStream, localShareStream, members, myUserId, participants, shareAudioPreferred]
+  )
 
   const streamCards = useMemo<StreamCard[]>(() => {
     const cards: StreamCard[] = []
@@ -356,6 +372,7 @@ export default function VoiceChannelPanel(): React.JSX.Element | null {
       } else {
         testId = `remote-video-${displayName}`
       }
+
       cards.push({
         key: `${userId}:${slot}`,
         userId,
@@ -395,18 +412,23 @@ export default function VoiceChannelPanel(): React.JSX.Element | null {
     return [...shares, ...cameras]
   }, [streamCards])
 
+  const voiceOnlyParticipants = participantCards.filter(
+    (participant) => !participant.hasCamera && !participant.hasShare
+  )
+
   useEffect(() => {
-    if (!focusedStreamKey) {
-      setFocusedStreamKey(orderedStreamCards[0]?.key ?? null)
+    if (!orderedStreamCards.length) {
+      setFocusedStreamKey(null)
       return
     }
 
-    if (!orderedStreamCards.some((card) => card.key === focusedStreamKey)) {
+    if (!focusedStreamKey || !orderedStreamCards.some((card) => card.key === focusedStreamKey)) {
       setFocusedStreamKey(orderedStreamCards[0]?.key ?? null)
     }
   }, [focusedStreamKey, orderedStreamCards])
 
-  const focusedStream = orderedStreamCards.find((card) => card.key === focusedStreamKey) ?? null
+  const focusedStream =
+    orderedStreamCards.find((card) => card.key === focusedStreamKey) ?? orderedStreamCards[0] ?? null
 
   const applyLiveCameraProfile = async (): Promise<void> => {
     if (!cameraEnabled) {
@@ -427,319 +449,462 @@ export default function VoiceChannelPanel(): React.JSX.Element | null {
   }
 
   return (
-    <div data-testid="voice-channel-panel" className="vesper-voice-room">
-      <div className="vesper-voice-room-hero">
-        <div className="vesper-voice-room-hero-copy">
-          <div className="vesper-voice-room-kicker">{activeServer?.name || 'Server Voice'}</div>
-          <h2 className="vesper-voice-room-title">{activeChannel.name}</h2>
-          <p className="vesper-voice-room-description">
-            {isConnected
-              ? 'Mic, camera, screen share, and share audio are relayed as encrypted RTP. Pick a profile, focus the stage, and tune each stream separately.'
-              : 'Join this voice room to talk live, turn on your camera, or present your screen with encrypted transport.'}
-          </p>
-          <div className={`vesper-voice-room-health${isConnected ? '' : ''}`} data-testid={isConnected ? 'voice-connected' : undefined}>
-            <span className={`vesper-voice-room-quality vesper-voice-room-quality-${connectionQuality}`}>
-              {connectionQualityLabel}
-            </span>
-            <span>RTT {formatMetric(roundTripMs, 'ms')}</span>
-            <span>Loss {formatLoss(packetLossPct)}</span>
-            <span>Jitter {formatMetric(jitterMs, 'ms')}</span>
-          </div>
-          <div className="vesper-voice-room-transport">
-            <span className="vesper-voice-room-transport-chip">
-              <span className="vesper-voice-room-transport-label">In</span>
-              <span>{formatBitrate(inboundBitrateKbps)}</span>
-            </span>
-            <span className="vesper-voice-room-transport-chip">
-              <span className="vesper-voice-room-transport-label">Out</span>
-              <span>{formatBitrate(outboundBitrateKbps)}</span>
-            </span>
-          </div>
-          {!encryptedMediaSupported && (
-            <div className="vesper-voice-room-error">
-              Encrypted stream publishing and playback require a Chromium-class browser or the desktop app.
-            </div>
-          )}
-          {errorMessage && <div className="vesper-voice-room-error">{errorMessage}</div>}
-        </div>
-
-        <div className="vesper-voice-room-actions">
-          {isConnected ? (
-            <>
-              <button
-                data-testid="mute-button"
-                type="button"
-                onClick={toggleMute}
-                className={`vesper-voice-room-button${muted ? ' vesper-voice-room-button-danger' : ''}`}
-              >
-                {muted ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-                {muted ? 'Unmute' : 'Mute'}
-              </button>
-              <button
-                type="button"
-                onClick={toggleDeafen}
-                className={`vesper-voice-room-button${deafened ? ' vesper-voice-room-button-danger' : ''}`}
-              >
-                {deafened ? <HeadphoneOff className="w-4 h-4" /> : <Headphones className="w-4 h-4" />}
-                {deafened ? 'Undeafen' : 'Deafen'}
-              </button>
-              <button
-                data-testid="camera-button"
-                type="button"
-                onClick={() => {
-                  void toggleCamera(cameraProfile)
-                }}
-                className={`vesper-voice-room-button${cameraEnabled ? ' vesper-voice-room-button-active' : ''}`}
-              >
-                {cameraEnabled ? <VideoOff className="w-4 h-4" /> : <Video className="w-4 h-4" />}
-                {cameraEnabled ? 'Stop Camera' : 'Camera'}
-              </button>
-              <button
-                data-testid="screen-share-button"
-                type="button"
-                onClick={() => {
-                  void toggleScreenShare(shareProfile, shareAudioPreferred)
-                }}
-                className={`vesper-voice-room-button${screenShareEnabled ? ' vesper-voice-room-button-active' : ''}`}
-              >
-                {screenShareEnabled ? <ScreenShareOff className="w-4 h-4" /> : <ScreenShare className="w-4 h-4" />}
-                {screenShareEnabled ? 'Stop Share' : 'Share Screen'}
-              </button>
-              <button
-                data-testid="disconnect-call"
-                type="button"
-                onClick={disconnect}
-                className="vesper-voice-room-button vesper-voice-room-button-danger"
-              >
-                <PhoneOff className="w-4 h-4" />
-                Disconnect
-              </button>
-            </>
-          ) : (
-            <button
-              type="button"
-              onClick={() => {
-                void joinVoiceChannel(activeChannel.id)
-              }}
-              disabled={isConnecting}
-              className="vesper-voice-room-button vesper-voice-room-button-primary"
-            >
-              <Volume2 className="w-4 h-4" />
-              {isConnecting ? 'Connecting...' : 'Join Voice'}
-            </button>
-          )}
-        </div>
-      </div>
-
-      {participantCards.length > 0 && (
-        <section className="vesper-voice-room-presence-strip">
-          <div className="vesper-voice-room-section-header">
-            <div className="vesper-voice-room-section-title">People Here</div>
-            <div className="vesper-voice-room-section-meta">
-              {participantCards.length} connected
-            </div>
-          </div>
-
-          <div className="vesper-voice-room-presence-grid">
-            {participantCards.map((participant) => (
-              <VoicePresenceTile
-                key={participant.id}
-                participant={participant}
-                active={participant.focusStreamKey !== null && participant.focusStreamKey === focusedStreamKey}
-                onSelect={() => {
-                  if (participant.focusStreamKey) {
-                    setFocusedStreamKey(participant.focusStreamKey)
-                  }
-                }}
-              />
-            ))}
-          </div>
-        </section>
-      )}
-
-      <div className="vesper-voice-room-publish-grid">
-        <ProfileCard
-          title="Camera Profile"
-          description={formatProfile(cameraProfile)}
-          active={cameraEnabled}
-          onApply={() => {
-            void applyLiveCameraProfile()
-          }}
-        >
-          <label className="vesper-voice-profile-field">
-            <span>Preset</span>
-            <select
-              value={cameraPreset}
-              onChange={(event) => setCameraPreset(event.target.value as CameraPresetId)}
-              className="vesper-voice-profile-select"
-            >
-              <option value="camera_balanced">Balanced</option>
-              <option value="camera_crisp">Crisp</option>
-              <option value="custom">Custom</option>
-            </select>
-          </label>
-          {cameraPreset === 'custom' && (
-            <CustomProfileFields
-              value={cameraCustom}
-              onChange={setCameraCustom}
-            />
-          )}
-        </ProfileCard>
-
-        <ProfileCard
-          title="Share Profile"
-          description={formatProfile(shareProfile)}
-          active={screenShareEnabled}
-          onApply={() => {
-            void applyLiveShareProfile()
-          }}
-        >
-          <label className="vesper-voice-profile-field">
-            <span>Preset</span>
-            <select
-              value={sharePreset}
-              onChange={(event) => setSharePreset(event.target.value as SharePresetId)}
-              className="vesper-voice-profile-select"
-            >
-              <option value="screen_low">Low</option>
-              <option value="screen_balanced">Balanced</option>
-              <option value="screen_crisp">Crisp</option>
-              <option value="custom">Custom</option>
-            </select>
-          </label>
-          <label className="vesper-voice-profile-toggle">
-            <input
-              type="checkbox"
-              checked={shareAudioPreferred}
-              onChange={(event) => setShareAudioPreferred(event.target.checked)}
-            />
-            <span>Capture share audio when supported</span>
-          </label>
-          {sharePreset === 'custom' && (
-            <CustomProfileFields
-              value={shareCustom}
-              onChange={setShareCustom}
-            />
-          )}
-        </ProfileCard>
-      </div>
-
-      <div className="vesper-voice-room-stage-layout">
-        <div className="vesper-voice-room-stage">
-          {focusedStream ? (
-            <>
-              <div className="vesper-voice-room-stage-header">
-                <div>
-                  <div className="vesper-voice-room-featured-kicker">
-                    {focusedStream.slot === 'share_video' ? 'Screen Share' : 'Camera Feed'}
-                  </div>
-                  <div className="vesper-voice-room-featured-name">{focusedStream.displayName}</div>
-                  <div className="vesper-voice-room-featured-meta">
-                    {focusedStream.isLocal
-                      ? focusedStream.slot === 'share_video'
-                        ? 'You are presenting live'
-                        : 'Your camera is live'
-                      : focusedStream.hasShareAudio && focusedStream.slot === 'share_video'
-                        ? 'Encrypted share with separate stream audio'
-                        : 'Encrypted live video relay'}
-                  </div>
-                </div>
-                {!focusedStream.isLocal && focusedStream.slot === 'share_video' && focusedStream.hasShareAudio && (
-                  <label className="vesper-voice-room-stage-slider">
-                    <span>Stream audio</span>
-                    <input
-                      type="range"
-                      min={0}
-                      max={200}
-                      step={1}
-                      value={remoteStreamVolumes[focusedStream.userId] ?? 100}
-                      onChange={(event) => setRemoteStreamVolume(focusedStream.userId, Number(event.target.value))}
-                    />
-                  </label>
-                )}
+    <div data-testid="voice-channel-panel" className="vesper-voice-room vesper-voice-room-discord">
+      <div className="vesper-voice-room-discord-layout">
+        <div className="vesper-voice-room-discord-main">
+          <section className="vesper-voice-room-discord-surface">
+            <div className="vesper-voice-room-discord-surface-header">
+              <div>
+                <div className="vesper-voice-room-kicker">{activeServer?.name || 'Server voice'}</div>
+                <h2 className="vesper-voice-room-title">{activeChannel.name}</h2>
+                <p className="vesper-voice-room-description">
+                  {orderedStreamCards.length > 0
+                    ? 'Discord-like live tiles for camera and screen share, with the same encrypted media transport underneath.'
+                    : 'Hop in voice, then camera and screen share pop into the live grid as soon as they are published.'}
+                </p>
               </div>
-              <VoiceVideoSurface
-                stream={focusedStream.stream}
-                muted={focusedStream.isLocal}
-                displayName={focusedStream.displayName}
-                avatarUrl={focusedStream.avatarUrl}
-                mirror={focusedStream.isLocal && focusedStream.slot === 'camera_video'}
-                fit={focusedStream.slot === 'share_video' ? 'contain' : 'cover'}
-                testId={focusedStream.testId}
-                className="vesper-voice-room-stage-video"
-              />
-            </>
-          ) : (
-            <div className="vesper-voice-room-empty">
-              <Volume2 className="w-7 h-7" />
-              <p>No streams are live yet.</p>
-              <span>Voice can stay live on its own, or someone can turn on a camera or share a screen.</span>
-            </div>
-          )}
-        </div>
-
-        <aside className="vesper-voice-room-streams">
-          <div className="vesper-voice-room-streams-title">Live Streams</div>
-          {orderedStreamCards.length > 0 ? (
-            orderedStreamCards.map((card) => (
-              <button
-                key={card.key}
-                type="button"
-                className={card.key === focusedStreamKey ? 'vesper-voice-room-stream-card vesper-voice-room-stream-card-active' : 'vesper-voice-room-stream-card'}
-                onClick={() => setFocusedStreamKey(card.key)}
-              >
-                <div className="vesper-voice-room-stream-card-media">
-                  <div className="vesper-voice-room-stream-card-badges">
-                    <span className="vesper-voice-room-stream-badge">
-                      {card.slot === 'share_video' ? 'Share' : 'Camera'}
-                    </span>
-                    {card.isLocal && <span className="vesper-voice-room-stream-badge">You</span>}
-                  </div>
-                  <VoiceVideoSurface
-                    stream={card.stream}
-                    muted={card.isLocal}
-                    displayName={card.displayName}
-                    avatarUrl={card.avatarUrl}
-                    mirror={card.isLocal && card.slot === 'camera_video'}
-                    testId={card.testId}
-                    className="vesper-voice-room-stream-card-video"
-                  />
-                </div>
-                <div className="vesper-voice-room-stream-card-copy">
-                  <span>{card.displayName}</span>
-                  <span>
-                    {card.slot === 'share_video' ? 'Screen share' : 'Camera'}
-                    {card.hasShareAudio && card.slot === 'share_video' ? ' · Audio' : ''}
-                    {card.speaking && card.slot === 'camera_video' ? ' · Speaking' : ''}
+              {focusedStream && (
+                <div className="vesper-voice-room-discord-focus">
+                  <span className="vesper-voice-room-discord-focus-kicker">
+                    {focusedStream.slot === 'share_video' ? 'Focused share' : 'Focused camera'}
+                  </span>
+                  <span className="vesper-voice-room-discord-focus-name">
+                    {focusedStream.displayName}
+                    {focusedStream.isLocal ? ' (You)' : ''}
                   </span>
                 </div>
-              </button>
-            ))
-          ) : (
-            <div className="vesper-voice-room-streams-empty">No camera or share feeds yet.</div>
-          )}
+              )}
+            </div>
+
+            {orderedStreamCards.length > 0 ? (
+              <div
+                className={`vesper-voice-call-grid ${getCallGridClass(orderedStreamCards.length)}`}
+              >
+                {orderedStreamCards.map((card) => (
+                  <VoiceVideoTile
+                    key={card.key}
+                    card={card}
+                    active={card.key === focusedStream?.key}
+                    onSelect={() => setFocusedStreamKey(card.key)}
+                  />
+                ))}
+              </div>
+            ) : participantCards.length > 0 ? (
+              <div className={`vesper-voice-avatar-grid ${getCallGridClass(participantCards.length)}`}>
+                {participantCards.map((participant) => (
+                  <VoiceAvatarTile key={participant.id} participant={participant} />
+                ))}
+              </div>
+            ) : (
+              <div className="vesper-voice-room-empty">
+                <Volume2 className="w-7 h-7" />
+                <p>No one is in here yet.</p>
+                <span>Start the channel and Vesper will keep the call encrypted end to end.</span>
+              </div>
+            )}
+
+            {voiceOnlyParticipants.length > 0 && orderedStreamCards.length > 0 && (
+              <div className="vesper-voice-room-discord-audio-strip">
+                <div className="vesper-voice-room-section-header">
+                  <div className="vesper-voice-room-section-title">Also in voice</div>
+                  <div className="vesper-voice-room-section-meta">
+                    {voiceOnlyParticipants.length} audio only
+                  </div>
+                </div>
+                <div className="vesper-voice-room-discord-audio-list">
+                  {voiceOnlyParticipants.map((participant) => (
+                    <VoiceMiniPresence key={participant.id} participant={participant} />
+                  ))}
+                </div>
+              </div>
+            )}
+          </section>
+        </div>
+
+        <aside className="vesper-voice-room-discord-sidebar">
+          <section className="vesper-voice-room-discord-card">
+            <div
+              className="vesper-voice-room-discord-status"
+              data-testid={isConnected ? 'voice-connected' : undefined}
+            >
+              <span
+                className={`vesper-call-overlay-status-dot vesper-voice-room-discord-status-dot vesper-call-overlay-quality-${connectionQuality}`}
+                aria-hidden="true"
+              />
+              <div className="vesper-voice-room-discord-status-copy">
+                <span className="vesper-voice-room-discord-status-label">
+                  {isConnected ? 'Voice connected' : isConnecting ? 'Connecting...' : 'Not connected'}
+                </span>
+                <span className="vesper-voice-room-discord-status-meta">
+                  {activeChannel.name}
+                  {activeServer?.name ? ` · ${activeServer.name}` : ''}
+                </span>
+              </div>
+            </div>
+
+            <div className="vesper-voice-room-transport">
+              <span className={`vesper-voice-room-quality vesper-voice-room-quality-${connectionQuality}`}>
+                {connectionQualityLabel}
+              </span>
+              <span className="vesper-voice-room-transport-chip">
+                <span className="vesper-voice-room-transport-label">RTT</span>
+                <span>{formatMetric(roundTripMs, 'ms')}</span>
+              </span>
+              <span className="vesper-voice-room-transport-chip">
+                <span className="vesper-voice-room-transport-label">Loss</span>
+                <span>{formatLoss(packetLossPct)}</span>
+              </span>
+              <span className="vesper-voice-room-transport-chip">
+                <span className="vesper-voice-room-transport-label">Jitter</span>
+                <span>{formatMetric(jitterMs, 'ms')}</span>
+              </span>
+              <span className="vesper-voice-room-transport-chip">
+                <span className="vesper-voice-room-transport-label">In</span>
+                <span>{formatBitrate(inboundBitrateKbps)}</span>
+              </span>
+              <span className="vesper-voice-room-transport-chip">
+                <span className="vesper-voice-room-transport-label">Out</span>
+                <span>{formatBitrate(outboundBitrateKbps)}</span>
+              </span>
+            </div>
+
+            {!encryptedMediaSupported && (
+              <div className="vesper-voice-room-error">
+                Encrypted stream publishing and playback require a Chromium-class browser or the desktop app.
+              </div>
+            )}
+            {errorMessage && <div className="vesper-voice-room-error">{errorMessage}</div>}
+
+            <div className="vesper-voice-room-actions">
+              {isConnected ? (
+                <>
+                  <button
+                    data-testid="mute-button"
+                    type="button"
+                    onClick={toggleMute}
+                    className={`vesper-voice-room-button${muted ? ' vesper-voice-room-button-danger' : ''}`}
+                  >
+                    {muted ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                    {muted ? 'Unmute' : 'Mute'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={toggleDeafen}
+                    className={`vesper-voice-room-button${deafened ? ' vesper-voice-room-button-danger' : ''}`}
+                  >
+                    {deafened ? (
+                      <HeadphoneOff className="w-4 h-4" />
+                    ) : (
+                      <Headphones className="w-4 h-4" />
+                    )}
+                    {deafened ? 'Undeafen' : 'Deafen'}
+                  </button>
+                  <button
+                    data-testid="camera-button"
+                    type="button"
+                    onClick={() => {
+                      void toggleCamera(cameraProfile)
+                    }}
+                    className={`vesper-voice-room-button${cameraEnabled ? ' vesper-voice-room-button-active' : ''}`}
+                  >
+                    {cameraEnabled ? <VideoOff className="w-4 h-4" /> : <Video className="w-4 h-4" />}
+                    {cameraEnabled ? 'Stop camera' : 'Camera'}
+                  </button>
+                  <button
+                    data-testid="screen-share-button"
+                    type="button"
+                    onClick={() => {
+                      void toggleScreenShare(shareProfile, shareAudioPreferred)
+                    }}
+                    className={`vesper-voice-room-button${screenShareEnabled ? ' vesper-voice-room-button-active' : ''}`}
+                  >
+                    {screenShareEnabled ? (
+                      <ScreenShareOff className="w-4 h-4" />
+                    ) : (
+                      <ScreenShare className="w-4 h-4" />
+                    )}
+                    {screenShareEnabled ? 'Stop share' : 'Share'}
+                  </button>
+                  <button
+                    data-testid="disconnect-call"
+                    type="button"
+                    onClick={disconnect}
+                    className="vesper-voice-room-button vesper-voice-room-button-danger"
+                  >
+                    <PhoneOff className="w-4 h-4" />
+                    Disconnect
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void joinVoiceChannel(activeChannel.id)
+                  }}
+                  disabled={isConnecting}
+                  className="vesper-voice-room-button vesper-voice-room-button-primary"
+                >
+                  <Volume2 className="w-4 h-4" />
+                  {isConnecting ? 'Connecting...' : 'Join voice'}
+                </button>
+              )}
+            </div>
+
+            {focusedStream &&
+              !focusedStream.isLocal &&
+              focusedStream.slot === 'share_video' &&
+              focusedStream.hasShareAudio && (
+                <label className="vesper-voice-room-volume">
+                  <span>Focused share audio</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={200}
+                    step={1}
+                    value={remoteStreamVolumes[focusedStream.userId] ?? 100}
+                    onChange={(event) =>
+                      setRemoteStreamVolume(focusedStream.userId, Number(event.target.value))
+                    }
+                  />
+                </label>
+              )}
+          </section>
+
+          <section className="vesper-voice-room-discord-card">
+            <div className="vesper-voice-room-section-header">
+              <div className="vesper-voice-room-section-title">People in voice</div>
+              <div className="vesper-voice-room-section-meta">{participantCards.length} connected</div>
+            </div>
+            <div className="vesper-voice-room-discord-roster">
+              {participantCards.map((participant) => (
+                <ParticipantAudioRow
+                  key={participant.id}
+                  participant={participant}
+                  voiceVolume={remoteVolumes[participant.id] ?? 100}
+                  streamVolume={remoteStreamVolumes[participant.id] ?? 100}
+                  onVoiceVolumeChange={(volume) => setRemoteVolume(participant.id, volume)}
+                  onStreamVolumeChange={(volume) => setRemoteStreamVolume(participant.id, volume)}
+                />
+              ))}
+            </div>
+          </section>
+
+          <details className="vesper-voice-room-discord-card vesper-voice-room-discord-settings">
+            <summary>Broadcast settings</summary>
+            <div className="vesper-voice-room-publish-grid">
+              <ProfileCard
+                title="Camera profile"
+                description={formatProfile(cameraProfile)}
+                active={cameraEnabled}
+                onApply={() => {
+                  void applyLiveCameraProfile()
+                }}
+              >
+                <label className="vesper-voice-profile-field">
+                  <span>Preset</span>
+                  <select
+                    value={cameraPreset}
+                    onChange={(event) => setCameraPreset(event.target.value as CameraPresetId)}
+                    className="vesper-voice-profile-select"
+                  >
+                    <option value="camera_balanced">Balanced</option>
+                    <option value="camera_crisp">Crisp</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                </label>
+                {cameraPreset === 'custom' && (
+                  <CustomProfileFields value={cameraCustom} onChange={setCameraCustom} />
+                )}
+              </ProfileCard>
+
+              <ProfileCard
+                title="Share profile"
+                description={formatProfile(shareProfile)}
+                active={screenShareEnabled}
+                onApply={() => {
+                  void applyLiveShareProfile()
+                }}
+              >
+                <label className="vesper-voice-profile-field">
+                  <span>Preset</span>
+                  <select
+                    value={sharePreset}
+                    onChange={(event) => setSharePreset(event.target.value as SharePresetId)}
+                    className="vesper-voice-profile-select"
+                  >
+                    <option value="screen_low">Low</option>
+                    <option value="screen_balanced">Balanced</option>
+                    <option value="screen_crisp">Crisp</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                </label>
+                <label className="vesper-voice-profile-toggle">
+                  <input
+                    type="checkbox"
+                    checked={shareAudioPreferred}
+                    onChange={(event) => setShareAudioPreferred(event.target.checked)}
+                  />
+                  <span>Capture share audio when supported</span>
+                </label>
+                {sharePreset === 'custom' && (
+                  <CustomProfileFields value={shareCustom} onChange={setShareCustom} />
+                )}
+              </ProfileCard>
+            </div>
+          </details>
         </aside>
       </div>
+    </div>
+  )
+}
 
-      <div className="vesper-voice-room-roster">
-        {participantCards.length > 0 ? (
-          participantCards.map((participant) => (
-            <ParticipantAudioCard
-              key={participant.id}
-              participant={participant}
-              voiceVolume={remoteVolumes[participant.id] ?? 100}
-              streamVolume={remoteStreamVolumes[participant.id] ?? 100}
-              onVoiceVolumeChange={(volume) => setRemoteVolume(participant.id, volume)}
-              onStreamVolumeChange={(volume) => setRemoteStreamVolume(participant.id, volume)}
-            />
-          ))
-        ) : (
-          <div className="vesper-voice-room-empty">
-            <Volume2 className="w-7 h-7" />
-            <p>No one is in here yet.</p>
-            <span>Start the channel and Vesper will keep the call encrypted end to end.</span>
+function VoiceVideoTile({
+  card,
+  active,
+  onSelect
+}: {
+  card: StreamCard
+  active: boolean
+  onSelect: () => void
+}): React.JSX.Element {
+  return (
+    <button
+      type="button"
+      className={
+        active
+          ? 'vesper-voice-call-tile vesper-voice-call-tile-active'
+          : 'vesper-voice-call-tile'
+      }
+      onClick={onSelect}
+    >
+      <div className="vesper-voice-call-tile-media">
+        <VoiceVideoSurface
+          stream={card.stream}
+          muted={card.isLocal}
+          displayName={card.displayName}
+          avatarUrl={card.avatarUrl}
+          mirror={card.isLocal && card.slot === 'camera_video'}
+          fit={card.slot === 'share_video' ? 'contain' : 'cover'}
+          testId={card.testId}
+          className="vesper-voice-call-tile-video"
+        />
+      </div>
+      <div className="vesper-voice-call-tile-top">
+        <div className="vesper-voice-call-tile-badges">
+          <span className="vesper-voice-call-tile-badge">
+            {card.slot === 'share_video' ? 'Screen' : 'Camera'}
+          </span>
+          {card.isLocal && <span className="vesper-voice-call-tile-badge">You</span>}
+          {card.hasShareAudio && card.slot === 'share_video' && (
+            <span className="vesper-voice-call-tile-badge">Audio</span>
+          )}
+        </div>
+      </div>
+      <div className="vesper-voice-call-tile-bottom">
+        <span className="vesper-voice-call-tile-name">
+          {card.muted && <MicOff className="w-3 h-3" />}
+          {card.displayName}
+        </span>
+        <span className="vesper-voice-call-tile-meta">
+          {card.slot === 'share_video'
+            ? 'Presenting'
+            : card.speaking
+              ? 'Speaking'
+              : card.muted
+                ? 'Muted'
+                : 'Live'}
+        </span>
+      </div>
+    </button>
+  )
+}
+
+function VoiceAvatarTile({
+  participant
+}: {
+  participant: ParticipantCard
+}): React.JSX.Element {
+  const initials = getInitials(participant.displayName)
+
+  return (
+    <div
+      className={
+        participant.speaking
+          ? 'vesper-voice-avatar-tile vesper-voice-avatar-tile-speaking'
+          : 'vesper-voice-avatar-tile'
+      }
+    >
+      <div className="vesper-voice-avatar-tile-shell">
+        <div className="vesper-voice-avatar-tile-ring">
+          <div className="vesper-voice-avatar-tile-avatar">
+            {participant.avatarUrl ? (
+              <img
+                src={participant.avatarUrl}
+                alt=""
+                className="vesper-voice-avatar-tile-image"
+              />
+            ) : (
+              <span className="vesper-voice-avatar-tile-fallback">{initials}</span>
+            )}
           </div>
+        </div>
+        {participant.muted && (
+          <span className="vesper-voice-avatar-tile-status">
+            <MicOff className="w-3 h-3" />
+          </span>
         )}
+        {participant.hasShare && <span className="vesper-voice-avatar-tile-live">LIVE</span>}
+      </div>
+      <div data-testid="voice-participant-name" className="vesper-voice-avatar-tile-name">
+        {participant.displayName}
+        {participant.isLocal ? ' (You)' : ''}
+      </div>
+      <div className="vesper-voice-avatar-tile-meta">
+        {participant.hasShare
+          ? 'Sharing screen'
+          : participant.hasCamera
+            ? 'Camera on'
+            : participant.speaking
+              ? 'Speaking'
+              : 'Listening'}
+      </div>
+    </div>
+  )
+}
+
+function VoiceMiniPresence({
+  participant
+}: {
+  participant: ParticipantCard
+}): React.JSX.Element {
+  return (
+    <div className="vesper-call-overlay-presence-pill">
+      <div className="vesper-call-overlay-presence-avatar">
+        {participant.avatarUrl ? (
+          <img
+            src={participant.avatarUrl}
+            alt=""
+            className="vesper-call-overlay-presence-avatar-image"
+          />
+        ) : (
+          <span className="vesper-call-overlay-presence-avatar-fallback">
+            {getInitials(participant.displayName)}
+          </span>
+        )}
+        {participant.muted && (
+          <span className="vesper-call-overlay-presence-muted">
+            <MicOff className="w-2.5 h-2.5" />
+          </span>
+        )}
+      </div>
+      <div className="vesper-call-overlay-presence-copy">
+        <span className="vesper-call-overlay-presence-name">
+          {participant.displayName}
+          {participant.isLocal ? ' (You)' : ''}
+        </span>
+        <span className="vesper-call-overlay-presence-meta">
+          {participant.speaking ? 'Speaking' : 'Audio'}
+        </span>
       </div>
     </div>
   )
@@ -766,18 +931,12 @@ function ProfileCard({
           <div className="vesper-voice-profile-description">{description}</div>
         </div>
         {active && (
-          <button
-            type="button"
-            className="vesper-voice-profile-apply"
-            onClick={onApply}
-          >
-            Apply Live
+          <button type="button" className="vesper-voice-profile-apply" onClick={onApply}>
+            Apply live
           </button>
         )}
       </div>
-      <div className="vesper-voice-profile-body">
-        {children}
-      </div>
+      <div className="vesper-voice-profile-body">{children}</div>
     </section>
   )
 }
@@ -840,24 +999,14 @@ function CustomProfileFields({
   )
 }
 
-function ParticipantAudioCard({
+function ParticipantAudioRow({
   participant,
   voiceVolume,
   streamVolume,
   onVoiceVolumeChange,
   onStreamVolumeChange
 }: {
-  participant: {
-    id: string
-    displayName: string
-    avatarUrl: string | null
-    speaking: boolean
-    muted: boolean
-    isLocal: boolean
-    hasCamera: boolean
-    hasShare: boolean
-    hasShareAudio: boolean
-  }
+  participant: ParticipantCard
   voiceVolume: number
   streamVolume: number
   onVoiceVolumeChange: (volume: number) => void
@@ -875,23 +1024,36 @@ function ParticipantAudioCard({
             speaking={participant.speaking}
           />
           <div>
-            <div data-testid="voice-participant-name" className="vesper-voice-roster-card-name">{participant.displayName}</div>
+            <div data-testid="voice-participant-name" className="vesper-voice-roster-card-name">
+              {participant.displayName}
+              {participant.isLocal ? ' (You)' : ''}
+            </div>
             <div className="vesper-voice-roster-card-meta">
-              {participant.muted ? 'Muted' : participant.speaking ? 'Speaking' : 'Listening'}
+              {participant.hasShare
+                ? 'Screen share live'
+                : participant.hasCamera
+                  ? participant.speaking
+                    ? 'Camera live · speaking'
+                    : 'Camera live'
+                  : participant.muted
+                    ? 'Muted'
+                    : participant.speaking
+                      ? 'Speaking'
+                      : 'Listening'}
             </div>
           </div>
         </div>
         <div className="vesper-voice-roster-card-badges">
           {participant.hasCamera && <span className="vesper-voice-roster-badge">Camera</span>}
           {participant.hasShare && <span className="vesper-voice-roster-badge">Share</span>}
-          {participant.hasShareAudio && <span className="vesper-voice-roster-badge">Share Audio</span>}
+          {participant.hasShareAudio && <span className="vesper-voice-roster-badge">Share audio</span>}
         </div>
       </div>
 
       {!participant.isLocal && (
         <div className="vesper-voice-roster-sliders">
           <label className="vesper-voice-room-volume">
-            <span>Voice</span>
+            <span>Voice volume</span>
             <input
               type="range"
               min={0}
@@ -903,7 +1065,7 @@ function ParticipantAudioCard({
           </label>
           {participant.hasShareAudio && (
             <label className="vesper-voice-room-volume">
-              <span>Stream</span>
+              <span>Share audio</span>
               <input
                 type="range"
                 min={0}
@@ -917,69 +1079,5 @@ function ParticipantAudioCard({
         </div>
       )}
     </div>
-  )
-}
-
-function VoicePresenceTile({
-  participant,
-  active,
-  onSelect
-}: {
-  participant: ParticipantCard
-  active: boolean
-  onSelect: () => void
-}): React.JSX.Element {
-  const initials = getInitials(participant.displayName)
-
-  return (
-    <button
-      type="button"
-      className={
-        active
-          ? 'vesper-voice-presence-tile vesper-voice-presence-tile-active'
-          : 'vesper-voice-presence-tile'
-      }
-      onClick={onSelect}
-      disabled={!participant.focusStreamKey}
-      title={
-        participant.focusStreamKey
-          ? `Focus ${participant.displayName}`
-          : `${participant.displayName} is audio only`
-      }
-    >
-      <div className="vesper-voice-presence-avatar-shell">
-        <div className={participant.speaking ? 'vesper-voice-presence-avatar-ring vesper-voice-presence-avatar-ring-speaking' : 'vesper-voice-presence-avatar-ring'}>
-          <div className={participant.speaking ? 'vesper-voice-presence-avatar vesper-voice-presence-avatar-speaking' : 'vesper-voice-presence-avatar'}>
-            {participant.avatarUrl ? (
-              <img src={participant.avatarUrl} alt="" className="vesper-voice-presence-avatar-image" />
-            ) : (
-              <span className="vesper-voice-presence-avatar-fallback">{initials}</span>
-            )}
-          </div>
-        </div>
-        {participant.muted && (
-          <span className="vesper-voice-presence-status-badge" aria-label="Muted">
-            <MicOff className="w-3 h-3" />
-          </span>
-        )}
-        {participant.hasShare && (
-          <span className="vesper-voice-presence-live-badge">Live</span>
-        )}
-      </div>
-
-      <div data-testid="voice-participant-name" className="vesper-voice-presence-name">
-        {participant.displayName}
-        {participant.isLocal ? ' (You)' : ''}
-      </div>
-      <div className="vesper-voice-presence-meta">
-        {participant.hasShare
-          ? 'Screen share'
-          : participant.hasCamera
-            ? 'Camera live'
-            : participant.speaking
-              ? 'Speaking'
-              : 'Audio only'}
-      </div>
-    </button>
   )
 }

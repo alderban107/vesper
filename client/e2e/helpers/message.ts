@@ -88,7 +88,14 @@ export async function editMessage(
 export async function deleteMessage(page: Page, messageText: string): Promise<void> {
   const row = page.locator(`[data-testid="message-row"]:has-text("${messageText}")`)
   await row.hover()
-  await row.locator('[data-testid="delete-message"]').click()
+
+  const inlineDelete = row.locator('[data-testid="delete-message"]')
+  if (await inlineDelete.isVisible().catch(() => false)) {
+    await inlineDelete.click()
+  } else {
+    await row.locator('[data-testid="message-menu-button"]').click()
+    await page.locator('[data-testid="delete-message"]').click()
+  }
 
   // Confirm deletion if there's a confirm dialog
   const dialog = page.locator('.fixed.inset-0').last()
@@ -113,24 +120,58 @@ export async function pinMessage(page: Page, messageText: string): Promise<void>
   await page.waitForTimeout(1_000)
 }
 
-/** Unpin a message via right-click context menu. */
+/** Unpin a message from the pinned messages panel. */
 export async function unpinMessage(page: Page, messageText: string): Promise<void> {
-  const row = page.locator(`[data-testid="message-row"]:has-text("${messageText}")`)
-  await row.click({ button: 'right' })
-  await page.waitForSelector('[data-testid="unpin-message"]', { timeout: 5_000 })
-  await page.click('[data-testid="unpin-message"]')
-  await page.waitForTimeout(1_000)
+  await openPinsPanel(page)
+
+  const pinnedRow = page.locator('[data-testid="pins-panel"] [data-testid="pinned-message"]')
+    .filter({ hasText: messageText })
+    .first()
+
+  await pinnedRow.waitFor({ state: 'visible', timeout: 10_000 })
+  await pinnedRow.locator('button[title="Unpin message"]').click()
+  await pinnedRow.waitFor({ state: 'hidden', timeout: 10_000 })
 }
 
 /** Open the pins panel. */
 export async function openPinsPanel(page: Page): Promise<void> {
+  const panel = page.locator('[data-testid="pins-panel"]')
+  if (await panel.isVisible().catch(() => false)) {
+    return
+  }
+
   await page.click('[data-testid="toggle-pins"]')
-  await page.waitForSelector('[data-testid="pins-panel"]', { timeout: 5_000 })
+  await panel.waitFor({ state: 'visible', timeout: 5_000 })
 }
 
 /** Get pinned message texts from the pins panel. */
 export async function getPinnedMessages(page: Page): Promise<string[]> {
-  const items = page.locator('[data-testid="pins-panel"] [data-testid="pinned-message"]')
+  const panel = page.locator('[data-testid="pins-panel"]')
+  const loadingIndicator = panel.getByText('Loading pins')
+  const items = panel.locator('[data-testid="pinned-message"]')
+
+  if (await loadingIndicator.isVisible().catch(() => false)) {
+    await loadingIndicator.waitFor({ state: 'hidden', timeout: 10_000 })
+  }
+
+  await page
+    .waitForFunction(() => {
+      const panelEl = document.querySelector('[data-testid="pins-panel"]')
+      if (!panelEl) {
+        return false
+      }
+
+      const hasLoadingText = panelEl.textContent?.includes('Loading pins') ?? false
+      if (hasLoadingText) {
+        return false
+      }
+
+      const hasPinnedMessages =
+        panelEl.querySelectorAll('[data-testid="pinned-message"]').length > 0
+      const hasEmptyState = panelEl.textContent?.includes('No pinned messages') ?? false
+      return hasPinnedMessages || hasEmptyState
+    }, { timeout: 10_000 })
+
   return items.allTextContents()
 }
 

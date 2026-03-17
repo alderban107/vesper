@@ -14,6 +14,7 @@ import { useDmStore } from './dmStore'
 import { useUnreadStore } from './unreadStore'
 import { usePresenceStore, cleanupPresenceTimers } from './presenceStore'
 import { useVoiceStore } from './voiceStore'
+import { useSyncStore } from './syncStore'
 import { clearDecryptionCache } from '../crypto/decryptionCache'
 import { resetStorage } from '../crypto/storage'
 
@@ -45,8 +46,14 @@ export function resetAllStores(): void {
   // Reset all Zustand stores to initial state
   useMessageStore.setState({
     messagesByChannel: {},
+    loadingByScope: {},
+    loadedByScope: {},
+    activeScopeId: null,
+    recentScopeIds: [],
+    scopeLifecycleById: {},
     typingUsers: {},
     hasMore: {},
+    hasNewer: {},
     replyingTo: null,
     editingMessage: null,
     encryptionError: null,
@@ -81,6 +88,8 @@ export function resetAllStores(): void {
     channelUnreads: {},
     dmUnreads: {}
   })
+
+  useSyncStore.getState().resetToken()
 
   usePresenceStore.setState({
     statuses: {},

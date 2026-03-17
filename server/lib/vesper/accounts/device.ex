@@ -16,6 +16,10 @@ defmodule Vesper.Accounts.Device do
     field :trusted_at, :utc_datetime
     field :revoked_at, :utc_datetime
     field :last_seen_at, :utc_datetime
+    field :push_token, :string
+    field :push_platform, :string
+    field :notification_public_key, :binary
+    field :background_sync_capable, :boolean, default: false
 
     belongs_to :user, Vesper.Accounts.User
 
@@ -35,11 +39,16 @@ defmodule Vesper.Accounts.Device do
       :approval_method,
       :trusted_at,
       :revoked_at,
-      :last_seen_at
+      :last_seen_at,
+      :push_token,
+      :push_platform,
+      :notification_public_key,
+      :background_sync_capable
     ])
     |> validate_required([:user_id, :client_id, :name, :trust_state])
     |> validate_inclusion(:trust_state, @trust_states)
     |> validate_length(:name, min: 1, max: 128)
+    |> validate_length(:push_platform, max: 32)
     |> unique_constraint([:user_id, :client_id])
   end
 end

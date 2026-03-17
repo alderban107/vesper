@@ -24,6 +24,15 @@ function writeStoredConversationId(conversationId: string | null): void {
   localStorage.removeItem(LAST_CONVERSATION_KEY)
 }
 
+function parseActivityTimestamp(value: string | null | undefined): number {
+  if (!value) {
+    return 0
+  }
+
+  const parsed = Date.parse(value)
+  return Number.isNaN(parsed) ? 0 : parsed
+}
+
 interface DmUser {
   id: string
   username: string
@@ -48,6 +57,19 @@ interface LastMessage {
   inserted_at: string
 }
 
+interface ConversationActivity {
+  conversationId: string
+  messageId: string
+  senderId: string | null
+  sender: { id: string; username: string } | null
+  insertedAt: string
+}
+
+interface ConversationLastMessageSync {
+  conversationId: string
+  lastMessage: LastMessage | null
+}
+
 export interface DmConversation {
   id: string
   type: string
@@ -58,13 +80,38 @@ export interface DmConversation {
   last_message: LastMessage | null
 }
 
+function getConversationActivityTimestamp(conversation: DmConversation): number {
+  return parseActivityTimestamp(conversation.last_message?.inserted_at ?? conversation.inserted_at)
+}
+
+function mergeConversation(existing: DmConversation | undefined, incoming: DmConversation): DmConversation {
+  if (!existing) {
+    return incoming
+  }
+
+  if (getConversationActivityTimestamp(existing) > getConversationActivityTimestamp(incoming)) {
+    return {
+      ...incoming,
+      last_message: existing.last_message
+    }
+  }
+
+  return {
+    ...incoming,
+    last_message: incoming.last_message ?? existing.last_message
+  }
+}
+
 interface DmState {
   conversations: DmConversation[]
   selectedConversationId: string | null
 
   fetchConversations: () => Promise<void>
+  mergeConversations: (conversations: DmConversation[]) => void
   createConversation: (userIds: string[], name?: string) => Promise<DmConversation | null>
   addConversation: (conversation: DmConversation) => void
+  applyConversationActivity: (activity: ConversationActivity) => boolean
+  syncConversationLastMessage: (payload: ConversationLastMessageSync) => void
   selectConversation: (id: string | null) => void
   searchUsers: (username: string) => Promise<DmUser[]>
   updateConversationTtl: (conversationId: string, ttl: number | null) => void
@@ -79,20 +126,74 @@ export const useDmStore = create<DmState>((set, get) => ({
       const res = await apiFetch('/api/v1/conversations')
       if (res.ok) {
         const data = await res.json()
-        const conversations = data.conversations as DmConversation[]
-        const selectedConversationId = get().selectedConversationId
-        const restoredConversation = conversations.find((conversation) => conversation.id === selectedConversationId)
+        const incomingConversations = data.conversations as DmConversation[]
 
-        set({
-          conversations,
-          selectedConversationId: restoredConversation?.id ?? null
+        set((state) => {
+          const mergedById = new Map<string, DmConversation>()
+
+          for (const conversation of state.conversations) {
+            mergedById.set(conversation.id, conversation)
+          }
+
+          for (const conversation of incomingConversations) {
+            mergedById.set(conversation.id, mergeConversation(mergedById.get(conversation.id), conversation))
+          }
+
+          const conversations = [...mergedById.values()].sort(
+            (left, right) =>
+              getConversationActivityTimestamp(right) - getConversationActivityTimestamp(left)
+          )
+
+          const selectedConversationId = state.selectedConversationId
+          const restoredConversation = selectedConversationId
+            ? mergedById.get(selectedConversationId) ?? null
+            : null
+
+          writeStoredConversationId(restoredConversation?.id ?? null)
+
+          return {
+            conversations,
+            selectedConversationId: restoredConversation?.id ?? null
+          }
         })
-
-        writeStoredConversationId(restoredConversation?.id ?? null)
       }
     } catch {
       // ignore
     }
+  },
+
+  mergeConversations: (incomingConversations) => {
+    set((state) => {
+      const mergedById = new Map<string, DmConversation>()
+
+      for (const conversation of state.conversations) {
+        mergedById.set(conversation.id, conversation)
+      }
+
+      for (const conversation of incomingConversations) {
+        mergedById.set(
+          conversation.id,
+          mergeConversation(mergedById.get(conversation.id), conversation)
+        )
+      }
+
+      const conversations = [...mergedById.values()].sort(
+        (left, right) =>
+          getConversationActivityTimestamp(right) - getConversationActivityTimestamp(left)
+      )
+
+      const selectedConversationId = state.selectedConversationId
+      const restoredConversation = selectedConversationId
+        ? mergedById.get(selectedConversationId) ?? null
+        : null
+
+      writeStoredConversationId(restoredConversation?.id ?? null)
+
+      return {
+        conversations,
+        selectedConversationId: restoredConversation?.id ?? null
+      }
+    })
   },
 
   createConversation: async (userIds, name?) => {
@@ -131,6 +232,67 @@ export const useDmStore = create<DmState>((set, get) => ({
       const exists = s.conversations.some((c) => c.id === conversation.id)
       return exists ? {} : { conversations: [conversation, ...s.conversations] }
     })
+  },
+
+  applyConversationActivity: (activity) => {
+    let applied = false
+
+    set((s) => {
+      const existingConversation = s.conversations.find(
+        (conversation) => conversation.id === activity.conversationId
+      )
+
+      if (!existingConversation) {
+        return s
+      }
+
+      const currentActivityAt = getConversationActivityTimestamp(existingConversation)
+      const nextActivityAt = parseActivityTimestamp(activity.insertedAt)
+      if (currentActivityAt > nextActivityAt) {
+        return s
+      }
+
+      applied = true
+
+      const updatedConversation: DmConversation = {
+        ...existingConversation,
+        last_message: {
+          id: activity.messageId,
+          ciphertext: 'encrypted',
+          sender_id: activity.senderId,
+          sender: activity.sender,
+          inserted_at: activity.insertedAt
+        }
+      }
+
+      const conversations = s.conversations
+        .map((conversation) =>
+          conversation.id === activity.conversationId ? updatedConversation : conversation
+        )
+        .sort(
+          (left, right) =>
+            getConversationActivityTimestamp(right) - getConversationActivityTimestamp(left)
+        )
+
+      return { conversations }
+    })
+
+    return applied
+  },
+
+  syncConversationLastMessage: ({ conversationId, lastMessage }) => {
+    set((s) => ({
+      conversations: s.conversations
+        .map((conversation) =>
+          conversation.id === conversationId
+            ? { ...conversation, last_message: lastMessage }
+            : conversation
+        )
+        .sort(
+          (left, right) =>
+            getConversationActivityTimestamp(right) - getConversationActivityTimestamp(left)
+        )
+    }))
   },
 
   selectConversation: (id) => {

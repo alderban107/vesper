@@ -34,6 +34,10 @@ const cryptoDbApi = {
     ipcRenderer.invoke('cryptoDb:setGroupState', groupId, state, epoch),
   deleteGroupState: (groupId: string) =>
     ipcRenderer.invoke('cryptoDb:deleteGroupState', groupId),
+  getGroupSyncCursor: (groupId: string) =>
+    ipcRenderer.invoke('cryptoDb:getGroupSyncCursor', groupId),
+  setGroupSyncCursor: (groupId: string, lastEventSeq: number) =>
+    ipcRenderer.invoke('cryptoDb:setGroupSyncCursor', groupId, lastEventSeq),
 
   // Key packages
   getLocalKeyPackages: () =>
@@ -54,6 +58,7 @@ const cryptoDbApi = {
     server_id: string | null
     sender_id: string | null
     sender_username: string | null
+    parent_message_id: string | null
     ciphertext: Uint8Array | null
     decrypted_content: string | null
     mls_epoch: number | null

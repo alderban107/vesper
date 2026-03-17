@@ -25,16 +25,31 @@ import {
 import {
   saveGroupState,
   loadGroupState,
+  loadGroupSyncCursor,
   deleteGroupState,
+  saveGroupSyncCursor,
   loadKeyPackages,
   consumeKeyPackage
 } from '../crypto/storage'
 import { deserializePrivatePackage } from '../crypto/keySerialization'
-import { fetchKeyPackage, fetchPendingWelcomes, ackPendingWelcome } from '../api/crypto'
+import {
+  fetchKeyPackage,
+  fetchMlsEvents,
+  fetchPendingWelcomes,
+  ackPendingWelcome
+} from '../api/crypto'
 import { base64ToUint8, uint8ToBase64 } from '../api/crypto'
 import { useAuthStore } from './authStore'
-import { withGroupLock } from '../crypto/groupLock'
+import { withGroupLock, type GroupLockPriority } from '../crypto/groupLock'
 import { cacheSentMessage } from '../crypto/decryptionCache'
+
+const BACKGROUND_DECRYPT_CHUNK_SIZE = 8
+const inFlightMlsEventReplays = new Map<string, Promise<void>>()
+
+interface PendingCommit {
+  commitData: string
+  eventSeq: number | null
+}
 
 function isAlreadyMemberValidationError(error: unknown): boolean {
   return (
@@ -105,10 +120,20 @@ interface CryptoState {
   /** Whether we're currently setting up a group */
   groupSetupInProgress: Record<string, boolean>
   /** Commits received before local state is ready */
-  pendingCommits: Record<string, string[]>
+  pendingCommits: Record<string, PendingCommit[]>
+  /** Durable MLS event cursor keyed by scope ID */
+  groupEventCursors: Record<string, number>
+  /** Recently applied Welcome messages awaiting post-join follow-up */
+  welcomeAppliedAtByScope: Record<string, number>
 
   /** Ensure this user is a member of the MLS group for a channel */
-  ensureGroupMembership: (channelId: string) => Promise<void>
+  ensureGroupMembership: (channelId: string) => Promise<boolean>
+  /** Consume a pending Welcome-applied marker for a scope */
+  consumeWelcomeApplied: (channelId: string) => boolean
+  /** Persist the highest replayed MLS event sequence for a scope */
+  markScopeEventApplied: (channelId: string, eventSeq: number) => Promise<void>
+  /** Replay missed durable MLS events for a scope before message hydration */
+  replayMissedScopeEvents: (channelId: string) => Promise<void>
   /** Create a new MLS group for a channel (first user) */
   createGroup: (channelId: string) => Promise<void>
   /** Handle a join request from another user */
@@ -132,14 +157,28 @@ interface CryptoState {
     keyPackageRef?: string | null
   ) => Promise<boolean>
   /** Process a Commit message to update group state */
-  handleCommit: (channelId: string, commitData: string) => Promise<void>
+  handleCommit: (
+    channelId: string,
+    commitData: string,
+    eventSeq?: number | null
+  ) => Promise<boolean>
   /** Encrypt a plaintext message for a channel */
   encryptForChannel: (channelId: string, plaintext: string) => Promise<{
     ciphertext: string
     epoch: number
   } | null>
   /** Decrypt a ciphertext message from a channel */
-  decryptForChannel: (channelId: string, ciphertext: string) => Promise<string | null>
+  decryptForChannel: (
+    channelId: string,
+    ciphertext: string,
+    priority?: GroupLockPriority
+  ) => Promise<string | null>
+  /** Decrypt a batch of ciphertext messages while holding the room lock once */
+  decryptBatchForChannel: (
+    channelId: string,
+    ciphertexts: string[],
+    priority?: GroupLockPriority
+  ) => Promise<Array<string | null>>
   /** Check if a channel has an active MLS group */
   hasGroup: (channelId: string) => boolean
   /** Count current MLS members for a channel */
@@ -154,10 +193,166 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
   groupStates: {},
   groupSetupInProgress: {},
   pendingCommits: {},
+  groupEventCursors: {},
+  welcomeAppliedAtByScope: {},
+
+  consumeWelcomeApplied: (channelId) => {
+    const appliedAt = get().welcomeAppliedAtByScope[channelId]
+    if (appliedAt == null) {
+      return false
+    }
+
+    set((s) => {
+      const { [channelId]: _ignored, ...remaining } = s.welcomeAppliedAtByScope
+      return {
+        welcomeAppliedAtByScope: remaining
+      }
+    })
+
+    return true
+  },
+
+  markScopeEventApplied: async (channelId, eventSeq) => {
+    if (!Number.isFinite(eventSeq) || eventSeq <= 0) {
+      return
+    }
+
+    const currentCursor =
+      get().groupEventCursors[channelId] ?? (await loadGroupSyncCursor(channelId))
+    const nextCursor = Math.max(currentCursor, Math.trunc(eventSeq))
+    if (nextCursor === currentCursor && get().groupEventCursors[channelId] === nextCursor) {
+      return
+    }
+
+    await saveGroupSyncCursor(channelId, nextCursor)
+    set((s) => ({
+      groupEventCursors: {
+        ...s.groupEventCursors,
+        [channelId]: Math.max(s.groupEventCursors[channelId] ?? 0, nextCursor)
+      }
+    }))
+  },
+
+  replayMissedScopeEvents: async (channelId) => {
+    const existingReplay = inFlightMlsEventReplays.get(channelId)
+    if (existingReplay) {
+      return existingReplay
+    }
+
+    const replay = (async () => {
+      if (!useAuthStore.getState().canUseE2EE || !get().groupStates[channelId]) {
+        return
+      }
+
+      const currentUserId = useAuthStore.getState().user?.id ?? null
+      const localDeviceId = getLocalDeviceIdentity().id
+      const startCursor =
+        get().groupEventCursors[channelId] ?? (await loadGroupSyncCursor(channelId))
+
+      if (get().groupEventCursors[channelId] == null) {
+        set((s) => ({
+          groupEventCursors: {
+            ...s.groupEventCursors,
+            [channelId]: startCursor
+          }
+        }))
+      }
+
+      let afterSeq = startCursor
+
+      while (true) {
+        const events = await fetchMlsEvents(channelId, afterSeq)
+        if (events.length === 0) {
+          break
+        }
+
+        let shouldStopReplay = false
+
+        for (const event of events) {
+          const knownCursor = get().groupEventCursors[channelId] ?? startCursor
+          if (event.seq <= knownCursor) {
+            afterSeq = Math.max(afterSeq, event.seq)
+            continue
+          }
+
+          const isLocalSender =
+            event.sender_id === currentUserId && event.sender_device_id === localDeviceId
+
+          if (event.event_type === 'mls_remove') {
+            const removedUserId =
+              typeof event.payload?.removed_user_id === 'string'
+                ? event.payload.removed_user_id
+                : null
+            const commitData =
+              typeof event.payload?.commit_data === 'string' ? event.payload.commit_data : null
+
+            if (removedUserId === currentUserId && !isLocalSender) {
+              await get().resetGroup(channelId)
+              await get().markScopeEventApplied(channelId, event.seq)
+              afterSeq = event.seq
+              continue
+            }
+
+            if (!commitData) {
+              await get().markScopeEventApplied(channelId, event.seq)
+              afterSeq = event.seq
+              continue
+            }
+
+            if (isLocalSender) {
+              await get().markScopeEventApplied(channelId, event.seq)
+              afterSeq = event.seq
+              continue
+            }
+
+            const handled = await get().handleCommit(channelId, commitData, event.seq)
+            if (!handled) {
+              shouldStopReplay = true
+              break
+            }
+
+            afterSeq = event.seq
+            continue
+          }
+
+          const commitData =
+            typeof event.payload?.commit_data === 'string' ? event.payload.commit_data : null
+          if (!commitData) {
+            await get().markScopeEventApplied(channelId, event.seq)
+            afterSeq = event.seq
+            continue
+          }
+
+          if (isLocalSender) {
+            await get().markScopeEventApplied(channelId, event.seq)
+            afterSeq = event.seq
+            continue
+          }
+
+          const handled = await get().handleCommit(channelId, commitData, event.seq)
+          if (!handled) {
+            shouldStopReplay = true
+            break
+          }
+
+          afterSeq = event.seq
+        }
+
+        if (shouldStopReplay || events.length < 200) {
+          break
+        }
+      }
+    })().finally(() => {
+      inFlightMlsEventReplays.delete(channelId)
+    })
+
+    inFlightMlsEventReplays.set(channelId, replay)
+    return replay
+  },
 
   ensureGroupMembership: async (channelId) => {
     if (!useAuthStore.getState().canUseE2EE) {
-      return
+      return false
     }
 
     // Already have state in memory
@@ -170,11 +365,15 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
             [channelId]: []
           }
         }))
-        for (const commitData of pending) {
-          await get().handleCommit(channelId, commitData)
+        for (const pendingCommit of pending) {
+          await get().handleCommit(channelId, pendingCommit.commitData, pendingCommit.eventSeq)
         }
       }
-      return
+
+      await get().replayMissedScopeEvents(channelId)
+      if (get().groupStates[channelId]) {
+        return false
+      }
     }
 
     // Check local DB for persisted state
@@ -185,6 +384,13 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
         set((s) => ({
           groupStates: { ...s.groupStates, [channelId]: state }
         }))
+        const persistedCursor = await loadGroupSyncCursor(channelId)
+        set((s) => ({
+          groupEventCursors: {
+            ...s.groupEventCursors,
+            [channelId]: persistedCursor
+          }
+        }))
         const pending = get().pendingCommits[channelId] ?? []
         if (pending.length > 0) {
           set((s) => ({
@@ -193,11 +399,14 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
               [channelId]: []
             }
           }))
-          for (const commitData of pending) {
-            await get().handleCommit(channelId, commitData)
+          for (const pendingCommit of pending) {
+            await get().handleCommit(channelId, pendingCommit.commitData, pendingCommit.eventSeq)
           }
         }
-        return
+        await get().replayMissedScopeEvents(channelId)
+        if (get().groupStates[channelId]) {
+          return false
+        }
       } catch {
         // Corrupted state — delete and re-request join
         await deleteGroupState(channelId)
@@ -209,7 +418,7 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
     for (const welcome of welcomes) {
       if (get().groupStates[channelId]) {
         await ackPendingWelcome(welcome.id).catch(() => {})
-        return
+        return false
       }
 
       const processed = await get().handleWelcome(
@@ -219,12 +428,16 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
       )
       if (processed || get().groupStates[channelId]) {
         await ackPendingWelcome(welcome.id)
-        return
+        await get().replayMissedScopeEvents(channelId)
+        const { handleWelcomeProcessedForResolvedScope } = await import('./messageStore')
+        await handleWelcomeProcessedForResolvedScope(channelId).catch(() => {})
+        return true
       }
     }
 
     // No group exists or we're not in it — will be handled by mls_request_join
     // The messageStore triggers this after channel join
+    return false
   },
 
   createGroup: async (channelId) => {
@@ -312,15 +525,8 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
           return null
         }
 
-        // Skip duplicate member check for same-user different-device joins.
-        // Multi-device: the same user joins from a new device with a different
-        // key package. Both devices coexist as separate leaves in the MLS tree.
-        if (!isSameUser && groupHasMember(state, userId, username)) {
-          console.warn(`Skipping MLS join request for existing member ${userId} in ${channelId}`)
-          return null
-        }
-
-        // Fetch the requesting user's key package from the directory
+        // Fetch the requesting device's key package first so we can distinguish
+        // "same user, new device" from a true duplicate leaf.
         const keyPackageBytes = await fetchKeyPackage(userId, deviceId)
         if (!keyPackageBytes) {
           console.warn(`No key package available for user ${userId}`)
@@ -338,13 +544,11 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
           return null
         }
 
-        if (
-          !isSameUser &&
-          requestedIdentity &&
-          groupHasMember(state, requestedIdentity, userId, username)
-        ) {
+        // Allow additional devices for an existing member. Only suppress the
+        // join if this exact leaf identity is already present.
+        if (requestedIdentity && groupHasMember(state, requestedIdentity)) {
           console.warn(
-            `Skipping MLS join request for existing member ${requestedIdentity} in ${channelId}`
+            `Skipping MLS join request for existing leaf ${requestedIdentity} in ${channelId}`
           )
           return null
         }
@@ -421,9 +625,7 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
         const existingLeafIndex =
           requestedIdentity && groupHasMember(workingState, requestedIdentity)
             ? findMemberLeafIndex(workingState, requestedIdentity)
-            : isSameUser
-              ? null
-              : findMemberLeafIndex(workingState, userId, username, requestedIdentity)
+            : null
 
         if (existingLeafIndex !== null) {
           const removed = await removeMemberFromGroup(workingState, existingLeafIndex)
@@ -496,7 +698,11 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
             await consumeKeyPackage(pkg.id)
 
             set((s) => ({
-              groupStates: { ...s.groupStates, [channelId]: state }
+              groupStates: { ...s.groupStates, [channelId]: state },
+              welcomeAppliedAtByScope: {
+                ...s.welcomeAppliedAtByScope,
+                [channelId]: Date.now()
+              }
             }))
 
             // Process any pending commits that arrived before the welcome.
@@ -510,17 +716,20 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
                   [channelId]: []
                 }
               }))
-              for (const pendingCommitData of pending) {
+              for (const pendingCommit of pending) {
                 try {
                   const currentState = get().groupStates[channelId]
                   if (!currentState) break
-                  const commitBytes = base64ToUint8(pendingCommitData)
+                  const commitBytes = base64ToUint8(pendingCommit.commitData)
                   const newState = await processCommitMessage(currentState, commitBytes)
                   const ser = serializeGroupState(newState)
                   await saveGroupState(channelId, ser, Number(newState.groupContext.epoch))
                   set((s) => ({
                     groupStates: { ...s.groupStates, [channelId]: newState }
                   }))
+                  if (pendingCommit.eventSeq != null) {
+                    await get().markScopeEventApplied(channelId, pendingCommit.eventSeq)
+                  }
                 } catch {
                   // Expected: commits for earlier epochs fail harmlessly
                 }
@@ -544,32 +753,32 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
     })
   },
 
-  handleCommit: async (channelId, commitData) => {
+  handleCommit: async (channelId, commitData, eventSeq = null) => {
     if (!useAuthStore.getState().canUseE2EE) {
-      return
+      return false
     }
 
     if (!get().groupStates[channelId]) {
       const existing = get().pendingCommits[channelId] ?? []
-      if (!existing.includes(commitData)) {
+      if (!existing.some((pending) => pending.commitData === commitData)) {
         set((s) => ({
           pendingCommits: {
             ...s.pendingCommits,
-            [channelId]: [...existing, commitData]
+            [channelId]: [...existing, { commitData, eventSeq }]
           }
         }))
       }
       await get().ensureGroupMembership(channelId)
-      return
+      return false
     }
 
-    await withGroupLock(channelId, async () => {
+    return withGroupLock(channelId, async () => {
       const RETRY_DELAYS = [100, 500, 2000]
       let lastError: unknown
 
       for (let attempt = 0; attempt < RETRY_DELAYS.length; attempt++) {
         const state = get().groupStates[channelId]
-        if (!state) return
+        if (!state) return false
 
         try {
           await initCipherSuite()
@@ -582,7 +791,10 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
           set((s) => ({
             groupStates: { ...s.groupStates, [channelId]: newState }
           }))
-          return // Success
+          if (eventSeq != null) {
+            await get().markScopeEventApplied(channelId, eventSeq)
+          }
+          return true
         } catch (e) {
           lastError = e
           if (attempt < RETRY_DELAYS.length - 1) {
@@ -606,7 +818,10 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
           `Commit processing failed for ${channelId} after ${RETRY_DELAYS.length} attempts at epoch ${currentEpoch}, ignoring stale commit:`,
           lastError
         )
-        return
+        if (eventSeq != null) {
+          await get().markScopeEventApplied(channelId, eventSeq)
+        }
+        return true
       }
 
       console.error(
@@ -615,8 +830,10 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
       )
       set((s) => {
         const { [channelId]: _groupState, ...remainingGroups } = s.groupStates
+        const { [channelId]: _cursor, ...remainingCursors } = s.groupEventCursors
         return {
           groupStates: remainingGroups,
+          groupEventCursors: remainingCursors,
           pendingCommits: {
             ...s.pendingCommits,
             [channelId]: []
@@ -624,6 +841,7 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
         }
       })
       deleteGroupState(channelId).catch(() => {})
+      return false
     })
   },
 
@@ -665,7 +883,7 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
     })
   },
 
-  decryptForChannel: async (channelId, ciphertext) => {
+  decryptForChannel: async (channelId, ciphertext, priority = 'normal') => {
     if (!useAuthStore.getState().canUseE2EE) return null
     if (!get().groupStates[channelId]) return null
 
@@ -692,7 +910,77 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
       } catch {
         return null
       }
-    })
+    }, priority)
+  },
+
+  decryptBatchForChannel: async (channelId, ciphertexts, priority = 'background') => {
+    if (!useAuthStore.getState().canUseE2EE) {
+      return ciphertexts.map(() => null)
+    }
+    if (!get().groupStates[channelId] || ciphertexts.length === 0) {
+      return ciphertexts.map(() => null)
+    }
+
+    const chunkSize =
+      priority === 'background' ? BACKGROUND_DECRYPT_CHUNK_SIZE : ciphertexts.length
+    const plaintexts = ciphertexts.map(() => null) as Array<string | null>
+
+    for (let index = 0; index < ciphertexts.length; index += chunkSize) {
+      const chunk = ciphertexts.slice(index, index + chunkSize)
+
+      const chunkPlaintexts = await withGroupLock(channelId, async () => {
+        const initialState = get().groupStates[channelId]
+        if (!initialState) {
+          return chunk.map(() => null)
+        }
+
+        try {
+          await initCipherSuite()
+
+          let workingState = initialState
+          let stateChanged = false
+          const currentPlaintexts: Array<string | null> = []
+
+          for (const ciphertext of chunk) {
+            try {
+              const result = await decryptMessage(workingState, base64ToUint8(ciphertext))
+              if (!result) {
+                currentPlaintexts.push(null)
+                continue
+              }
+
+              workingState = result.newState
+              stateChanged = true
+              currentPlaintexts.push(result.plaintext)
+            } catch {
+              currentPlaintexts.push(null)
+            }
+          }
+
+          if (stateChanged) {
+            const serialized = serializeGroupState(workingState)
+            await saveGroupState(channelId, serialized, Number(workingState.groupContext.epoch))
+            set((s) => ({
+              groupStates: { ...s.groupStates, [channelId]: workingState }
+            }))
+          }
+
+          return currentPlaintexts
+        } catch {
+          return chunk.map(() => null)
+        }
+      }, priority)
+
+      chunkPlaintexts.forEach((plaintext, chunkIndex) => {
+        plaintexts[index + chunkIndex] = plaintext
+      })
+
+      if (priority === 'background' && index + chunkSize < ciphertexts.length) {
+        await new Promise((resolve) => window.setTimeout(resolve, 0))
+      }
+    }
+
+    return plaintexts
   },
 
   hasGroup: (channelId) => {
@@ -714,8 +1002,10 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
     await withGroupLock(channelId, async () => {
       set((s) => {
         const { [channelId]: _groupState, ...remainingGroups } = s.groupStates
+        const { [channelId]: _cursor, ...remainingCursors } = s.groupEventCursors
         return {
           groupStates: remainingGroups,
+          groupEventCursors: remainingCursors,
           pendingCommits: {
             ...s.pendingCommits,
             [channelId]: []

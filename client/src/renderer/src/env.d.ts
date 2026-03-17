@@ -28,6 +28,8 @@ interface CryptoDbApi {
   } | null>
   setGroupState(groupId: string, state: Uint8Array, epoch: number): Promise<void>
   deleteGroupState(groupId: string): Promise<void>
+  getGroupSyncCursor(groupId: string): Promise<number>
+  setGroupSyncCursor(groupId: string, lastEventSeq: number): Promise<void>
 
   // Key packages
   getLocalKeyPackages(): Promise<
@@ -51,6 +53,7 @@ interface CryptoDbApi {
     server_id: string | null
     sender_id: string | null
     sender_username: string | null
+    parent_message_id: string | null
     ciphertext: Uint8Array | null
     decrypted_content: string | null
     mls_epoch: number | null
@@ -66,6 +69,7 @@ interface CryptoDbApi {
       server_id: string | null
       sender_id: string | null
       sender_username: string | null
+      parent_message_id: string | null
       ciphertext: ArrayBuffer | null
       decrypted_content: string | null
       mls_epoch: number | null

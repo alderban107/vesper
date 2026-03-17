@@ -15,8 +15,17 @@ export async function openSearch(page: Page): Promise<void> {
 export async function searchFor(page: Page, query: string): Promise<void> {
   await openSearch(page)
   await page.locator('[data-testid="search-input"]').fill(query)
-  // Wait for results
   await page.waitForSelector('[data-testid="search-results"]', { timeout: 15_000 })
+  await page.waitForFunction(() => {
+    const results = document.querySelector('[data-testid="search-results"]')
+    if (!results) {
+      return false
+    }
+
+    return !(
+      results.textContent?.includes('Searching your local recall index...') ?? false
+    )
+  }, { timeout: 15_000 })
 }
 
 /** Get search result texts. */

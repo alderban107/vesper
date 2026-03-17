@@ -36,6 +36,15 @@ export interface Channel {
   position: number
   disappearing_ttl: number | null
   server_id?: string
+  last_message_id?: string | null
+  last_message_inserted_at?: string | null
+  last_message_sender?: {
+    id: string
+    username: string
+    display_name?: string | null
+    avatar_url?: string | null
+  } | null
+  permission_overrides?: unknown
 }
 
 export interface Server {
@@ -136,6 +145,55 @@ function sortChannels(channels: Channel[]): Channel[] {
   )
 }
 
+function parseActivityTimestamp(value: string | null | undefined): number {
+  if (!value) {
+    return 0
+  }
+
+  const parsed = Date.parse(value)
+  return Number.isNaN(parsed) ? 0 : parsed
+}
+
+function mergeChannelActivity(existing: Channel | undefined, incoming: Channel): Channel {
+  const existingActivityAt = parseActivityTimestamp(existing?.last_message_inserted_at)
+  const incomingActivityAt = parseActivityTimestamp(incoming.last_message_inserted_at)
+
+  if (existing && existingActivityAt > incomingActivityAt) {
+    return {
+      ...incoming,
+      last_message_id: existing.last_message_id ?? incoming.last_message_id ?? null,
+      last_message_inserted_at:
+        existing.last_message_inserted_at ?? incoming.last_message_inserted_at ?? null,
+      last_message_sender: existing.last_message_sender ?? incoming.last_message_sender ?? null
+    }
+  }
+
+  return {
+    ...incoming,
+    last_message_id: incoming.last_message_id ?? existing?.last_message_id ?? null,
+    last_message_inserted_at:
+      incoming.last_message_inserted_at ?? existing?.last_message_inserted_at ?? null,
+    last_message_sender: incoming.last_message_sender ?? existing?.last_message_sender ?? null
+  }
+}
+
+function mergeServerChannels(existingChannels: Channel[], incomingChannels: Channel[]): Channel[] {
+  const existingById = new Map(existingChannels.map((channel) => [channel.id, channel]))
+  return sortChannels(
+    incomingChannels.map((channel) => mergeChannelActivity(existingById.get(channel.id), channel))
+  )
+}
+
+function upsertServerChannel(existingChannels: Channel[], channel: Channel): Channel[] {
+  const existingById = new Map(existingChannels.map((entry) => [entry.id, entry]))
+  existingById.set(channel.id, mergeChannelActivity(existingById.get(channel.id), channel))
+  return sortChannels([...existingById.values()])
+}
+
+function removeServerChannel(existingChannels: Channel[], channelId: string): Channel[] {
+  return existingChannels.filter((channel) => channel.id !== channelId)
+}
+
 function getFirstNavigableChannel(server: Server | undefined | null): Channel | null {
   if (!server) {
     return null
@@ -158,10 +216,10 @@ async function fetchServerChannels(serverId: string): Promise<Channel[] | null> 
   }
 }
 
-function normalizeServer(server: Server): Server {
+function normalizeServer(server: Server, existing?: Server): Server {
   return {
     ...server,
-    channels: server.channels ?? [],
+    channels: mergeServerChannels(existing?.channels ?? [], server.channels ?? []),
     emojis: server.emojis ?? []
   }
 }
@@ -299,6 +357,7 @@ interface ServerState {
   channelPermissionOverrides: Record<string, ChannelPermissionOverride[]>
 
   fetchServers: () => Promise<void>
+  mergeServers: (servers: Server[]) => void
   createServer: (name: string) => Promise<Server | null>
   joinServer: (inviteCode: string) => Promise<Server | null>
   deleteServer: (id: string) => Promise<boolean>
@@ -347,7 +406,42 @@ interface ServerState {
   deleteServerEmoji: (serverId: string, emojiId: string) => Promise<boolean>
 
   updateChannelTtl: (channelId: string, ttl: number | null) => void
-  updateMemberUser: (userId: string, userData: { display_name: string | null; username: string }) => void
+  applyChannelActivity: (activity: {
+    channelId: string
+    messageId: string
+    insertedAt: string
+    senderId: string | null
+    sender?: {
+      id: string
+      username: string
+      display_name?: string | null
+      avatar_url?: string | null
+    } | null
+  }) => boolean
+  syncChannelLastMessage: (payload: {
+    channelId: string
+    lastMessage: {
+      id: string
+      inserted_at: string
+      sender_id: string | null
+      sender?: {
+        id: string
+        username: string
+        display_name?: string | null
+        avatar_url?: string | null
+      } | null
+    } | null
+  }) => void
+  applyChannelMutation: (payload: {
+    serverId: string
+    action: 'created' | 'updated' | 'deleted'
+    channel?: Channel | null
+    channelId?: string | null
+  }) => boolean
+  updateMemberUser: (
+    userId: string,
+    userData: { display_name: string | null; username: string; avatar_url?: string | null }
+  ) => void
 
   getActiveServer: () => Server | undefined
   getActiveChannel: () => Channel | undefined
@@ -368,7 +462,10 @@ export const useServerStore = create<ServerState>((set, get) => ({
       const res = await apiFetch('/api/v1/servers')
       if (res.ok) {
         const data = await res.json()
-        const servers = (data.servers as Server[]).map(normalizeServer)
+        const existingById = new Map(get().servers.map((server) => [server.id, server]))
+        const servers = (data.servers as Server[]).map((server) =>
+          normalizeServer(server, existingById.get(server.id))
+        )
         const currentServerId = get().activeServerId
         const currentChannelId = get().activeChannelId
         const restoredServer = servers.find((server) => server.id === currentServerId) ?? null
@@ -394,6 +491,44 @@ export const useServerStore = create<ServerState>((set, get) => ({
     } catch {
       // ignore
     }
+  },
+
+  mergeServers: (incomingServers) => {
+    set((state) => {
+      const mergedById = new Map(state.servers.map((server) => [server.id, server]))
+
+      for (const server of incomingServers) {
+        const existing = mergedById.get(server.id)
+        mergedById.set(server.id, normalizeServer(server, existing))
+      }
+
+      const orderedExistingIds = state.servers.map((server) => server.id)
+      const orderedServers = [
+        ...orderedExistingIds
+          .map((serverId) => mergedById.get(serverId))
+          .filter((server): server is Server => Boolean(server)),
+        ...incomingServers
+          .filter((server) => !orderedExistingIds.includes(server.id))
+          .map((server) => normalizeServer(server, mergedById.get(server.id)))
+      ]
+
+      const currentServerId = state.activeServerId
+      const currentChannelId = state.activeChannelId
+      const restoredServer = orderedServers.find((server) => server.id === currentServerId) ?? null
+      const restoredChannel =
+        restoredServer?.channels.find((channel) => channel.id === currentChannelId) ?? null
+      const fallbackChannel =
+        restoredServer && !restoredChannel ? getFirstNavigableChannel(restoredServer) : null
+
+      writeStoredValue(LAST_SERVER_KEY, restoredServer?.id ?? null)
+      writeStoredValue(LAST_CHANNEL_KEY, restoredChannel?.id ?? fallbackChannel?.id ?? null)
+
+      return {
+        servers: orderedServers,
+        activeServerId: restoredServer?.id ?? null,
+        activeChannelId: restoredChannel?.id ?? fallbackChannel?.id ?? null
+      }
+    })
   },
 
   createServer: async (name) => {
@@ -493,7 +628,9 @@ export const useServerStore = create<ServerState>((set, get) => ({
     })
     if (id) {
       get().fetchMembers(id)
-      void get().refreshServerChannels(id)
+      if ((server?.channels.length ?? 0) === 0) {
+        void get().refreshServerChannels(id)
+      }
     }
   },
 
@@ -513,14 +650,11 @@ export const useServerStore = create<ServerState>((set, get) => ({
       })
       if (res.ok) {
         const data = await res.json()
-        const channels = (await fetchServerChannels(serverId)) ?? [data.channel]
-        set((s) => ({
-          servers: s.servers.map((srv) =>
-            srv.id === serverId
-              ? { ...srv, channels }
-              : srv
-          )
-        }))
+        get().applyChannelMutation({
+          serverId,
+          action: 'created',
+          channel: data.channel as Channel
+        })
         return data.channel
       }
     } catch {
@@ -530,12 +664,14 @@ export const useServerStore = create<ServerState>((set, get) => ({
   },
 
   refreshServerChannels: async (serverId) => {
-    const channels = await fetchServerChannels(serverId)
-    if (!channels) {
+    const fetchedChannels = await fetchServerChannels(serverId)
+    if (!fetchedChannels) {
       return
     }
 
     set((s) => {
+      const currentServer = s.servers.find((srv) => srv.id === serverId)
+      const channels = mergeServerChannels(currentServer?.channels ?? [], fetchedChannels)
       const nextServers = s.servers.map((srv) =>
         srv.id === serverId
           ? { ...srv, channels }
@@ -570,19 +706,11 @@ export const useServerStore = create<ServerState>((set, get) => ({
       })
       if (res.ok) {
         const data = await res.json()
-        const channels = await fetchServerChannels(serverId)
-        set((s) => ({
-          servers: s.servers.map((srv) =>
-            srv.id === serverId
-              ? {
-                  ...srv,
-                  channels: channels ?? srv.channels.map((channel) =>
-                    channel.id === channelId ? data.channel : channel
-                  )
-                }
-              : srv
-          )
-        }))
+        get().applyChannelMutation({
+          serverId,
+          action: 'updated',
+          channel: data.channel as Channel
+        })
         return data.channel
       }
     } catch {
@@ -597,30 +725,11 @@ export const useServerStore = create<ServerState>((set, get) => ({
         method: 'DELETE'
       })
       if (res.ok) {
-        const channels = await fetchServerChannels(serverId)
-        set((s) => ({
-          servers: s.servers.map((srv) =>
-            srv.id === serverId
-              ? { ...srv, channels: channels ?? srv.channels.filter((c) => c.id !== channelId) }
-              : srv
-          ),
-          activeChannelId:
-            s.activeChannelId === channelId
-              ? getFirstNavigableChannel(
-                  s.servers
-                    .map((srv) =>
-                      srv.id === serverId
-                        ? {
-                            ...srv,
-                            channels: channels ?? srv.channels.filter((c) => c.id !== channelId)
-                          }
-                        : srv
-                    )
-                    .find((srv) => srv.id === serverId)
-                )?.id ?? null
-              : s.activeChannelId
-        }))
-        writeStoredValue(LAST_CHANNEL_KEY, get().activeChannelId)
+        get().applyChannelMutation({
+          serverId,
+          action: 'deleted',
+          channelId
+        })
         return true
       }
     } catch {
@@ -1007,7 +1116,16 @@ export const useServerStore = create<ServerState>((set, get) => ({
     set((s) => ({
       members: s.members.map((m) =>
         m.user_id === userId
-          ? { ...m, user: { ...m.user, display_name: userData.display_name, username: userData.username } }
+          ? {
+              ...m,
+              user: {
+                ...m.user,
+                display_name: userData.display_name,
+                username: userData.username,
+                avatar_url:
+                  userData.avatar_url === undefined ? m.user.avatar_url : userData.avatar_url
+              }
+            }
           : m
       )
     }))
@@ -1022,6 +1140,137 @@ export const useServerStore = create<ServerState>((set, get) => ({
         )
       }))
     }))
+  },
+
+  applyChannelActivity: (activity) => {
+    let applied = false
+
+    set((s) => ({
+      servers: s.servers.map((srv) => ({
+        ...srv,
+        channels: srv.channels.map((channel) => {
+          if (channel.id !== activity.channelId) {
+            return channel
+          }
+
+          const currentActivityAt = parseActivityTimestamp(channel.last_message_inserted_at)
+          const nextActivityAt = parseActivityTimestamp(activity.insertedAt)
+          if (currentActivityAt > nextActivityAt) {
+            return channel
+          }
+
+          applied = true
+          return {
+            ...channel,
+            last_message_id: activity.messageId,
+            last_message_inserted_at: activity.insertedAt,
+            last_message_sender:
+              activity.sender ??
+              (activity.senderId
+                ? {
+                    id: activity.senderId,
+                    username: 'Unknown'
+                  }
+                : null)
+          }
+        })
+      }))
+    }))
+
+    return applied
+  },
+
+  syncChannelLastMessage: ({ channelId, lastMessage }) => {
+    set((s) => ({
+      servers: s.servers.map((srv) => ({
+        ...srv,
+        channels: srv.channels.map((channel) =>
+          channel.id === channelId
+            ? {
+                ...channel,
+                last_message_id: lastMessage?.id ?? null,
+                last_message_inserted_at: lastMessage?.inserted_at ?? null,
+                last_message_sender: lastMessage?.sender ?? null
+              }
+            : channel
+        )
+      }))
+    }))
+  },
+
+  applyChannelMutation: ({ serverId, action, channel, channelId }) => {
+    let applied = false
+
+    set((s) => {
+      const payloadChannel = channel
+        ? (() => {
+            const {
+              permission_overrides: _permissionOverrides,
+              ...nextChannel
+            } = channel as Channel & { permission_overrides?: unknown }
+            return nextChannel
+          })()
+        : null
+      const nextServers = s.servers.map((srv) => {
+        if (srv.id !== serverId) {
+          return srv
+        }
+
+        applied = true
+
+        if (action === 'deleted') {
+          return {
+            ...srv,
+            channels: removeServerChannel(srv.channels, channelId ?? '')
+          }
+        }
+
+        if (!payloadChannel) {
+          return srv
+        }
+
+        return {
+          ...srv,
+          channels: upsertServerChannel(srv.channels, payloadChannel)
+        }
+      })
+
+      if (!applied) {
+        return s
+      }
+
+      const activeServer = nextServers.find((srv) => srv.id === s.activeServerId)
+      const activeChannelStillVisible = activeServer?.channels.some(
+        (entry) => entry.id === s.activeChannelId
+      ) ?? false
+      const nextActiveChannelId =
+        s.activeServerId === serverId && !activeChannelStillVisible
+          ? getFirstNavigableChannel(activeServer)?.id ?? null
+          : s.activeChannelId
+
+      if (s.activeServerId === serverId && nextActiveChannelId !== s.activeChannelId) {
+        writeStoredValue(LAST_CHANNEL_KEY, nextActiveChannelId)
+      }
+
+      const nextChannelPermissionOverrides = { ...s.channelPermissionOverrides }
+
+      if (action === 'deleted' && channelId) {
+        delete nextChannelPermissionOverrides[channelId]
+      } else if (channel && Object.prototype.hasOwnProperty.call(channel, 'permission_overrides')) {
+        nextChannelPermissionOverrides[channel.id] = normalizePermissionOverrides(
+          channel.id,
+          channel.permission_overrides
+        )
+      }
+
+      return {
+        servers: nextServers,
+        activeChannelId: nextActiveChannelId,
+        channelPermissionOverrides: nextChannelPermissionOverrides
+      }
+    })
+
+    return applied
   },
 
   getActiveServer: () => {

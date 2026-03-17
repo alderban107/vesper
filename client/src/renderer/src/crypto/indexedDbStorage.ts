@@ -10,11 +10,12 @@
  */
 
 const DB_NAME_PREFIX = 'vesper-crypto'
-const DB_VERSION = 2
+const DB_VERSION = 3
 
 const STORES = {
   identityKeys: 'identity_keys',
   mlsGroups: 'mls_groups',
+  mlsGroupSyncState: 'mls_group_sync_state',
   localKeyPackages: 'local_key_packages',
   messageCache: 'message_cache',
   sentMessageCache: 'sent_message_cache'
@@ -34,6 +35,10 @@ function openDb(userId: string): Promise<IDBDatabase> {
 
       if (!db.objectStoreNames.contains(STORES.mlsGroups)) {
         db.createObjectStore(STORES.mlsGroups, { keyPath: 'group_id' })
+      }
+
+      if (!db.objectStoreNames.contains(STORES.mlsGroupSyncState)) {
+        db.createObjectStore(STORES.mlsGroupSyncState, { keyPath: 'group_id' })
       }
 
       if (!db.objectStoreNames.contains(STORES.localKeyPackages)) {
@@ -176,6 +181,25 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
     async deleteGroupState(groupId: string) {
       const db = await getDb()
       await req(tx(db, STORES.mlsGroups, 'readwrite').delete(groupId))
+      await req(tx(db, STORES.mlsGroupSyncState, 'readwrite').delete(groupId))
+    },
+
+    async getGroupSyncCursor(groupId: string) {
+      const db = await getDb()
+      const result = await req(tx(db, STORES.mlsGroupSyncState, 'readonly').get(groupId))
+      return result?.last_event_seq ?? 0
+    },
+
+    async setGroupSyncCursor(groupId: string, lastEventSeq: number) {
+      const db = await getDb()
+      const store = tx(db, STORES.mlsGroupSyncState, 'readwrite')
+      const existing = await req(store.get(groupId))
+      await req(
+        store.put({
+          group_id: groupId,
+          last_event_seq: Math.max(existing?.last_event_seq ?? 0, lastEventSeq)
+        })
+      )
     },
 
     // --- Key Packages ---
@@ -233,13 +257,31 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
       server_id: string | null
       sender_id: string | null
       sender_username: string | null
+      parent_message_id: string | null
       ciphertext: Uint8Array | null
       decrypted_content: string | null
       mls_epoch: number | null
       inserted_at: string
     }) {
       const db = await getDb()
-      await req(tx(db, STORES.messageCache, 'readwrite').put(msg))
+      const store = tx(db, STORES.messageCache, 'readwrite')
+      const existing = await req(store.get(msg.id))
+
+      await req(
+        store.put({
+          ...existing,
+          ...msg,
+          channel_id: msg.channel_id ?? existing?.channel_id ?? null,
+          conversation_id: msg.conversation_id ?? existing?.conversation_id ?? null,
+          server_id: msg.server_id ?? existing?.server_id ?? null,
+          sender_id: msg.sender_id ?? existing?.sender_id ?? null,
+          sender_username: msg.sender_username ?? existing?.sender_username ?? null,
+          parent_message_id: msg.parent_message_id ?? existing?.parent_message_id ?? null,
+          ciphertext: msg.ciphertext ?? existing?.ciphertext ?? null,
+          decrypted_content: msg.decrypted_content ?? existing?.decrypted_content ?? null,
+          mls_epoch: msg.mls_epoch ?? existing?.mls_epoch ?? null
+        })
+      )
     },
 
     async getCachedMessageDecryption(messageId: string) {
@@ -263,9 +305,12 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
     async getCachedMessages(channelId: string) {
       const db = await getDb()
       const store = tx(db, STORES.messageCache, 'readonly')
-      const index = store.index('channel_id')
-      const results = await req(index.getAll(channelId))
-      return results.sort(
+      const results = await req(store.getAll())
+      const filtered = results.filter(
+        (message: { channel_id: string | null; conversation_id: string | null }) =>
+          message.channel_id === channelId || message.conversation_id === channelId
+      )
+      return filtered.sort(
         (a: { inserted_at: string }, b: { inserted_at: string }) =>
           a.inserted_at.localeCompare(b.inserted_at)
       )
@@ -274,8 +319,13 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
     async clearMessageCache(channelId: string) {
       const db = await getDb()
       const store = tx(db, STORES.messageCache, 'readwrite')
-      const index = store.index('channel_id')
-      const keys = await req(index.getAllKeys(channelId))
+      const records = await req(store.getAll())
+      const keys = records
+        .filter(
+          (message: { id: string; channel_id: string | null; conversation_id: string | null }) =>
+            message.channel_id === channelId || message.conversation_id === channelId
+        )
+        .map((message: { id: string }) => message.id)
       for (const key of keys) {
         store.delete(key)
       }

@@ -3,7 +3,7 @@
  * Covers: R-CHANNEL-1, R-CHANNEL-2, R-CHANNEL-3, R-CHANNEL-4
  */
 
-import type { Page } from '@playwright/test'
+import { expect, type Page } from '@playwright/test'
 import { waitForMessage, waitForThreadPanel } from './wait'
 
 const ENCRYPTION_READY_TIMEOUT = 60_000
@@ -28,7 +28,37 @@ export async function sendChannelMessage(page: Page, text: string, waitForText?:
 
     // Wait for either the message to appear, an encryption error, or timeout
     const result = await Promise.race([
-      page.waitForSelector(`[data-testid="message-row"]:has-text("${confirmText}")`, { timeout: 10_000 })
+      expect
+        .poll(
+          async () =>
+            page
+              .getByTestId('message-row')
+              .filter({ hasText: confirmText })
+              .evaluateAll((elements) =>
+                elements.filter((element) => {
+                  if (!(element instanceof HTMLElement)) {
+                    return false
+                  }
+
+                  if (element.classList.contains('vesper-message-row-sending')) {
+                    return false
+                  }
+
+                  if (element.classList.contains('vesper-message-row-failed')) {
+                    return false
+                  }
+
+                  const style = window.getComputedStyle(element)
+                  if (style.visibility === 'hidden' || style.display === 'none') {
+                    return false
+                  }
+
+                  return element.getClientRects().length > 0
+                }).length
+              ),
+          { timeout: 10_000 }
+        )
+        .toBeGreaterThan(0)
         .then(() => 'sent' as const),
       page.waitForSelector('.vesper-composer-alert', { timeout: 10_000 })
         .then(() => 'error' as const),
@@ -86,7 +116,37 @@ export async function sendThreadReply(page: Page, text: string): Promise<void> {
     }
 
     const result = await Promise.race([
-      page.waitForSelector(`.vesper-thread-feed :text("${text}")`, { timeout: 10_000 })
+      expect
+        .poll(
+          async () =>
+            page
+              .locator('.vesper-thread-feed [data-testid="message-row"]')
+              .filter({ hasText: text })
+              .evaluateAll((elements) =>
+                elements.filter((element) => {
+                  if (!(element instanceof HTMLElement)) {
+                    return false
+                  }
+
+                  if (element.classList.contains('vesper-message-row-sending')) {
+                    return false
+                  }
+
+                  if (element.classList.contains('vesper-message-row-failed')) {
+                    return false
+                  }
+
+                  const style = window.getComputedStyle(element)
+                  if (style.visibility === 'hidden' || style.display === 'none') {
+                    return false
+                  }
+
+                  return element.getClientRects().length > 0
+                }).length
+              ),
+          { timeout: 10_000 }
+        )
+        .toBeGreaterThan(0)
         .then(() => 'sent' as const),
       page.waitForSelector('.vesper-composer-alert', { timeout: 10_000 })
         .then(() => 'error' as const),
@@ -114,6 +174,29 @@ export async function sendThreadReply(page: Page, text: string): Promise<void> {
 
 /** Get all thread replies from the open thread panel. */
 export async function getThreadReplies(page: Page): Promise<string[]> {
+  await expect
+    .poll(
+      async () =>
+        page
+          .locator('.vesper-thread-feed [data-testid="message-row"]')
+          .evaluateAll((elements) =>
+            elements.filter((element) => {
+              if (!(element instanceof HTMLElement)) {
+                return false
+              }
+
+              const style = window.getComputedStyle(element)
+              if (style.visibility === 'hidden' || style.display === 'none') {
+                return false
+              }
+
+              return element.getClientRects().length > 0
+            }).length
+          ),
+      { timeout: 10_000 }
+    )
+    .toBeGreaterThan(0)
+
   const replies = page.locator('.vesper-thread-feed [data-testid="message-content"]')
   return replies.allTextContents()
 }

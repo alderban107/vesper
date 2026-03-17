@@ -1,6 +1,7 @@
 defmodule VesperWeb.ChannelController do
   use VesperWeb, :controller
   alias Vesper.Servers
+  alias Vesper.Sync
   import VesperWeb.ControllerHelpers, only: [format_errors: 1]
 
   def index(conn, %{"server_id" => server_id}) do
@@ -21,10 +22,17 @@ defmodule VesperWeb.ChannelController do
     if role in ~w(owner admin) do
       case Servers.create_channel(server_id, params) do
         {:ok, channel} ->
+          Sync.append_scope_events(
+            Servers.list_member_ids(server_id),
+            "server",
+            "server",
+            server_id
+          )
+
           VesperWeb.Endpoint.broadcast!(
             "presence:server:#{server_id}",
-            "channels_updated",
-            %{server_id: server_id}
+            "channel_created",
+            %{server_id: server_id, channel: channel_json(channel)}
           )
 
           conn
@@ -76,10 +84,17 @@ defmodule VesperWeb.ChannelController do
               {:ok, updated} ->
                 case maybe_update_permission_overrides(updated, params) do
                   :ok ->
+                    Sync.append_scope_events(
+                      Servers.list_member_ids(server_id),
+                      "server",
+                      "server",
+                      server_id
+                    )
+
                     VesperWeb.Endpoint.broadcast!(
                       "presence:server:#{server_id}",
-                      "channels_updated",
-                      %{server_id: server_id}
+                      "channel_updated",
+                      %{server_id: server_id, channel: channel_json(updated)}
                     )
 
                     json(conn, %{channel: channel_json(updated)})
@@ -119,10 +134,17 @@ defmodule VesperWeb.ChannelController do
       else
         Servers.delete_channel(channel)
 
+        Sync.append_scope_events(
+          Servers.list_member_ids(server_id),
+          "server",
+          "server",
+          server_id
+        )
+
         VesperWeb.Endpoint.broadcast!(
           "presence:server:#{server_id}",
-          "channels_updated",
-          %{server_id: server_id}
+          "channel_deleted",
+          %{server_id: server_id, channel_id: channel.id}
         )
 
         json(conn, %{ok: true})

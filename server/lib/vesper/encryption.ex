@@ -9,6 +9,7 @@ defmodule Vesper.Encryption do
 
   alias Vesper.Encryption.{
     KeyPackage,
+    MlsEvent,
     PendingHistoryBundle,
     PendingHistoryRequest,
     PendingResyncRequest,
@@ -442,5 +443,28 @@ defmodule Vesper.Encryption do
   def delete_pending_resync_request(id) do
     from(pr in PendingResyncRequest, where: pr.id == ^id)
     |> Repo.delete_all()
+  end
+
+  # --- Durable MLS Events ---
+
+  @doc """
+  Store a replayable MLS control-plane event for an encrypted scope.
+  """
+  def store_mls_event(attrs) do
+    %MlsEvent{}
+    |> MlsEvent.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  List replayable MLS control-plane events for a scope after the given local cursor.
+  """
+  def list_mls_events_after(group_id, after_seq \\ 0, limit \\ 200) do
+    from(event in MlsEvent,
+      where: event.group_id == ^group_id and event.id > ^after_seq,
+      order_by: [asc: event.id],
+      limit: ^limit
+    )
+    |> Repo.all()
   end
 end

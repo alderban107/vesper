@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback } from 'react'
 import { Paperclip, SendHorizonal, Smile, Loader2 } from 'lucide-react'
 import { useDmStore } from '../../stores/dmStore'
+import { useServerStore } from '../../stores/serverStore'
 import {
   useMessageStore,
   cacheSentPlaintext,
@@ -14,31 +15,55 @@ import { useCryptoStore } from '../../stores/cryptoStore'
 import { pushToChannel } from '../../api/socket'
 import { useAuthStore } from '../../stores/authStore'
 import EmojiPicker from '../chat/EmojiPicker'
+import ComposerAutocomplete from '../chat/ComposerAutocomplete'
 import ComposerShell from '../chat/message/ComposerShell'
 import type { StagedFile } from '../chat/message/ComposerShell'
 import { formatCustomEmojiToken } from '../../utils/emoji'
 import { extractVideoThumbnail } from '../../utils/videoThumbnail'
 import { extractAudioMetadata } from '../../utils/audioMetadata'
+import {
+  applyAutocompleteSelection,
+  buildEmojiSuggestions,
+  buildMentionSuggestions,
+  detectComposerTrigger,
+  type ComposerTriggerMatch
+} from '../chat/composerAutocompleteUtils'
+import type { Message } from '../../stores/messageStore'
 
 let stagedIdCounter = 0
+const EMPTY_MESSAGES: Message[] = []
 
 export default function DmMessageInput(): React.JSX.Element {
   const [content, setContent] = useState('')
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
+  const [trigger, setTrigger] = useState<ComposerTriggerMatch | null>(null)
+  const [selectedAutocompleteIndex, setSelectedAutocompleteIndex] = useState(0)
   const [uploading, setUploading] = useState(false)
   const [stagedFiles, setStagedFiles] = useState<StagedFile[]>([])
   const conversationId = useDmStore((s) => s.selectedConversationId)
+  const conversations = useDmStore((s) => s.conversations)
+  const servers = useServerStore((s) => s.servers)
+  const activeServerId = useServerStore((s) => s.activeServerId)
   const sendDmMessage = useMessageStore((s) => s.sendDmMessage)
   const sendDmTypingStart = useMessageStore((s) => s.sendDmTypingStart)
   const sendDmTypingStop = useMessageStore((s) => s.sendDmTypingStop)
   const replyingTo = useMessageStore((s) => s.replyingTo)
   const setReplyingTo = useMessageStore((s) => s.setReplyingTo)
+  const setEditingMessage = useMessageStore((s) => s.setEditingMessage)
   const encryptionError = useMessageStore((s) => s.encryptionError)
   const canUseE2EE = useAuthStore((s) => s.canUseE2EE)
+  const myUserId = useAuthStore((s) => s.user?.id)
+  const messages = useMessageStore((s) =>
+    conversationId ? (s.messagesByChannel[conversationId] ?? EMPTY_MESSAGES) : EMPTY_MESSAGES
+  )
+  const activeConversation = conversations.find((conversation) => conversation.id === conversationId)
+  const activeServer = servers.find((server) => server.id === activeServerId)
 
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isTypingRef = useRef(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const emojiButtonRef = useRef<HTMLButtonElement>(null)
   const dragDepthRef = useRef(0)
   const [dragActive, setDragActive] = useState(false)
 
@@ -99,6 +124,7 @@ export default function DmMessageInput(): React.JSX.Element {
         if (result.welcomeBytes) {
           pushToChannel(topic, 'mls_welcome', {
             recipient_id: participant.user_id,
+            recipient_device_id: preferredDeviceId,
             welcome_data: result.welcomeBytes,
             key_package_ref: result.keyPackageRef
           })
@@ -273,6 +299,50 @@ export default function DmMessageInput(): React.JSX.Element {
     return false
   }
 
+  const autocompleteItems = trigger
+    ? (
+        trigger.type === 'mention'
+          ? buildMentionSuggestions(trigger.query, useServerStore.getState().members, activeConversation)
+          : trigger.type === 'emoji'
+            ? buildEmojiSuggestions(trigger.query, activeServer)
+            : []
+      )
+    : []
+
+  const updateAutocompleteState = (value: string, cursorPos: number): void => {
+    const nextTrigger = detectComposerTrigger(value, cursorPos)
+    setTrigger(nextTrigger?.type === 'channel' ? null : nextTrigger)
+    setSelectedAutocompleteIndex(0)
+  }
+
+  const commitAutocompleteSelection = (index: number): void => {
+    if (!trigger) {
+      return
+    }
+
+    const item = autocompleteItems[index]
+    if (!item) {
+      return
+    }
+
+    const cursorPos = textareaRef.current?.selectionStart ?? content.length
+    const next = applyAutocompleteSelection(
+      content,
+      trigger.start,
+      cursorPos,
+      item.value,
+      item.type !== 'emoji'
+    )
+    setContent(next.value)
+    setTrigger(null)
+    setSelectedAutocompleteIndex(0)
+
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus()
+      textareaRef.current?.setSelectionRange(next.caret, next.caret)
+    })
+  }
+
   const handleSubmit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault()
     if (!conversationId) return
@@ -313,12 +383,64 @@ export default function DmMessageInput(): React.JSX.Element {
       isTypingRef.current = false
       sendDmTypingStop(conversationId)
     }
+    setTrigger(null)
+    setSelectedAutocompleteIndex(0)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent): void => {
+    if (trigger && autocompleteItems.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSelectedAutocompleteIndex((current) => (current + 1) % autocompleteItems.length)
+        return
+      }
+
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSelectedAutocompleteIndex((current) =>
+          current <= 0 ? autocompleteItems.length - 1 : current - 1
+        )
+        return
+      }
+
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault()
+        commitAutocompleteSelection(selectedAutocompleteIndex)
+        return
+      }
+
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setTrigger(null)
+        return
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       void handleSubmit(e)
+    }
+    if (
+      e.key === 'ArrowUp' &&
+      !e.shiftKey &&
+      !e.altKey &&
+      !e.metaKey &&
+      !e.ctrlKey &&
+      !content &&
+      stagedFiles.length === 0 &&
+      !replyingTo &&
+      !uploading &&
+      textareaRef.current?.selectionStart === 0
+    ) {
+      const lastEditableMessage = [...messages]
+        .reverse()
+        .find((message) => message.sender_id === myUserId && !message.parent_message_id)
+
+      if (lastEditableMessage) {
+        e.preventDefault()
+        setEditingMessage(lastEditableMessage)
+      }
+      return
     }
     if (e.key === 'Escape' && replyingTo) {
       setReplyingTo(null)
@@ -386,6 +508,19 @@ export default function DmMessageInput(): React.JSX.Element {
           </div>
         </div>
       )}
+      {trigger && autocompleteItems.length > 0 && (
+        <ComposerAutocomplete
+          anchorRef={textareaRef}
+          query={trigger.query}
+          items={autocompleteItems}
+          selectedIndex={selectedAutocompleteIndex}
+          onSelect={(item) => {
+            const index = autocompleteItems.findIndex((entry) => entry.id === item.id)
+            commitAutocompleteSelection(index)
+          }}
+          onHover={setSelectedAutocompleteIndex}
+        />
+      )}
       <ComposerShell
         encryptionError={encryptionError}
         onClearEncryptionError={() => useMessageStore.setState({ encryptionError: null })}
@@ -413,6 +548,7 @@ export default function DmMessageInput(): React.JSX.Element {
           />
           <div className="relative">
             <button
+              ref={emojiButtonRef}
               type="button"
               onClick={() => setShowEmojiPicker(!showEmojiPicker)}
               className="vesper-composer-icon-button"
@@ -421,24 +557,27 @@ export default function DmMessageInput(): React.JSX.Element {
               <Smile className="w-5 h-5" />
             </button>
             {showEmojiPicker && (
-              <div className="absolute bottom-12 left-0 z-50">
-                <EmojiPicker
-                  onSelect={(emoji, item) => {
-                    const value = item?.type === 'custom' ? formatCustomEmojiToken(item) : emoji
-                    setContent((prev) => prev + value)
-                    setShowEmojiPicker(false)
-                  }}
-                  onClose={() => setShowEmojiPicker(false)}
-                />
-              </div>
+              <EmojiPicker
+                anchorRef={emojiButtonRef}
+                onSelect={(emoji, item) => {
+                  const value = item?.type === 'custom' ? formatCustomEmojiToken(item) : emoji
+                  setContent((prev) => prev + value)
+                  setShowEmojiPicker(false)
+                }}
+                onClose={() => setShowEmojiPicker(false)}
+              />
             )}
           </div>
           <textarea
+            ref={textareaRef}
             value={content}
             onChange={(e) => {
               setContent(e.target.value)
               handleTyping()
+              updateAutocompleteState(e.target.value, e.target.selectionStart)
             }}
+            onClick={(event) => updateAutocompleteState(event.currentTarget.value, event.currentTarget.selectionStart)}
+            onKeyUp={(event) => updateAutocompleteState(event.currentTarget.value, event.currentTarget.selectionStart)}
             onKeyDown={handleKeyDown}
             placeholder="Message this conversation"
             rows={1}

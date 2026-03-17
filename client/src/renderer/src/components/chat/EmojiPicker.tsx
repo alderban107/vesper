@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { Search, X } from 'lucide-react'
 import { CATEGORIES, EMOJIS, type EmojiCategory } from '../../data/emojis'
 import { useServerStore } from '../../stores/serverStore'
 import type { CustomEmoji } from '../../utils/emoji'
+import FloatingSurface from '../ui/FloatingSurface'
 
 const CATEGORY_ICONS: Record<EmojiCategory, string> = {
   Smileys: '\u{1F604}',
@@ -35,13 +36,16 @@ export type PickerEmoji =
 interface Props {
   onSelect: (emoji: string, item?: PickerEmoji) => void
   onClose: () => void
+  anchorRef?: RefObject<HTMLElement | null>
 }
 
 function readRecentEmoji(): string[] {
   try {
     const raw = localStorage.getItem('vesper.recent-emoji')
     const parsed = raw ? JSON.parse(raw) : []
-    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string') : []
+    return Array.isArray(parsed)
+      ? parsed.filter((value): value is string => typeof value === 'string')
+      : []
   } catch {
     return []
   }
@@ -52,16 +56,21 @@ function saveRecentEmoji(value: string): void {
   localStorage.setItem('vesper.recent-emoji', JSON.stringify(next))
 }
 
-export default function EmojiPicker({ onSelect, onClose }: Props): React.JSX.Element {
+export default function EmojiPicker({
+  onSelect,
+  onClose,
+  anchorRef
+}: Props): React.JSX.Element {
   const [search, setSearch] = useState('')
   const [activeCategory, setActiveCategory] = useState<PickerCategoryId>('Recent')
   const [hoveredEmoji, setHoveredEmoji] = useState<PickerEmoji | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
-  const pickerRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const activeServerId = useServerStore((s) => s.activeServerId)
   const fetchServerEmojis = useServerStore((s) => s.fetchServerEmojis)
-  const activeServer = useServerStore((s) => s.servers.find((server) => server.id === s.activeServerId))
+  const activeServer = useServerStore((s) =>
+    s.servers.find((server) => server.id === s.activeServerId)
+  )
   const customEmojis = activeServer?.emojis ?? []
 
   useEffect(() => {
@@ -73,28 +82,6 @@ export default function EmojiPicker({ onSelect, onClose }: Props): React.JSX.Ele
       void fetchServerEmojis(activeServerId)
     }
   }, [activeServerId, fetchServerEmojis])
-
-  useEffect(() => {
-    const handlePointerOutside = (event: PointerEvent): void => {
-      if (pickerRef.current && !pickerRef.current.contains(event.target as Node)) {
-        onClose()
-      }
-    }
-
-    const handleEscape = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        onClose()
-      }
-    }
-
-    document.addEventListener('pointerdown', handlePointerOutside)
-    document.addEventListener('keydown', handleEscape)
-
-    return () => {
-      document.removeEventListener('pointerdown', handlePointerOutside)
-      document.removeEventListener('keydown', handleEscape)
-    }
-  }, [onClose])
 
   const pickerSections = useMemo(() => {
     const unicodeItems: PickerEmoji[] = EMOJIS.map((emoji) => ({
@@ -114,7 +101,12 @@ export default function EmojiPicker({ onSelect, onClose }: Props): React.JSX.Ele
     }))
 
     const recentOrder = readRecentEmoji()
-    const recentMap = new Map([...customItems, ...unicodeItems].map((item) => [item.type === 'custom' ? item.id : item.value, item]))
+    const recentMap = new Map(
+      [...customItems, ...unicodeItems].map((item) => [
+        item.type === 'custom' ? item.id : item.value,
+        item
+      ])
+    )
     const recentItems = recentOrder
       .map((key) => recentMap.get(key))
       .filter((item): item is PickerEmoji => Boolean(item))
@@ -122,17 +114,21 @@ export default function EmojiPicker({ onSelect, onClose }: Props): React.JSX.Ele
     const searchValue = search.trim().toLowerCase()
 
     const filteredUnicode = searchValue
-      ? unicodeItems.filter((item) =>
-          item.name.toLowerCase().includes(searchValue) ||
-          item.keywords.some((keyword) => keyword.toLowerCase().includes(searchValue))
-        )
+      ? unicodeItems.filter((item) => {
+          return (
+            item.name.toLowerCase().includes(searchValue) ||
+            item.keywords.some((keyword) => keyword.toLowerCase().includes(searchValue))
+          )
+        })
       : unicodeItems
 
     const filteredCustom = searchValue
-      ? customItems.filter((item) =>
-          item.name.toLowerCase().includes(searchValue) ||
-          item.keywords.some((keyword) => keyword.toLowerCase().includes(searchValue))
-        )
+      ? customItems.filter((item) => {
+          return (
+            item.name.toLowerCase().includes(searchValue) ||
+            item.keywords.some((keyword) => keyword.toLowerCase().includes(searchValue))
+          )
+        })
       : customItems
 
     if (searchValue) {
@@ -140,12 +136,14 @@ export default function EmojiPicker({ onSelect, onClose }: Props): React.JSX.Ele
       if (filteredCustom.length > 0) {
         sections.push({ id: 'Custom', label: 'Custom Emoji', items: filteredCustom })
       }
+
       for (const category of CATEGORIES) {
         const items = filteredUnicode.filter((item) => item.category === category)
         if (items.length > 0) {
           sections.push({ id: category, label: category, items })
         }
       }
+
       return sections
     }
 
@@ -156,6 +154,7 @@ export default function EmojiPicker({ onSelect, onClose }: Props): React.JSX.Ele
     if (filteredCustom.length > 0) {
       sections.push({ id: 'Custom', label: 'Custom Emoji', items: filteredCustom })
     }
+
     for (const category of CATEGORIES) {
       sections.push({
         id: category,
@@ -173,27 +172,63 @@ export default function EmojiPicker({ onSelect, onClose }: Props): React.JSX.Ele
     }
   }, [activeCategory, pickerSections])
 
+  useEffect(() => {
+    if (!listRef.current || search.trim()) {
+      return
+    }
+
+    const sections = listRef.current.querySelectorAll<HTMLElement>('[data-category-id]')
+    if (sections.length === 0) {
+      return
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visibleEntries = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((left, right) => left.boundingClientRect.top - right.boundingClientRect.top)
+        const nextCategoryId = visibleEntries[0]?.target.getAttribute('data-category-id')
+        if (nextCategoryId) {
+          setActiveCategory(nextCategoryId as PickerCategoryId)
+        }
+      },
+      {
+        root: listRef.current,
+        threshold: 0.15
+      }
+    )
+
+    sections.forEach((section) => observer.observe(section))
+    return () => observer.disconnect()
+  }, [pickerSections, search])
+
   const categoryButtons = useMemo(() => {
     const buttons: Array<{ id: PickerCategoryId; label: string; icon: string }> = []
+
     if (pickerSections.some((section) => section.id === 'Recent')) {
       buttons.push({ id: 'Recent', label: 'Recently Used', icon: '\u{1F55B}' })
     }
     if (pickerSections.some((section) => section.id === 'Custom')) {
       buttons.push({ id: 'Custom', label: 'Custom Emoji', icon: '\u{2728}' })
     }
+
     for (const category of CATEGORIES) {
       if (pickerSections.some((section) => section.id === category)) {
         buttons.push({ id: category, label: category, icon: CATEGORY_ICONS[category] })
       }
     }
+
     return buttons
   }, [pickerSections])
 
-  const handleCategoryClick = (categoryId: PickerCategoryId): void => {
+  const handleCategoryClick = useCallback((categoryId: PickerCategoryId): void => {
     setActiveCategory(categoryId)
-    const section = listRef.current?.querySelector<HTMLElement>(`[data-category-id="${categoryId}"]`)
+    setSearch('')
+    const section = listRef.current?.querySelector<HTMLElement>(
+      `[data-category-id="${categoryId}"]`
+    )
     section?.scrollIntoView({ block: 'start', behavior: 'smooth' })
-  }
+  }, [])
 
   const handleSelect = (item: PickerEmoji): void => {
     const recentKey = item.type === 'custom' ? item.id : item.value
@@ -203,120 +238,140 @@ export default function EmojiPicker({ onSelect, onClose }: Props): React.JSX.Ele
   }
 
   return (
-    <div ref={pickerRef} data-testid="emoji-picker" className="vesper-emoji-picker">
-      <div className="vesper-emoji-picker-header">
-        <div className="vesper-emoji-picker-search">
-          <Search className="vesper-emoji-picker-search-icon" />
-          <input
-            ref={searchRef}
-            type="text"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="Find the perfect emoji"
-            className="vesper-emoji-picker-search-input"
-          />
-          {search && (
-            <button
-              type="button"
-              onClick={() => setSearch('')}
-              className="vesper-emoji-picker-clear"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div className="vesper-emoji-picker-grid">
-        <div className="vesper-emoji-picker-categories">
-          {categoryButtons.map((category) => (
-            <button
-              key={category.id}
-              type="button"
-              className={category.id === activeCategory ? 'vesper-emoji-picker-category vesper-emoji-picker-category-active' : 'vesper-emoji-picker-category'}
-              onClick={() => handleCategoryClick(category.id)}
-              title={category.label}
-            >
-              <span>{category.icon}</span>
-            </button>
-          ))}
-        </div>
-
-        <div ref={listRef} className="vesper-emoji-picker-list">
-          {pickerSections.length === 0 ? (
-            <div className="vesper-emoji-picker-empty">
-              <span className="vesper-emoji-picker-empty-glyph">: (</span>
-              <span>No emoji found</span>
-            </div>
-          ) : (
-            pickerSections.map((section) => (
-              <section
-                key={section.id}
-                data-category-id={section.id}
-                className="vesper-emoji-picker-section"
+    <FloatingSurface
+      anchorRef={anchorRef}
+      placement="top-end"
+      offset={12}
+      minWidth={432}
+      maxWidth={432}
+      zIndex={92}
+      onClose={onClose}
+      className="vesper-emoji-picker-portal"
+      ariaLabel="Emoji picker"
+    >
+      <div data-testid="emoji-picker" className="vesper-emoji-picker">
+        <div className="vesper-emoji-picker-header">
+          <div className="vesper-emoji-picker-search">
+            <Search className="vesper-emoji-picker-search-icon" />
+            <input
+              ref={searchRef}
+              type="text"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Find the perfect emoji"
+              className="vesper-emoji-picker-search-input"
+            />
+            {search && (
+              <button
+                type="button"
+                onClick={() => setSearch('')}
+                className="vesper-emoji-picker-clear"
               >
-                <div className="vesper-emoji-picker-section-header">
-                  <span>{section.label}</span>
-                </div>
-                <div className="vesper-emoji-picker-items">
-                  {section.items.map((item) => (
-                    <button
-                      key={item.type === 'custom' ? item.id : item.value}
-                      type="button"
-                      className="vesper-emoji-picker-item"
-                      onClick={(event) => {
-                        event.preventDefault()
-                        event.stopPropagation()
-                        handleSelect(item)
-                      }}
-                      onMouseEnter={() => setHoveredEmoji(item)}
-                      title={item.type === 'custom' ? `:${item.name}:` : item.name}
-                    >
-                      {item.type === 'custom' ? (
-                        <img
-                          src={item.url}
-                          alt={`:${item.name}:`}
-                          className="vesper-emoji-picker-custom-image"
-                        />
-                      ) : (
-                        <span className="vesper-emoji-picker-glyph">{item.value}</span>
-                      )}
-                    </button>
-                  ))}
-                </div>
-              </section>
-            ))
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="vesper-emoji-picker-grid">
+          <div className="vesper-emoji-picker-categories">
+            {categoryButtons.map((category) => (
+              <button
+                key={category.id}
+                type="button"
+                className={
+                  category.id === activeCategory
+                    ? 'vesper-emoji-picker-category vesper-emoji-picker-category-active'
+                    : 'vesper-emoji-picker-category'
+                }
+                onClick={() => handleCategoryClick(category.id)}
+                title={category.label}
+              >
+                <span>{category.icon}</span>
+              </button>
+            ))}
+          </div>
+
+          <div ref={listRef} className="vesper-emoji-picker-list">
+            {pickerSections.length === 0 ? (
+              <div className="vesper-emoji-picker-empty">
+                <span className="vesper-emoji-picker-empty-glyph">: (</span>
+                <span>No emoji found</span>
+              </div>
+            ) : (
+              pickerSections.map((section) => (
+                <section
+                  key={section.id}
+                  data-category-id={section.id}
+                  className="vesper-emoji-picker-section"
+                >
+                  <div className="vesper-emoji-picker-section-header">
+                    <span>{section.label}</span>
+                  </div>
+                  <div className="vesper-emoji-picker-items">
+                    {section.items.map((item) => (
+                      <button
+                        key={item.type === 'custom' ? item.id : item.value}
+                        type="button"
+                        className="vesper-emoji-picker-item"
+                        onClick={(event) => {
+                          event.preventDefault()
+                          event.stopPropagation()
+                          handleSelect(item)
+                        }}
+                        onMouseEnter={() => setHoveredEmoji(item)}
+                        title={item.type === 'custom' ? `:${item.name}:` : item.name}
+                      >
+                        {item.type === 'custom' ? (
+                          <img
+                            src={item.url}
+                            alt={`:${item.name}:`}
+                            className="vesper-emoji-picker-custom-image"
+                          />
+                        ) : (
+                          <span className="vesper-emoji-picker-glyph">{item.value}</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              ))
+            )}
+          </div>
+        </div>
+
+        <div className="vesper-emoji-picker-inspector">
+          {hoveredEmoji ? (
+            <>
+              <div className="vesper-emoji-picker-inspector-preview">
+                {hoveredEmoji.type === 'custom' ? (
+                  <img
+                    src={hoveredEmoji.url}
+                    alt={`:${hoveredEmoji.name}:`}
+                    className="vesper-emoji-picker-inspector-image"
+                  />
+                ) : (
+                  <span className="vesper-emoji-picker-inspector-glyph">
+                    {hoveredEmoji.value}
+                  </span>
+                )}
+              </div>
+              <div className="vesper-emoji-picker-inspector-copy">
+                <span className="vesper-emoji-picker-inspector-name">
+                  {hoveredEmoji.type === 'custom'
+                    ? `:${hoveredEmoji.name}:`
+                    : hoveredEmoji.name}
+                </span>
+                <span className="vesper-emoji-picker-inspector-meta">
+                  {hoveredEmoji.type === 'custom' ? 'Custom emoji' : hoveredEmoji.category}
+                </span>
+              </div>
+            </>
+          ) : (
+            <span className="vesper-emoji-picker-inspector-placeholder">Select an emoji</span>
           )}
         </div>
       </div>
-
-      <div className="vesper-emoji-picker-inspector">
-        {hoveredEmoji ? (
-          <>
-            <div className="vesper-emoji-picker-inspector-preview">
-              {hoveredEmoji.type === 'custom' ? (
-                <img
-                  src={hoveredEmoji.url}
-                  alt={`:${hoveredEmoji.name}:`}
-                  className="vesper-emoji-picker-inspector-image"
-                />
-              ) : (
-                <span className="vesper-emoji-picker-inspector-glyph">{hoveredEmoji.value}</span>
-              )}
-            </div>
-            <div className="vesper-emoji-picker-inspector-copy">
-              <span className="vesper-emoji-picker-inspector-name">
-                {hoveredEmoji.type === 'custom' ? `:${hoveredEmoji.name}:` : hoveredEmoji.name}
-              </span>
-              <span className="vesper-emoji-picker-inspector-meta">
-                {hoveredEmoji.type === 'custom' ? 'Custom emoji' : hoveredEmoji.category}
-              </span>
-            </div>
-          </>
-        ) : (
-          <span className="vesper-emoji-picker-inspector-placeholder">Select an emoji</span>
-        )}
-      </div>
-    </div>
+    </FloatingSurface>
   )
 }

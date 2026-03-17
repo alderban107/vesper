@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Hash, AtSign, Phone, PhoneOff, Pin, PanelRightClose, PanelRightOpen, Menu, Settings, Users } from 'lucide-react'
 import { useServerStore } from '../../stores/serverStore'
 import { useDmStore } from '../../stores/dmStore'
@@ -35,6 +35,7 @@ export default function Header({ mobile = false }: Props): React.JSX.Element {
   const disconnect = useVoiceStore((s) => s.disconnect)
   const connectionQuality = useVoiceStore((s) => s.connectionQuality)
   const [showPinnedPopover, setShowPinnedPopover] = useState(false)
+  const pinnedButtonRef = useRef<HTMLButtonElement>(null)
 
   const startDmCall = useVoiceStore((s) => s.startDmCall)
   const voiceState = useVoiceStore((s) => s.state)
@@ -159,6 +160,7 @@ export default function Header({ mobile = false }: Props): React.JSX.Element {
           <div className="relative">
             <button
               data-testid="toggle-pins"
+              ref={pinnedButtonRef}
               onClick={() => setShowPinnedPopover((value) => !value)}
               className={`text-text-muted hover:text-text-primary transition-colors p-1.5 rounded hover:bg-bg-tertiary/50 ${showPinnedPopover ? 'text-accent' : ''}`}
               title="Pinned Messages"
@@ -171,6 +173,7 @@ export default function Header({ mobile = false }: Props): React.JSX.Element {
                 topic={`chat:channel:${activeChannel.id}`}
                 canManage={canManagePins}
                 onClose={() => setShowPinnedPopover(false)}
+                anchorRef={pinnedButtonRef}
               />
             )}
           </div>

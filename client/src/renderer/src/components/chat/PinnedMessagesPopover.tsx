@@ -1,33 +1,34 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, type RefObject, useState } from 'react'
 import { Loader2, Pin, PinOff } from 'lucide-react'
 import {
   parseMessageContent,
   useMessageStore,
   type PinnedMessageEntry
 } from '../../stores/messageStore'
+import FloatingSurface from '../ui/FloatingSurface'
 
 interface Props {
   channelId: string
   topic: string
   canManage: boolean
   onClose: () => void
+  anchorRef?: RefObject<HTMLElement | null>
 }
 
 export default function PinnedMessagesPopover({
   channelId,
   topic,
   canManage,
-  onClose
+  onClose,
+  anchorRef
 }: Props): React.JSX.Element {
   const fetchPinnedMessages = useMessageStore((s) => s.fetchPinnedMessages)
   const jumpToMessage = useMessageStore((s) => s.jumpToMessage)
   const unpinMessage = useMessageStore((s) => s.unpinMessage)
-  const popoverRef = useRef<HTMLDivElement>(null)
   const [pins, setPins] = useState<PinnedMessageEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [jumpingMessageId, setJumpingMessageId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-
   const refreshPins = async (): Promise<void> => {
     const nextPins = await fetchPinnedMessages(channelId)
     setPins(nextPins)
@@ -37,28 +38,6 @@ export default function PinnedMessagesPopover({
   useEffect(() => {
     void refreshPins()
   }, [channelId])
-
-  useEffect(() => {
-    const handleOutsideClick = (event: MouseEvent): void => {
-      if (popoverRef.current && !popoverRef.current.contains(event.target as Node)) {
-        onClose()
-      }
-    }
-
-    const handleEscape = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        onClose()
-      }
-    }
-
-    document.addEventListener('mousedown', handleOutsideClick)
-    document.addEventListener('keydown', handleEscape)
-
-    return () => {
-      document.removeEventListener('mousedown', handleOutsideClick)
-      document.removeEventListener('keydown', handleEscape)
-    }
-  }, [onClose])
 
   useEffect(() => {
     const onPinUpdate = (event: Event): void => {
@@ -88,9 +67,6 @@ export default function PinnedMessagesPopover({
   const handleUnpin = (messageId: string): void => {
     unpinMessage(topic, messageId)
     setPins((currentPins) => currentPins.filter((pin) => pin.message.id !== messageId))
-    window.setTimeout(() => {
-      void refreshPins()
-    }, 400)
   }
 
   const messagePreview = (pin: PinnedMessageEntry): string => {
@@ -107,11 +83,17 @@ export default function PinnedMessagesPopover({
   }
 
   return (
-    <div
-      data-testid="pins-panel"
-      ref={popoverRef}
-      className="absolute right-0 top-10 z-40 w-96 max-w-[80vw] rounded-xl border border-border bg-bg-secondary/95 p-2 shadow-2xl backdrop-blur"
+    <FloatingSurface
+      anchorRef={anchorRef}
+      placement="bottom-end"
+      offset={10}
+      minWidth={320}
+      maxWidth={420}
+      zIndex={85}
+      onClose={onClose}
+      className="w-96 max-w-[80vw] rounded-xl border border-border bg-bg-secondary/95 p-2 shadow-2xl backdrop-blur"
     >
+      <div data-testid="pins-panel">
       <div className="flex items-center gap-2 px-2 py-1.5">
         <Pin className="w-4 h-4 text-accent" />
         <span className="text-text-primary text-sm font-semibold">Pinned Messages</span>
@@ -171,6 +153,7 @@ export default function PinnedMessagesPopover({
       {error && (
         <div className="px-2 pb-1 pt-1 text-[11px] text-red-300">{error}</div>
       )}
-    </div>
+      </div>
+    </FloatingSurface>
   )
 }

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { CheckCircle2, KeyRound, Laptop2, ShieldAlert } from 'lucide-react'
 import { useAuthStore } from '../../stores/authStore'
+import { useVoiceStore } from '../../stores/voiceStore'
 
 export default function DeviceTrustGate(): React.JSX.Element | null {
   const currentDevice = useAuthStore((state) => state.currentDevice)
@@ -12,6 +13,8 @@ export default function DeviceTrustGate(): React.JSX.Element | null {
   const approveCurrentDeviceWithRecovery = useAuthStore((state) => state.approveCurrentDeviceWithRecovery)
   const unlockTrustedDevice = useAuthStore((state) => state.unlockTrustedDevice)
   const error = useAuthStore((state) => state.error)
+  const voiceState = useVoiceStore((state) => state.state)
+  const incomingCall = useVoiceStore((state) => state.incomingCall)
 
   const [recoveryKey, setRecoveryKey] = useState('')
   const [password, setPassword] = useState('')
@@ -33,6 +36,7 @@ export default function DeviceTrustGate(): React.JSX.Element | null {
   const isPending = currentDevice.trust_state !== 'trusted'
   const needsUnlock = currentDevice.trust_state === 'trusted' && !canUseE2EE
   const showPendingReviewCard = !isPending && !needsUnlock && pendingDevices.length > 0
+  const shouldAvoidBottomRight = voiceState !== 'idle' || incomingCall !== null
 
   if (!isPending && !needsUnlock && !showPendingReviewCard) {
     return null
@@ -64,7 +68,11 @@ export default function DeviceTrustGate(): React.JSX.Element | null {
 
   if (showPendingReviewCard) {
     return (
-      <div className="fixed right-5 bottom-5 z-[110] w-[360px] glass-card rounded-2xl border border-border/60 bg-bg-base/85 p-5 shadow-2xl">
+      <div
+        className={`fixed right-5 z-[110] w-[360px] glass-card rounded-2xl border border-border/60 bg-bg-base/85 p-5 shadow-2xl ${
+          shouldAvoidBottomRight ? 'top-5' : 'bottom-5'
+        }`}
+      >
         <div className="flex items-center gap-2 text-text-primary font-medium mb-3">
           <ShieldAlert className="w-4 h-4" />
           Review new device

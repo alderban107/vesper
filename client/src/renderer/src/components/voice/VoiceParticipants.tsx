@@ -21,7 +21,7 @@ export default function VoiceParticipants({
   if (voiceState === 'idle' || roomId !== channelId) return null
 
   return (
-    <div className="pl-8 pr-3">
+    <div className="vesper-voice-participant-list-discord">
       {participants.map((p) => (
         <ParticipantRow
           key={p.user_id}
@@ -63,7 +63,7 @@ function ParticipantRow({
   const isMutedLocally = volume === 0
 
   return (
-    <div className="vesper-voice-participant">
+    <div className="vesper-voice-participant vesper-voice-participant-discord">
       <div className="vesper-voice-participant-row">
         <div className="vesper-voice-participant-row-content">
           <div className={`vesper-voice-participant-avatar${participant.speaking ? ' vesper-voice-participant-avatar-speaking' : ''}`}>
@@ -77,6 +77,7 @@ function ParticipantRow({
           </div>
           <span data-testid="voice-participant-name" className={participant.speaking ? 'vesper-voice-participant-name vesper-voice-participant-name-speaking' : 'vesper-voice-participant-name'}>
             {displayName}
+            {isSelf ? ' (You)' : ''}
           </span>
           <div className="vesper-voice-participant-icons">
             {participant.camera_video_track_id && <Video className="vesper-voice-participant-state-icon" />}

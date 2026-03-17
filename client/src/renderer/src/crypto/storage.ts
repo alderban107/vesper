@@ -122,6 +122,14 @@ export async function deleteGroupState(groupId: string): Promise<void> {
   await db().deleteGroupState(groupId)
 }
 
+export async function loadGroupSyncCursor(groupId: string): Promise<number> {
+  return db().getGroupSyncCursor(groupId)
+}
+
+export async function saveGroupSyncCursor(groupId: string, lastEventSeq: number): Promise<void> {
+  await db().setGroupSyncCursor(groupId, lastEventSeq)
+}
+
 // --- Key Packages ---
 
 export async function saveKeyPackages(
@@ -162,6 +170,7 @@ export async function cacheMessage(msg: {
   serverId: string | null
   senderId: string | null
   senderUsername: string | null
+  parentMessageId: string | null
   ciphertext: Uint8Array | null
   decryptedContent: string | null
   mlsEpoch: number | null
@@ -174,6 +183,7 @@ export async function cacheMessage(msg: {
     server_id: msg.serverId,
     sender_id: msg.senderId,
     sender_username: msg.senderUsername,
+    parent_message_id: msg.parentMessageId,
     ciphertext: msg.ciphertext,
     decrypted_content: msg.decryptedContent,
     mls_epoch: msg.mlsEpoch,
@@ -211,6 +221,7 @@ export async function loadCachedMessages(channelId: string): Promise<
     serverId: string | null
     senderId: string | null
     senderUsername: string | null
+    parentMessageId: string | null
     ciphertext: Uint8Array | null
     decryptedContent: string | null
     mlsEpoch: number | null
@@ -225,6 +236,7 @@ export async function loadCachedMessages(channelId: string): Promise<
     serverId: r.server_id,
     senderId: r.sender_id,
     senderUsername: r.sender_username,
+    parentMessageId: r.parent_message_id ?? null,
     ciphertext: r.ciphertext ? new Uint8Array(r.ciphertext) : null,
     decryptedContent: r.decrypted_content,
     mlsEpoch: r.mls_epoch,

@@ -100,9 +100,10 @@ defmodule VesperWeb.ChannelHelpers do
 
   def maybe_link_attachments(message, _params), do: message
 
-  def encrypted_message_payload(message, id_field) do
+  def encrypted_message_payload(message, id_field, extra \\ %{}) do
     payload = %{
       id: message.id,
+      room_seq: message.room_seq,
       ciphertext: Base.encode64(message.ciphertext),
       mls_epoch: message.mls_epoch,
       sender_id: message.sender_id,
@@ -114,7 +115,27 @@ defmodule VesperWeb.ChannelHelpers do
       reactions: reactions_json(message)
     }
 
-    Map.put(payload, id_field, Map.get(message, id_field))
+    payload
+    |> Map.put(id_field, Map.get(message, id_field))
+    |> Map.merge(extra)
+  end
+
+  def activity_message_json(nil), do: nil
+
+  def activity_message_json(message) do
+    base = %{
+      id: message.id,
+      room_seq: message.room_seq,
+      inserted_at: message.inserted_at,
+      sender_id: message.sender_id,
+      sender: sender_json(message.sender)
+    }
+
+    if message.ciphertext do
+      Map.put(base, :ciphertext, "encrypted")
+    else
+      Map.put(base, :content, message.content)
+    end
   end
 
   def handle_edit_message(id, ciphertext_b64, epoch, socket) do
@@ -129,7 +150,17 @@ defmodule VesperWeb.ChannelHelpers do
              edited_at: now
            }) do
         {:ok, _updated} ->
-          {:ok, %{message_id: id, ciphertext: ciphertext_b64, mls_epoch: epoch, edited_at: now}}
+          payload =
+            %{
+              message_id: id,
+              ciphertext: ciphertext_b64,
+              mls_epoch: epoch,
+              edited_at: now
+            }
+            |> maybe_put(:channel_id, Map.get(socket.assigns, :channel_id))
+            |> maybe_put(:conversation_id, Map.get(socket.assigns, :conversation_id))
+
+          {:ok, payload}
 
         {:error, _} ->
           {:error, "could not edit message"}
@@ -151,7 +182,7 @@ defmodule VesperWeb.ChannelHelpers do
           {:error, "not the message author"}
         else
           case Chat.delete_message(message) do
-            {:ok, _} -> :ok
+            {:ok, _} -> {:ok, message}
             {:error, _} -> {:error, "could not delete message"}
           end
         end

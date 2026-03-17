@@ -4,6 +4,8 @@ defmodule VesperWeb.MessageController do
   alias Vesper.Servers
   import VesperWeb.ControllerHelpers, only: [parse_int: 2]
 
+  @batch_max_ids 100
+
   def index(conn, %{"id" => channel_id} = params) do
     user = conn.assigns.current_user
     channel = Servers.get_channel(channel_id)
@@ -27,11 +29,47 @@ defmodule VesperWeb.MessageController do
             before -> Keyword.put(opts, :before, before)
           end
 
+        opts =
+          case params["after"] do
+            nil -> opts
+            after_cursor -> Keyword.put(opts, :after, after_cursor)
+          end
+
         messages = Chat.list_channel_messages(channel_id, opts)
 
         json(conn, %{
           messages: Enum.map(messages, &message_json/1)
         })
+    end
+  end
+
+  def batch(conn, params) do
+    user = conn.assigns.current_user
+
+    messages =
+      params
+      |> parse_message_ids()
+      |> Chat.get_messages_with_details()
+      |> Enum.filter(&message_accessible?(user, &1))
+
+    json(conn, %{messages: Enum.map(messages, &message_json/1)})
+  end
+
+  def show(conn, %{"id" => message_id}) do
+    user = conn.assigns.current_user
+
+    case Chat.get_message_with_details(message_id) do
+      nil ->
+        conn |> put_status(:not_found) |> json(%{error: "message not found"})
+
+      message ->
+        case authorize_message_access(user, message) do
+          :ok ->
+            json(conn, %{message: message_json(message)})
+
+          {:error, status, error} ->
+            conn |> put_status(status) |> json(%{error: error})
+        end
     end
   end
 
@@ -153,9 +191,64 @@ defmodule VesperWeb.MessageController do
     end
   end
 
+  defp parse_message_ids(params) do
+    params
+    |> Map.get("ids")
+    |> case do
+      ids when is_list(ids) ->
+        ids
+
+      ids when is_binary(ids) ->
+        String.split(ids, ",", trim: true)
+
+      _ ->
+        []
+    end
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+    |> Enum.take(@batch_max_ids)
+  end
+
+  defp message_accessible?(user, message) do
+    match?(:ok, authorize_message_access(user, message))
+  end
+
+  defp authorize_message_access(user, %{channel_id: channel_id}) when is_binary(channel_id) do
+    channel = Servers.get_channel(channel_id)
+
+    cond do
+      is_nil(channel) ->
+        {:error, :not_found, "channel not found"}
+
+      not Servers.user_is_member?(user.id, channel.server_id) ->
+        {:error, :forbidden, "not a member"}
+
+      not Servers.user_can_view_channel?(user.id, channel) ->
+        {:error, :forbidden, "channel access denied"}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp authorize_message_access(user, %{conversation_id: conversation_id})
+       when is_binary(conversation_id) do
+    if Chat.user_is_participant?(user.id, conversation_id) do
+      :ok
+    else
+      {:error, :forbidden, "not a participant"}
+    end
+  end
+
+  defp authorize_message_access(_user, _message) do
+    {:error, :unprocessable_entity, "message has no scope"}
+  end
+
   defp message_json(message) do
     base = %{
       id: message.id,
+      room_seq: message.room_seq,
       channel_id: message.channel_id,
       conversation_id: message.conversation_id,
       sender_id: message.sender_id,
