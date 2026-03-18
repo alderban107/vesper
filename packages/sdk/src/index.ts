@@ -1,0 +1,8 @@
+export * as VesperApi from './api/index.js'
+export * as VesperAuth from './auth/index.js'
+export * as VesperCrypto from './crypto/index.js'
+export * as VesperStorage from './storage/index.js'
+export * as VesperTesting from './testing/index.js'
+export * as VesperTransport from './transport/index.js'
+export * as VesperTypes from './types/index.js'
+export * as VesperVoice from './voice/index.js'

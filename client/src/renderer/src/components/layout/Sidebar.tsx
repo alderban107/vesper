@@ -14,7 +14,7 @@ import {
   Trash2,
   Volume2
 } from 'lucide-react'
-import { apiFetch } from '../../api/client'
+import { apiFetch } from '@vesper/sdk/transport'
 import { useAuthStore } from '../../stores/authStore'
 import { useDmStore } from '../../stores/dmStore'
 import { usePresenceStore } from '../../stores/presenceStore'

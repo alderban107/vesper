@@ -15,8 +15,7 @@ import { useUnreadStore } from './unreadStore'
 import { usePresenceStore, cleanupPresenceTimers } from './presenceStore'
 import { useVoiceStore } from './voiceStore'
 import { useSyncStore } from './syncStore'
-import { clearDecryptionCache } from '../crypto/decryptionCache'
-import { resetStorage } from '../crypto/storage'
+import { clearDecryptionCache, resetStorage } from '@vesper/sdk/crypto'
 
 /**
  * Reset all application state to initial values.

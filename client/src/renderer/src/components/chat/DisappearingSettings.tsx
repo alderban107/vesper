@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { Timer } from 'lucide-react'
-import { pushToChannel } from '../../api/socket'
+import { pushToChannel } from '@vesper/sdk/transport'
 
 const TTL_OPTIONS = [
   { label: 'Off', value: null },

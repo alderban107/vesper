@@ -1,0 +1,81 @@
+{
+  "name": "@vesper/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for building Vesper clients",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noCheck",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test:db:start": "sh ./scripts/start-test-postgres.sh",
+    "test:db:stop": "sh ./scripts/stop-test-postgres.sh",
+    "test:db:profile": "sh ./scripts/profile-localdb-queries.sh",
+    "chaos:load": "npm run build && node scripts/run-chaos-load.mjs",
+    "chaos:load:localdb": "sh ./scripts/run-chaos-load-localdb.sh",
+    "test:integration": "npm run build && node --test --test-concurrency=1 test/**/*.test.mjs",
+    "test:integration:localdb": "sh ./scripts/run-integration-with-localdb.sh",
+    "test:integration:watch": "npm run build && node --test --test-concurrency=1 --watch test/**/*.test.mjs",
+    "sample:auth": "npm run build && node examples/node-auth.mjs",
+    "sample:cli": "npm run build && node examples/cli-client.mjs me",
+    "sample:bot:mention": "npm run build && node examples/mention-command-bot.mjs",
+    "sample:recovery": "npm run build && node examples/node-recovery.mjs",
+    "sample:realtime": "npm run build && node examples/node-realtime.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./api": {
+      "types": "./dist/api/index.d.ts",
+      "import": "./dist/api/index.js"
+    },
+    "./auth": {
+      "types": "./dist/auth/index.d.ts",
+      "import": "./dist/auth/index.js"
+    },
+    "./crypto": {
+      "types": "./dist/crypto/index.d.ts",
+      "import": "./dist/crypto/index.js"
+    },
+    "./transport": {
+      "types": "./dist/transport/index.d.ts",
+      "import": "./dist/transport/index.js"
+    },
+    "./types": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/types/index.js"
+    },
+    "./voice": {
+      "types": "./dist/voice/index.d.ts",
+      "import": "./dist/voice/index.js"
+    },
+    "./storage": {
+      "types": "./dist/storage/index.d.ts",
+      "import": "./dist/storage/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "dependencies": {
+    "@hpke/core": "^1.8.0",
+    "@noble/ciphers": "^2.1.1",
+    "@noble/curves": "^2.0.1",
+    "@noble/hashes": "^2.0.1",
+    "hash-wasm": "^4.12.0",
+    "phoenix": "^1.8.4",
+    "ts-mls": "^1.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "typescript": "^5.9.3"
+  }
+}

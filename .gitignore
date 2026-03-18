@@ -10,6 +10,7 @@ server/tmp/
 server/*.tar
 
 # Client (Electron/Node)
+node_modules/
 client/node_modules/
 client/out/
 client/dist/
@@ -17,6 +18,8 @@ client/dist-web/
 client/coverage/
 client/test-results/
 client/playwright-report/
+packages/sdk/artifacts/
+packages/sdk/dist/
 
 # Project docs (private)
 CLAUDE.md

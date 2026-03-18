@@ -1,12 +1,12 @@
 import { create } from 'zustand'
 import {
-  ackPendingWelcome,
   ackPendingResyncRequest,
+  ackPendingWelcome,
   fetchPendingResyncRequests
-} from '../api/crypto'
-import { getLocalDeviceIdentity } from '../auth/deviceIdentity'
-import { getVoiceRtcConfig } from '../api/voiceConfig'
-import { connectSocket, joinVoiceChannel, leaveChannel, pushToChannel } from '../api/socket'
+} from '@vesper/sdk/api'
+import { getLocalDeviceIdentity } from '@vesper/sdk/auth'
+import { getVoiceRtcConfig } from '@vesper/sdk/voice'
+import { connectSocket, joinVoiceChannel, leaveChannel, pushToChannel } from '@vesper/sdk/transport'
 import {
   WebRTCManager,
   type VoiceMediaSlot,

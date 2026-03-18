@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AlertCircle, Download, Film, Loader2, Play } from 'lucide-react'
-import { decryptFile } from '../../crypto/fileEncryption'
+import { decryptFile } from '@vesper/sdk/crypto'
 import { fetchAttachmentBytes } from '../../utils/attachmentFetch'
 import {
   acquireCachedAttachmentObjectUrl,

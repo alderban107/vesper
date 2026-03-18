@@ -1,4 +1,4 @@
-import { apiFetch } from '../api/client'
+import { apiFetch } from '@vesper/sdk/transport'
 
 const ATTACHMENT_FETCH_RETRY_DELAYS_MS = [0, 180, 500, 1200] as const
 

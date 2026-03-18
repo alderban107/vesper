@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AlertCircle, Download, FileText, Loader2, Paperclip, Play, Volume2 } from 'lucide-react'
-import { decryptFile } from '../../crypto/fileEncryption'
+import { decryptFile } from '@vesper/sdk/crypto'
 import { useVisibility } from '../../hooks/useVisibility'
 import type { FileMessageContent } from '../../stores/messageStore'
 import { fetchAttachmentBytes } from '../../utils/attachmentFetch'

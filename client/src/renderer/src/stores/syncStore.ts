@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { apiFetch } from '../api/client'
+import { apiFetch } from '@vesper/sdk/transport'
 import { useDmStore, type DmConversation } from './dmStore'
 import { useServerStore, type Server } from './serverStore'
 import { useUnreadStore } from './unreadStore'

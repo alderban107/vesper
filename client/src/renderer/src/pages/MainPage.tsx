@@ -30,7 +30,7 @@ import { usePresenceStore } from '../stores/presenceStore'
 import { useUnreadStore } from '../stores/unreadStore'
 import { parseMessageContent, useMessageStore, type Message } from '../stores/messageStore'
 import { useSyncStore } from '../stores/syncStore'
-import { onSocketOpen } from '../api/socket'
+import { onSocketOpen } from '@vesper/sdk/transport'
 
 const EMPTY_MESSAGES: Message[] = []
 const EMPTY_TYPING_USERS: { user_id: string; username: string }[] = []

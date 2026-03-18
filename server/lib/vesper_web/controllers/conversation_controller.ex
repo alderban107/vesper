@@ -2,7 +2,7 @@ defmodule VesperWeb.ConversationController do
   use VesperWeb, :controller
   alias Vesper.Chat
   alias Vesper.Sync
-  import VesperWeb.ControllerHelpers, only: [parse_int: 2]
+  import VesperWeb.ControllerHelpers, only: [parse_bool: 2, parse_int: 2]
 
   def create(conn, %{"participant_ids" => participant_ids} = params) do
     user = conn.assigns.current_user
@@ -78,6 +78,8 @@ defmodule VesperWeb.ConversationController do
         conn |> put_status(:forbidden) |> json(%{error: "not a participant"})
 
       true ->
+        after_seq = parse_int(params["after_seq"], -1)
+        lean = parse_bool(params["lean"], false)
         opts = [limit: min(parse_int(params["limit"], 50), 100)]
 
         opts =
@@ -92,8 +94,21 @@ defmodule VesperWeb.ConversationController do
             after_cursor -> Keyword.put(opts, :after, after_cursor)
           end
 
-        messages = Chat.list_conversation_messages(conversation_id, opts)
-        json(conn, %{messages: Enum.map(messages, &message_json/1)})
+        opts =
+          if lean do
+            Keyword.put(opts, :lean, true)
+          else
+            opts
+          end
+
+        messages =
+          if after_seq >= 0 do
+            Chat.list_conversation_messages_after_seq(conversation_id, after_seq, opts)
+          else
+            Chat.list_conversation_messages(conversation_id, opts)
+          end
+
+        json(conn, %{messages: Enum.map(messages, &message_json(&1, lean: lean))})
     end
   end
 
@@ -134,7 +149,9 @@ defmodule VesperWeb.ConversationController do
     }
   end
 
-  defp message_json(message) do
+  defp message_json(message, opts \\ []) do
+    lean = Keyword.get(opts, :lean, false)
+
     base = %{
       id: message.id,
       room_seq: message.room_seq,
@@ -143,10 +160,18 @@ defmodule VesperWeb.ConversationController do
       sender: sender_json(message.sender),
       expires_at: message.expires_at,
       parent_message_id: message.parent_message_id,
-      inserted_at: message.inserted_at,
-      attachments: attachments_json(message),
-      reactions: reactions_json(message)
+      inserted_at: message.inserted_at
     }
+
+    base =
+      if lean do
+        base
+      else
+        Map.merge(base, %{
+          attachments: attachments_json(message),
+          reactions: reactions_json(message)
+        })
+      end
 
     if message.ciphertext do
       Map.merge(base, %{

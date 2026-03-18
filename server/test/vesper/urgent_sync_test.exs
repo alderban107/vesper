@@ -4,7 +4,9 @@ defmodule Vesper.UrgentSyncTest do
   import Phoenix.ConnTest
   import Plug.Conn
 
+  alias Vesper.Accounts
   alias Vesper.Chat
+  alias Vesper.Encryption
   alias Vesper.Chat.Message
   alias Vesper.Repo
   alias Vesper.Runtime
@@ -128,6 +130,57 @@ defmodule Vesper.UrgentSyncTest do
     assert Enum.map(events, & &1["id"]) == [mutation_event.id]
   end
 
+  test "scope sync preserves requested order for accessible scopes and skips hidden ones", %{
+    conn: conn
+  } do
+    user = insert_user()
+    peer = insert_user()
+    outsider = insert_user()
+
+    {:ok, server} = Vesper.Servers.create_server(user, %{name: "alpha"})
+    {:ok, hidden_server} = Vesper.Servers.create_server(outsider, %{name: "hidden"})
+    {:ok, conversation} = Chat.create_conversation(user.id, [peer.id], name: "chat")
+
+    {:ok, hidden_conversation} =
+      Chat.create_conversation(outsider.id, [peer.id], name: "hidden-chat")
+
+    channel = Enum.find(server.channels, &(&1.type == "text"))
+    hidden_channel = Enum.find(hidden_server.channels, &(&1.type == "text"))
+
+    visible_channel_message = insert_channel_message(user.id, channel.id, "channel body")
+    visible_dm_message = insert_dm_message(peer.id, conversation.id, "dm body")
+
+    assert {:ok, _} = Runtime.project_message(visible_channel_message)
+    assert {:ok, _} = Runtime.project_message(visible_dm_message)
+
+    response =
+      conn
+      |> assign(:current_user, user)
+      |> ScopeSyncController.create(%{
+        "limit" => "20",
+        "scopes" => [
+          %{"kind" => "channel", "id" => hidden_channel.id, "after_seq" => "0"},
+          %{"kind" => "dm", "id" => conversation.id, "after_seq" => "0"},
+          %{"kind" => "channel", "id" => channel.id, "after_seq" => "0"},
+          %{"kind" => "dm", "id" => hidden_conversation.id, "after_seq" => "0"}
+        ]
+      })
+      |> json_response(200)
+
+    assert Enum.map(response["scopes"], &{&1["kind"], &1["scope_id"]}) == [
+             {"dm", conversation.id},
+             {"channel", channel.id}
+           ]
+
+    assert Enum.at(response["scopes"], 0)["messages"] |> Enum.map(& &1["id"]) == [
+             visible_dm_message.id
+           ]
+
+    assert Enum.at(response["scopes"], 1)["messages"] |> Enum.map(& &1["id"]) == [
+             visible_channel_message.id
+           ]
+  end
+
   test "mls event replay returns durable events after the provided cursor", %{conn: conn} do
     user = insert_user()
     {:ok, server} = Vesper.Servers.create_server(user, %{name: "alpha"})
@@ -176,6 +229,90 @@ defmodule Vesper.UrgentSyncTest do
                "inserted_at" => response["events"] |> hd() |> Map.fetch!("inserted_at")
              }
            ]
+  end
+
+  test "kick broadcasts a user-scoped membership revocation with affected groups" do
+    owner = insert_user()
+    member = insert_user()
+    {:ok, server} = Vesper.Servers.create_server(owner, %{name: "alpha"})
+    assert {:ok, _joined_server} = Vesper.Servers.join_server(member, server.invite_code)
+
+    Phoenix.PubSub.subscribe(Vesper.PubSub, "user:#{member.id}")
+
+    assert {:ok, _membership} =
+             Vesper.Servers.kick_member(server.id, member.id, actor_id: owner.id)
+
+    assert_receive %Phoenix.Socket.Broadcast{
+      topic: topic,
+      event: "server_membership_revoked",
+      payload: %{
+        server_id: server_id,
+        channel_ids: channel_ids,
+        reason: "kicked"
+      }
+    }
+
+    assert topic == "user:#{member.id}"
+    assert server_id == server.id
+    assert Enum.sort(channel_ids) == Enum.sort(Enum.map(server.channels, & &1.id))
+  end
+
+  test "kick queues per-device crypto evictions for text channels and requests the first leaf" do
+    owner = insert_user()
+    member = insert_user()
+
+    assert {:ok, _device} =
+             Accounts.ensure_device(member, %{client_id: "member-a", name: "Member A"}, "trusted")
+
+    assert {:ok, _device} =
+             Accounts.ensure_device(member, %{client_id: "member-b", name: "Member B"}, "trusted")
+
+    {:ok, server} = Vesper.Servers.create_server(owner, %{name: "alpha"})
+    assert {:ok, _joined_server} = Vesper.Servers.join_server(member, server.invite_code)
+
+    text_channels = Enum.filter(server.channels, &(&1.type == "text"))
+
+    Enum.each(text_channels, fn channel ->
+      Phoenix.PubSub.subscribe(Vesper.PubSub, "chat:channel:#{channel.id}")
+    end)
+
+    assert {:ok, _membership} =
+             Vesper.Servers.kick_member(server.id, member.id, actor_id: owner.id)
+
+    evictions =
+      text_channels
+      |> Enum.flat_map(fn channel ->
+        Encryption.list_pending_crypto_evictions("channel", channel.id)
+      end)
+
+    assert length(evictions) == length(text_channels) * 2
+    assert Enum.all?(evictions, &(&1.target_user_id == member.id))
+
+    assert Enum.sort(Enum.map(evictions, & &1.target_device_id)) ==
+             Enum.sort(
+               for(
+                 _channel <- text_channels,
+                 device_id <- ["member-a", "member-b"],
+                 do: device_id
+               )
+             )
+
+    Enum.each(text_channels, fn channel ->
+      assert_receive %Phoenix.Socket.Broadcast{
+        topic: topic,
+        event: "mls_eviction_request",
+        payload: %{
+          scope_id: scope_id,
+          target_user_id: target_user_id,
+          target_device_id: target_device_id
+        }
+      }
+
+      assert topic == "chat:channel:#{channel.id}"
+      assert scope_id == channel.id
+      assert target_user_id == member.id
+      assert target_device_id in ["member-a", "member-b"]
+    end)
   end
 
   defp insert_dm_message(sender_id, conversation_id, content) do

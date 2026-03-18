@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { apiFetch, apiUpload } from '../api/client'
+import { apiFetch, apiUpload } from '@vesper/sdk/transport'
 import { useDmStore } from './dmStore'
 import type { CustomEmoji } from '../utils/emoji'
 
@@ -25,6 +25,25 @@ function writeStoredValue(key: string, value: string | null): void {
   }
 
   localStorage.removeItem(key)
+}
+
+async function resetServerGroups(server: Server | undefined): Promise<void> {
+  if (!server) {
+    return
+  }
+
+  const { useCryptoStore } = await import('./cryptoStore')
+
+  const groupIds = Array.from(
+    new Set([
+      ...server.channels.map((channel) => channel.id),
+      ...server.channels.map((channel) => `voice:channel:${channel.id}`)
+    ])
+  )
+
+  await Promise.all(
+    groupIds.map((groupId) => useCryptoStore.getState().resetGroup(groupId).catch(() => {}))
+  )
 }
 
 export interface Channel {
@@ -362,6 +381,7 @@ interface ServerState {
   joinServer: (inviteCode: string) => Promise<Server | null>
   deleteServer: (id: string) => Promise<boolean>
   leaveServer: (serverId: string) => Promise<boolean>
+  removeServerLocally: (serverId: string) => void
   setActiveServer: (id: string | null) => void
   setActiveChannel: (id: string | null) => void
   createChannel: (
@@ -575,15 +595,8 @@ export const useServerStore = create<ServerState>((set, get) => ({
     try {
       const res = await apiFetch(`/api/v1/servers/${id}`, { method: 'DELETE' })
       if (res.ok) {
-        set((s) => ({
-          servers: s.servers.filter((srv) => srv.id !== id),
-          activeServerId: s.activeServerId === id ? null : s.activeServerId,
-          activeChannelId: s.activeServerId === id ? null : s.activeChannelId
-        }))
-        if (get().activeServerId === null) {
-          writeStoredValue(LAST_SERVER_KEY, null)
-          writeStoredValue(LAST_CHANNEL_KEY, null)
-        }
+        await resetServerGroups(get().servers.find((server) => server.id === id))
+        get().removeServerLocally(id)
         return true
       }
     } catch {
@@ -596,21 +609,45 @@ export const useServerStore = create<ServerState>((set, get) => ({
     try {
       const res = await apiFetch(`/api/v1/servers/${serverId}/leave`, { method: 'DELETE' })
       if (res.ok) {
-        set((s) => ({
-          servers: s.servers.filter((srv) => srv.id !== serverId),
-          activeServerId: s.activeServerId === serverId ? null : s.activeServerId,
-          activeChannelId: s.activeServerId === serverId ? null : s.activeChannelId
-        }))
-        if (get().activeServerId === null) {
-          writeStoredValue(LAST_SERVER_KEY, null)
-          writeStoredValue(LAST_CHANNEL_KEY, null)
-        }
+        await resetServerGroups(get().servers.find((server) => server.id === serverId))
+        get().removeServerLocally(serverId)
         return true
       }
     } catch {
       // ignore
     }
     return false
+  },
+
+  removeServerLocally: (serverId) => {
+    set((state) => {
+      const removedServer = state.servers.find((server) => server.id === serverId)
+      const removedChannelIds = new Set((removedServer?.channels ?? []).map((channel) => channel.id))
+      const activeServerRemoved = state.activeServerId === serverId
+      const { [serverId]: _roles, ...rolesByServer } = state.rolesByServer
+      const { [serverId]: _bans, ...bansByServer } = state.bansByServer
+      const { [serverId]: _audit, ...auditLogByServer } = state.auditLogByServer
+
+      return {
+        servers: state.servers.filter((server) => server.id !== serverId),
+        activeServerId: activeServerRemoved ? null : state.activeServerId,
+        activeChannelId: activeServerRemoved ? null : state.activeChannelId,
+        members: activeServerRemoved ? [] : state.members,
+        rolesByServer,
+        bansByServer,
+        auditLogByServer,
+        channelPermissionOverrides: Object.fromEntries(
+          Object.entries(state.channelPermissionOverrides).filter(
+            ([channelId]) => !removedChannelIds.has(channelId)
+          )
+        )
+      }
+    })
+
+    if (get().activeServerId === null) {
+      writeStoredValue(LAST_SERVER_KEY, null)
+      writeStoredValue(LAST_CHANNEL_KEY, null)
+    }
   },
 
   setActiveServer: (id) => {

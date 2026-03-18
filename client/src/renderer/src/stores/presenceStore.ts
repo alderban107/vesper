@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { joinChannel, leaveChannel, pushToChannel } from '../api/socket'
+import { joinChannel, leaveChannel, pushToChannel } from '@vesper/sdk/transport'
 import { useServerStore } from './serverStore'
 import type { DmConversation } from './dmStore'
 
@@ -330,6 +330,36 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
         import('./dmStore').then(({ useDmStore }) => {
           const data = payload as { conversation: DmConversation }
           useDmStore.getState().addConversation(data.conversation)
+        })
+      } else if (event === 'server_membership_revoked') {
+        Promise.all([
+          import('./cryptoStore'),
+          import('./serverStore')
+        ]).then(([{ useCryptoStore }, { useServerStore }]) => {
+          const data = payload as {
+            server_id?: string
+            channel_ids?: string[]
+          }
+
+          const serverId = typeof data.server_id === 'string' ? data.server_id : null
+          const channelIds = Array.isArray(data.channel_ids)
+            ? data.channel_ids.filter((channelId): channelId is string => typeof channelId === 'string')
+            : []
+
+          const groupIds = Array.from(
+            new Set([
+              ...channelIds,
+              ...channelIds.map((channelId) => `voice:channel:${channelId}`)
+            ])
+          )
+
+          for (const groupId of groupIds) {
+            void useCryptoStore.getState().resetGroup(groupId).catch(() => {})
+          }
+
+          if (serverId) {
+            useServerStore.getState().removeServerLocally(serverId)
+          }
         })
       } else if (event === 'dm_message') {
         triggerUrgentBackgroundSync()

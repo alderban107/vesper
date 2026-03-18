@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Pin, PinOff, X } from 'lucide-react'
-import { apiFetch } from '../../api/client'
+import { apiFetch } from '@vesper/sdk/transport'
 import { useMessageStore } from '../../stores/messageStore'
 import type { Message } from '../../stores/messageStore'
 import MarkdownContent from './MarkdownContent'

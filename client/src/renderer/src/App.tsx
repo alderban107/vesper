@@ -6,7 +6,7 @@ import {
   clearSessionNotice,
   getSessionNotice,
   type SessionNotice
-} from './api/client'
+} from '@vesper/sdk/transport'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
 import RecoveryPage from './pages/RecoveryPage'

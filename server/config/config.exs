@@ -49,7 +49,7 @@ config :joken,
 # Oban background jobs
 config :vesper, Oban,
   repo: Vesper.Repo,
-  queues: [default: 10],
+  queues: [default: 10, crypto_evictions: 20],
   plugins: [
     {Oban.Plugins.Cron,
      crontab: [

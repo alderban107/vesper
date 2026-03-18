@@ -1,13 +1,8 @@
 import { useState } from 'react'
 import { ArrowLeft, ArrowRight, KeyRound, Loader2, Lock, ShieldCheck, Smartphone } from 'lucide-react'
-import { apiFetch, setTokens } from '../api/client'
-import { getLocalDeviceIdentity } from '../auth/deviceIdentity'
-import { connectSocket } from '../api/socket'
-import { uint8ToBase64, base64ToUint8 } from '../api/crypto'
-import { decryptWithRecoveryKey, createEncryptedKeyBundle, recoveryKeyToBytes } from '../crypto/identity'
-import { initStorage, saveIdentity } from '../crypto/storage'
 import AuthShell from '../components/auth/AuthShell'
 import { useAuthStore } from '../stores/authStore'
+import { useSettingsStore } from '../stores/settingsStore'
 
 interface Props {
   onBack: () => void
@@ -38,8 +33,9 @@ export default function RecoveryPage({ onBack }: Props): React.JSX.Element {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [step, setStep] = useState<'mnemonic' | 'password'>('mnemonic')
-  const [recoveryKeyHash, setRecoveryKeyHash] = useState<string | null>(null)
-  const [privateKeys, setPrivateKeys] = useState<Uint8Array | null>(null)
+  const serverUrl = useSettingsStore((state) => state.serverUrl)
+  const verifyRecoveryKey = useAuthStore((state) => state.verifyRecoveryKey)
+  const recoverAccount = useAuthStore((state) => state.recoverAccount)
 
   const handleVerifyMnemonic = async (event: React.FormEvent): Promise<void> => {
     event.preventDefault()
@@ -47,31 +43,12 @@ export default function RecoveryPage({ onBack }: Props): React.JSX.Element {
     setLoading(true)
 
     try {
-      const keyBytes = await recoveryKeyToBytes(mnemonic)
-      const hashBuffer = await crypto.subtle.digest('SHA-256', keyBytes)
-      const hashArray = new Uint8Array(hashBuffer)
-      const hash = Array.from(hashArray)
-        .map((byte) => byte.toString(16).padStart(2, '0'))
-        .join('')
-
-      const response = await apiFetch('/api/v1/auth/recover', {
-        method: 'POST',
-        body: JSON.stringify({ recovery_key_hash: hash })
-      })
-
-      const data = await response.json()
-      if (!response.ok) {
-        setError(data.error || 'Invalid recovery key')
-        setLoading(false)
-        return
+      const verified = await verifyRecoveryKey(mnemonic)
+      if (verified) {
+        setStep('password')
+      } else {
+        setError(useAuthStore.getState().error || 'Invalid recovery key')
       }
-
-      const encryptedBundle = base64ToUint8(data.encrypted_recovery_bundle)
-      const decrypted = await decryptWithRecoveryKey(mnemonic, encryptedBundle)
-
-      setRecoveryKeyHash(hash)
-      setPrivateKeys(decrypted)
-      setStep('password')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Recovery failed')
     }
@@ -93,59 +70,13 @@ export default function RecoveryPage({ onBack }: Props): React.JSX.Element {
       return
     }
 
-    if (!recoveryKeyHash || !privateKeys) return
-
     setLoading(true)
 
     try {
-      const newBundle = await createEncryptedKeyBundle(privateKeys, newPassword)
-      const device = getLocalDeviceIdentity()
-
-      const response = await apiFetch('/api/v1/auth/recover/reset', {
-        method: 'POST',
-        body: JSON.stringify({
-          recovery_key_hash: recoveryKeyHash,
-          new_password: newPassword,
-          device_id: device.id,
-          device_name: device.name,
-          device_platform: device.platform,
-          encrypted_key_bundle: uint8ToBase64(newBundle.ciphertext),
-          key_bundle_nonce: uint8ToBase64(newBundle.nonce),
-          key_bundle_salt: uint8ToBase64(newBundle.salt)
-        })
-      })
-
-      const data = await response.json()
-      if (!response.ok) {
-        setError(data.error || 'Failed to reset password')
-        setLoading(false)
-        return
+      const recovered = await recoverAccount(mnemonic, newPassword)
+      if (!recovered) {
+        setError(useAuthStore.getState().error || 'Failed to set new password')
       }
-
-      setTokens(data.access_token, data.refresh_token)
-      connectSocket()
-      initStorage(data.user.id)
-
-      await saveIdentity(
-        data.user.id,
-        data.public_identity_key ? base64ToUint8(data.public_identity_key) : new Uint8Array(0),
-        data.public_key_exchange ? base64ToUint8(data.public_key_exchange) : new Uint8Array(0),
-        newBundle.ciphertext,
-        newBundle.nonce,
-        newBundle.salt,
-        privateKeys
-      )
-
-      useAuthStore.setState({
-        user: data.user,
-        currentDevice: data.current_device ?? null,
-        devices: data.current_device ? [data.current_device] : [],
-        isAuthenticated: true,
-        error: null,
-        canUseE2EE: true
-      })
-      await useAuthStore.getState().fetchDevices()
-      await useAuthStore.getState().replenishKeyPackages()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to set new password')
     }
@@ -170,6 +101,11 @@ export default function RecoveryPage({ onBack }: Props): React.JSX.Element {
       {step === 'mnemonic' ? (
         <form onSubmit={handleVerifyMnemonic} className="vesper-auth-form">
           {error && <div className="vesper-auth-error">{error}</div>}
+          {!serverUrl.trim() && (
+            <div className="vesper-auth-error">
+              Set a backend server URL before trying account recovery.
+            </div>
+          )}
 
           <label className="vesper-auth-field">
             <span className="vesper-auth-label">Recovery key</span>
@@ -197,7 +133,7 @@ export default function RecoveryPage({ onBack }: Props): React.JSX.Element {
             </button>
             <button
               type="submit"
-              disabled={loading || !mnemonic.trim()}
+              disabled={loading || !mnemonic.trim() || !serverUrl.trim()}
               className="vesper-auth-submit glow-accent hover:glow-accent-hover disabled:opacity-40 disabled:shadow-none"
             >
               {loading ? (
@@ -253,7 +189,7 @@ export default function RecoveryPage({ onBack }: Props): React.JSX.Element {
 
           <button
             type="submit"
-            disabled={loading || !newPassword || !confirmPassword}
+            disabled={loading || !newPassword || !confirmPassword || !serverUrl.trim()}
             className="vesper-auth-submit glow-accent hover:glow-accent-hover disabled:opacity-40 disabled:shadow-none"
           >
             {loading ? (

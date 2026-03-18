@@ -1,0 +1,8 @@
+{
+  "name": "vesper-monorepo",
+  "private": true,
+  "workspaces": [
+    "client",
+    "packages/sdk"
+  ]
+}

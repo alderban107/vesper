@@ -63,7 +63,18 @@ defmodule VesperWeb.SyncController do
 
     changed_conversation_ids = scope_changes.conversation_ids
 
-    conversation_reset_messages = Chat.get_latest_conversation_messages(changed_conversation_ids)
+    conversation_messages_by_id =
+      Map.new(conversations, fn %{conversation: conversation, last_message: last_message} ->
+        {conversation.id, last_message}
+      end)
+
+    missing_reset_ids =
+      Enum.reject(changed_conversation_ids, &Map.has_key?(conversation_messages_by_id, &1))
+
+    conversation_reset_messages =
+      conversation_messages_by_id
+      |> Map.take(changed_conversation_ids)
+      |> Map.merge(Chat.get_latest_conversation_messages(missing_reset_ids))
 
     conversation_resets =
       Enum.map(changed_conversation_ids, fn conversation_id ->

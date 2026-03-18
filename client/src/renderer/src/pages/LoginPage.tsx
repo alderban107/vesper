@@ -19,10 +19,17 @@ export default function LoginPage({ onSwitchToRegister, onSwitchToRecovery }: Pr
   const serverUrl = useSettingsStore((state) => state.serverUrl)
   const setServerUrl = useSettingsStore((state) => state.setServerUrl)
   const [loading, setLoading] = useState(false)
+  const hasServerUrl = serverUrl.trim().length > 0
 
   useEffect(() => {
     setServerDraft(serverUrl)
   }, [serverUrl])
+
+  useEffect(() => {
+    if (!hasServerUrl) {
+      setServerEditorOpen(true)
+    }
+  }, [hasServerUrl])
 
   const handleSubmit = async (event: React.FormEvent): Promise<void> => {
     event.preventDefault()
@@ -70,6 +77,11 @@ export default function LoginPage({ onSwitchToRegister, onSwitchToRecovery }: Pr
     >
       <form onSubmit={handleSubmit} data-testid="login-form" className="vesper-auth-form">
         {error && <div className="vesper-auth-error">{error}</div>}
+        {!hasServerUrl && (
+          <div className="vesper-auth-error">
+            Set a backend server URL before signing in.
+          </div>
+        )}
 
         <label className="vesper-auth-field">
           <span className="vesper-auth-label">Username</span>
@@ -103,7 +115,7 @@ export default function LoginPage({ onSwitchToRegister, onSwitchToRecovery }: Pr
 
         <button
           type="submit"
-          disabled={loading || !username || !password}
+          disabled={loading || !username || !password || !hasServerUrl}
           className="vesper-auth-submit glow-accent hover:glow-accent-hover disabled:opacity-40 disabled:shadow-none"
         >
           {loading ? (
@@ -131,7 +143,9 @@ export default function LoginPage({ onSwitchToRegister, onSwitchToRecovery }: Pr
           >
             {serverEditorOpen ? 'Hide server options' : 'Use a different server'}
           </button>
-          <div className="vesper-auth-server-current">{serverUrl}</div>
+          <div className="vesper-auth-server-current">
+            {serverUrl || 'No server configured yet'}
+          </div>
 
           {serverEditorOpen ? (
             <div className="vesper-auth-server-editor">

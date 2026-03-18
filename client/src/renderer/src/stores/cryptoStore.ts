@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import type { ClientState } from 'ts-mls'
-import { getLocalDeviceIdentity } from '../auth/deviceIdentity'
+import { getLocalDeviceIdentity } from '@vesper/sdk/auth'
 import {
   buildClientCredentialIdentity,
   initCipherSuite,
@@ -21,7 +21,7 @@ import {
   getGroupLeafIdentities,
   getGroupMemberIdentities,
   findMemberLeafIndex
-} from '../crypto/mls'
+} from '@vesper/sdk/crypto'
 import {
   saveGroupState,
   loadGroupState,
@@ -30,18 +30,17 @@ import {
   saveGroupSyncCursor,
   loadKeyPackages,
   consumeKeyPackage
-} from '../crypto/storage'
-import { deserializePrivatePackage } from '../crypto/keySerialization'
+} from '@vesper/sdk/crypto'
+import { deserializePrivatePackage } from '@vesper/sdk/crypto'
 import {
   fetchKeyPackage,
   fetchMlsEvents,
   fetchPendingWelcomes,
   ackPendingWelcome
-} from '../api/crypto'
-import { base64ToUint8, uint8ToBase64 } from '../api/crypto'
+} from '@vesper/sdk/api'
+import { base64ToUint8, uint8ToBase64 } from '@vesper/sdk/api'
 import { useAuthStore } from './authStore'
-import { withGroupLock, type GroupLockPriority } from '../crypto/groupLock'
-import { cacheSentMessage } from '../crypto/decryptionCache'
+import { cacheSentMessage, type GroupLockPriority, withGroupLock } from '@vesper/sdk/crypto'
 
 const BACKGROUND_DECRYPT_CHUNK_SIZE = 8
 const inFlightMlsEventReplays = new Map<string, Promise<void>>()
@@ -117,6 +116,16 @@ export interface ResyncRequestResult extends JoinRequestResult {
   removeCommitBytes: string | null
 }
 
+export type EvictionRequestResult =
+  | {
+      action: 'remove'
+      commitBytes: string
+    }
+  | {
+      action: 'skip'
+      reason: string
+    }
+
 interface CryptoState {
   /** In-memory MLS group states keyed by channel ID */
   groupStates: Record<string, ClientState>
@@ -153,6 +162,12 @@ interface CryptoState {
     username?: string,
     deviceId?: string
   ) => Promise<ResyncRequestResult | null>
+  /** Handle a cryptographic eviction request from a trusted member */
+  handleEvictionRequest: (
+    channelId: string,
+    userId: string,
+    deviceId?: string
+  ) => Promise<EvictionRequestResult | null>
   /** Process a Welcome message to join an existing group */
   handleWelcome: (
     channelId: string,
@@ -282,14 +297,21 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
             event.sender_id === currentUserId && event.sender_device_id === localDeviceId
 
           if (event.event_type === 'mls_remove') {
+            const payload = event.payload as Record<string, unknown> | undefined
             const removedUserId =
-              typeof event.payload?.removed_user_id === 'string'
-                ? event.payload.removed_user_id
+              typeof payload?.removed_user_id === 'string' ? payload.removed_user_id : null
+            const removedDeviceId =
+              typeof payload?.removed_device_id === 'string'
+                ? payload.removed_device_id
                 : null
             const commitData =
-              typeof event.payload?.commit_data === 'string' ? event.payload.commit_data : null
+              typeof payload?.commit_data === 'string' ? payload.commit_data : null
 
-            if (removedUserId === currentUserId && !isLocalSender) {
+            if (
+              removedUserId === currentUserId &&
+              (removedDeviceId == null || removedDeviceId === localDeviceId) &&
+              !isLocalSender
+            ) {
               await get().resetGroup(channelId)
               await get().markScopeEventApplied(channelId, event.seq)
               afterSeq = event.seq
@@ -680,6 +702,66 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
         }
       } catch (e) {
         console.error('Failed to handle resync request:', e)
+        return null
+      }
+    })
+  },
+
+  handleEvictionRequest: async (channelId, userId, deviceId) => {
+    if (!useAuthStore.getState().canUseE2EE) return null
+    if (!get().groupStates[channelId]) return null
+
+    return withGroupLock(channelId, async () => {
+      const state = get().groupStates[channelId]
+      if (!state) return null
+
+      try {
+        await initCipherSuite()
+        const localUser = useAuthStore.getState().user
+        const localDeviceId = getLocalDeviceIdentity().id
+
+        if (!localUser || !groupHasMember(state, localUser.id, localUser.username)) {
+          return null
+        }
+
+        if (
+          localUser.id === userId &&
+          (deviceId == null || deviceId === localDeviceId)
+        ) {
+          return null
+        }
+
+        const leafIndex =
+          deviceId != null
+            ? (() => {
+                const targetIdentity = buildClientCredentialIdentity(userId, deviceId)
+                return getGroupLeafIdentities(state).includes(targetIdentity)
+                  ? findMemberLeafIndex(state, targetIdentity)
+                  : null
+              })()
+            : findMemberLeafIndex(state, userId)
+
+        if (leafIndex == null) {
+          return {
+            action: 'skip',
+            reason: 'leaf_missing'
+          }
+        }
+
+        const removed = await removeMemberFromGroup(state, leafIndex)
+        const serialized = serializeGroupState(removed.newState)
+        await saveGroupState(channelId, serialized, Number(removed.newState.groupContext.epoch))
+
+        set((s) => ({
+          groupStates: { ...s.groupStates, [channelId]: removed.newState }
+        }))
+
+        return {
+          action: 'remove',
+          commitBytes: uint8ToBase64(removed.commitBytes)
+        }
+      } catch (e) {
+        console.error('Failed to handle eviction request:', e)
         return null
       }
     })

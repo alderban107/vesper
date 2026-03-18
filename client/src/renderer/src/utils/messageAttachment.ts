@@ -1,6 +1,5 @@
-import { apiUpload } from '../api/client'
-import { encryptFile } from '../crypto/fileEncryption'
-import type { FilePayload } from '../crypto/payload'
+import { encryptFile, type FilePayload } from '@vesper/sdk/crypto'
+import { apiUpload } from '@vesper/sdk/transport'
 import { extractAudioMetadata } from './audioMetadata'
 import { extractVideoThumbnail } from './videoThumbnail'
 

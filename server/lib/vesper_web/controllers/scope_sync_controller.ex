@@ -25,9 +25,7 @@ defmodule VesperWeb.ScopeSyncController do
 
     json(conn, %{
       token: token,
-      scopes:
-        scopes
-        |> Enum.flat_map(&sync_scope(user.id, &1, limit, since))
+      scopes: sync_scopes(user.id, scopes, limit, since)
     })
   end
 
@@ -80,82 +78,121 @@ defmodule VesperWeb.ScopeSyncController do
 
   defp parse_since(value), do: SyncCursor.decode(value)
 
+  defp sync_scopes(user_id, scopes, limit, since) do
+    channel_scopes = Enum.filter(scopes, &(&1.kind == "channel"))
+    channel_ids = channel_scopes |> Enum.map(& &1.id) |> Enum.uniq()
+
+    channels_by_id =
+      user_id
+      |> Servers.list_viewable_channels(channel_ids)
+      |> Map.new(&{&1.id, &1})
+
+    channel_rooms_by_id =
+      channels_by_id
+      |> Map.keys()
+      |> Runtime.list_rooms_for_channels()
+
+    dm_scopes = Enum.filter(scopes, &(&1.kind == "dm"))
+    dm_ids = dm_scopes |> Enum.map(& &1.id) |> Enum.uniq()
+    accessible_dm_ids = Chat.list_accessible_conversation_ids(user_id, dm_ids)
+
+    dm_rooms_by_id =
+      accessible_dm_ids
+      |> MapSet.to_list()
+      |> Runtime.list_rooms_for_conversations()
+
+    Enum.flat_map(scopes, fn scope ->
+      sync_scope(
+        scope,
+        limit,
+        since,
+        channels_by_id,
+        channel_rooms_by_id,
+        accessible_dm_ids,
+        dm_rooms_by_id
+      )
+    end)
+  end
+
   defp sync_scope(
-         user_id,
          %{kind: "channel", id: channel_id, after: after_cursor, after_seq: after_seq},
          limit,
-         since
+         since,
+         channels_by_id,
+         channel_rooms_by_id,
+         _accessible_dm_ids,
+         _dm_rooms_by_id
        ) do
-    case Servers.get_channel(channel_id) do
+    case Map.get(channels_by_id, channel_id) do
       nil ->
         []
 
-      channel ->
-        if Servers.user_is_member?(user_id, channel.server_id) and
-             Servers.user_can_view_channel?(user_id, channel) do
-          room = Runtime.get_room_for_channel(channel_id)
+      _channel ->
+        room = Map.get(channel_rooms_by_id, channel_id)
 
-          {messages, events, has_more} =
-            cond do
-              is_integer(after_seq) ->
-                sync_scope_after_seq(
-                  room,
-                  after_seq,
-                  limit,
-                  fn query_limit ->
-                    Chat.list_channel_messages_after_seq(channel_id, after_seq,
-                      limit: query_limit
-                    )
-                  end,
-                  fn query_limit ->
-                    Runtime.list_scope_events_after_seq(
-                      "channel",
-                      channel_id,
-                      after_seq,
-                      limit: query_limit
-                    )
-                  end
-                )
+        {messages, events, has_more} =
+          cond do
+            is_integer(after_seq) ->
+              sync_scope_after_seq(
+                room,
+                after_seq,
+                limit,
+                fn query_limit ->
+                  chat_opts =
+                    if room do
+                      [limit: query_limit, room_id: room.id]
+                    else
+                      [limit: query_limit]
+                    end
 
-              true ->
-                messages =
-                  Chat.list_channel_messages(channel_id, limit: limit, after: after_cursor)
-
-                events =
-                  if since do
-                    Runtime.list_scope_events("channel", channel_id, since,
-                      limit: max(limit * 4, 100)
-                    )
+                  Chat.list_channel_messages_after_seq(channel_id, after_seq, chat_opts)
+                end,
+                fn query_limit ->
+                  if room do
+                    Runtime.list_scope_events_after_seq(room, after_seq, limit: query_limit)
                   else
                     []
                   end
+                end
+              )
 
-                {messages, events, length(messages) == limit}
-            end
+            true ->
+              messages =
+                Chat.list_channel_messages(channel_id, limit: limit, after: after_cursor)
 
-          [
-            %{
-              scope_id: channel_id,
-              kind: "channel",
-              has_more: has_more,
-              messages: Enum.map(messages, &message_json/1),
-              events: Enum.map(events, &sync_event_json/1)
-            }
-          ]
-        else
-          []
-        end
+              events =
+                if since && room do
+                  Runtime.list_scope_events(room, since, limit: max(limit * 4, 100))
+                else
+                  []
+                end
+
+              {messages, events, length(messages) == limit}
+          end
+
+        [
+          %{
+            scope_id: channel_id,
+            kind: "channel",
+            has_more: has_more,
+            messages: Enum.map(messages, &message_json/1),
+            events: Enum.map(events, &sync_event_json/1)
+          }
+        ]
     end
   end
 
   defp sync_scope(
-         user_id,
          %{kind: "dm", id: conversation_id, after: after_cursor, after_seq: after_seq},
          limit,
-         since
+         since,
+         _channels_by_id,
+         _channel_rooms_by_id,
+         accessible_dm_ids,
+         dm_rooms_by_id
        ) do
-    if Chat.user_is_participant?(user_id, conversation_id) do
-      room = Runtime.get_room_for_conversation(conversation_id)
+    if MapSet.member?(accessible_dm_ids, conversation_id) do
+      room = Map.get(dm_rooms_by_id, conversation_id)
 
       {messages, events, has_more} =
         cond do
@@ -165,19 +202,25 @@ defmodule VesperWeb.ScopeSyncController do
               after_seq,
               limit,
               fn query_limit ->
+                chat_opts =
+                  if room do
+                    [limit: query_limit, room_id: room.id]
+                  else
+                    [limit: query_limit]
+                  end
+
                 Chat.list_conversation_messages_after_seq(
                   conversation_id,
                   after_seq,
-                  limit: query_limit
+                  chat_opts
                 )
               end,
               fn query_limit ->
-                Runtime.list_scope_events_after_seq(
-                  "dm",
-                  conversation_id,
-                  after_seq,
-                  limit: query_limit
-                )
+                if room do
+                  Runtime.list_scope_events_after_seq(room, after_seq, limit: query_limit)
+                else
+                  []
+                end
               end
             )
 
@@ -186,10 +229,8 @@ defmodule VesperWeb.ScopeSyncController do
               Chat.list_conversation_messages(conversation_id, limit: limit, after: after_cursor)
 
             events =
-              if since do
-                Runtime.list_scope_events("dm", conversation_id, since,
-                  limit: max(limit * 4, 100)
-                )
+              if since && room do
+                Runtime.list_scope_events(room, since, limit: max(limit * 4, 100))
               else
                 []
               end
@@ -211,20 +252,45 @@ defmodule VesperWeb.ScopeSyncController do
     end
   end
 
-  defp sync_scope(_user_id, _scope, _limit, _since), do: []
+  defp sync_scope(
+         _scope,
+         _limit,
+         _since,
+         _channels_by_id,
+         _channel_rooms_by_id,
+         _dm_ids,
+         _dm_rooms
+       ),
+       do: []
 
   defp sync_scope_after_seq(room, after_seq, limit, list_messages, list_events) do
     event_limit = max(limit * 4, 100)
     room_current_seq = if(room, do: room.current_seq || 0, else: 0)
+    room_last_message_seq = if(room, do: room.last_message_seq || 0, else: 0)
+    room_last_mutation_seq = if(room, do: room.last_mutation_seq || 0, else: 0)
 
     cond do
       after_seq >= room_current_seq ->
         {[], [], false}
 
       true ->
-        messages = list_messages.(limit)
-        events = list_events.(event_limit)
-        has_more = length(messages) == limit or length(events) == event_limit
+        messages =
+          if after_seq < room_last_message_seq do
+            list_messages.(limit)
+          else
+            []
+          end
+
+        events =
+          if after_seq < room_last_mutation_seq do
+            list_events.(event_limit)
+          else
+            []
+          end
+
+        has_more =
+          (room_last_message_seq > after_seq and length(messages) == limit) or
+            (room_last_mutation_seq > after_seq and length(events) == event_limit)
 
         {messages, events, has_more}
     end

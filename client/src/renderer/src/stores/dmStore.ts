@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { apiFetch } from '../api/client'
+import { apiFetch } from '@vesper/sdk/transport'
 
 const LAST_CONVERSATION_KEY = 'vesper:lastConversationId'
 

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { getServerUrl } from '../../api/client'
+import { getServerUrl } from '@vesper/sdk/transport'
 import { avatarColor } from '../../utils/avatar'
 import type { PresenceStatus } from '../../stores/presenceStore'
 

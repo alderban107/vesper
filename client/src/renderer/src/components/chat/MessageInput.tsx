@@ -7,9 +7,9 @@ import {
   pushToChannelWithAck,
   waitForChannelMembershipReady
 } from '../../stores/messageStore'
-import { encodePayload } from '../../crypto/payload'
+import { encodePayload } from '@vesper/sdk/crypto'
 import { useCryptoStore } from '../../stores/cryptoStore'
-import { pushToChannel } from '../../api/socket'
+import { pushToChannel } from '@vesper/sdk/transport'
 import { useAuthStore } from '../../stores/authStore'
 import ComposerForm from './ComposerForm'
 import type { StagedFile } from './message/ComposerShell'

@@ -1,7 +1,41 @@
 import { create } from 'zustand'
-import { apiFetch } from '../api/client'
-import { getLocalDeviceIdentity } from '../auth/deviceIdentity'
-import { getChannel, joinChannel, joinChannelWithAck, leaveChannel, pushToChannel } from '../api/socket'
+import {
+  ackPendingHistoryBundle,
+  ackPendingHistoryRequest,
+  ackPendingResyncRequest,
+  ackPendingWelcome,
+  base64ToUint8,
+  fetchPendingHistoryBundles,
+  fetchPendingHistoryRequests,
+  fetchPendingResyncRequests,
+  uint8ToBase64
+} from '@vesper/sdk/api'
+import { getLocalDeviceIdentity } from '@vesper/sdk/auth'
+import {
+  cacheMessage as cacheMessageToDb,
+  cacheSentMessage,
+  decodePayload,
+  encodePayload,
+  getCachedDecryption,
+  getSentMessage,
+  getStoredSentMessage,
+  indexDecryptedMessage as indexToFts,
+  loadCachedMessageDecryption,
+  loadCachedMessages,
+  removeCachedDecryption,
+  removeFromFtsIndex,
+  saveCachedMessageDecryption,
+  searchDecryptedMessages,
+  setCachedDecryption
+} from '@vesper/sdk/crypto'
+import {
+  apiFetch,
+  getChannel,
+  joinChannel,
+  joinChannelWithAck,
+  leaveChannel,
+  pushToChannel
+} from '@vesper/sdk/transport'
 import { useCryptoStore } from './cryptoStore'
 import { useAuthStore } from './authStore'
 import { useVoiceStore } from './voiceStore'
@@ -9,36 +43,6 @@ import { useServerStore } from './serverStore'
 import { useDmStore } from './dmStore'
 import { queueScopeMutationHint, usePresenceStore } from './presenceStore'
 import { replaceEmojiShortcodes } from '../utils/emoji'
-import {
-  cacheMessage as cacheMessageToDb,
-  loadCachedMessages,
-  loadCachedMessageDecryption,
-  searchDecryptedMessages,
-  saveCachedMessageDecryption,
-  indexDecryptedMessage as indexToFts,
-  removeFromFtsIndex
-} from '../crypto/storage'
-import {
-  ackPendingHistoryBundle,
-  ackPendingHistoryRequest,
-  ackPendingWelcome,
-  ackPendingResyncRequest,
-  base64ToUint8,
-  uint8ToBase64,
-  fetchPendingHistoryBundles,
-  fetchPendingHistoryRequests,
-  fetchPendingResyncRequests
-} from '../api/crypto'
-import { encodePayload, decodePayload } from '../crypto/payload'
-import {
-  cacheSentMessage,
-  getCachedDecryption,
-  setCachedDecryption,
-  removeCachedDecryption,
-  getSentMessage,
-  getStoredSentMessage
-} from '../crypto/decryptionCache'
-
 export function cacheSentPlaintext(ciphertext: string, plaintext: string): void {
   void cacheSentMessage(ciphertext, plaintext)
 }
@@ -48,6 +52,9 @@ const recentMlsJoinRequests = new Map<string, number>()
 const recentMlsJoinDeviceIds = new Map<string, string>()
 const MLS_RESYNC_REQUEST_COOLDOWN_MS = 5000
 const recentMlsResyncRequests = new Map<string, number>()
+const MLS_EVICTION_REQUEST_COOLDOWN_MS = 5000
+const recentMlsEvictionRequests = new Map<string, number>()
+const inFlightMlsEvictionRequests = new Map<string, Promise<boolean>>()
 const MLS_RECOVERY_BACKOFF_MS = [150, 500, 1500] as const
 const DM_JOIN_WAIT_TIMEOUT_MS = 10_000
 const ENCRYPTED_MESSAGE_SYNCING_PLACEHOLDER = 'Encrypted message is syncing...'
@@ -783,6 +790,19 @@ interface PendingMlsResyncRequest {
   reason?: string | null
 }
 
+interface PendingMlsEvictionRequest {
+  id?: string
+  eviction_id?: string
+  target_user_id?: string
+  target_username?: string | null
+  target_device_id?: string | null
+  removed_user_id?: string
+  removed_device_id?: string | null
+  user_id?: string
+  device_id?: string | null
+  request_id?: string
+}
+
 interface EncryptedScopeDescriptor {
   kind: 'channel' | 'dm'
   targetId: string
@@ -873,6 +893,105 @@ async function processMlsResyncRequest(
   }
 
   return true
+}
+
+function isLocalRemovalTarget(
+  targetUserId: string | null,
+  targetDeviceId: string | null,
+  localUserId: string | undefined,
+  localDeviceId: string
+): boolean {
+  if (!targetUserId || !localUserId) {
+    return false
+  }
+
+  if (targetUserId !== localUserId) {
+    return false
+  }
+
+  return targetDeviceId == null || targetDeviceId === localDeviceId
+}
+
+async function processMlsEvictionRequest(
+  targetId: string,
+  topic: string,
+  request: PendingMlsEvictionRequest
+): Promise<boolean> {
+  const evictionId =
+    request.eviction_id ?? request.request_id ?? request.id ?? null
+  const targetUserId =
+    request.target_user_id ?? request.removed_user_id ?? request.user_id ?? null
+  const targetDeviceId =
+    request.target_device_id ?? request.removed_device_id ?? request.device_id ?? null
+
+  if (!evictionId || !targetUserId) {
+    return false
+  }
+
+  const existing = inFlightMlsEvictionRequests.get(evictionId)
+  if (existing) {
+    return await existing
+  }
+
+  const lastHandledAt = recentMlsEvictionRequests.get(evictionId) ?? 0
+  if (Date.now() - lastHandledAt < MLS_EVICTION_REQUEST_COOLDOWN_MS) {
+    return false
+  }
+
+  const run = (async () => {
+    const localUserId = useAuthStore.getState().user?.id
+    const localDeviceId = getLocalDeviceIdentity().id
+
+    if (isLocalRemovalTarget(targetUserId, targetDeviceId, localUserId, localDeviceId)) {
+      return false
+    }
+
+    const crypto = useCryptoStore.getState()
+    if (!crypto.hasGroup(targetId)) {
+      return false
+    }
+
+    const claimed = await pushToChannelWithAck(topic, 'mls_eviction_claim', {
+      id: evictionId
+    })
+    if (!claimed) {
+      return false
+    }
+
+    const result = await crypto.handleEvictionRequest(
+      targetId,
+      targetUserId,
+      targetDeviceId ?? undefined
+    )
+    if (!result) {
+      return false
+    }
+
+    const pushed =
+      result.action === 'skip'
+        ? await pushToChannelWithAck(topic, 'mls_eviction_skip', {
+            id: evictionId,
+            target_user_id: targetUserId,
+            ...(targetDeviceId ? { target_device_id: targetDeviceId } : {}),
+            reason: result.reason
+          })
+        : await pushToChannelWithAck(topic, 'mls_remove', {
+            removed_user_id: targetUserId,
+            ...(targetDeviceId ? { removed_device_id: targetDeviceId } : {}),
+            commit_data: result.commitBytes,
+            eviction_id: evictionId
+          })
+
+    if (pushed) {
+      recentMlsEvictionRequests.set(evictionId, Date.now())
+    }
+    return pushed
+  })().finally(() => {
+    inFlightMlsEvictionRequests.delete(evictionId)
+  })
+
+  inFlightMlsEvictionRequests.set(evictionId, run)
+  return await run
 }
 
 async function processPendingMlsResyncRequests(
@@ -2179,6 +2298,19 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           last_known_epoch: (msg.last_known_epoch as number | null | undefined) ?? null,
           reason: (msg.reason as string | null | undefined) ?? null
         }).catch(() => {})
+      } else if (event === 'mls_eviction_request') {
+        void processMlsEvictionRequest(channelId, topic, {
+          id: msg.id as string | undefined,
+          eviction_id: msg.eviction_id as string | undefined,
+          target_user_id: (msg.target_user_id as string | undefined) ?? undefined,
+          target_username: (msg.target_username as string | undefined) ?? undefined,
+          target_device_id: (msg.target_device_id as string | undefined) ?? undefined,
+          removed_user_id: (msg.removed_user_id as string | undefined) ?? undefined,
+          removed_device_id: (msg.removed_device_id as string | undefined) ?? undefined,
+          user_id: (msg.user_id as string | undefined) ?? undefined,
+          device_id: (msg.device_id as string | undefined) ?? undefined,
+          request_id: (msg.request_id as string | undefined) ?? undefined
+        }).catch(() => {})
       } else if (event === 'mls_commit') {
         const senderId = msg.sender_id as string
         const senderDeviceId =
@@ -2233,14 +2365,20 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         }
       } else if (event === 'mls_remove') {
         const userId = useAuthStore.getState().user?.id
-        const removedId = msg.removed_user_id as string
+        const removedId =
+          typeof msg.removed_user_id === 'string' ? msg.removed_user_id : null
+        const removedDeviceId =
+          typeof msg.removed_device_id === 'string' ? msg.removed_device_id : null
         const senderId = msg.sender_id as string
         const senderDeviceId =
           typeof msg.sender_device_id === 'string' ? msg.sender_device_id : null
         const eventSeq = typeof msg.seq === 'number' ? msg.seq : null
         const localDeviceId = getLocalDeviceIdentity().id
         const isLocalSender = senderId === userId && senderDeviceId === localDeviceId
-        if (removedId === userId && !isLocalSender) {
+        if (
+          isLocalRemovalTarget(removedId, removedDeviceId, userId, localDeviceId) &&
+          !isLocalSender
+        ) {
           void useCryptoStore
             .getState()
             .resetGroup(channelId)
@@ -3002,6 +3140,19 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           last_known_epoch: (msg.last_known_epoch as number | null | undefined) ?? null,
           reason: (msg.reason as string | null | undefined) ?? null
         }).catch(() => {})
+      } else if (event === 'mls_eviction_request') {
+        void processMlsEvictionRequest(conversationId, topic, {
+          id: msg.id as string | undefined,
+          eviction_id: msg.eviction_id as string | undefined,
+          target_user_id: (msg.target_user_id as string | undefined) ?? undefined,
+          target_username: (msg.target_username as string | undefined) ?? undefined,
+          target_device_id: (msg.target_device_id as string | undefined) ?? undefined,
+          removed_user_id: (msg.removed_user_id as string | undefined) ?? undefined,
+          removed_device_id: (msg.removed_device_id as string | undefined) ?? undefined,
+          user_id: (msg.user_id as string | undefined) ?? undefined,
+          device_id: (msg.device_id as string | undefined) ?? undefined,
+          request_id: (msg.request_id as string | undefined) ?? undefined
+        }).catch(() => {})
       } else if (event === 'mls_commit') {
         const senderId = msg.sender_id as string
         const senderDeviceId =
@@ -3055,7 +3206,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         }
       } else if (event === 'mls_remove') {
         const userId = useAuthStore.getState().user?.id
-        const removedId = msg.removed_user_id as string
+        const removedId =
+          typeof msg.removed_user_id === 'string' ? msg.removed_user_id : null
+        const removedDeviceId =
+          typeof msg.removed_device_id === 'string' ? msg.removed_device_id : null
         const senderId = msg.sender_id as string
         const senderDeviceId =
           typeof msg.sender_device_id === 'string' ? msg.sender_device_id : null
@@ -3064,7 +3218,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         const isLocalSender = senderId === userId && senderDeviceId === localDeviceId
         // Only reset if someone ELSE removed us. If we sent the remove
         // ourselves (e.g., resync), our state is already updated.
-        if (removedId === userId && !isLocalSender) {
+        if (
+          isLocalRemovalTarget(removedId, removedDeviceId, userId, localDeviceId) &&
+          !isLocalSender
+        ) {
           void useCryptoStore
             .getState()
             .resetGroup(conversationId)

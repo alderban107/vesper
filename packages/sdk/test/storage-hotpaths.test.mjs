@@ -1,0 +1,117 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+
+import {
+  MemoryStorage,
+  cacheMessage,
+  configureCryptoStorage,
+  consumeKeyPackage,
+  initStorage,
+  loadCachedMessages,
+  loadKeyPackageByRef,
+  loadKeyPackages,
+  resetStorage,
+  saveKeyPackages
+} from '../dist/storage/index.js'
+
+function configureMemoryStorage() {
+  const storage = new MemoryStorage()
+  configureCryptoStorage(storage)
+  initStorage(`storage-hotpaths-${Date.now()}-${Math.random()}`)
+  return storage
+}
+
+test('key package refs support direct lookup without scanning the whole set', async (t) => {
+  configureMemoryStorage()
+  t.after(() => {
+    resetStorage()
+  })
+
+  await saveKeyPackages([
+    {
+      publicData: Uint8Array.from([1, 2, 3]),
+      privateData: Uint8Array.from([4, 5, 6])
+    },
+    {
+      publicData: Uint8Array.from([7, 8, 9]),
+      privateData: Uint8Array.from([10, 11, 12])
+    }
+  ])
+
+  const packages = await loadKeyPackages()
+  assert.equal(packages.length, 2)
+  assert.ok(packages[1].keyPackageRef)
+
+  const directMatch = await loadKeyPackageByRef(packages[1].keyPackageRef)
+  assert.equal(directMatch?.id, packages[1].id)
+  assert.deepEqual([...directMatch.publicData], [7, 8, 9])
+
+  await consumeKeyPackage(packages[1].id)
+  const missing = await loadKeyPackageByRef(packages[1].keyPackageRef)
+  assert.equal(missing, null)
+})
+
+test('cached messages stay scoped even when channel and dm ids collide', async (t) => {
+  const storage = configureMemoryStorage()
+  t.after(() => {
+    resetStorage()
+  })
+
+  await cacheMessage({
+    id: 'channel-message',
+    roomSeq: 2,
+    channelId: 'scope-1',
+    conversationId: null,
+    serverId: 'server-1',
+    senderId: 'sender-1',
+    senderUsername: 'alpha',
+    parentMessageId: null,
+    ciphertext: null,
+    decryptedContent: 'channel body',
+    mlsEpoch: null,
+    insertedAt: '2026-03-18T01:00:00.000Z'
+  })
+
+  await cacheMessage({
+    id: 'dm-message',
+    roomSeq: 1,
+    channelId: null,
+    conversationId: 'scope-1',
+    serverId: null,
+    senderId: 'sender-2',
+    senderUsername: 'beta',
+    parentMessageId: null,
+    ciphertext: null,
+    decryptedContent: 'dm body',
+    mlsEpoch: null,
+    insertedAt: '2026-03-18T00:59:00.000Z'
+  })
+
+  await cacheMessage({
+    id: 'other-scope-message',
+    roomSeq: 3,
+    channelId: 'scope-2',
+    conversationId: null,
+    serverId: 'server-2',
+    senderId: 'sender-3',
+    senderUsername: 'gamma',
+    parentMessageId: null,
+    ciphertext: null,
+    decryptedContent: 'other body',
+    mlsEpoch: null,
+    insertedAt: '2026-03-18T01:01:00.000Z'
+  })
+
+  const scopedMessages = await loadCachedMessages('scope-1')
+  assert.deepEqual(
+    scopedMessages.map((message) => message.id),
+    ['dm-message', 'channel-message']
+  )
+
+  await storage.clearMessageCache('scope-1')
+  const clearedMessages = await loadCachedMessages('scope-1')
+  assert.deepEqual(clearedMessages, [])
+
+  const untouchedMessages = await loadCachedMessages('scope-2')
+  assert.deepEqual(untouchedMessages.map((message) => message.id), ['other-scope-message'])
+})

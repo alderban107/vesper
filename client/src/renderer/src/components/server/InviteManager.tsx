@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Copy, Trash2, Plus, Clock, Users } from 'lucide-react'
-import { apiFetch } from '../../api/client'
+import { apiFetch } from '@vesper/sdk/transport'
 import { useServerStore } from '../../stores/serverStore'
 
 interface Invite {

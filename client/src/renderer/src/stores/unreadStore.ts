@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { apiFetch } from '../api/client'
+import { apiFetch } from '@vesper/sdk/transport'
 
 interface UnreadState {
   channelUnreads: Record<string, number>

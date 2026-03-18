@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Bell, Globe, Mic, Moon, Palette, RefreshCw, Shield, SlidersHorizontal, Sparkles, Sun, UserRound, Volume2 } from 'lucide-react'
-import { getLocalDeviceIdentity } from '../../auth/deviceIdentity'
+import { getLocalDeviceIdentity } from '@vesper/sdk/auth'
 import { usePresenceStore } from '../../stores/presenceStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useSettingsStore } from '../../stores/settingsStore'

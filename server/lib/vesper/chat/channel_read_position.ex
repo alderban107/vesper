@@ -9,12 +9,13 @@ defmodule Vesper.Chat.ChannelReadPosition do
     belongs_to :user, Vesper.Accounts.User
     belongs_to :channel, Vesper.Servers.Channel
     belongs_to :last_read_message, Vesper.Chat.Message
+    field :last_read_seq, :integer
     field :last_read_at, :utc_datetime_usec
   end
 
   def changeset(position, attrs) do
     position
-    |> cast(attrs, [:user_id, :channel_id, :last_read_message_id, :last_read_at])
+    |> cast(attrs, [:user_id, :channel_id, :last_read_message_id, :last_read_seq, :last_read_at])
     |> validate_required([:user_id, :channel_id])
     |> unique_constraint([:user_id, :channel_id])
   end

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Shield, Loader2, Trash2 } from 'lucide-react'
-import { apiFetch } from '../../api/client'
+import { apiFetch } from '@vesper/sdk/transport'
 import { useServerStore } from '../../stores/serverStore'
 import { useUIStore } from '../../stores/uiStore'
 

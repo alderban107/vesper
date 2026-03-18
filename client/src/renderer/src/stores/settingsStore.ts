@@ -1,8 +1,20 @@
 import { create } from 'zustand'
 
-const DEFAULT_SERVER_URL =
-  (window as any).VESPER_API_URL || 'http://localhost:4000'
 const LINK_PREVIEWS_STORAGE_KEY = 'linkPreviews'
+
+function normalizeServerUrl(url: string): string {
+  return url.trim().replace(/\/+$/, '')
+}
+
+function getInitialServerUrl(): string {
+  const stored = localStorage.getItem('serverUrl')
+  if (stored) {
+    return normalizeServerUrl(stored)
+  }
+
+  const configured = (window as { VESPER_API_URL?: string }).VESPER_API_URL
+  return typeof configured === 'string' ? normalizeServerUrl(configured) : ''
+}
 
 interface SettingsState {
   serverUrl: string
@@ -12,12 +24,16 @@ interface SettingsState {
 }
 
 export const useSettingsStore = create<SettingsState>((set) => ({
-  serverUrl: localStorage.getItem('serverUrl') || DEFAULT_SERVER_URL,
+  serverUrl: getInitialServerUrl(),
   linkPreviewsEnabled: localStorage.getItem(LINK_PREVIEWS_STORAGE_KEY) === 'enabled',
 
   setServerUrl: (url) => {
-    const normalized = url.replace(/\/+$/, '') // strip trailing slashes
-    localStorage.setItem('serverUrl', normalized)
+    const normalized = normalizeServerUrl(url)
+    if (normalized) {
+      localStorage.setItem('serverUrl', normalized)
+    } else {
+      localStorage.removeItem('serverUrl')
+    }
     set({ serverUrl: normalized })
   },
 
