@@ -1,5 +1,6 @@
 import { createPortal } from 'react-dom'
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -94,84 +95,84 @@ export default function FloatingSurface({
     return minWidth
   }, [anchorRect, anchorRef, minWidth, point])
 
-  useLayoutEffect(() => {
-    const updatePosition = (): void => {
-      const anchor = resolveAnchorRect(anchorRef, anchorRect, point)
-      const surface = surfaceRef.current
-      if (!anchor || !surface) {
-        setStyle(null)
-        return
-      }
-
-      const rect = surface.getBoundingClientRect()
-      const width = maxWidth ? Math.min(rect.width || 0, maxWidth) || maxWidth : rect.width
-      const height = rect.height
-      const viewportWidth = window.innerWidth
-      const viewportHeight = window.innerHeight
-
-      let left = anchor.left
-      let top = anchor.bottom + offset
-
-      switch (placement) {
-        case 'top-start':
-          left = anchor.left
-          top = anchor.top - height - offset
-          break
-        case 'top-end':
-          left = anchor.right - width
-          top = anchor.top - height - offset
-          break
-        case 'bottom-end':
-          left = anchor.right - width
-          top = anchor.bottom + offset
-          break
-        case 'right-start':
-          left = anchor.right + offset
-          top = anchor.top
-          break
-        case 'right-center':
-          left = anchor.right + offset
-          top = anchor.top + (anchor.height - height) / 2
-          break
-        case 'left-start':
-          left = anchor.left - width - offset
-          top = anchor.top
-          break
-        case 'left-center':
-          left = anchor.left - width - offset
-          top = anchor.top + (anchor.height - height) / 2
-          break
-        case 'bottom-start':
-        default:
-          left = anchor.left
-          top = anchor.bottom + offset
-          break
-      }
-
-      if (placement.startsWith('top') && top < VIEWPORT_PADDING) {
-        top = Math.min(anchor.bottom + offset, viewportHeight - height - VIEWPORT_PADDING)
-      }
-
-      if (placement.startsWith('bottom') && top + height > viewportHeight - VIEWPORT_PADDING) {
-        const fallbackTop = anchor.top - height - offset
-        if (fallbackTop >= VIEWPORT_PADDING) {
-          top = fallbackTop
-        }
-      }
-
-      left = clamp(left, VIEWPORT_PADDING, Math.max(VIEWPORT_PADDING, viewportWidth - width - VIEWPORT_PADDING))
-      top = clamp(top, VIEWPORT_PADDING, Math.max(VIEWPORT_PADDING, viewportHeight - height - VIEWPORT_PADDING))
-
-      setStyle({
-        position: 'fixed',
-        left,
-        top,
-        minWidth: resolvedMinWidth,
-        maxWidth,
-        zIndex
-      })
+  const updatePosition = useCallback((): void => {
+    const anchor = resolveAnchorRect(anchorRef, anchorRect, point)
+    const surface = surfaceRef.current
+    if (!anchor || !surface) {
+      setStyle(null)
+      return
     }
 
+    const rect = surface.getBoundingClientRect()
+    const width = maxWidth ? Math.min(rect.width || 0, maxWidth) || maxWidth : rect.width
+    const height = rect.height
+    const viewportWidth = window.innerWidth
+    const viewportHeight = window.innerHeight
+
+    let left = anchor.left
+    let top = anchor.bottom + offset
+
+    switch (placement) {
+      case 'top-start':
+        left = anchor.left
+        top = anchor.top - height - offset
+        break
+      case 'top-end':
+        left = anchor.right - width
+        top = anchor.top - height - offset
+        break
+      case 'bottom-end':
+        left = anchor.right - width
+        top = anchor.bottom + offset
+        break
+      case 'right-start':
+        left = anchor.right + offset
+        top = anchor.top
+        break
+      case 'right-center':
+        left = anchor.right + offset
+        top = anchor.top + (anchor.height - height) / 2
+        break
+      case 'left-start':
+        left = anchor.left - width - offset
+        top = anchor.top
+        break
+      case 'left-center':
+        left = anchor.left - width - offset
+        top = anchor.top + (anchor.height - height) / 2
+        break
+      case 'bottom-start':
+      default:
+        left = anchor.left
+        top = anchor.bottom + offset
+        break
+    }
+
+    if (placement.startsWith('top') && top < VIEWPORT_PADDING) {
+      top = Math.min(anchor.bottom + offset, viewportHeight - height - VIEWPORT_PADDING)
+    }
+
+    if (placement.startsWith('bottom') && top + height > viewportHeight - VIEWPORT_PADDING) {
+      const fallbackTop = anchor.top - height - offset
+      if (fallbackTop >= VIEWPORT_PADDING) {
+        top = fallbackTop
+      }
+    }
+
+    left = clamp(left, VIEWPORT_PADDING, Math.max(VIEWPORT_PADDING, viewportWidth - width - VIEWPORT_PADDING))
+    top = clamp(top, VIEWPORT_PADDING, Math.max(VIEWPORT_PADDING, viewportHeight - height - VIEWPORT_PADDING))
+
+    setStyle({
+      position: 'fixed',
+      left,
+      top,
+      minWidth: resolvedMinWidth,
+      maxWidth,
+      zIndex
+    })
+  }, [anchorRect, anchorRef, maxWidth, offset, placement, point, resolvedMinWidth, zIndex])
+
+  useLayoutEffect(() => {
     updatePosition()
     window.addEventListener('resize', updatePosition)
     window.addEventListener('scroll', updatePosition, true)
@@ -180,7 +181,23 @@ export default function FloatingSurface({
       window.removeEventListener('resize', updatePosition)
       window.removeEventListener('scroll', updatePosition, true)
     }
-  }, [anchorRect, anchorRef, maxWidth, offset, placement, point, resolvedMinWidth])
+  }, [updatePosition])
+
+  useEffect(() => {
+    const surface = surfaceRef.current
+    if (!surface || typeof ResizeObserver === 'undefined') {
+      return
+    }
+
+    const observer = new ResizeObserver(() => {
+      updatePosition()
+    })
+    observer.observe(surface)
+
+    return () => {
+      observer.disconnect()
+    }
+  }, [updatePosition])
 
   useEffect(() => {
     if (!onClose) {

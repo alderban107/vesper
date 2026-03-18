@@ -154,7 +154,11 @@ function OverlayVideoTile({
   )
 }
 
-export default function CallOverlay(): React.JSX.Element | null {
+export default function CallOverlay({
+  mobileDocked = false
+}: {
+  mobileDocked?: boolean
+} = {}): React.JSX.Element | null {
   const voiceState = useVoiceStore((s) => s.state)
   const roomId = useVoiceStore((s) => s.roomId)
   const roomType = useVoiceStore((s) => s.roomType)
@@ -363,7 +367,14 @@ export default function CallOverlay(): React.JSX.Element | null {
           : 'vesper-call-overlay-quality-unknown'
 
   return (
-    <div data-testid="call-overlay" className="vesper-call-overlay vesper-call-overlay-discord">
+    <div
+      data-testid="call-overlay"
+      className={
+        mobileDocked
+          ? 'vesper-call-overlay vesper-call-overlay-discord vesper-call-overlay-docked'
+          : 'vesper-call-overlay vesper-call-overlay-discord'
+      }
+    >
       <div className="vesper-call-overlay-shell glass-card">
         <div className="vesper-call-overlay-header">
           <div className="vesper-call-overlay-header-main">

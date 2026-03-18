@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Crown, MessageCircle, Copy, MoonStar, Shield, UserMinus, AtSign } from 'lucide-react'
+import { Crown, MessageCircle, Copy, MoonStar, Shield, UserMinus, AtSign, X } from 'lucide-react'
 import { useServerStore, type Member } from '../../stores/serverStore'
 import { usePresenceStore, type PresenceStatus } from '../../stores/presenceStore'
 import { useAuthStore } from '../../stores/authStore'
@@ -149,6 +149,7 @@ export default function MemberListPanel(): React.JSX.Element {
   const activeServer = useServerStore((s) => s.servers.find((srv) => srv.id === s.activeServerId))
   const memberListWidth = useUIStore((s) => s.memberListWidth)
   const setMemberListWidth = useUIStore((s) => s.setMemberListWidth)
+  const setMemberListVisible = useUIStore((s) => s.setMemberListVisible)
   const kickMember = useServerStore((s) => s.kickMember)
   const createConversation = useDmStore((s) => s.createConversation)
   const setActiveServer = useServerStore((s) => s.setActiveServer)
@@ -157,6 +158,7 @@ export default function MemberListPanel(): React.JSX.Element {
 
   const memberMenu = useContextMenu<Member>()
   const groups = getMemberGroups(members, statuses, myId, activeServer?.owner_id)
+  const isMobileLayout = typeof window !== 'undefined' && window.innerWidth <= 768
 
   const openConversation = async (member: Member): Promise<void> => {
     await createConversation([member.user_id])
@@ -217,16 +219,23 @@ export default function MemberListPanel(): React.JSX.Element {
     ]
   }
 
-  return (
-    <PanelShell
-      side="left"
-      width={memberListWidth}
-      onWidthChange={setMemberListWidth}
-    >
-      <div data-testid="member-list" className="vesper-member-list-panel">
+  const panelContent = (
+    <div data-testid="member-list" className="vesper-member-list-panel" onClick={(event) => event.stopPropagation()}>
         <div className="vesper-member-list-header">
-          <span className="vesper-member-list-title">Members</span>
-          <span className="vesper-member-list-count">{members.length}</span>
+          <div className="flex items-center gap-2">
+            <span className="vesper-member-list-title">Members</span>
+            <span className="vesper-member-list-count">{members.length}</span>
+          </div>
+          {isMobileLayout && (
+            <button
+              type="button"
+              onClick={() => setMemberListVisible(false)}
+              className="vesper-member-list-close"
+              aria-label="Close member list"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
         </div>
 
         <div className="vesper-member-list-scroller">
@@ -297,6 +306,23 @@ export default function MemberListPanel(): React.JSX.Element {
           />
         )}
       </div>
+  )
+
+  if (isMobileLayout) {
+    return (
+      <div className="vesper-member-list-mobile-overlay" onClick={() => setMemberListVisible(false)}>
+        {panelContent}
+      </div>
+    )
+  }
+
+  return (
+    <PanelShell
+      side="left"
+      width={memberListWidth}
+      onWidthChange={setMemberListWidth}
+    >
+      {panelContent}
     </PanelShell>
   )
 }

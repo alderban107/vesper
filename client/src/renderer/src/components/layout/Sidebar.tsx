@@ -1,14 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   ArrowRightToLine,
-  Check,
   ChevronDown,
   Copy,
   Pencil,
   Folder,
   GripVertical,
   Hash,
-  Link,
   LogOut,
   MessageCircle,
   Plus,
@@ -205,6 +203,9 @@ export default function Sidebar(): React.JSX.Element {
   const activeServer = servers.find((server) => server.id === activeServerId)
   const isMobileLayout = typeof window !== 'undefined' && window.innerWidth <= 768
   const isServerOwner = activeServer?.owner_id === user?.id
+  const members = useServerStore((s) => s.members)
+  const myMembership = members.find((member) => member.user_id === user?.id)
+  const canManageServer = Boolean(isServerOwner || myMembership?.role === 'admin')
   const sections = buildSections(activeServer?.channels ?? [])
   const sortedCategories = sortChannels(
     (activeServer?.channels ?? []).filter((channel) => channel.type === 'category')
@@ -286,6 +287,22 @@ export default function Sidebar(): React.JSX.Element {
     setServerHeaderOpen(false)
     if (isMobileLayout) {
       closeMobileNav()
+    }
+  }
+
+  const copyInviteCode = async (serverId: string): Promise<void> => {
+    try {
+      const res = await apiFetch(`/api/v1/servers/${serverId}/invite-code`)
+      if (!res.ok) {
+        return
+      }
+
+      const data = await res.json()
+      if (typeof data.invite_code === 'string' && data.invite_code.length > 0) {
+        await navigator.clipboard.writeText(data.invite_code)
+      }
+    } catch {
+      // ignore
     }
   }
 
@@ -405,30 +422,30 @@ export default function Sidebar(): React.JSX.Element {
 
   return (
     <div data-testid="sidebar" className="flex h-full">
-      <div className="w-[72px] bg-bg-base flex flex-col items-center py-3 gap-2">
+      <div className="vesper-server-rail">
         <div className="relative">
           {currentView === 'dm' && (
-            <div className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1 w-1 h-8 bg-accent rounded-r-full" />
+            <div className="absolute left-0.5 top-1/2 -translate-y-1/2 w-1 h-8 bg-accent rounded-r-full z-10" />
           )}
           <button
             onClick={handleDmClick}
             title="Direct Messages"
-            className={`relative w-12 h-12 flex items-center justify-center transition-all duration-200 ${
+            className={`vesper-rail-button ${
               currentView === 'dm'
-                ? 'bg-accent text-bg-base rounded-2xl'
-                : 'bg-bg-secondary text-text-muted hover:bg-accent/20 hover:text-accent rounded-[24px] hover:rounded-2xl'
+                ? 'vesper-rail-button-active'
+                : 'vesper-rail-button-neutral'
             }`}
           >
             <MessageCircle className="w-5 h-5" />
             {totalDmUnread > 0 && (
-              <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center px-1">
+              <span className="vesper-rail-badge">
                 {totalDmUnread > 99 ? '99+' : totalDmUnread}
               </span>
             )}
           </button>
         </div>
 
-        <div className="w-8 h-0.5 bg-border rounded-full" />
+        <div className="vesper-rail-separator" />
 
         {servers.map((server) => {
           const isActive = server.id === activeServerId && currentView === 'server'
@@ -440,22 +457,22 @@ export default function Sidebar(): React.JSX.Element {
           return (
             <div key={server.id} className="relative" data-testid="server-row">
               {isActive && (
-                <div className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1 w-1 h-8 bg-accent rounded-r-full" />
+                <div className="absolute left-0.5 top-1/2 -translate-y-1/2 w-1 h-8 bg-accent rounded-r-full z-10" />
               )}
               <button
                 data-testid="server-row"
                 onClick={() => handleServerClick(server.id)}
                 onContextMenu={(event) => serverMenu.onContextMenu(event, server.id)}
                 title={server.name}
-                className={`relative w-12 h-12 flex items-center justify-center text-sm font-semibold transition-all duration-200 ${
+                className={`vesper-rail-button ${
                   isActive
-                    ? 'bg-accent text-bg-base rounded-2xl'
-                    : 'bg-bg-secondary text-text-muted hover:bg-accent/20 hover:text-accent rounded-[24px] hover:rounded-2xl'
+                    ? 'vesper-rail-button-active'
+                    : 'vesper-rail-button-neutral'
                 }`}
               >
-                {server.name.slice(0, 2).toUpperCase()}
+                <span className="vesper-rail-button-copy">{server.name.slice(0, 2).toUpperCase()}</span>
                 {serverUnread > 0 && !isActive && (
-                  <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center px-1">
+                  <span className="vesper-rail-badge">
                     {serverUnread > 99 ? '99+' : serverUnread}
                   </span>
                 )}
@@ -469,14 +486,14 @@ export default function Sidebar(): React.JSX.Element {
         <button
           onClick={openCreateServerModal}
           title="Create Server"
-          className="w-12 h-12 rounded-[24px] bg-bg-secondary text-success hover:bg-success/10 hover:text-success flex items-center justify-center transition-all duration-200 hover:rounded-2xl"
+          className="vesper-rail-button vesper-rail-button-ghost"
         >
           <Plus className="w-5 h-5" />
         </button>
         <button
           onClick={openJoinServerModal}
           title="Join Server"
-          className="w-12 h-12 rounded-[24px] bg-bg-secondary text-text-muted hover:bg-bg-tertiary hover:text-text-primary flex items-center justify-center transition-all duration-200 hover:rounded-2xl"
+          className="vesper-rail-button vesper-rail-button-neutral"
         >
           <ArrowRightToLine className="w-5 h-5" />
         </button>
@@ -502,12 +519,10 @@ export default function Sidebar(): React.JSX.Element {
                     aria-haspopup="menu"
                   >
                     <div className="vesper-channel-sidebar-header-copy">
-                      <span className="vesper-channel-sidebar-kicker">Server</span>
                       <h2 className="vesper-channel-sidebar-title">{activeServer.name}</h2>
                     </div>
                     <ChevronDown className={`vesper-guild-header-chevron${serverHeaderOpen ? ' vesper-guild-header-chevron-open' : ''}`} />
                   </button>
-                  <InviteCodeButton serverId={activeServer.id} />
 
                   {serverHeaderOpen && (
                     <div className="vesper-guild-header-menu" role="menu" aria-label={`${activeServer.name} actions`}>
@@ -523,8 +538,20 @@ export default function Sidebar(): React.JSX.Element {
                         <Copy className="w-4 h-4" />
                         <span>Copy Server ID</span>
                       </button>
-                      {isServerOwner && (
+                      {canManageServer && (
                         <>
+                          <button
+                            type="button"
+                            className="vesper-guild-header-menu-item"
+                            onClick={() => {
+                              void copyInviteCode(activeServer.id)
+                              setServerHeaderOpen(false)
+                            }}
+                            role="menuitem"
+                          >
+                            <Copy className="w-4 h-4" />
+                            <span>Copy Invite Code</span>
+                          </button>
                           <button
                             type="button"
                             className="vesper-guild-header-menu-item"
@@ -852,137 +879,6 @@ export default function Sidebar(): React.JSX.Element {
           onClose={channelMenu.closeMenu}
         />
       )}
-    </div>
-  )
-}
-
-function InviteCodeButton({ serverId }: { serverId: string }): React.JSX.Element | null {
-  const [code, setCode] = useState<string | null>(null)
-  const [visible, setVisible] = useState(false)
-  const [copied, setCopied] = useState(false)
-  const [loading, setLoading] = useState(false)
-  const [denied, setDenied] = useState(false)
-  const [countdown, setCountdown] = useState(0)
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
-
-  const AUTO_HIDE_SECONDS = 15
-
-  const clearTimer = (): void => {
-    if (timerRef.current) {
-      clearInterval(timerRef.current)
-      timerRef.current = null
-    }
-  }
-
-  const hideCode = (): void => {
-    setVisible(false)
-    setCode(null)
-    setCountdown(0)
-    clearTimer()
-  }
-
-  const startTimer = (): void => {
-    clearTimer()
-    setCountdown(AUTO_HIDE_SECONDS)
-    timerRef.current = setInterval(() => {
-      setCountdown((prev) => {
-        if (prev <= 1) {
-          hideCode()
-          return 0
-        }
-        return prev - 1
-      })
-    }, 1000)
-  }
-
-  const fetchAndShow = async (): Promise<void> => {
-    if (visible) {
-      hideCode()
-      return
-    }
-
-    setLoading(true)
-    try {
-      const res = await apiFetch(`/api/v1/servers/${serverId}/invite-code`)
-      if (res.ok) {
-        const data = await res.json()
-        setCode(data.invite_code)
-        setVisible(true)
-        startTimer()
-      } else if (res.status === 403) {
-        setDenied(true)
-      }
-    } catch {
-      // ignore
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const copyCode = (): void => {
-    if (!code) {
-      return
-    }
-
-    navigator.clipboard.writeText(code)
-    setCopied(true)
-    window.setTimeout(() => setCopied(false), 2000)
-    // Reset timer on copy since the user is interacting
-    startTimer()
-  }
-
-  useEffect(() => {
-    setCode(null)
-    setVisible(false)
-    setCopied(false)
-    setDenied(false)
-    clearTimer()
-  }, [serverId])
-
-  useEffect(() => {
-    return () => clearTimer()
-  }, [])
-
-  if (denied) {
-    return null
-  }
-
-  return (
-    <div className="flex items-center gap-1 shrink-0">
-      {visible && code ? (
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={copyCode}
-            title={copied ? 'Copied!' : 'Copy invite code'}
-            className="flex items-center gap-1 bg-bg-base/50 px-1.5 py-0.5 rounded border border-border hover:border-accent/50 transition-colors max-w-[100px]"
-          >
-            <code className="text-accent-text text-[10px] font-mono truncate">{code}</code>
-            {copied ? (
-              <Check className="w-3 h-3 text-emerald-400 shrink-0" />
-            ) : (
-              <Copy className="w-3 h-3 text-text-faint shrink-0" />
-            )}
-          </button>
-          <button
-            type="button"
-            onClick={hideCode}
-            title="Dismiss"
-            className="text-text-faintest hover:text-text-muted transition-colors text-[10px] tabular-nums w-5 text-center"
-          >
-            {countdown}s
-          </button>
-        </div>
-      ) : null}
-      <button
-        type="button"
-        onClick={fetchAndShow}
-        disabled={loading}
-        title={visible ? 'Hide invite code' : 'Show invite code'}
-        className="text-text-faint hover:text-text-primary transition-colors p-1 rounded hover:bg-bg-tertiary/50 disabled:opacity-40"
-      >
-        <Link className="w-3.5 h-3.5" />
-      </button>
     </div>
   )
 }

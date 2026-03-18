@@ -1,6 +1,8 @@
 import { useState } from 'react'
+import rehypeKatex from 'rehype-katex'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
 import type { Components } from 'react-markdown'
 import { useServerStore } from '../../stores/serverStore'
 import { useDmStore } from '../../stores/dmStore'
@@ -8,6 +10,8 @@ import { useAuthStore } from '../../stores/authStore'
 import { usePresenceStore } from '../../stores/presenceStore'
 import { findCustomEmoji, parseCustomEmojiToken, type CustomEmoji } from '../../utils/emoji'
 import ProfilePopout from '../profile/ProfilePopout'
+import { extractMarkdownCodeBlock } from './markdownCodeBlock'
+import MermaidBlock from './MermaidBlock'
 import EmojiGlyph from './message/EmojiGlyph'
 
 interface Props {
@@ -160,29 +164,45 @@ export default function MarkdownContent({ content }: Props): React.JSX.Element {
   })()
   const components: Components = {
     p: ({ children }) => (
-      <p className="text-text-secondary text-sm break-words whitespace-pre-wrap">{children}</p>
+      <p className="vesper-markdown-paragraph">{children}</p>
     ),
-    strong: ({ children }) => <strong className="font-semibold text-text-primary">{children}</strong>,
-    em: ({ children }) => <em className="italic">{children}</em>,
-    del: ({ children }) => <del className="line-through text-text-muted">{children}</del>,
-    code: ({ className, children }) => {
-      if (className) {
+    strong: ({ children }) => <strong className="vesper-markdown-strong">{children}</strong>,
+    em: ({ children }) => <em className="vesper-markdown-emphasis">{children}</em>,
+    del: ({ children }) => <del className="vesper-markdown-strike">{children}</del>,
+    code: ({ inline, className, children }) => {
+      if (!inline) {
         return <code className={className}>{children}</code>
       }
 
       return (
-        <code className="bg-bg-tertiary rounded px-1.5 py-0.5 font-mono text-xs text-accent-text">
+        <code className="vesper-markdown-inline-code">
           {children}
         </code>
       )
     },
-    pre: ({ children }) => (
-      <pre className="bg-bg-base rounded-lg border border-border overflow-x-auto p-3 my-1 text-sm">
-        {children}
-      </pre>
-    ),
+    pre: ({ children }) => {
+      const codeBlock = extractMarkdownCodeBlock(children)
+      if (!codeBlock) {
+        return <pre className="vesper-markdown-pre">{children}</pre>
+      }
+
+      if (codeBlock.language?.toLowerCase() === 'mermaid') {
+        return <MermaidBlock code={codeBlock.code} />
+      }
+
+      return (
+        <div className="vesper-markdown-code-container">
+          {codeBlock.language && (
+            <span className="vesper-markdown-code-lang">{codeBlock.language}</span>
+          )}
+          <pre className="vesper-markdown-pre">
+            <code className="vesper-markdown-code-block">{codeBlock.code}</code>
+          </pre>
+        </div>
+      )
+    },
     blockquote: ({ children }) => (
-      <blockquote className="border-l-2 border-accent/50 pl-3 text-text-muted italic my-1">
+      <blockquote className="vesper-markdown-blockquote">
         {children}
       </blockquote>
     ),
@@ -255,16 +275,22 @@ export default function MarkdownContent({ content }: Props): React.JSX.Element {
 
       return <img src={src || ''} alt={alt || ''} />
     },
-    ul: ({ children }) => <ul className="list-disc list-inside my-0.5">{children}</ul>,
-    ol: ({ children }) => <ol className="list-decimal list-inside my-0.5">{children}</ol>,
-    li: ({ children }) => <li className="text-text-secondary text-sm">{children}</li>
+    ul: ({ children }) => <ul className="vesper-markdown-list">{children}</ul>,
+    ol: ({ children }) => <ol className="vesper-markdown-list vesper-markdown-list-ordered">{children}</ol>,
+    li: ({ children }) => <li className="vesper-markdown-list-item">{children}</li>
   }
 
   return (
     <>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
-        {processed}
-      </ReactMarkdown>
+      <div className="vesper-markdown">
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm, remarkMath]}
+          rehypePlugins={[rehypeKatex]}
+          components={components}
+        >
+          {processed}
+        </ReactMarkdown>
+      </div>
       {mentionedUser && mentionAnchor && (
         <ProfilePopout
           user={mentionedUser}

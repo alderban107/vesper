@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { Clock3, CornerDownLeft, Hash, Search, Volume2, X } from 'lucide-react'
 import { useMessageStore, type RecallSearchResult } from '../../stores/messageStore'
@@ -591,21 +592,10 @@ export default function SearchBar(): React.JSX.Element {
     return 'Encrypted history'
   }
 
-  return (
-    <>
-      <button
-        data-testid="search-button"
-        type="button"
-        onClick={() => setIsOpen(true)}
-        className="text-text-faint hover:text-text-primary p-1.5 rounded hover:bg-bg-tertiary/50 transition-colors"
-        title="Quick Switcher"
-      >
-        <Search className="w-4 h-4" />
-      </button>
-
-      {isOpen && (
+  const paletteOverlay = isOpen && typeof document !== 'undefined'
+    ? createPortal(
         <div
-          className="fixed inset-0 z-[90] bg-black/45 backdrop-blur-sm px-4 py-10"
+          className="vesper-search-palette-overlay"
           onClick={closePalette}
         >
           <div
@@ -768,8 +758,24 @@ export default function SearchBar(): React.JSX.Element {
               </span>
             </div>
           </div>
-        </div>
-      )}
+        </div>,
+        document.body
+      )
+    : null
+
+  return (
+    <>
+      <button
+        data-testid="search-button"
+        type="button"
+        onClick={() => setIsOpen(true)}
+        className="text-text-faint hover:text-text-primary p-1.5 rounded hover:bg-bg-tertiary/50 transition-colors"
+        title="Quick Switcher"
+      >
+        <Search className="w-4 h-4" />
+      </button>
+
+      {paletteOverlay}
     </>
   )
 }

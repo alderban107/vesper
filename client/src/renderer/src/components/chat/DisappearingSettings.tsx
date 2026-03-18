@@ -13,6 +13,9 @@ const TTL_OPTIONS = [
 interface Props {
   currentTtl: number | null
   topic: string
+  buttonClassName?: string
+  showLabel?: boolean
+  label?: string
 }
 
 function formatTtl(ttl: number | null): string {
@@ -21,7 +24,13 @@ function formatTtl(ttl: number | null): string {
   return opt?.label ?? `${ttl}s`
 }
 
-export default function DisappearingSettings({ currentTtl, topic }: Props): React.JSX.Element {
+export default function DisappearingSettings({
+  currentTtl,
+  topic,
+  buttonClassName,
+  showLabel = false,
+  label = 'Auto-delete'
+}: Props): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
@@ -45,11 +54,20 @@ export default function DisappearingSettings({ currentTtl, topic }: Props): Reac
       <button
         data-testid="disappearing-settings"
         onClick={() => setOpen(!open)}
-        className="text-text-muted hover:text-text-primary transition-colors flex items-center gap-1 p-1.5 rounded hover:bg-bg-tertiary/50"
+        className={
+          buttonClassName
+            ? `${buttonClassName} text-text-muted hover:text-text-primary`
+            : 'text-text-muted hover:text-text-primary transition-colors flex items-center gap-1 p-1.5 rounded hover:bg-bg-tertiary/50'
+        }
         title="Disappearing messages"
       >
         <Timer className="w-4 h-4" />
-        {currentTtl && <span className="text-xs">{formatTtl(currentTtl)}</span>}
+        {showLabel && <span>{label}</span>}
+        {currentTtl && (
+          <span className={showLabel ? 'vesper-disappearing-settings-value' : 'text-xs'}>
+            {formatTtl(currentTtl)}
+          </span>
+        )}
       </button>
 
       {open && (

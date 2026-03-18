@@ -1,6 +1,7 @@
-import { forwardRef, type HTMLAttributes, useEffect, useMemo, useRef, useState } from 'react'
+import { forwardRef, type HTMLAttributes, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { useMessageStore, type Message } from '../../../stores/messageStore'
+import { useAuthStore } from '../../../stores/authStore'
 import { useServerStore } from '../../../stores/serverStore'
 import { useDmStore } from '../../../stores/dmStore'
 import MessageItem from '../MessageItem'
@@ -53,6 +54,7 @@ export default function MessageFeed({
   onMarkRead,
   isThreadView = false
 }: Props): React.JSX.Element {
+  const currentUserId = useAuthStore((s) => s.user?.id ?? null)
   const activeChannelId = useServerStore((s) => s.activeChannelId)
   const selectedConversationId = useDmStore((s) => s.selectedConversationId)
   const pendingJumpTarget = useMessageStore((s) => s.pendingJumpTarget)
@@ -67,6 +69,7 @@ export default function MessageFeed({
   const highlightTimeoutRef = useRef<number | null>(null)
   const previousMessagesRef = useRef<Message[]>(messages)
   const previousIdentityRef = useRef<string | null>(null)
+  const isAtBottomRef = useRef(true)
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null)
   const [firstItemIndex, setFirstItemIndex] = useState(PREPEND_BASE_INDEX)
 
@@ -110,13 +113,14 @@ export default function MessageFeed({
     }
   }, [])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (previousIdentityRef.current !== feedIdentity) {
       previousIdentityRef.current = feedIdentity
       previousMessagesRef.current = messages
       setFirstItemIndex(PREPEND_BASE_INDEX - messages.length)
       setHighlightedMessageId(null)
       jumpAttemptsRef.current = 0
+      isAtBottomRef.current = true
       return
     }
 
@@ -128,6 +132,22 @@ export default function MessageFeed({
     const nextFirstPreviousIndex = nextFirstId
       ? previousMessages.findIndex((message) => message.id === nextFirstId)
       : -1
+    const appendedCount =
+      previousMessages.length > 0 &&
+      nextFirstId === previousFirstId &&
+      messages.length > previousMessages.length
+        ? messages.length - previousMessages.length
+        : 0
+    const appendedMessages = appendedCount > 0 ? messages.slice(-appendedCount) : []
+    const shouldStickToBottom =
+      appendedMessages.length > 0 &&
+      (isAtBottomRef.current ||
+        appendedMessages.some(
+          (message) =>
+            String(message.id).startsWith('local:') ||
+            message.delivery_state === 'sending' ||
+            message.sender_id === currentUserId
+        ))
 
     if (
       previousMessages.length > 0 &&
@@ -149,8 +169,19 @@ export default function MessageFeed({
       }
     }
 
+    if (shouldStickToBottom) {
+      const bottomIndex = firstItemIndex + messages.length - 1
+      requestAnimationFrame(() => {
+        virtuosoRef.current?.scrollToIndex({
+          index: bottomIndex,
+          align: 'end',
+          behavior: 'auto'
+        })
+      })
+    }
+
     previousMessagesRef.current = messages
-  }, [feedIdentity, messages])
+  }, [currentUserId, feedIdentity, firstItemIndex, messages])
 
   useEffect(() => {
     if (pendingForCurrentTarget || !lastMessageId) {
@@ -209,13 +240,18 @@ export default function MessageFeed({
     const now = new Date()
     const yesterday = new Date(now)
     yesterday.setDate(now.getDate() - 1)
+    const fullDateLabel = date.toLocaleDateString([], {
+      month: 'long',
+      day: 'numeric',
+      year: 'numeric'
+    })
 
     if (date.toDateString() === now.toDateString()) {
-      return 'Today'
+      return `Today - ${fullDateLabel}`
     }
 
     if (date.toDateString() === yesterday.toDateString()) {
-      return 'Yesterday'
+      return `Yesterday - ${fullDateLabel}`
     }
 
     return date.toLocaleDateString([], {
@@ -260,9 +296,14 @@ export default function MessageFeed({
         ref={virtuosoRef}
         key={feedIdentity}
         data={messages}
+        alignToBottom
         firstItemIndex={firstItemIndex}
         initialTopMostItemIndex={Math.max(firstItemIndex + messages.length - 1, firstItemIndex)}
         followOutput={followOutput}
+        atBottomThreshold={96}
+        atBottomStateChange={(atBottom) => {
+          isAtBottomRef.current = atBottom
+        }}
         startReached={() => {
           if (hasMore) {
             onLoadMoreRef.current()
@@ -274,6 +315,7 @@ export default function MessageFeed({
           }
         }}
         increaseViewportBy={{ top: 600, bottom: 800 }}
+        minOverscanItemCount={{ top: 6, bottom: 10 }}
         computeItemKey={(_index, message) => message.id}
         className="vesper-message-feed-root"
         components={{

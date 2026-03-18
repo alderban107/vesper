@@ -65,8 +65,21 @@ const historySyncRetryTimers = new Map<string, number>()
 const warmDmScopeTopics = new Set<string>()
 const recentNotifiedMessageIds = new Map<string, number>()
 const recentMutationSeqsByScope = new Map<string, number[]>()
+const inFlightPendingResyncFetches = new Map<string, Promise<void>>()
+const inFlightPendingHistoryRequestFetches = new Map<string, Promise<void>>()
+const inFlightPendingHistoryBundleFetches = new Map<string, Promise<void>>()
+const lastPendingResyncFetchAt = new Map<string, number>()
+const lastPendingHistoryRequestFetchAt = new Map<string, number>()
+const lastPendingHistoryBundleFetchAt = new Map<string, number>()
+const recentHandledJoinRequests = new Map<string, number>()
+const inFlightJoinRequests = new Set<string>()
+const inFlightScopeMessageFetches = new Map<string, Promise<void>>()
+const inFlightOlderScopeMessageFetches = new Set<string>()
+const inFlightNewerScopeMessageFetches = new Set<string>()
 const RECENT_NOTIFICATION_TTL_MS = 30_000
 const RECENT_MUTATION_SEQ_WINDOW = 256
+const PENDING_MLS_FETCH_COOLDOWN_MS = 1_000
+const RECENT_JOIN_REQUEST_TTL_MS = 3_000
 const MESSAGE_PAGE_SIZE = 50
 const MAX_RESIDENT_MESSAGES_PER_SCOPE = 400
 const MAX_WARM_SCOPES = 3
@@ -206,6 +219,37 @@ function mergeResidentTailMessages(
   return [...fetchedMessages, ...carriedMessages]
 }
 
+function patchResidentMessagesById(
+  residentMessages: Message[],
+  resolvedMessages: Message[]
+): Message[] {
+  if (residentMessages.length === 0 || resolvedMessages.length === 0) {
+    return residentMessages
+  }
+
+  const resolvedById = new Map(resolvedMessages.map((message) => [message.id, message]))
+  let changed = false
+
+  const patched = residentMessages.map((message) => {
+    const resolved = resolvedById.get(message.id)
+    if (!resolved) {
+      return message
+    }
+
+    changed = true
+    return {
+      ...message,
+      ...resolved,
+      sender: resolved.sender ?? message.sender,
+      attachments: resolved.attachments ?? message.attachments,
+      reactions: resolved.reactions ?? message.reactions,
+      delivery_state: resolved.delivery_state ?? message.delivery_state
+    }
+  })
+
+  return changed ? patched : residentMessages
+}
+
 function requestHistorySync(
   scopeId: string,
   topic: string,
@@ -343,6 +387,72 @@ function syncWarmDmScopeSubscriptions(state: MessageState): void {
 
 function encodeMessageCursor(message: { id: string; inserted_at: string }): string {
   return `${message.inserted_at}|${message.id}`
+}
+
+interface CachedMessageRecord {
+  id: string
+  channelId: string | null
+  conversationId: string | null
+  serverId: string | null
+  senderId: string | null
+  senderUsername: string | null
+  parentMessageId: string | null
+  ciphertext: Uint8Array | null
+  decryptedContent: string | null
+  mlsEpoch: number | null
+  insertedAt: string
+}
+
+function buildMessageFromCache(record: CachedMessageRecord): Message {
+  const hasPlaintext =
+    typeof record.decryptedContent === 'string' && record.decryptedContent.length > 0
+  const content = hasPlaintext
+    ? record.decryptedContent!
+    : record.ciphertext
+      ? (canUseEncryptedFeatures()
+          ? ENCRYPTED_MESSAGE_SYNCING_PLACEHOLDER
+          : ENCRYPTED_MESSAGE_APPROVAL_PLACEHOLDER)
+      : ''
+
+  return {
+    id: record.id,
+    room_seq: null,
+    content,
+    channel_id: record.channelId,
+    conversation_id: record.conversationId,
+    server_id: record.serverId,
+    sender_id: record.senderId,
+    sender: record.senderId && record.senderUsername
+      ? {
+          id: record.senderId,
+          username: record.senderUsername,
+          display_name: null,
+          avatar_url: null
+        }
+      : null,
+    inserted_at: record.insertedAt,
+    expires_at: null,
+    parent_message_id: record.parentMessageId,
+    attachments: [],
+    reactions: [],
+    encrypted: Boolean(record.ciphertext),
+    decryptionFailed: Boolean(record.ciphertext) && !hasPlaintext,
+    delivery_state: 'sent'
+  }
+}
+
+async function loadScopeMessagesFromCache(scopeId: string): Promise<Message[]> {
+  const cachedMessages = await loadCachedMessages(scopeId).catch(() => [])
+  if (cachedMessages.length === 0) {
+    return []
+  }
+
+  return cachedMessages
+    .map(buildMessageFromCache)
+    .sort(
+      (left, right) =>
+        new Date(left.inserted_at).getTime() - new Date(right.inserted_at).getTime()
+    )
 }
 
 export interface MessageSender {
@@ -768,70 +878,130 @@ async function processMlsResyncRequest(
 async function processPendingMlsResyncRequests(
   targetId: string,
   scopeId: string,
-  topic: string
+  topic: string,
+  force = false
 ): Promise<void> {
-  const requests = await fetchPendingResyncRequests(scopeId)
-  for (const request of requests) {
-    await processMlsResyncRequest(targetId, topic, request)
+  const existing = inFlightPendingResyncFetches.get(scopeId)
+  if (existing) {
+    await existing
+    return
   }
+
+  const lastFetchAt = lastPendingResyncFetchAt.get(scopeId) ?? 0
+  if (!force && Date.now() - lastFetchAt < PENDING_MLS_FETCH_COOLDOWN_MS) {
+    return
+  }
+
+  const run = (async () => {
+    lastPendingResyncFetchAt.set(scopeId, Date.now())
+    const requests = await fetchPendingResyncRequests(scopeId)
+    for (const request of requests) {
+      await processMlsResyncRequest(targetId, topic, request)
+    }
+  })().finally(() => {
+    inFlightPendingResyncFetches.delete(scopeId)
+  })
+
+  inFlightPendingResyncFetches.set(scopeId, run)
+  await run
 }
 
 async function processPendingHistoryRequests(
   targetId: string,
   scopeId: string,
-  topic: string
+  topic: string,
+  force = false
 ): Promise<void> {
-  const requests = await fetchPendingHistoryRequests(scopeId)
-  const localDeviceId = getLocalDeviceIdentity().id
-
-  for (const request of requests) {
-    if (
-      !request.requester_client_id ||
-      (request.requester_id === useAuthStore.getState().user?.id &&
-        request.requester_client_id === localDeviceId)
-    ) {
-      continue
-    }
-    await sendHistoryBundle(
-      targetId,
-      topic,
-      request.requester_id,
-      request.requester_client_id,
-      request.id
-    )
+  const existing = inFlightPendingHistoryRequestFetches.get(scopeId)
+  if (existing) {
+    await existing
+    return
   }
+
+  const lastFetchAt = lastPendingHistoryRequestFetchAt.get(scopeId) ?? 0
+  if (!force && Date.now() - lastFetchAt < PENDING_MLS_FETCH_COOLDOWN_MS) {
+    return
+  }
+
+  const run = (async () => {
+    lastPendingHistoryRequestFetchAt.set(scopeId, Date.now())
+    const requests = await fetchPendingHistoryRequests(scopeId)
+    const localDeviceId = getLocalDeviceIdentity().id
+
+    for (const request of requests) {
+      if (
+        !request.requester_client_id ||
+        (request.requester_id === useAuthStore.getState().user?.id &&
+          request.requester_client_id === localDeviceId)
+      ) {
+        continue
+      }
+      await sendHistoryBundle(
+        targetId,
+        topic,
+        request.requester_id,
+        request.requester_client_id,
+        request.id
+      )
+    }
+  })().finally(() => {
+    inFlightPendingHistoryRequestFetches.delete(scopeId)
+  })
+
+  inFlightPendingHistoryRequestFetches.set(scopeId, run)
+  await run
 }
 
 async function processPendingHistoryBundles(
   targetId: string,
   scopeId: string,
-  set: (fn: (s: MessageState) => Partial<MessageState>) => void
+  set: (fn: (s: MessageState) => Partial<MessageState>) => void,
+  force = false
 ): Promise<void> {
-  const bundles = await fetchPendingHistoryBundles(scopeId)
-  const currentUserId = useAuthStore.getState().user?.id
-  const localDeviceId = getLocalDeviceIdentity().id
-
-  for (const bundle of bundles) {
-    if (
-      bundle.recipient_id !== currentUserId ||
-      bundle.recipient_client_id !== localDeviceId
-    ) {
-      continue
-    }
-
-    await processHistoryBundle(
-      targetId,
-      {
-        id: bundle.id,
-        ciphertext: bundle.ciphertext,
-        mls_epoch: bundle.mls_epoch,
-        recipient_id: bundle.recipient_id,
-        recipient_device_id: bundle.recipient_client_id,
-        sender_id: bundle.sender_id
-      },
-      set
-    )
+  const existing = inFlightPendingHistoryBundleFetches.get(scopeId)
+  if (existing) {
+    await existing
+    return
   }
+
+  const lastFetchAt = lastPendingHistoryBundleFetchAt.get(scopeId) ?? 0
+  if (!force && Date.now() - lastFetchAt < PENDING_MLS_FETCH_COOLDOWN_MS) {
+    return
+  }
+
+  const run = (async () => {
+    lastPendingHistoryBundleFetchAt.set(scopeId, Date.now())
+    const bundles = await fetchPendingHistoryBundles(scopeId)
+    const currentUserId = useAuthStore.getState().user?.id
+    const localDeviceId = getLocalDeviceIdentity().id
+
+    for (const bundle of bundles) {
+      if (
+        bundle.recipient_id !== currentUserId ||
+        bundle.recipient_client_id !== localDeviceId
+      ) {
+        continue
+      }
+
+      await processHistoryBundle(
+        targetId,
+        {
+          id: bundle.id,
+          ciphertext: bundle.ciphertext,
+          mls_epoch: bundle.mls_epoch,
+          recipient_id: bundle.recipient_id,
+          recipient_device_id: bundle.recipient_client_id,
+          sender_id: bundle.sender_id
+        },
+        set
+      )
+    }
+  })().finally(() => {
+    inFlightPendingHistoryBundleFetches.delete(scopeId)
+  })
+
+  inFlightPendingHistoryBundleFetches.set(scopeId, run)
+  await run
 }
 
 export async function processPendingHistoryScope(
@@ -845,8 +1015,8 @@ export async function processPendingHistoryScope(
   }
 
   try {
-    await processPendingHistoryRequests(scopeId, scopeId, topic)
-    await processPendingHistoryBundles(scopeId, scopeId, useMessageStore.setState)
+    await processPendingHistoryRequests(scopeId, scopeId, topic, true)
+    await processPendingHistoryBundles(scopeId, scopeId, useMessageStore.setState, true)
   } finally {
     if (!hadChannel) {
       leaveChannel(topic)
@@ -2161,6 +2331,13 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   },
 
   fetchMessages: async (channelId) => {
+    const existingFetch = inFlightScopeMessageFetches.get(`channel:${channelId}`)
+    if (existingFetch) {
+      await existingFetch
+      return
+    }
+
+    const run = (async () => {
     const refreshToken = beginScopeMessageRefresh(channelId)
     set((s) => ({
       loadingByScope: {
@@ -2177,6 +2354,36 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       }
     }))
     try {
+      const residentMessages = get().messagesByChannel[channelId] ?? []
+      const hasResidentMessages = residentMessages.length > 0
+
+      if (!hasResidentMessages) {
+        const cachedMessages = await loadScopeMessagesFromCache(channelId)
+        if (cachedMessages.length > 0 && isCurrentScopeMessageRefresh(channelId, refreshToken)) {
+          const cachedWindow = applyMessageWindow(cachedMessages, 'replace')
+          scheduleExpiryTimers(channelId, cachedWindow.messages)
+          set((s) => ({
+            messagesByChannel: {
+              ...s.messagesByChannel,
+              [channelId]: cachedWindow.messages
+            },
+            latestRoomSeqByScope: updateLatestRoomSeqByScope(
+              s.latestRoomSeqByScope,
+              channelId,
+              getMaxRoomSeq(cachedWindow.messages)
+            ),
+            hasMore: {
+              ...s.hasMore,
+              [channelId]: s.hasMore[channelId] ?? true
+            },
+            hasNewer: {
+              ...s.hasNewer,
+              [channelId]: s.hasNewer[channelId] ?? false
+            }
+          }))
+        }
+      }
+
       if (canUseEncryptedFeatures()) {
         await ensureEncryptedScopeMembership({
           kind: 'channel',
@@ -2338,13 +2545,24 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         }
       }))
     }
+    })().finally(() => {
+      inFlightScopeMessageFetches.delete(`channel:${channelId}`)
+    })
+
+    inFlightScopeMessageFetches.set(`channel:${channelId}`, run)
+    await run
   },
 
   fetchOlderMessages: async (channelId) => {
+    if (inFlightOlderScopeMessageFetches.has(`channel:${channelId}`)) {
+      return
+    }
+
     const existing = get().messagesByChannel[channelId] || []
     if (existing.length === 0) return
 
     const oldest = existing[0]
+    inFlightOlderScopeMessageFetches.add(`channel:${channelId}`)
     try {
       const res = await apiFetch(
         `/api/v1/channels/${channelId}/messages?limit=${MESSAGE_PAGE_SIZE}&before=${encodeURIComponent(encodeMessageCursor(oldest))}`
@@ -2352,12 +2570,18 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       if (res.ok) {
         const data = await res.json()
         const rawMessages = (data.messages as Record<string, unknown>[]).reverse()
-        const olderMessages = await processIncomingMessageBatch(channelId, rawMessages, 'background')
-        const mergedWindow = applyMessageWindow([...olderMessages, ...existing], 'prepend')
+        const provisionalOlderMessages = rawMessages.map((message) => buildProvisionalMessage(message))
+        const mergedWindow = applyMessageWindow(
+          [...provisionalOlderMessages, ...(get().messagesByChannel[channelId] ?? existing)],
+          'prepend'
+        )
         set((s) => ({
           messagesByChannel: {
             ...s.messagesByChannel,
-            [channelId]: mergedWindow.messages
+            [channelId]: applyMessageWindow(
+              [...provisionalOlderMessages, ...(s.messagesByChannel[channelId] ?? existing)],
+              'prepend'
+            ).messages
           },
           latestRoomSeqByScope: updateLatestRoomSeqByScope(
             s.latestRoomSeqByScope,
@@ -2374,6 +2598,27 @@ export const useMessageStore = create<MessageState>((set, get) => ({
               (s.hasNewer[channelId] ?? false) || mergedWindow.trimmedNewer
           }
         }))
+        const olderMessages = await processIncomingMessageBatch(channelId, rawMessages, 'background')
+        set((s) => {
+          const residentMessages = s.messagesByChannel[channelId] ?? []
+          const patchedMessages = patchResidentMessagesById(residentMessages, olderMessages)
+
+          if (patchedMessages === residentMessages) {
+            return {}
+          }
+
+          return {
+            messagesByChannel: {
+              ...s.messagesByChannel,
+              [channelId]: patchedMessages
+            },
+            latestRoomSeqByScope: updateLatestRoomSeqByScope(
+              s.latestRoomSeqByScope,
+              channelId,
+              getMaxRoomSeq(patchedMessages)
+            )
+          }
+        })
         maybeRecoverEncryptedScope(
           {
             kind: 'channel',
@@ -2388,10 +2633,16 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       }
     } catch {
       // ignore
+    } finally {
+      inFlightOlderScopeMessageFetches.delete(`channel:${channelId}`)
     }
   },
 
   fetchNewerMessages: async (channelId) => {
+    if (inFlightNewerScopeMessageFetches.has(`channel:${channelId}`)) {
+      return
+    }
+
     const existing = get().messagesByChannel[channelId] || []
     if (existing.length === 0) {
       await get().fetchMessages(channelId)
@@ -2399,6 +2650,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     }
 
     const newest = existing[existing.length - 1]
+    inFlightNewerScopeMessageFetches.add(`channel:${channelId}`)
     try {
       const res = await apiFetch(
         `/api/v1/channels/${channelId}/messages?limit=${MESSAGE_PAGE_SIZE}&after=${encodeURIComponent(encodeMessageCursor(newest))}`
@@ -2406,13 +2658,19 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       if (res.ok) {
         const data = await res.json()
         const rawMessages = (data.messages as Record<string, unknown>[]).reverse()
-        const newerMessages = await processIncomingMessageBatch(channelId, rawMessages, 'normal')
-        const mergedWindow = applyMessageWindow([...existing, ...newerMessages], 'append')
+        const provisionalNewerMessages = rawMessages.map((message) => buildProvisionalMessage(message))
+        const mergedWindow = applyMessageWindow(
+          [...(get().messagesByChannel[channelId] ?? existing), ...provisionalNewerMessages],
+          'append'
+        )
         scheduleExpiryTimers(channelId, mergedWindow.messages)
         set((s) => ({
           messagesByChannel: {
             ...s.messagesByChannel,
-            [channelId]: mergedWindow.messages
+            [channelId]: applyMessageWindow(
+              [...(s.messagesByChannel[channelId] ?? existing), ...provisionalNewerMessages],
+              'append'
+            ).messages
           },
           latestRoomSeqByScope: updateLatestRoomSeqByScope(
             s.latestRoomSeqByScope,
@@ -2428,9 +2686,33 @@ export const useMessageStore = create<MessageState>((set, get) => ({
             [channelId]: data.messages.length === MESSAGE_PAGE_SIZE
           }
         }))
+        const newerMessages = await processIncomingMessageBatch(channelId, rawMessages, 'normal')
+        set((s) => {
+          const residentMessages = s.messagesByChannel[channelId] ?? []
+          const patchedMessages = patchResidentMessagesById(residentMessages, newerMessages)
+
+          if (patchedMessages === residentMessages) {
+            return {}
+          }
+
+          scheduleExpiryTimers(channelId, patchedMessages)
+          return {
+            messagesByChannel: {
+              ...s.messagesByChannel,
+              [channelId]: patchedMessages
+            },
+            latestRoomSeqByScope: updateLatestRoomSeqByScope(
+              s.latestRoomSeqByScope,
+              channelId,
+              getMaxRoomSeq(patchedMessages)
+            )
+          }
+        })
       }
     } catch {
       // ignore
+    } finally {
+      inFlightNewerScopeMessageFetches.delete(`channel:${channelId}`)
     }
   },
 
@@ -2982,6 +3264,13 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   },
 
   fetchDmMessages: async (conversationId) => {
+    const existingFetch = inFlightScopeMessageFetches.get(`dm:${conversationId}`)
+    if (existingFetch) {
+      await existingFetch
+      return
+    }
+
+    const run = (async () => {
     const refreshToken = beginScopeMessageRefresh(conversationId)
     set((s) => ({
       loadingByScope: {
@@ -2998,6 +3287,39 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       }
     }))
     try {
+      const residentMessages = get().messagesByChannel[conversationId] ?? []
+      const hasResidentMessages = residentMessages.length > 0
+
+      if (!hasResidentMessages) {
+        const cachedMessages = await loadScopeMessagesFromCache(conversationId)
+        if (
+          cachedMessages.length > 0 &&
+          isCurrentScopeMessageRefresh(conversationId, refreshToken)
+        ) {
+          const cachedWindow = applyMessageWindow(cachedMessages, 'replace')
+          scheduleExpiryTimers(conversationId, cachedWindow.messages)
+          set((s) => ({
+            messagesByChannel: {
+              ...s.messagesByChannel,
+              [conversationId]: cachedWindow.messages
+            },
+            latestRoomSeqByScope: updateLatestRoomSeqByScope(
+              s.latestRoomSeqByScope,
+              conversationId,
+              getMaxRoomSeq(cachedWindow.messages)
+            ),
+            hasMore: {
+              ...s.hasMore,
+              [conversationId]: s.hasMore[conversationId] ?? true
+            },
+            hasNewer: {
+              ...s.hasNewer,
+              [conversationId]: s.hasNewer[conversationId] ?? false
+            }
+          }))
+        }
+      }
+
       if (canUseEncryptedFeatures()) {
         await ensureEncryptedScopeMembership({
           kind: 'dm',
@@ -3162,13 +3484,24 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         }
       }))
     }
+    })().finally(() => {
+      inFlightScopeMessageFetches.delete(`dm:${conversationId}`)
+    })
+
+    inFlightScopeMessageFetches.set(`dm:${conversationId}`, run)
+    await run
   },
 
   fetchOlderDmMessages: async (conversationId) => {
+    if (inFlightOlderScopeMessageFetches.has(`dm:${conversationId}`)) {
+      return
+    }
+
     const existing = get().messagesByChannel[conversationId] || []
     if (existing.length === 0) return
 
     const oldest = existing[0]
+    inFlightOlderScopeMessageFetches.add(`dm:${conversationId}`)
     try {
       const res = await apiFetch(
         `/api/v1/conversations/${conversationId}/messages?limit=${MESSAGE_PAGE_SIZE}&before=${encodeURIComponent(encodeMessageCursor(oldest))}`
@@ -3176,16 +3509,18 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       if (res.ok) {
         const data = await res.json()
         const rawMessages = (data.messages as Record<string, unknown>[]).reverse()
-        const olderMessages = await processIncomingMessageBatch(
-          conversationId,
-          rawMessages,
-          'background'
+        const provisionalOlderMessages = rawMessages.map((message) => buildProvisionalMessage(message))
+        const mergedWindow = applyMessageWindow(
+          [...provisionalOlderMessages, ...(get().messagesByChannel[conversationId] ?? existing)],
+          'prepend'
         )
-        const mergedWindow = applyMessageWindow([...olderMessages, ...existing], 'prepend')
         set((s) => ({
           messagesByChannel: {
             ...s.messagesByChannel,
-            [conversationId]: mergedWindow.messages
+            [conversationId]: applyMessageWindow(
+              [...provisionalOlderMessages, ...(s.messagesByChannel[conversationId] ?? existing)],
+              'prepend'
+            ).messages
           },
           latestRoomSeqByScope: updateLatestRoomSeqByScope(
             s.latestRoomSeqByScope,
@@ -3202,6 +3537,31 @@ export const useMessageStore = create<MessageState>((set, get) => ({
               (s.hasNewer[conversationId] ?? false) || mergedWindow.trimmedNewer
           }
         }))
+        const olderMessages = await processIncomingMessageBatch(
+          conversationId,
+          rawMessages,
+          'background'
+        )
+        set((s) => {
+          const residentMessages = s.messagesByChannel[conversationId] ?? []
+          const patchedMessages = patchResidentMessagesById(residentMessages, olderMessages)
+
+          if (patchedMessages === residentMessages) {
+            return {}
+          }
+
+          return {
+            messagesByChannel: {
+              ...s.messagesByChannel,
+              [conversationId]: patchedMessages
+            },
+            latestRoomSeqByScope: updateLatestRoomSeqByScope(
+              s.latestRoomSeqByScope,
+              conversationId,
+              getMaxRoomSeq(patchedMessages)
+            )
+          }
+        })
         maybeRecoverEncryptedScope(
           {
             kind: 'dm',
@@ -3216,10 +3576,16 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       }
     } catch {
       // ignore
+    } finally {
+      inFlightOlderScopeMessageFetches.delete(`dm:${conversationId}`)
     }
   },
 
   fetchNewerDmMessages: async (conversationId) => {
+    if (inFlightNewerScopeMessageFetches.has(`dm:${conversationId}`)) {
+      return
+    }
+
     const existing = get().messagesByChannel[conversationId] || []
     if (existing.length === 0) {
       await get().fetchDmMessages(conversationId)
@@ -3227,6 +3593,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     }
 
     const newest = existing[existing.length - 1]
+    inFlightNewerScopeMessageFetches.add(`dm:${conversationId}`)
     try {
       const res = await apiFetch(
         `/api/v1/conversations/${conversationId}/messages?limit=${MESSAGE_PAGE_SIZE}&after=${encodeURIComponent(encodeMessageCursor(newest))}`
@@ -3234,13 +3601,19 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       if (res.ok) {
         const data = await res.json()
         const rawMessages = (data.messages as Record<string, unknown>[]).reverse()
-        const newerMessages = await processIncomingMessageBatch(conversationId, rawMessages, 'normal')
-        const mergedWindow = applyMessageWindow([...existing, ...newerMessages], 'append')
+        const provisionalNewerMessages = rawMessages.map((message) => buildProvisionalMessage(message))
+        const mergedWindow = applyMessageWindow(
+          [...(get().messagesByChannel[conversationId] ?? existing), ...provisionalNewerMessages],
+          'append'
+        )
         scheduleExpiryTimers(conversationId, mergedWindow.messages)
         set((s) => ({
           messagesByChannel: {
             ...s.messagesByChannel,
-            [conversationId]: mergedWindow.messages
+            [conversationId]: applyMessageWindow(
+              [...(s.messagesByChannel[conversationId] ?? existing), ...provisionalNewerMessages],
+              'append'
+            ).messages
           },
           latestRoomSeqByScope: updateLatestRoomSeqByScope(
             s.latestRoomSeqByScope,
@@ -3257,9 +3630,33 @@ export const useMessageStore = create<MessageState>((set, get) => ({
             [conversationId]: data.messages.length === MESSAGE_PAGE_SIZE
           }
         }))
+        const newerMessages = await processIncomingMessageBatch(conversationId, rawMessages, 'normal')
+        set((s) => {
+          const residentMessages = s.messagesByChannel[conversationId] ?? []
+          const patchedMessages = patchResidentMessagesById(residentMessages, newerMessages)
+
+          if (patchedMessages === residentMessages) {
+            return {}
+          }
+
+          scheduleExpiryTimers(conversationId, patchedMessages)
+          return {
+            messagesByChannel: {
+              ...s.messagesByChannel,
+              [conversationId]: patchedMessages
+            },
+            latestRoomSeqByScope: updateLatestRoomSeqByScope(
+              s.latestRoomSeqByScope,
+              conversationId,
+              getMaxRoomSeq(patchedMessages)
+            )
+          }
+        })
       }
     } catch {
       // ignore
+    } finally {
+      inFlightNewerScopeMessageFetches.delete(`dm:${conversationId}`)
     }
   },
 
@@ -4884,31 +5281,45 @@ async function handleMlsJoinRequest(
   const userId = msg.user_id as string
   const username = (msg.username as string | undefined) ?? undefined
   const deviceId = (msg.device_id as string | undefined) ?? undefined
+  const joinRequestKey = `${targetId}:${userId}:${deviceId ?? 'unknown'}`
   rememberMlsJoinDeviceId(topic, userId, deviceId)
   const crypto = useCryptoStore.getState()
 
   if (!crypto.hasGroup(targetId)) return
+  if (inFlightJoinRequests.has(joinRequestKey)) return
+
+  const lastHandledAt = recentHandledJoinRequests.get(joinRequestKey) ?? 0
+  if (Date.now() - lastHandledAt < RECENT_JOIN_REQUEST_TTL_MS) {
+    return
+  }
 
   // Serialize join requests per group to avoid concurrent epoch commits
   const prev = mlsJoinLocks.get(targetId) ?? Promise.resolve()
   const current = prev.then(async () => {
-    const crypto = useCryptoStore.getState()
-    const result = await crypto.handleJoinRequest(targetId, userId, username, deviceId)
+    inFlightJoinRequests.add(joinRequestKey)
 
-    if (result) {
-      pushToChannel(topic, 'mls_commit', { commit_data: result.commitBytes })
-      if (result.welcomeBytes) {
-        pushToChannel(topic, 'mls_welcome', {
-          recipient_id: userId,
-          recipient_device_id: deviceId,
-          welcome_data: result.welcomeBytes,
-          key_package_ref: result.keyPackageRef
-        })
+    try {
+      const crypto = useCryptoStore.getState()
+      const result = await crypto.handleJoinRequest(targetId, userId, username, deviceId)
 
-        if (deviceId) {
-          void sendHistoryBundle(targetId, topic, userId, deviceId).catch(() => {})
+      if (result) {
+        pushToChannel(topic, 'mls_commit', { commit_data: result.commitBytes })
+        if (result.welcomeBytes) {
+          pushToChannel(topic, 'mls_welcome', {
+            recipient_id: userId,
+            recipient_device_id: deviceId,
+            welcome_data: result.welcomeBytes,
+            key_package_ref: result.keyPackageRef
+          })
+
+          if (deviceId) {
+            void sendHistoryBundle(targetId, topic, userId, deviceId).catch(() => {})
+          }
         }
       }
+    } finally {
+      inFlightJoinRequests.delete(joinRequestKey)
+      recentHandledJoinRequests.set(joinRequestKey, Date.now())
     }
   }).catch(() => {})
   mlsJoinLocks.set(targetId, current)

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Download, Maximize2, Minimize2, RotateCcw, X, ZoomIn, ZoomOut } from 'lucide-react'
 
 interface Props {
@@ -60,7 +61,11 @@ export default function ImageLightbox({
     }
   }, [onClose])
 
-  return (
+  if (typeof document === 'undefined') {
+    return <></>
+  }
+
+  return createPortal(
     <div
       className="vesper-lightbox"
       onMouseDown={(event) => {
@@ -156,6 +161,7 @@ export default function ImageLightbox({
           style={zoomMode === 'fit' ? undefined : { transform: `scale(${zoom})` }}
         />
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }

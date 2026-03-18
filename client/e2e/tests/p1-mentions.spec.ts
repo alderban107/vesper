@@ -34,8 +34,23 @@ test.describe('P1: Mentions', () => {
     await bob.context.close()
   })
 
+  test('Composer rich preview renders markdown while input keeps raw text', async () => {
+    const input = alice.page.locator('[data-testid="message-input"]')
+    const preview = alice.page.locator('[data-testid="composer-rich-preview"]')
+
+    await input.fill('**bold** _italic_ ~~gone~~')
+
+    await expect(preview.locator('strong')).toHaveText('bold')
+    await expect(preview.locator('em')).toHaveText('italic')
+    await expect(preview.locator('del')).toHaveText('gone')
+    await expect(input).toHaveValue('**bold** _italic_ ~~gone~~')
+
+    await input.fill('')
+  })
+
   test('Member mention autocomplete inserts correct syntax (R-MSG-4)', async () => {
     const input = alice.page.locator('[data-testid="message-input"]')
+    const preview = alice.page.locator('[data-testid="composer-rich-preview"]')
     await input.fill('')
     const suffix = 'mention-sync-rmsg4'
 
@@ -54,6 +69,8 @@ test.describe('P1: Mentions', () => {
         await bobOption.click()
       }
     }
+
+    await expect(preview).toContainText('@bob')
 
     // Ensure the message includes stable plain text we can assert on both clients.
     await input.type(` ${suffix}`)

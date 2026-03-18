@@ -16,7 +16,7 @@ interface UseVisibilityResult {
  *
  * - `rootMargin` of 600px so we detect elements before they scroll into view,
  *    allowing pre-load to start early.
- * - A second observer with 2000px margin detects when an element has scrolled
+ * - A second observer with 6000px margin detects when an element has scrolled
  *   far out of view, signalling the caller to revoke blob URLs and free memory.
  */
 export function useVisibility(): UseVisibilityResult {
@@ -57,14 +57,14 @@ export function useVisibility(): UseVisibilityResult {
     )
     preloadObserverRef.current.observe(node)
 
-    // Eviction observer: 2000px margin — when element leaves this larger zone,
+    // Eviction observer: 6000px margin — when element leaves this much larger zone,
     // it's far away enough to evict from memory
     evictionObserverRef.current = new IntersectionObserver(
       ([entry]) => {
-        // isFarAway = element is outside the 2000px margin
+        // isFarAway = element is outside the 6000px margin
         setIsFarAway(!entry.isIntersecting)
       },
-      { rootMargin: '2000px' }
+      { rootMargin: '6000px' }
     )
     evictionObserverRef.current.observe(node)
   }, [])

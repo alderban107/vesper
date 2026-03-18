@@ -1,9 +1,9 @@
 import { useState, useRef, useEffect } from 'react'
-import { Copy, MessageSquare, Pencil, Pin, Reply, Trash2 } from 'lucide-react'
+import { Copy, Lock, MessageSquare, Pencil, Pin, Reply, Trash2 } from 'lucide-react'
 import type { Message } from '../../stores/messageStore'
 import { useMessageStore, parseMessageContent } from '../../stores/messageStore'
 import { useAuthStore } from '../../stores/authStore'
-import { usePresenceStore, type PresenceStatus } from '../../stores/presenceStore'
+import { usePresenceStore } from '../../stores/presenceStore'
 import { useServerStore } from '../../stores/serverStore'
 import { useDmStore } from '../../stores/dmStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -19,13 +19,6 @@ import MessageReplyPreview from './message/MessageReplyPreview'
 import MessageReactionBar from './message/MessageReactionBar'
 import ProfilePopout from '../profile/ProfilePopout'
 import { formatCustomEmojiToken, type CustomEmoji } from '../../utils/emoji'
-
-const STATUS_COLORS: Record<PresenceStatus, string> = {
-  online: 'bg-emerald-500',
-  idle: 'bg-amber-500',
-  dnd: 'bg-red-500',
-  offline: 'bg-gray-500'
-}
 
 interface Props {
   message: Message
@@ -46,6 +39,13 @@ function formatTime(isoString: string): string {
   return date.toLocaleDateString([], {
     month: 'short',
     day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
+
+function formatInlineTime(isoString: string): string {
+  return new Date(isoString).toLocaleTimeString([], {
     hour: '2-digit',
     minute: '2-digit'
   })
@@ -88,7 +88,7 @@ function getMessageGroupState(
   const currentTime = new Date(message.inserted_at).getTime()
   const previousTime = new Date(previousMessage.inserted_at).getTime()
 
-  return currentTime - previousTime > 5 * 60 * 1000
+  return currentTime - previousTime > 30 * 60 * 1000
 }
 
 function formatExpiryLabel(expiresAt: string, nowMs: number): string {
@@ -388,6 +388,8 @@ export default function MessageItem({
     const pm = members.find((m) => m.user_id === parentMessage.sender_id)
     return pm?.user?.display_name || pm?.user?.username || parentMessage.sender?.display_name || parentMessage.sender?.username || 'Unknown'
   })()
+  const isUnavailableMessage = displayText === 'Message unavailable - decryption failed'
+  const unavailableLabel = startsGroup ? 'Encrypted message unavailable' : 'Message unavailable'
 
   return (
     <div
@@ -396,7 +398,7 @@ export default function MessageItem({
       className={
         `${startsGroup
           ? 'vesper-message-row vesper-message-row-start group'
-          : 'vesper-message-row vesper-message-row-grouped group'}${isActiveThread ? ' vesper-message-row-thread-active' : ''}${isFocusedMessage ? ' ring-1 ring-accent/60 bg-accent/5 rounded-xl' : ''}${isSending ? ' vesper-message-row-sending' : ''}${isFailed ? ' vesper-message-row-failed' : ''}`
+          : 'vesper-message-row vesper-message-row-grouped group'}${isActiveThread ? ' vesper-message-row-thread-active' : ''}${isFocusedMessage ? ' vesper-message-row-focused' : ''}${isSending ? ' vesper-message-row-sending' : ''}${isFailed ? ' vesper-message-row-failed' : ''}`
       }
       onContextMenu={(e) => msgMenu.onContextMenu(e, message)}
     >
@@ -412,11 +414,11 @@ export default function MessageItem({
               avatarUrl={avatarUrl}
               displayName={displayName}
               size="md"
+              status={status}
             />
-            <div className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-bg-primary ${STATUS_COLORS[status]}`} />
           </button>
         ) : (
-          <span className="vesper-message-inline-time">{formatTime(message.inserted_at)}</span>
+          <span className="vesper-message-inline-time">{formatInlineTime(message.inserted_at)}</span>
         )}
       </div>
 
@@ -431,7 +433,8 @@ export default function MessageItem({
             }
           >
             <MessageActions
-              canEdit={isMe}
+              canEdit={isMe && !isUnavailableMessage}
+              canInteract={!isUnavailableMessage}
               onReply={() => setReplyingTo(message)}
               onThread={handleOpenThread}
               onReact={() => setShowEmojiPicker((value) => !value)}
@@ -494,7 +497,14 @@ export default function MessageItem({
           <>
             {displayText && (
               <div data-testid="message-content" className="vesper-message-content text-text-secondary text-sm break-words whitespace-pre-wrap">
-                <MarkdownContent content={displayText} />
+                {isUnavailableMessage ? (
+                  <div className="vesper-message-unavailable">
+                    <Lock className="vesper-message-unavailable-icon w-3.5 h-3.5" />
+                    <div className="vesper-message-unavailable-title">{unavailableLabel}</div>
+                  </div>
+                ) : (
+                  <MarkdownContent content={displayText} />
+                )}
                 {message.edited_at && (
                   <span data-testid="edited-marker" className="ml-1.5 text-xs text-text-faintest">(edited)</span>
                 )}

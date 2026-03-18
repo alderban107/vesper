@@ -45,6 +45,9 @@ import { cacheSentMessage } from '../crypto/decryptionCache'
 
 const BACKGROUND_DECRYPT_CHUNK_SIZE = 8
 const inFlightMlsEventReplays = new Map<string, Promise<void>>()
+const inFlightPendingWelcomeChecks = new Map<string, Promise<boolean>>()
+const lastPendingWelcomeCheckAt = new Map<string, number>()
+const PENDING_WELCOME_CHECK_COOLDOWN_MS = 1500
 
 interface PendingCommit {
   commitData: string
@@ -413,31 +416,51 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
       }
     }
 
-    // Check for pending welcomes (offline delivery)
-    const welcomes = await fetchPendingWelcomes(channelId)
-    for (const welcome of welcomes) {
-      if (get().groupStates[channelId]) {
-        await ackPendingWelcome(welcome.id).catch(() => {})
-        return false
+    const existingPendingWelcomeCheck = inFlightPendingWelcomeChecks.get(channelId)
+    if (existingPendingWelcomeCheck) {
+      return await existingPendingWelcomeCheck
+    }
+
+    const lastWelcomeCheckAt = lastPendingWelcomeCheckAt.get(channelId) ?? 0
+    if (Date.now() - lastWelcomeCheckAt < PENDING_WELCOME_CHECK_COOLDOWN_MS) {
+      return false
+    }
+
+    const pendingWelcomeCheck = (async () => {
+      lastPendingWelcomeCheckAt.set(channelId, Date.now())
+
+      // Check for pending welcomes (offline delivery)
+      const welcomes = await fetchPendingWelcomes(channelId)
+      for (const welcome of welcomes) {
+        if (get().groupStates[channelId]) {
+          await ackPendingWelcome(welcome.id).catch(() => {})
+          return false
+        }
+
+        const processed = await get().handleWelcome(
+          channelId,
+          uint8ToBase64(welcome.welcome_data),
+          welcome.key_package_ref
+        )
+        if (processed || get().groupStates[channelId]) {
+          await ackPendingWelcome(welcome.id)
+          await get().replayMissedScopeEvents(channelId)
+          const { handleWelcomeProcessedForResolvedScope } = await import('./messageStore')
+          await handleWelcomeProcessedForResolvedScope(channelId).catch(() => {})
+          return true
+        }
       }
 
-      const processed = await get().handleWelcome(
-        channelId,
-        uint8ToBase64(welcome.welcome_data),
-        welcome.key_package_ref
-      )
-      if (processed || get().groupStates[channelId]) {
-        await ackPendingWelcome(welcome.id)
-        await get().replayMissedScopeEvents(channelId)
-        const { handleWelcomeProcessedForResolvedScope } = await import('./messageStore')
-        await handleWelcomeProcessedForResolvedScope(channelId).catch(() => {})
-        return true
-      }
-    }
+      return false
+    })().finally(() => {
+      inFlightPendingWelcomeChecks.delete(channelId)
+    })
+
+    inFlightPendingWelcomeChecks.set(channelId, pendingWelcomeCheck)
+    return await pendingWelcomeCheck
 
     // No group exists or we're not in it — will be handled by mls_request_join
     // The messageStore triggers this after channel join
-    return false
   },
 
   createGroup: async (channelId) => {
@@ -529,7 +552,9 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
         // "same user, new device" from a true duplicate leaf.
         const keyPackageBytes = await fetchKeyPackage(userId, deviceId)
         if (!keyPackageBytes) {
-          console.warn(`No key package available for user ${userId}`)
+          if (deviceId !== 'legacy') {
+            console.warn(`No key package available for user ${userId}`)
+          }
           return null
         }
 
@@ -608,7 +633,9 @@ export const useCryptoStore = create<CryptoState>((set, get) => ({
 
         const keyPackageBytes = await fetchKeyPackage(userId, deviceId)
         if (!keyPackageBytes) {
-          console.warn(`No key package available for user ${userId}`)
+          if (deviceId !== 'legacy') {
+            console.warn(`No key package available for user ${userId}`)
+          }
           return null
         }
 

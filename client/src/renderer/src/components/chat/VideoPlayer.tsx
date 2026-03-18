@@ -1,7 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { AlertCircle, Download, Film, Loader2, Play } from 'lucide-react'
-import { apiFetch } from '../../api/client'
 import { decryptFile } from '../../crypto/fileEncryption'
+import { fetchAttachmentBytes } from '../../utils/attachmentFetch'
+import {
+  acquireCachedAttachmentObjectUrl,
+  loadCachedAttachmentObjectUrl,
+  releaseCachedAttachmentObjectUrl
+} from '../../utils/attachmentObjectUrlCache'
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -50,47 +55,100 @@ export default function VideoPlayer({
   const [state, setState] = useState<VideoState>('unloaded')
   const [blobUrl, setBlobUrl] = useState<string | null>(null)
   const [posterUrl, setPosterUrl] = useState<string | null>(null)
+  const videoCacheKey = `attachment-video:${fileId}`
+  const posterCacheKey = thumbnailId ? `attachment-poster:${thumbnailId}` : null
+  const videoRetainedRef = useRef(false)
+  const posterRetainedRef = useRef(false)
+
+  const releaseVideoUrl = useCallback(() => {
+    if (videoRetainedRef.current) {
+      releaseCachedAttachmentObjectUrl(videoCacheKey)
+      videoRetainedRef.current = false
+      setBlobUrl(null)
+      setState('unloaded')
+    }
+  }, [videoCacheKey])
+
+  const releasePosterUrl = useCallback(() => {
+    if (posterRetainedRef.current && posterCacheKey) {
+      releaseCachedAttachmentObjectUrl(posterCacheKey)
+      posterRetainedRef.current = false
+      setPosterUrl(null)
+    }
+  }, [posterCacheKey])
+
+  useEffect(() => {
+    const cachedVideoUrl = acquireCachedAttachmentObjectUrl(videoCacheKey)
+    if (!cachedVideoUrl) {
+      return
+    }
+
+    videoRetainedRef.current = true
+    setBlobUrl(cachedVideoUrl)
+    setState('loaded')
+
+    return () => {
+      releaseVideoUrl()
+    }
+  }, [videoCacheKey, releaseVideoUrl])
 
   // Eagerly fetch/decrypt the tiny thumbnail JPEG
   useEffect(() => {
-    if (!thumbnailId || !thumbnailKey || !thumbnailIv) return
+    if (!thumbnailId || !thumbnailKey || !thumbnailIv || !posterCacheKey) return
 
     let cancelled = false
-    let url: string | null = null
+    const cachedPosterUrl = acquireCachedAttachmentObjectUrl(posterCacheKey)
+    if (cachedPosterUrl) {
+      posterRetainedRef.current = true
+      setPosterUrl(cachedPosterUrl)
 
-    void (async () => {
-      try {
-        const res = await apiFetch(`/api/v1/attachments/${thumbnailId}`)
-        if (!res.ok || cancelled) return
-        const encrypted = await res.arrayBuffer()
-        const decrypted = await decryptFile(encrypted, thumbnailKey, thumbnailIv)
-        if (cancelled) return
-        const blob = new Blob([decrypted], { type: 'image/jpeg' })
-        url = URL.createObjectURL(blob)
-        setPosterUrl(url)
-      } catch {
-        // Thumbnail fetch failed — no poster, not critical
+      return () => {
+        releasePosterUrl()
       }
-    })()
+    }
+
+    posterRetainedRef.current = true
+    void loadCachedAttachmentObjectUrl(posterCacheKey, async () => {
+      const encrypted = await fetchAttachmentBytes(thumbnailId)
+      const decrypted = await decryptFile(encrypted, thumbnailKey, thumbnailIv)
+      return new Blob([decrypted], { type: 'image/jpeg' })
+    })
+      .then((url) => {
+        if (cancelled) return
+        setPosterUrl(url)
+      })
+      .catch(() => {
+        // Thumbnail fetch failed — no poster, not critical
+      })
 
     return () => {
       cancelled = true
-      if (url) URL.revokeObjectURL(url)
+      releasePosterUrl()
     }
-  }, [thumbnailId, thumbnailKey, thumbnailIv])
+  }, [thumbnailId, thumbnailKey, thumbnailIv, posterCacheKey, releasePosterUrl])
 
   const fetchAndDecrypt = async (): Promise<void> => {
+    if (videoRetainedRef.current && blobUrl) {
+      setState('loaded')
+      return
+    }
+
     setState('loading')
+    videoRetainedRef.current = true
+
     try {
-      const res = await apiFetch(`/api/v1/attachments/${fileId}`)
-      if (!res.ok) throw new Error('fetch failed')
-      const encrypted = await res.arrayBuffer()
-      const decrypted = await decryptFile(encrypted, encryptionKey, iv)
-      const blob = new Blob([decrypted], { type: contentType })
-      const url = URL.createObjectURL(blob)
+      const url = await loadCachedAttachmentObjectUrl(videoCacheKey, async () => {
+        const encrypted = await fetchAttachmentBytes(fileId)
+        const decrypted = await decryptFile(encrypted, encryptionKey, iv)
+        return new Blob([decrypted], { type: contentType })
+      })
       setBlobUrl(url)
       setState('loaded')
     } catch {
+      if (videoRetainedRef.current) {
+        releaseCachedAttachmentObjectUrl(videoCacheKey)
+        videoRetainedRef.current = false
+      }
       setState('error')
     }
   }
@@ -99,9 +157,7 @@ export default function VideoPlayer({
     try {
       let url = blobUrl
       if (!url) {
-        const res = await apiFetch(`/api/v1/attachments/${fileId}`)
-        if (!res.ok) return
-        const encrypted = await res.arrayBuffer()
+        const encrypted = await fetchAttachmentBytes(fileId)
         const decrypted = await decryptFile(encrypted, encryptionKey, iv)
         const blob = new Blob([decrypted], { type: contentType })
         url = URL.createObjectURL(blob)
@@ -115,6 +171,13 @@ export default function VideoPlayer({
       /* download failed silently */
     }
   }
+
+  useEffect(() => {
+    return () => {
+      releaseVideoUrl()
+      releasePosterUrl()
+    }
+  }, [releasePosterUrl, releaseVideoUrl])
 
   if (state === 'error') {
     return (
