@@ -61,6 +61,7 @@ export default function MessageFeed({
   const clearPendingJumpTarget = useMessageStore((s) => s.clearPendingJumpTarget)
 
   const virtuosoRef = useRef<VirtuosoHandle | null>(null)
+  const scrollerRef = useRef<HTMLDivElement | null>(null)
   const onLoadMoreRef = useRef(onLoadMore)
   const onLoadNewerRef = useRef(onLoadNewer)
   const onMarkReadRef = useRef(onMarkRead)
@@ -69,6 +70,7 @@ export default function MessageFeed({
   const highlightTimeoutRef = useRef<number | null>(null)
   const previousMessagesRef = useRef<Message[]>(messages)
   const previousIdentityRef = useRef<string | null>(null)
+  const lastKnownScrollHeightRef = useRef(0)
   const isAtBottomRef = useRef(true)
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null)
   const [firstItemIndex, setFirstItemIndex] = useState(PREPEND_BASE_INDEX)
@@ -112,6 +114,33 @@ export default function MessageFeed({
       }
     }
   }, [])
+
+  useLayoutEffect(() => {
+    const scroller = scrollerRef.current
+    if (!scroller) {
+      return
+    }
+
+    lastKnownScrollHeightRef.current = scroller.scrollHeight
+
+    const observer = new ResizeObserver(() => {
+      const nextScrollHeight = scroller.scrollHeight
+      const delta = nextScrollHeight - lastKnownScrollHeightRef.current
+      lastKnownScrollHeightRef.current = nextScrollHeight
+
+      if (!delta || isAtBottomRef.current) {
+        return
+      }
+
+      scroller.scrollTop += delta
+    })
+
+    observer.observe(scroller)
+
+    return () => {
+      observer.disconnect()
+    }
+  }, [feedIdentity])
 
   useLayoutEffect(() => {
     if (previousIdentityRef.current !== feedIdentity) {
@@ -283,6 +312,30 @@ export default function MessageFeed({
     [pendingForCurrentTarget]
   )
 
+  const FeedScrollerWithAnchor = useMemo(
+    () =>
+      forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>(function FeedScrollerWithAnchor(
+        { className, ...props },
+        ref
+      ) {
+        return (
+          <div
+            {...props}
+            ref={(node) => {
+              scrollerRef.current = node
+              if (typeof ref === 'function') {
+                ref(node)
+              } else if (ref) {
+                ref.current = node
+              }
+            }}
+            className={className ? `vesper-message-feed ${className}` : 'vesper-message-feed'}
+          />
+        )
+      }),
+    []
+  )
+
   return (
     messages.length === 0 ? (
       <div className="vesper-message-feed">
@@ -319,7 +372,7 @@ export default function MessageFeed({
         computeItemKey={(_index, message) => message.id}
         className="vesper-message-feed-root"
         components={{
-          Scroller: FeedScroller,
+          Scroller: FeedScrollerWithAnchor,
           List: FeedList,
           Footer: () => <TypingIndicator typingUsers={typingUsers} />
         }}

@@ -42,7 +42,6 @@ type ChannelSection = {
 }
 
 const CHANNEL_COLLAPSE_STORAGE_KEY = 'vesper:channelCollapseState'
-
 function readCollapsedSections(): Record<string, boolean> {
   if (typeof window === 'undefined') {
     return {}

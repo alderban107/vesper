@@ -21,6 +21,8 @@ import {
   buildEmojiSuggestions,
   buildMentionSuggestions,
   detectComposerTrigger,
+  serializeComposerMentions,
+  type ComposerMentionDraft,
   type ComposerTriggerMatch
 } from './composerAutocompleteUtils'
 import type { Message } from '../../stores/messageStore'
@@ -33,6 +35,7 @@ export default function MessageInput(): React.JSX.Element {
   const [content, setContent] = useState('')
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
   const [trigger, setTrigger] = useState<ComposerTriggerMatch | null>(null)
+  const [mentionDrafts, setMentionDrafts] = useState<ComposerMentionDraft[]>([])
   const [selectedAutocompleteIndex, setSelectedAutocompleteIndex] = useState(0)
   const [uploading, setUploading] = useState(false)
   const [stagedFiles, setStagedFiles] = useState<StagedFile[]>([])
@@ -81,9 +84,31 @@ export default function MessageInput(): React.JSX.Element {
     }, 2000)
   }, [activeChannelId, sendTypingStart, sendTypingStop])
 
-  const stageFile = (file: File): void => {
-    setStagedFiles((prev) => [...prev, { file, id: `staged-${++stagedIdCounter}` }])
-  }
+  const stageFiles = useCallback((files: Iterable<File>): void => {
+    const entries = Array.from(files)
+    if (entries.length === 0) {
+      return
+    }
+
+    setStagedFiles((prev) => {
+      const existingKeys = new Set(
+        prev.map((entry) => `${entry.file.name}:${entry.file.size}:${entry.file.lastModified}`)
+      )
+      const next = [...prev]
+
+      for (const file of entries) {
+        const key = `${file.name}:${file.size}:${file.lastModified}`
+        if (existingKeys.has(key)) {
+          continue
+        }
+
+        existingKeys.add(key)
+        next.push({ file, id: `staged-${++stagedIdCounter}` })
+      }
+
+      return next
+    })
+  }, [])
 
   const removeStagedFile = (id: string): void => {
     setStagedFiles((prev) => prev.filter((entry) => entry.id !== id))
@@ -164,15 +189,24 @@ export default function MessageInput(): React.JSX.Element {
       return
     }
 
+    const replacement =
+      item.type === 'user'
+        ? `@${item.label}`
+        : item.type === 'everyone'
+          ? '@everyone'
+          : item.value
     const cursorPos = textareaRef.current?.selectionStart ?? content.length
     const next = applyAutocompleteSelection(
       content,
       trigger.start,
       cursorPos,
-      item.value,
+      replacement,
       item.type !== 'emoji'
     )
     setContent(next.value)
+    if (item.type === 'user' || item.type === 'everyone') {
+      setMentionDrafts((current) => [...current, { display: replacement, syntax: item.value }])
+    }
     setTrigger(null)
     setSelectedAutocompleteIndex(0)
 
@@ -212,6 +246,71 @@ export default function MessageInput(): React.JSX.Element {
     syncPreviewScroll()
   }, [content])
 
+  useEffect(() => {
+    const hasFiles = (dataTransfer: DataTransfer | null): boolean =>
+      Boolean(dataTransfer?.types && Array.from(dataTransfer.types).includes('Files'))
+
+    const handleWindowDragEnter = (event: DragEvent): void => {
+      if (!hasFiles(event.dataTransfer)) {
+        return
+      }
+
+      event.preventDefault()
+      dragDepthRef.current += 1
+      setDragActive(true)
+    }
+
+    const handleWindowDragOver = (event: DragEvent): void => {
+      if (!hasFiles(event.dataTransfer)) {
+        return
+      }
+
+      event.preventDefault()
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = 'copy'
+      }
+      setDragActive(true)
+    }
+
+    const handleWindowDragLeave = (event: DragEvent): void => {
+      if (!hasFiles(event.dataTransfer)) {
+        return
+      }
+
+      event.preventDefault()
+      dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
+      if (dragDepthRef.current === 0) {
+        setDragActive(false)
+      }
+    }
+
+    const handleWindowDrop = (event: DragEvent): void => {
+      if (!hasFiles(event.dataTransfer)) {
+        return
+      }
+
+      event.preventDefault()
+      dragDepthRef.current = 0
+      setDragActive(false)
+
+      const files = Array.from(event.dataTransfer?.files ?? [])
+      if (!uploading) {
+        stageFiles(files)
+      }
+    }
+
+    window.addEventListener('dragenter', handleWindowDragEnter)
+    window.addEventListener('dragover', handleWindowDragOver)
+    window.addEventListener('dragleave', handleWindowDragLeave)
+    window.addEventListener('drop', handleWindowDrop)
+
+    return () => {
+      window.removeEventListener('dragenter', handleWindowDragEnter)
+      window.removeEventListener('dragover', handleWindowDragOver)
+      window.removeEventListener('dragleave', handleWindowDragLeave)
+      window.removeEventListener('drop', handleWindowDrop)
+    }
+  }, [stageFiles, uploading])
   const handleSubmit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault()
     if (!activeChannelId) return
@@ -228,7 +327,8 @@ export default function MessageInput(): React.JSX.Element {
         // First file gets the text caption, rest are sent without text
         for (let i = 0; i < stagedFiles.length; i++) {
           const text = i === 0 ? content.trim() : undefined
-          const ok = await uploadAndSendFile(stagedFiles[i].file, text)
+          const serializedText = text ? serializeComposerMentions(text, mentionDrafts) : undefined
+          const ok = await uploadAndSendFile(stagedFiles[i].file, serializedText)
           if (!ok) {
             setUploading(false)
             return
@@ -236,6 +336,7 @@ export default function MessageInput(): React.JSX.Element {
         }
         setStagedFiles([])
         setContent('')
+        setMentionDrafts([])
         useMessageStore.getState().setReplyingTo(null)
       } catch {
         // ignore
@@ -244,8 +345,9 @@ export default function MessageInput(): React.JSX.Element {
       }
     } else {
       // Text-only message
-      sendMessage(activeChannelId, content.trim())
+      sendMessage(activeChannelId, serializeComposerMentions(content.trim(), mentionDrafts))
       setContent('')
+      setMentionDrafts([])
     }
 
     setTrigger(null)
@@ -333,10 +435,7 @@ export default function MessageInput(): React.JSX.Element {
   }
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>): void => {
-    const file = e.target.files?.[0]
-    if (file) {
-      stageFile(file)
-    }
+    stageFiles(Array.from(e.target.files ?? []))
 
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
@@ -367,9 +466,8 @@ export default function MessageInput(): React.JSX.Element {
     dragDepthRef.current = 0
     setDragActive(false)
 
-    const file = event.dataTransfer.files?.[0]
-    if (file && !uploading) {
-      stageFile(file)
+    if (!uploading) {
+      stageFiles(Array.from(event.dataTransfer.files ?? []))
     }
   }
 

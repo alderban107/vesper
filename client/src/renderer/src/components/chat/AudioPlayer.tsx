@@ -109,7 +109,6 @@ export default function AudioPlayer({
   }
 
   const displayName = title || name
-  const displaySub = artist || sizeLabel
 
   return (
     <div className="vesper-audio-player">
