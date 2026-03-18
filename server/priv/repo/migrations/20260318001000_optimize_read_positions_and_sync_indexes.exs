@@ -42,8 +42,8 @@ defmodule Vesper.Repo.Migrations.OptimizeReadPositionsAndSyncIndexes do
 
   def down do
     drop_if_exists index(:room_events, [:room_id, :room_seq],
-                   name: :room_events_non_message_seq_idx
-                 )
+                     name: :room_events_non_message_seq_idx
+                   )
 
     drop_if_exists index(:dm_read_positions, [:user_id, :conversation_id, :last_read_seq])
     drop_if_exists index(:channel_read_positions, [:user_id, :channel_id, :last_read_seq])

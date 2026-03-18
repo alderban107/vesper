@@ -11,7 +11,9 @@ defmodule Vesper.Testing.ScaleFixture do
     label = normalize_label(Map.get(attrs, :label) || Map.get(attrs, "label") || "chaos")
     nonce = Map.get(attrs, :nonce) || Map.get(attrs, "nonce") || short_nonce()
     user_count = positive_integer!(Map.get(attrs, :user_count) || Map.get(attrs, "user_count"))
-    channel_count = positive_integer!(Map.get(attrs, :channel_count) || Map.get(attrs, "channel_count"))
+
+    channel_count =
+      positive_integer!(Map.get(attrs, :channel_count) || Map.get(attrs, "channel_count"))
 
     active_channel_count =
       attrs
@@ -238,7 +240,8 @@ defmodule Vesper.Testing.ScaleFixture do
   end
 
   defp device_entries(user_fixture) do
-    [user_fixture.primary_device] ++ if(user_fixture.secondary_device, do: [user_fixture.secondary_device], else: [])
+    [user_fixture.primary_device] ++
+      if(user_fixture.secondary_device, do: [user_fixture.secondary_device], else: [])
   end
 
   defp insert_all_in_chunks(_schema, []), do: :ok
@@ -266,7 +269,10 @@ defmodule Vesper.Testing.ScaleFixture do
   defp normalize_label(_value), do: "chaos"
 
   defp positive_integer!(value) when is_integer(value) and value > 0, do: value
-  defp positive_integer!(value) when is_binary(value), do: value |> String.to_integer() |> positive_integer!()
+
+  defp positive_integer!(value) when is_binary(value),
+    do: value |> String.to_integer() |> positive_integer!()
+
   defp positive_integer!(_value), do: raise(ArgumentError, "expected a positive integer")
 
   defp non_negative_integer!(value) when is_integer(value) and value >= 0, do: value

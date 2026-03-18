@@ -15,7 +15,13 @@ defmodule Vesper.Chat.DmReadPosition do
 
   def changeset(position, attrs) do
     position
-    |> cast(attrs, [:user_id, :conversation_id, :last_read_message_id, :last_read_seq, :last_read_at])
+    |> cast(attrs, [
+      :user_id,
+      :conversation_id,
+      :last_read_message_id,
+      :last_read_seq,
+      :last_read_at
+    ])
     |> validate_required([:user_id, :conversation_id])
     |> unique_constraint([:user_id, :conversation_id])
   end
