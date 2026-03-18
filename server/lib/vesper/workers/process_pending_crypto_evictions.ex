@@ -11,7 +11,7 @@ defmodule Vesper.Workers.ProcessPendingCryptoEvictions do
       period: 30,
       fields: [:worker, :args],
       keys: [:scope_kind, :scope_id],
-      states: [:available, :scheduled, :executing, :retryable]
+      states: [:available, :scheduled, :retryable]
     ]
 
   require Logger

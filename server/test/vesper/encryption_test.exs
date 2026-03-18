@@ -6,6 +6,8 @@ defmodule Vesper.EncryptionTest do
   alias Vesper.Accounts
   alias Vesper.Encryption
   alias Vesper.Encryption.KeyPackage
+  alias Vesper.Workers.ProcessPendingCryptoEvictions
+  alias Oban.Testing
 
   describe "key package scoping" do
     test "fetches the newest package when no client id is provided" do
@@ -132,6 +134,36 @@ defmodule Vesper.EncryptionTest do
   end
 
   describe "pending crypto evictions" do
+    test "duplicate scope enqueue is treated as benign" do
+      scope_id = Ecto.UUID.generate()
+
+      Testing.with_testing_mode(:manual, fn ->
+        assert :ok =
+                 Encryption.enqueue_crypto_eviction_scope("channel", scope_id, schedule_in: 30)
+
+        assert :ok =
+                 Encryption.enqueue_crypto_eviction_scope("channel", scope_id, schedule_in: 30)
+
+        queued_jobs =
+          Testing.all_enqueued(Vesper.Repo,
+            worker: ProcessPendingCryptoEvictions,
+            args: %{"scope_kind" => "channel", "scope_id" => scope_id}
+          )
+
+        assert length(queued_jobs) == 1
+      end)
+    end
+
+    test "worker uniqueness allows a retry to be queued while a pass is executing" do
+      unique_states =
+        ProcessPendingCryptoEvictions.new(%{"scope_kind" => "channel", "scope_id" => "scope-1"})
+        |> Map.fetch!(:changes)
+        |> Map.fetch!(:unique)
+        |> Map.fetch!(:states)
+
+      refute :executing in unique_states
+    end
+
     test "completes an eviction and purges target-scoped artifacts" do
       sponsor = insert_user()
       target = insert_user()

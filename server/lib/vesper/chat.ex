@@ -450,7 +450,7 @@ defmodule Vesper.Chat do
 
     cond do
       limit == 1 and is_nil(before) and is_nil(after_cursor) ->
-        case get_latest_channel_message(channel_id) do
+        case get_latest_channel_message(channel_id, opts) do
           nil -> []
           message -> [message]
         end
@@ -482,7 +482,7 @@ defmodule Vesper.Chat do
 
     cond do
       limit == 1 and is_nil(before) and is_nil(after_cursor) ->
-        case get_latest_conversation_message(conversation_id) do
+        case get_latest_conversation_message(conversation_id, opts) do
           nil -> []
           message -> [message]
         end
@@ -506,7 +506,9 @@ defmodule Vesper.Chat do
     end
   end
 
-  def get_latest_channel_message(channel_id) do
+  def get_latest_channel_message(channel_id, opts \\ []) do
+    preload = message_preload(opts)
+
     from(room in Room,
       where: room.channel_id == ^channel_id and not is_nil(room.last_message_id),
       join: m in Message,
@@ -515,7 +517,7 @@ defmodule Vesper.Chat do
       select: %{m | room_seq: room.last_message_seq}
     )
     |> Repo.one()
-    |> Repo.preload(:sender)
+    |> maybe_preload_message(preload)
   end
 
   def get_latest_channel_messages(channel_ids) when is_list(channel_ids) do
@@ -543,7 +545,9 @@ defmodule Vesper.Chat do
     end
   end
 
-  def get_latest_conversation_message(conversation_id) do
+  def get_latest_conversation_message(conversation_id, opts \\ []) do
+    preload = message_preload(opts)
+
     from(room in Room,
       where: room.conversation_id == ^conversation_id and not is_nil(room.last_message_id),
       join: m in Message,
@@ -552,7 +556,7 @@ defmodule Vesper.Chat do
       select: %{m | room_seq: room.last_message_seq}
     )
     |> Repo.one()
-    |> Repo.preload(:sender)
+    |> maybe_preload_message(preload)
   end
 
   def get_latest_conversation_messages(conversation_ids) when is_list(conversation_ids) do
@@ -672,6 +676,9 @@ defmodule Vesper.Chat do
       [:sender, :attachments, :reactions]
     end
   end
+
+  defp maybe_preload_message(nil, _preload), do: nil
+  defp maybe_preload_message(message, preload), do: Repo.preload(message, preload)
 
   defp preload_messages_with_room_seq(message_pairs, preload) do
     message_pairs

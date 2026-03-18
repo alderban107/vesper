@@ -519,7 +519,7 @@ defmodule Vesper.Encryption do
         :ok
 
       {:error, %Ecto.Changeset{} = changeset} ->
-        if Keyword.has_key?(changeset.errors, :unique) do
+        if unique_constraint_error?(changeset) do
           :ok
         else
           {:error, changeset}
@@ -528,6 +528,16 @@ defmodule Vesper.Encryption do
       {:error, changeset} ->
         {:error, changeset}
     end
+  end
+
+  defp unique_constraint_error?(%Ecto.Changeset{} = changeset) do
+    Enum.any?(changeset.errors, fn
+      {_field, {_message, meta}} ->
+        meta[:constraint] == :unique or meta[:error_type] == :unique
+
+      _ ->
+        false
+    end)
   end
 
   def request_next_pending_crypto_eviction(scope_kind, scope_id) do
