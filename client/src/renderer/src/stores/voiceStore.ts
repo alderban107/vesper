@@ -1622,7 +1622,11 @@ async function initVoice(
           void recoverVoiceMlsState(topic, 'voice_key_missing', preferredCreatorId).catch(() => {})
         }
       }
-    } else if (event === 'join_error') {
+    } else if (event === 'join_error' || event === 'error') {
+      const reason =
+        typeof data.reason === 'string' && data.reason.trim().length > 0
+          ? data.reason
+          : 'Could not join that voice session right now.'
       set({
         state: 'idle',
         roomId: null,
@@ -1638,7 +1642,7 @@ async function initVoice(
         localCameraStream: null,
         localShareStream: null,
         remoteMediaStreams: {},
-        errorMessage: 'Could not join that voice session right now.',
+        errorMessage: reason,
         ...buildResetConnectionStats()
       })
     }

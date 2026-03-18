@@ -158,6 +158,7 @@ export default function ComposerForm({
           <input
             ref={fileInputRef}
             type="file"
+            multiple
             onChange={onFileSelect}
             className="hidden"
           />

@@ -11,6 +11,11 @@ export interface ComposerTriggerMatch {
   start: number
 }
 
+export interface ComposerMentionDraft {
+  display: string
+  syntax: string
+}
+
 function toEmojiShortcode(value: string): string {
   return value.trim().toLowerCase().replace(/[\s-]+/g, '_')
 }
@@ -196,4 +201,22 @@ export function applyAutocompleteSelection(
     value,
     caret: before.length + inserted.length
   }
+}
+
+export function serializeComposerMentions(
+  content: string,
+  drafts: ComposerMentionDraft[]
+): string {
+  if (drafts.length === 0 || content.length === 0) {
+    return content
+  }
+
+  let result = content
+  const orderedDrafts = [...drafts].sort((left, right) => right.display.length - left.display.length)
+
+  for (const draft of orderedDrafts) {
+    result = result.split(draft.display).join(draft.syntax)
+  }
+
+  return result
 }
