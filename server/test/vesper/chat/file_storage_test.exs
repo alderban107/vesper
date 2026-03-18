@@ -15,11 +15,15 @@ defmodule Vesper.Chat.FileStorageTest do
   describe "upload directory resolution" do
     test "store/2 and get_path/1 use configured :upload_dir when set" do
       # Create a temp directory to act as the upload dir
-      tmp_dir = Path.join(System.tmp_dir!(), "vesper_test_uploads_#{System.unique_integer([:positive])}")
+      tmp_dir =
+        Path.join(System.tmp_dir!(), "vesper_test_uploads_#{System.unique_integer([:positive])}")
+
       File.mkdir_p!(tmp_dir)
 
       # Write a test file to upload
-      source = Path.join(System.tmp_dir!(), "vesper_test_source_#{System.unique_integer([:positive])}")
+      source =
+        Path.join(System.tmp_dir!(), "vesper_test_source_#{System.unique_integer([:positive])}")
+
       File.write!(source, "test content for upload dir config")
 
       previous = Application.get_env(:vesper, :upload_dir)
@@ -51,7 +55,9 @@ defmodule Vesper.Chat.FileStorageTest do
     end
 
     test "store/2 falls back to Application.app_dir when :upload_dir is not set" do
-      source = Path.join(System.tmp_dir!(), "vesper_test_fallback_#{System.unique_integer([:positive])}")
+      source =
+        Path.join(System.tmp_dir!(), "vesper_test_fallback_#{System.unique_integer([:positive])}")
+
       File.write!(source, "test content for fallback path")
 
       previous = Application.get_env(:vesper, :upload_dir)
@@ -77,7 +83,9 @@ defmodule Vesper.Chat.FileStorageTest do
     end
 
     test "avatar_dir and banner_dir are under the configured :upload_dir" do
-      tmp_dir = Path.join(System.tmp_dir!(), "vesper_test_subdirs_#{System.unique_integer([:positive])}")
+      tmp_dir =
+        Path.join(System.tmp_dir!(), "vesper_test_subdirs_#{System.unique_integer([:positive])}")
+
       previous = Application.get_env(:vesper, :upload_dir)
 
       try do
@@ -95,4 +103,3 @@ defmodule Vesper.Chat.FileStorageTest do
     end
   end
 end
-
