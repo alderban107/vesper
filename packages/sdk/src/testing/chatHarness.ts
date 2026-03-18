@@ -1518,10 +1518,21 @@ export class SdkChatHarness extends EventEmitter {
   }
 
   private async channelHasExistingActivity(channelId: string): Promise<boolean> {
-    const messages = await this.device
-      .fetchChannelMessages(channelId, { limit: 1, lean: true })
-      .catch(() => [])
-    return messages.length > 0
+    const cachedMessages = this.scopeMessages.get(channelId) ?? []
+    if (cachedMessages.length > 0) {
+      return true
+    }
+
+    const syncState = await this.device.fetchWorkspaceSync().catch(() => null)
+    const channelActivity = syncState?.channel_activity ?? []
+
+    for (const activity of channelActivity) {
+      if (activity.channel_id === channelId && activity.message_id) {
+        return true
+      }
+    }
+
+    return false
   }
 
   private async bootstrapDmGroupIfLeader(conversationId: string): Promise<boolean> {

@@ -5,6 +5,8 @@ import path from 'node:path'
 import { configureCryptoStorage } from '../dist/storage/index.js'
 import {
   createConversation,
+  fetchScopesSync,
+  fetchWorkspaceSync,
   getCurrentUser,
   listConversations,
   listServers,
@@ -448,4 +450,12 @@ export async function registerOrLogin(auth, username, password) {
   }
 }
 
-export { createConversation, getCurrentUser, listConversations, listServers, searchUsers }
+export {
+  createConversation,
+  fetchScopesSync,
+  fetchWorkspaceSync,
+  getCurrentUser,
+  listConversations,
+  listServers,
+  searchUsers
+}

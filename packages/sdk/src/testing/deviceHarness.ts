@@ -6,6 +6,8 @@ import {
   createServerChannel,
   fetchChannelMessages,
   fetchConversationMessages,
+  fetchScopesSync,
+  fetchWorkspaceSync,
   getCurrentUser,
   getServerInviteCode,
   joinServerByInvite,
@@ -16,6 +18,7 @@ import {
   type VesperChannel,
   type VesperConversation,
   type VesperMessage,
+  type VesperScopeSyncResponse,
   type VesperServer
 } from '../api/chat.js'
 import {
@@ -302,6 +305,23 @@ export class TestingDeviceHarness {
     } = {}
   ): Promise<VesperMessage[]> {
     return await this.run(() => fetchConversationMessages(conversationId, options))
+  }
+
+  async fetchWorkspaceSync(since?: string | null) {
+    return await this.run(() => fetchWorkspaceSync(since))
+  }
+
+  async fetchScopesSync(input: {
+    scopes: Array<{
+      kind: 'channel' | 'dm'
+      id: string
+      after?: string
+      after_seq?: number
+    }>
+    limit?: number
+    since?: string | null
+  }): Promise<VesperScopeSyncResponse> {
+    return await this.run(() => fetchScopesSync(input))
   }
 
   async joinTopicWithAck(

@@ -15,6 +15,7 @@ defmodule Vesper.UrgentSyncTest do
   alias VesperWeb.MlsEventController
   alias VesperWeb.MessageController
   alias VesperWeb.ScopeSyncController
+  alias VesperWeb.SyncController
   alias VesperWeb.UrgentSyncController
 
   setup do
@@ -128,6 +129,29 @@ defmodule Vesper.UrgentSyncTest do
     assert scope_id == channel.id
     assert Enum.map(messages, & &1["id"]) == [message.id]
     assert Enum.map(events, & &1["id"]) == [mutation_event.id]
+  end
+
+  test "full sync includes initial channel activity snapshots", %{conn: conn} do
+    user = insert_user()
+    {:ok, server} = Vesper.Servers.create_server(user, %{name: "alpha"})
+    channel = Enum.find(server.channels, &(&1.type == "text"))
+
+    message = insert_channel_message(user.id, channel.id, "hello")
+    assert {:ok, _projected_message} = Runtime.project_message(message)
+
+    response =
+      conn
+      |> assign(:current_user, user)
+      |> SyncController.index(%{})
+      |> json_response(200)
+
+    assert is_binary(response["token"])
+
+    assert Enum.any?(response["channel_activity"], fn activity ->
+             activity["channel_id"] == channel.id &&
+               activity["message_id"] == message.id &&
+               activity["sender_id"] == user.id
+           end)
   end
 
   test "scope sync preserves requested order for accessible scopes and skips hidden ones", %{

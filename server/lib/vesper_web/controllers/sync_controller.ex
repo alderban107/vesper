@@ -99,7 +99,7 @@ defmodule VesperWeb.SyncController do
               Chat.get_dm_unread_counts(user.id, Chat.list_user_conversation_ids(user.id))
           }
 
-          {[], unread_counts}
+          {Servers.list_channel_activity_snapshots(user.id, channel_ids), unread_counts}
 
         _value ->
           changed_channel_ids = scope_changes.channel_ids

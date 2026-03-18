@@ -36,9 +36,9 @@ import {
 import {
   createConversation,
   createSdkHarness,
+  fetchScopesSync,
+  fetchWorkspaceSync,
   getCurrentUser,
-  listConversations,
-  listServers,
   searchUsers
 } from '../_shared.mjs'
 
@@ -118,6 +118,86 @@ function coerceTextPayload(plaintext) {
   }
 }
 
+function mergeById(existing, incoming) {
+  const merged = new Map()
+
+  for (const entry of existing) {
+    merged.set(entry.id, entry)
+  }
+
+  for (const entry of incoming) {
+    const prior = merged.get(entry.id) || {}
+    merged.set(entry.id, {
+      ...prior,
+      ...entry
+    })
+  }
+
+  return [...merged.values()]
+}
+
+function applyConversationResets(conversations, resets) {
+  if (!Array.isArray(resets) || resets.length === 0) {
+    return conversations
+  }
+
+  return conversations.map((conversation) => {
+    const reset = resets.find((entry) => entry.conversation_id === conversation.id)
+    if (!reset) {
+      return conversation
+    }
+
+    return {
+      ...conversation,
+      last_message: reset.last_message || null
+    }
+  })
+}
+
+function applyChannelActivity(servers, activity) {
+  if (!Array.isArray(activity) || activity.length === 0) {
+    return servers
+  }
+
+  const activityByChannelId = new Map(
+    activity.map((entry) => [entry.channel_id, entry])
+  )
+
+  return servers.map((server) => ({
+    ...server,
+    channels: (server.channels || []).map((channel) => {
+      const patch = activityByChannelId.get(channel.id)
+      if (!patch) {
+        return channel
+      }
+
+      return {
+        ...channel,
+        last_message_id: patch.message_id || null,
+        last_message_inserted_at: patch.inserted_at || null,
+        last_message_sender: patch.sender || null
+      }
+    })
+  }))
+}
+
+function highestRoomSeq(messages) {
+  let highest = null
+
+  for (const message of messages) {
+    const roomSeq = typeof message?.raw?.room_seq === 'number' ? message.raw.room_seq : null
+    if (roomSeq == null) {
+      continue
+    }
+
+    if (highest == null || roomSeq > highest) {
+      highest = roomSeq
+    }
+  }
+
+  return highest
+}
+
 export class VesperChatRuntime extends EventEmitter {
   constructor(options = {}) {
     super()
@@ -139,10 +219,16 @@ export class VesperChatRuntime extends EventEmitter {
       devices: [],
       servers: [],
       conversations: [],
-      canUseE2EE: false
+      canUseE2EE: false,
+      syncToken: null,
+      unreadCounts: {
+        channels: {},
+        conversations: {}
+      }
     }
 
     this.scopeMessages = new Map()
+    this.scopeHasMore = new Map()
     this.joinedTopics = new Set()
     this.userTopic = null
     this.activeScope = null
@@ -235,9 +321,15 @@ export class VesperChatRuntime extends EventEmitter {
       devices: [],
       servers: [],
       conversations: [],
-      canUseE2EE: false
+      canUseE2EE: false,
+      syncToken: null,
+      unreadCounts: {
+        channels: {},
+        conversations: {}
+      }
     }
     this.scopeMessages.clear()
+    this.scopeHasMore.clear()
     this.joinedTopics.clear()
     this.activeScope = null
     this.userTopic = null
@@ -247,7 +339,7 @@ export class VesperChatRuntime extends EventEmitter {
   }
 
   async finishAuth() {
-    await this.refreshWorkspace()
+    await this.refreshWorkspace(true)
     await this.harness.auth.replenishKeyPackages(
       this.workspace.user,
       this.workspace.canUseE2EE
@@ -255,15 +347,16 @@ export class VesperChatRuntime extends EventEmitter {
     await this.connectUserFeed()
   }
 
-  async refreshWorkspace() {
+  async refreshWorkspace(forceFull = false) {
     if (!this.session) {
       return
     }
 
-    const [user, servers, conversations, deviceState] = await Promise.all([
+    const since = forceFull ? null : this.workspace.syncToken || null
+
+    const [user, syncState, deviceState] = await Promise.all([
       getCurrentUser(),
-      listServers(),
-      listConversations(),
+      fetchWorkspaceSync(since),
       this.harness.auth.fetchDevices({
         devices: this.workspace.devices.length > 0 ? this.workspace.devices : this.session.devices,
         currentDevice: this.workspace.currentDevice || this.session.currentDevice,
@@ -271,13 +364,34 @@ export class VesperChatRuntime extends EventEmitter {
       })
     ])
 
+    const baseServers = forceFull ? [] : this.workspace.servers
+    const baseConversations = forceFull ? [] : this.workspace.conversations
+
+    const nextServers = applyChannelActivity(
+      mergeById(baseServers, syncState.servers || []),
+      syncState.channel_activity || []
+    )
+    const nextConversations = applyConversationResets(
+      mergeById(baseConversations, syncState.conversations || []),
+      syncState.conversation_resets || []
+    )
+
     this.workspace = {
       user,
       currentDevice: deviceState.currentDevice,
       devices: deviceState.devices,
-      servers,
-      conversations,
-      canUseE2EE: deviceState.canUseE2EE
+      servers: nextServers,
+      conversations: nextConversations,
+      canUseE2EE: deviceState.canUseE2EE,
+      syncToken: syncState.token || (forceFull ? null : this.workspace.syncToken) || null,
+      unreadCounts:
+        syncState.unread_counts ||
+        (forceFull
+          ? {
+              channels: {},
+              conversations: {}
+            }
+          : this.workspace.unreadCounts)
     }
 
     this.emitWorkspace()
@@ -331,12 +445,19 @@ export class VesperChatRuntime extends EventEmitter {
   }
 
   async handleUserEvent(event, payload) {
-    if (event === 'new_conversation' || event === 'device_updated') {
+    if (
+      event === 'new_conversation' ||
+      event === 'device_updated' ||
+      event === 'device_approval_requested' ||
+      event === 'dm_message' ||
+      event === 'dm_unread_update' ||
+      event === 'unread_update'
+    ) {
       await this.refreshWorkspace().catch(() => {})
     }
 
-    if (event === 'device_approval_requested') {
-      await this.refreshWorkspace().catch(() => {})
+    if (event === 'server_membership_revoked') {
+      await this.refreshWorkspace(true).catch(() => {})
     }
 
     this.pushTranscriptEvent(event, JSON.stringify(payload || {}).slice(0, 120), payload)
@@ -500,11 +621,6 @@ export class VesperChatRuntime extends EventEmitter {
   }
 
   async fetchScopeMessages(scope) {
-    const endpoint =
-      scope.kind === 'channel'
-        ? `/api/v1/channels/${scope.id}/messages?limit=50`
-        : `/api/v1/conversations/${scope.id}/messages?limit=50`
-
     if (this.workspace.canUseE2EE) {
       if (scope.kind === 'channel') {
         await this.ensureChannelGroupReady(scope.id, false).catch(() => {})
@@ -513,26 +629,46 @@ export class VesperChatRuntime extends EventEmitter {
       }
     }
 
-    const response = await apiFetch(endpoint)
-    if (!response.ok) {
-      throw new Error(`Could not load messages for ${scope.kind}:${scope.id}`)
-    }
+    const existingMessages = this.scopeMessages.get(scope.id) || []
+    const afterSeq = highestRoomSeq(existingMessages)
 
-    const data = await response.json()
-    const rawMessages = Array.isArray(data.messages) ? sortRawMessages(data.messages) : []
-    const processed = []
+    const syncState = await fetchScopesSync({
+      scopes: [
+        {
+          kind: scope.kind,
+          id: scope.id,
+          ...(typeof afterSeq === 'number' ? { after_seq: afterSeq } : {})
+        }
+      ],
+      limit: 50,
+      since: this.workspace.syncToken || null
+    })
+
+    const scopeState = (syncState.scopes || []).find((entry) => entry.scope_id === scope.id)
+    const rawMessages = sortRawMessages(scopeState?.messages || [])
+    const processed = typeof afterSeq === 'number' ? [...existingMessages] : []
 
     for (const rawMessage of rawMessages) {
       const cached = this.findScopeMessage(scope.id, rawMessage.id)
       if (cached) {
-        processed.push(cached)
+        const withoutCached = processed.filter((entry) => entry.id !== cached.id)
+        processed.splice(0, processed.length, ...withoutCached, cached)
         continue
       }
 
       processed.push(await this.processIncomingMessage(scope.id, rawMessage))
     }
 
+    this.scopeHasMore.set(scope.id, Boolean(scopeState?.has_more))
+    if (syncState.token) {
+      this.workspace = {
+        ...this.workspace,
+        syncToken: syncState.token
+      }
+    }
+
     this.scopeMessages.set(scope.id, sortMessages(processed).slice(-MAX_MESSAGES_PER_SCOPE))
+    this.emitWorkspace()
     this.emitMessages(scope.id)
   }
 
@@ -957,13 +1093,16 @@ export class VesperChatRuntime extends EventEmitter {
       }
     }
 
-    const response = await apiFetch(`/api/v1/channels/${channelId}/messages?limit=1`)
-    if (!response.ok) {
-      return false
+    await this.refreshWorkspace().catch(() => {})
+
+    for (const server of this.workspace.servers) {
+      const channel = server.channels.find((entry) => entry.id === channelId)
+      if (channel?.last_message_id) {
+        return true
+      }
     }
 
-    const data = await response.json()
-    return Array.isArray(data.messages) && data.messages.length > 0
+    return false
   }
 
   isDmBootstrapLeader(conversationId) {

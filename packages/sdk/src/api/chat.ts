@@ -71,6 +71,60 @@ export interface VesperMessage {
   mls_epoch?: number | null
 }
 
+export interface VesperChannelActivityPatch {
+  channel_id: string
+  message_id: string | null
+  inserted_at: string | null
+  sender_id: string | null
+  sender?: VesperMemberPreview | null
+}
+
+export interface VesperConversationResetPatch {
+  conversation_id: string
+  last_message: VesperConversationMessagePreview | null
+}
+
+export interface VesperUnreadCounts {
+  channels: Record<string, number>
+  conversations: Record<string, number>
+}
+
+export interface VesperWorkspaceSyncResponse {
+  token: string | null
+  full: boolean
+  servers: VesperServer[]
+  conversations: VesperConversation[]
+  conversation_resets: VesperConversationResetPatch[]
+  channel_activity: VesperChannelActivityPatch[]
+  unread_counts: VesperUnreadCounts
+}
+
+export interface VesperScopeSyncScopeRequest {
+  kind: 'channel' | 'dm'
+  id: string
+  after?: string
+  after_seq?: number
+}
+
+export interface VesperScopeSyncScopeResponse {
+  scope_id: string
+  kind: 'channel' | 'dm'
+  has_more: boolean
+  messages: VesperMessage[]
+  events: Array<{
+    id?: number | null
+    seq?: number | null
+    event_type: string
+    inserted_at: string
+    payload?: Record<string, unknown> | null
+  }>
+}
+
+export interface VesperScopeSyncResponse {
+  token: string | null
+  scopes: VesperScopeSyncScopeResponse[]
+}
+
 export interface CreateServerChannelInput {
   name: string
   type?: string
@@ -112,6 +166,72 @@ export async function listConversations(): Promise<VesperConversation[]> {
 
   const data = (await response.json()) as { conversations?: VesperConversation[] }
   return data.conversations ?? []
+}
+
+export async function fetchWorkspaceSync(
+  since?: string | null
+): Promise<VesperWorkspaceSyncResponse> {
+  const query = since ? `?since=${encodeURIComponent(since)}` : ''
+  const response = await apiFetch(`/api/v1/sync${query}`)
+  if (!response.ok) {
+    throw new Error(`Could not load workspace sync: ${response.status}`)
+  }
+
+  const data = (await response.json()) as Partial<VesperWorkspaceSyncResponse>
+
+  return {
+    token: typeof data.token === 'string' ? data.token : null,
+    full: Boolean(data.full),
+    servers: Array.isArray(data.servers) ? data.servers : [],
+    conversations: Array.isArray(data.conversations) ? data.conversations : [],
+    conversation_resets: Array.isArray(data.conversation_resets)
+      ? data.conversation_resets
+      : [],
+    channel_activity: Array.isArray(data.channel_activity) ? data.channel_activity : [],
+    unread_counts:
+      data.unread_counts &&
+      typeof data.unread_counts === 'object' &&
+      !Array.isArray(data.unread_counts)
+        ? {
+            channels:
+              typeof data.unread_counts.channels === 'object' &&
+              data.unread_counts.channels !== null
+                ? data.unread_counts.channels
+                : {},
+            conversations:
+              typeof data.unread_counts.conversations === 'object' &&
+              data.unread_counts.conversations !== null
+                ? data.unread_counts.conversations
+                : {}
+          }
+        : { channels: {}, conversations: {} }
+  }
+}
+
+export async function fetchScopesSync(input: {
+  scopes: VesperScopeSyncScopeRequest[]
+  limit?: number
+  since?: string | null
+}): Promise<VesperScopeSyncResponse> {
+  const response = await apiFetch('/api/v1/sync/scopes', {
+    method: 'POST',
+    body: JSON.stringify({
+      scopes: input.scopes,
+      ...(typeof input.limit === 'number' ? { limit: input.limit } : {}),
+      ...(input.since ? { since: input.since } : {})
+    })
+  })
+
+  if (!response.ok) {
+    throw new Error(`Could not load scope sync: ${response.status}`)
+  }
+
+  const data = (await response.json()) as Partial<VesperScopeSyncResponse>
+
+  return {
+    token: typeof data.token === 'string' ? data.token : null,
+    scopes: Array.isArray(data.scopes) ? data.scopes : []
+  }
 }
 
 export async function searchUsers(username: string): Promise<VesperUser[]> {
