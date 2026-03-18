@@ -5,6 +5,7 @@ defmodule VesperWeb.SyncController do
   alias Vesper.Servers
   alias Vesper.Sync
   alias Vesper.SyncCursor
+  alias VesperWeb.ScopeSummary
 
   def index(conn, params) do
     user = conn.assigns.current_user
@@ -251,13 +252,7 @@ defmodule VesperWeb.SyncController do
   end
 
   defp channel_activity_json(%{channel_id: channel_id, message: message}) do
-    %{
-      channel_id: channel_id,
-      message_id: if(message, do: message.id, else: nil),
-      inserted_at: if(message, do: message.inserted_at, else: nil),
-      sender_id: if(message, do: message.sender_id, else: nil),
-      sender: if(message, do: sender_json(message.sender), else: nil)
-    }
+    ScopeSummary.channel_activity_json(channel_id, message)
   end
 
   defp sender_json(nil), do: nil

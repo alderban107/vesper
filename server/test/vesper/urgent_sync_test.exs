@@ -15,6 +15,7 @@ defmodule Vesper.UrgentSyncTest do
   alias VesperWeb.MlsEventController
   alias VesperWeb.MessageController
   alias VesperWeb.ScopeSyncController
+  alias VesperWeb.ScopeSummary
   alias VesperWeb.SyncController
   alias VesperWeb.UrgentSyncController
 
@@ -152,6 +153,95 @@ defmodule Vesper.UrgentSyncTest do
                activity["message_id"] == message.id &&
                activity["sender_id"] == user.id
            end)
+  end
+
+  test "scope summary updates broadcast channel activity over the user topic" do
+    owner = insert_user()
+    member = insert_user()
+    {:ok, server} = Vesper.Servers.create_server(owner, %{name: "alpha"})
+    assert {:ok, _joined_server} = Vesper.Servers.join_server(member, server.invite_code)
+
+    channel = Enum.find(server.channels, &(&1.type == "text"))
+    Phoenix.PubSub.subscribe(Vesper.PubSub, "user:#{owner.id}")
+    Phoenix.PubSub.subscribe(Vesper.PubSub, "user:#{member.id}")
+
+    message =
+      insert_channel_message(owner.id, channel.id, "hello")
+      |> then(fn message ->
+        {:ok, event} = Runtime.project_message(message)
+        Repo.preload(%{message | room_seq: event.room_seq}, :sender)
+      end)
+
+    assert :ok = ScopeSummary.broadcast_channel_update(channel.id, message, [owner.id, member.id])
+
+    topics =
+      for _ <- 1..2 do
+        assert_receive %Phoenix.Socket.Broadcast{
+          topic: topic,
+          event: "scope_summary_updated",
+          payload: %{
+            kind: "channel",
+            scope_id: scope_id,
+            channel_activity: %{
+              channel_id: activity_channel_id,
+              message_id: message_id,
+              sender_id: sender_id
+            }
+          }
+        }
+
+        assert scope_id == channel.id
+        assert activity_channel_id == channel.id
+        assert message_id == message.id
+        assert sender_id == owner.id
+        topic
+      end
+
+    assert Enum.sort(topics) == Enum.sort(["user:#{owner.id}", "user:#{member.id}"])
+  end
+
+  test "scope summary updates broadcast dm last-message resets over the user topic" do
+    owner = insert_user()
+    member = insert_user()
+    {:ok, conversation} = Chat.create_conversation(owner.id, [member.id], name: "chat")
+
+    Phoenix.PubSub.subscribe(Vesper.PubSub, "user:#{owner.id}")
+    Phoenix.PubSub.subscribe(Vesper.PubSub, "user:#{member.id}")
+
+    message =
+      insert_dm_message(owner.id, conversation.id, "hello")
+      |> then(fn message -> Repo.preload(message, :sender) end)
+
+    assert :ok = ScopeSummary.broadcast_dm_update(conversation.id, message, [owner.id, member.id])
+
+    topics =
+      for _ <- 1..2 do
+        assert_receive %Phoenix.Socket.Broadcast{
+          topic: topic,
+          event: "scope_summary_updated",
+          payload: %{
+            kind: "dm",
+            scope_id: scope_id,
+            conversation_reset: %{
+              conversation_id: payload_conversation_id,
+              last_message: %{
+                id: message_id,
+                conversation_id: message_conversation_id,
+                sender_id: sender_id
+              }
+            }
+          }
+        }
+
+        assert scope_id == conversation.id
+        assert payload_conversation_id == conversation.id
+        assert message_id == message.id
+        assert message_conversation_id == conversation.id
+        assert sender_id == owner.id
+        topic
+      end
+
+    assert Enum.sort(topics) == Enum.sort(["user:#{owner.id}", "user:#{member.id}"])
   end
 
   test "scope sync preserves requested order for accessible scopes and skips hidden ones", %{

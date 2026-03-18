@@ -7,6 +7,7 @@ defmodule VesperWeb.ChatChannel do
   alias Vesper.Encryption
   alias Vesper.Runtime
   alias Vesper.Sync
+  alias VesperWeb.ScopeSummary
   alias Vesper.Workers.ProcessPendingCryptoEvictions
   import VesperWeb.ChannelHelpers
 
@@ -106,6 +107,7 @@ defmodule VesperWeb.ChatChannel do
 
             notify_unread(channel_id, message, sender_id, member_ids)
             notify_mentions(mentioned, channel_id, sender_id, server_id, member_ids)
+            ScopeSummary.broadcast_channel_update(channel_id, message, member_ids)
 
             {:reply, :ok, socket}
 
@@ -366,6 +368,13 @@ defmodule VesperWeb.ChatChannel do
 
         broadcast!(socket, "message_deleted", Map.put(payload, :room_seq, room_seq))
         notify_scope_mutation(socket.assigns.server_id, "channel", socket.assigns.channel_id)
+
+        ScopeSummary.broadcast_channel_update(
+          socket.assigns.channel_id,
+          latest_message,
+          MemberCache.get_member_ids(socket.assigns.server_id)
+        )
+
         {:reply, :ok, socket}
 
       {:error, reason} ->

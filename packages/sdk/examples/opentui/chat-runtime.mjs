@@ -181,6 +181,38 @@ function applyChannelActivity(servers, activity) {
   }))
 }
 
+function setUnreadCount(unreadCounts, kind, scopeId, count) {
+  if (!scopeId || !Number.isFinite(count)) {
+    return unreadCounts
+  }
+
+  const key = kind === 'channel' ? 'channels' : 'conversations'
+  return {
+    ...unreadCounts,
+    [key]: {
+      ...unreadCounts[key],
+      [scopeId]: Math.max(0, Math.trunc(count))
+    }
+  }
+}
+
+function incrementUnreadCount(unreadCounts, kind, scopeId, delta = 1) {
+  if (!scopeId || !Number.isFinite(delta)) {
+    return unreadCounts
+  }
+
+  const key = kind === 'channel' ? 'channels' : 'conversations'
+  const nextValue = Math.max(0, (unreadCounts[key][scopeId] || 0) + Math.trunc(delta))
+
+  return {
+    ...unreadCounts,
+    [key]: {
+      ...unreadCounts[key],
+      [scopeId]: nextValue
+    }
+  }
+}
+
 function highestRoomSeq(messages) {
   let highest = null
 
@@ -445,14 +477,27 @@ export class VesperChatRuntime extends EventEmitter {
   }
 
   async handleUserEvent(event, payload) {
-    if (
-      event === 'new_conversation' ||
-      event === 'device_updated' ||
-      event === 'device_approval_requested' ||
-      event === 'dm_message' ||
-      event === 'dm_unread_update' ||
-      event === 'unread_update'
-    ) {
+    if (event === 'scope_summary_updated') {
+      this.applyScopeSummaryUpdate(payload)
+    }
+
+    if (event === 'new_conversation') {
+      this.applyNewConversation(payload)
+    }
+
+    if (event === 'dm_message') {
+      this.applyDirectMessageSummary(payload)
+    }
+
+    if (event === 'dm_unread_update') {
+      this.incrementScopeUnread('dm', payload?.conversation_id)
+    }
+
+    if (event === 'unread_update') {
+      this.applyChannelUnreadUpdate(payload)
+    }
+
+    if (event === 'device_updated' || event === 'device_approval_requested') {
       await this.refreshWorkspace().catch(() => {})
     }
 
@@ -483,7 +528,17 @@ export class VesperChatRuntime extends EventEmitter {
       throw new Error('Could not join server')
     }
 
-    await this.refreshWorkspace()
+    const data = await response.json().catch(() => ({}))
+    if (!data?.server?.id) {
+      await this.refreshWorkspace()
+      return
+    }
+
+    this.workspace = {
+      ...this.workspace,
+      servers: mergeById(this.workspace.servers, [data.server])
+    }
+    this.emitWorkspace()
   }
 
   async createDirectMessage(username) {
@@ -493,8 +548,14 @@ export class VesperChatRuntime extends EventEmitter {
       throw new Error(`User not found: ${username}`)
     }
 
-    await createConversation([user.id])
-    await this.refreshWorkspace()
+    const conversation = await createConversation([user.id])
+
+    this.workspace = {
+      ...this.workspace,
+      conversations: mergeById(this.workspace.conversations, [conversation]),
+      unreadCounts: setUnreadCount(this.workspace.unreadCounts, 'dm', conversation.id, 0)
+    }
+    this.emitWorkspace()
   }
 
   async openScope(scope) {
@@ -529,6 +590,42 @@ export class VesperChatRuntime extends EventEmitter {
     if (event === 'new_message') {
       const processed = await this.processIncomingMessage(scope.id, payload)
       this.upsertScopeMessage(scope.id, processed)
+      this.emitMessages(scope.id)
+      return
+    }
+
+    if (event === 'message_deleted') {
+      const existing = this.scopeMessages.get(scope.id) || []
+      this.scopeMessages.set(
+        scope.id,
+        existing.filter((message) => message.id !== payload?.message_id)
+      )
+
+      if (scope.kind === 'channel' && Object.hasOwn(payload || {}, 'latest_message')) {
+        this.applyScopeSummaryUpdate({
+          kind: 'channel',
+          scope_id: scope.id,
+          channel_activity: {
+            channel_id: scope.id,
+            message_id: payload?.latest_message?.id || null,
+            inserted_at: payload?.latest_message?.inserted_at || null,
+            sender_id: payload?.latest_message?.sender_id || null,
+            sender: payload?.latest_message?.sender || null
+          }
+        })
+      }
+
+      if (scope.kind === 'dm' && Object.hasOwn(payload || {}, 'latest_message')) {
+        this.applyScopeSummaryUpdate({
+          kind: 'dm',
+          scope_id: scope.id,
+          conversation_reset: {
+            conversation_id: scope.id,
+            last_message: payload?.latest_message || null
+          }
+        })
+      }
+
       this.emitMessages(scope.id)
       return
     }
@@ -748,8 +845,6 @@ export class VesperChatRuntime extends EventEmitter {
     if (!pushed) {
       throw new Error('Message send failed')
     }
-
-    await this.fetchScopeMessages(scope).catch(() => {})
   }
 
   getServer(serverId) {
@@ -758,6 +853,104 @@ export class VesperChatRuntime extends EventEmitter {
 
   getConversation(conversationId) {
     return this.workspace.conversations.find((conversation) => conversation.id === conversationId) || null
+  }
+
+  applyScopeSummaryUpdate(payload) {
+    if (!payload || typeof payload !== 'object') {
+      return
+    }
+
+    if (payload.kind === 'channel' && payload.channel_activity) {
+      this.workspace = {
+        ...this.workspace,
+        servers: applyChannelActivity(this.workspace.servers, [payload.channel_activity])
+      }
+      this.emitWorkspace()
+      return
+    }
+
+    if (payload.kind === 'dm' && payload.conversation_reset) {
+      this.workspace = {
+        ...this.workspace,
+        conversations: applyConversationResets(this.workspace.conversations, [payload.conversation_reset])
+      }
+      this.emitWorkspace()
+    }
+  }
+
+  applyNewConversation(payload) {
+    const conversation = payload?.conversation
+    if (!conversation || typeof conversation !== 'object' || !conversation.id) {
+      return
+    }
+
+    this.workspace = {
+      ...this.workspace,
+      conversations: mergeById(this.workspace.conversations, [conversation]),
+      unreadCounts: setUnreadCount(this.workspace.unreadCounts, 'dm', conversation.id, 0)
+    }
+    this.emitWorkspace()
+  }
+
+  applyDirectMessageSummary(payload) {
+    const conversationId = payload?.conversation_id
+    if (!conversationId) {
+      return
+    }
+
+    const lastMessage = {
+      id: payload?.message_id || null,
+      conversation_id: conversationId,
+      sender_id: payload?.sender_id || null,
+      sender: payload?.sender || null,
+      inserted_at: payload?.inserted_at || null,
+      ciphertext: 'encrypted'
+    }
+
+    this.workspace = {
+      ...this.workspace,
+      conversations: applyConversationResets(this.workspace.conversations, [
+        {
+          conversation_id: conversationId,
+          last_message: lastMessage.id ? lastMessage : null
+        }
+      ])
+    }
+    this.emitWorkspace()
+  }
+
+  applyChannelUnreadUpdate(payload) {
+    const channelId = payload?.channel_id
+    if (!channelId) {
+      return
+    }
+
+    this.workspace = {
+      ...this.workspace,
+      servers: applyChannelActivity(this.workspace.servers, [
+        {
+          channel_id: channelId,
+          message_id: payload?.message_id || null,
+          inserted_at: payload?.inserted_at || null,
+          sender_id: payload?.sender_id || null,
+          sender: payload?.sender || null
+        }
+      ]),
+      unreadCounts: incrementUnreadCount(this.workspace.unreadCounts, 'channel', channelId)
+    }
+    this.emitWorkspace()
+  }
+
+  incrementScopeUnread(kind, scopeId) {
+    if (!scopeId) {
+      return
+    }
+
+    this.workspace = {
+      ...this.workspace,
+      unreadCounts: incrementUnreadCount(this.workspace.unreadCounts, kind, scopeId)
+    }
+    this.emitWorkspace()
   }
 
   hasGroup(scopeId) {

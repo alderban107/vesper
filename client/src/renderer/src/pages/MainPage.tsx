@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { Suspense, lazy, useEffect, useRef, useState } from 'react'
 import { SendHorizonal, Star, X } from 'lucide-react'
 import Sidebar from '../components/layout/Sidebar'
 import Header from '../components/layout/Header'
@@ -8,29 +8,29 @@ import MessageItem from '../components/chat/MessageItem'
 import MessageFeed from '../components/chat/message/MessageFeed'
 import DmMessageList from '../components/dm/DmMessageList'
 import DmMessageInput from '../components/dm/DmMessageInput'
-import CreateServerModal from '../components/server/CreateServerModal'
-import JoinServerModal from '../components/server/JoinServerModal'
-import CreateChannelModal from '../components/server/CreateChannelModal'
-import NewDmModal from '../components/dm/NewDmModal'
-import SettingsModal from '../components/settings/SettingsModal'
-import IncomingCallModal from '../components/voice/IncomingCallModal'
-import CallOverlay from '../components/voice/CallOverlay'
-import RoleManager from '../components/server/RoleManager'
-import ServerSettingsModal from '../components/server/ServerSettingsModal'
-import ChannelSettingsModal from '../components/server/ChannelSettingsModal'
-import MemberListPanel from '../components/server/MemberListPanel'
-import PinsPanel from '../components/chat/PinsPanel'
-import VoiceChannelPanel from '../components/voice/VoiceChannelPanel'
 import { useServerStore } from '../stores/serverStore'
 import { useDmStore } from '../stores/dmStore'
 import { useUIStore } from '../stores/uiStore'
 import { useVoiceStore } from '../stores/voiceStore'
 import { useAuthStore } from '../stores/authStore'
 import { usePresenceStore } from '../stores/presenceStore'
-import { useUnreadStore } from '../stores/unreadStore'
 import { parseMessageContent, useMessageStore, type Message } from '../stores/messageStore'
 import { useSyncStore } from '../stores/syncStore'
 import { onSocketOpen } from '@vesper/sdk/transport'
+
+const CreateServerModal = lazy(() => import('../components/server/CreateServerModal'))
+const JoinServerModal = lazy(() => import('../components/server/JoinServerModal'))
+const CreateChannelModal = lazy(() => import('../components/server/CreateChannelModal'))
+const NewDmModal = lazy(() => import('../components/dm/NewDmModal'))
+const SettingsModal = lazy(() => import('../components/settings/SettingsModal'))
+const IncomingCallModal = lazy(() => import('../components/voice/IncomingCallModal'))
+const CallOverlay = lazy(() => import('../components/voice/CallOverlay'))
+const RoleManager = lazy(() => import('../components/server/RoleManager'))
+const ServerSettingsModal = lazy(() => import('../components/server/ServerSettingsModal'))
+const ChannelSettingsModal = lazy(() => import('../components/server/ChannelSettingsModal'))
+const MemberListPanel = lazy(() => import('../components/server/MemberListPanel'))
+const PinsPanel = lazy(() => import('../components/chat/PinsPanel'))
+const VoiceChannelPanel = lazy(() => import('../components/voice/VoiceChannelPanel'))
 
 const EMPTY_MESSAGES: Message[] = []
 const EMPTY_TYPING_USERS: { user_id: string; username: string }[] = []
@@ -79,10 +79,16 @@ function useIsMobileLayout(): boolean {
   return isMobile
 }
 
+function DeferredChrome({
+  children
+}: {
+  children: React.ReactNode
+}): React.JSX.Element {
+  return <Suspense fallback={null}>{children}</Suspense>
+}
+
 export default function MainPage(): React.JSX.Element {
   const isMobile = useIsMobileLayout()
-  const fetchServers = useServerStore((s) => s.fetchServers)
-  const activeServerId = useServerStore((s) => s.activeServerId)
   const activeChannelId = useServerStore((s) => s.activeChannelId)
   const activeChannel = useServerStore((s) => {
     const server = s.servers.find((entry) => entry.id === s.activeServerId)
@@ -112,7 +118,6 @@ export default function MainPage(): React.JSX.Element {
   const currentUser = useAuthStore((s) => s.user)
   const joinPresence = usePresenceStore((s) => s.joinPresence)
   const joinAllServerPresence = usePresenceStore((s) => s.joinAllServerPresence)
-  const fetchUnreadCounts = useUnreadStore((s) => s.fetchUnreadCounts)
   const syncNow = useSyncStore((s) => s.syncNow)
   const syncRecentScopes = useMessageStore((s) => s.syncRecentScopes)
   const activeThreadParentId = useMessageStore((s) => s.activeThreadParentId)
@@ -137,11 +142,6 @@ export default function MainPage(): React.JSX.Element {
   })
   const [threadReply, setThreadReply] = useState('')
   const sawInitialSocketOpenRef = useRef(false)
-
-  useEffect(() => {
-    fetchServers()
-    fetchUnreadCounts()
-  }, [fetchServers, fetchUnreadCounts])
 
   useEffect(() => {
     void syncNow(true)
@@ -361,7 +361,9 @@ export default function MainPage(): React.JSX.Element {
               {isChannelView ? (
                 <>
                   {isVoiceChannelView ? (
-                    <VoiceChannelPanel />
+                    <DeferredChrome>
+                      <VoiceChannelPanel />
+                    </DeferredChrome>
                   ) : (
                     <>
                       <MessageList />
@@ -382,21 +384,25 @@ export default function MainPage(): React.JSX.Element {
               )}
             </div>
 
-            {shouldShowCallOverlay && <CallOverlay mobileDocked />}
-            {isChannelView && showMemberList && !showThreadPanel && <MemberListPanel />}
+            <DeferredChrome>
+              {shouldShowCallOverlay && <CallOverlay mobileDocked />}
+              {isChannelView && showMemberList && !showThreadPanel && <MemberListPanel />}
+            </DeferredChrome>
             {renderThreadPanel(true)}
           </div>
         )}
 
-        {showCreateServerModal && <CreateServerModal />}
-        {showJoinServerModal && <JoinServerModal />}
-        {showCreateChannelModal && <CreateChannelModal />}
-        {showNewDmModal && <NewDmModal />}
-        {showSettingsModal && <SettingsModal />}
-        {showRoleManager && <RoleManager />}
-        {showServerSettingsModal && <ServerSettingsModal />}
-        {showChannelSettingsModal && <ChannelSettingsModal />}
-        {incomingCall && <IncomingCallModal />}
+        <DeferredChrome>
+          {showCreateServerModal && <CreateServerModal />}
+          {showJoinServerModal && <JoinServerModal />}
+          {showCreateChannelModal && <CreateChannelModal />}
+          {showNewDmModal && <NewDmModal />}
+          {showSettingsModal && <SettingsModal />}
+          {showRoleManager && <RoleManager />}
+          {showServerSettingsModal && <ServerSettingsModal />}
+          {showChannelSettingsModal && <ChannelSettingsModal />}
+          {incomingCall && <IncomingCallModal />}
+        </DeferredChrome>
       </div>
     )
   }
@@ -413,7 +419,9 @@ export default function MainPage(): React.JSX.Element {
             {isChannelView ? (
               <>
                 {isVoiceChannelView ? (
-                  <VoiceChannelPanel />
+                  <DeferredChrome>
+                    <VoiceChannelPanel />
+                  </DeferredChrome>
                 ) : (
                   <>
                     <MessageList />
@@ -434,27 +442,31 @@ export default function MainPage(): React.JSX.Element {
             )}
           </div>
           {renderThreadPanel(false)}
-          {!showThreadPanel && isChannelView && showMemberList && <MemberListPanel />}
-          {!showThreadPanel && isChannelView && showPins && activeChannelId && (
-            <PinsPanel
-              channelId={activeChannelId}
-              topic={`chat:channel:${activeChannelId}`}
-              onClose={closePins}
-            />
-          )}
+          <DeferredChrome>
+            {!showThreadPanel && isChannelView && showMemberList && <MemberListPanel />}
+            {!showThreadPanel && isChannelView && showPins && activeChannelId && (
+              <PinsPanel
+                channelId={activeChannelId}
+                topic={`chat:channel:${activeChannelId}`}
+                onClose={closePins}
+              />
+            )}
+          </DeferredChrome>
         </div>
       </div>
 
-      {showCreateServerModal && <CreateServerModal />}
-      {showJoinServerModal && <JoinServerModal />}
-      {showCreateChannelModal && <CreateChannelModal />}
-      {showNewDmModal && <NewDmModal />}
-      {showSettingsModal && <SettingsModal />}
-      {showRoleManager && <RoleManager />}
-      {showServerSettingsModal && <ServerSettingsModal />}
-      {showChannelSettingsModal && <ChannelSettingsModal />}
-      {incomingCall && <IncomingCallModal />}
-      {shouldShowCallOverlay && <CallOverlay />}
+      <DeferredChrome>
+        {showCreateServerModal && <CreateServerModal />}
+        {showJoinServerModal && <JoinServerModal />}
+        {showCreateChannelModal && <CreateChannelModal />}
+        {showNewDmModal && <NewDmModal />}
+        {showSettingsModal && <SettingsModal />}
+        {showRoleManager && <RoleManager />}
+        {showServerSettingsModal && <ServerSettingsModal />}
+        {showChannelSettingsModal && <ChannelSettingsModal />}
+        {incomingCall && <IncomingCallModal />}
+        {shouldShowCallOverlay && <CallOverlay />}
+      </DeferredChrome>
     </div>
   )
 }

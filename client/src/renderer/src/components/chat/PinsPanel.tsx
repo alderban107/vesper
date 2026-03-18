@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react'
+import { Suspense, lazy, useState, useEffect } from 'react'
 import { Pin, PinOff, X } from 'lucide-react'
 import { apiFetch } from '@vesper/sdk/transport'
 import { useMessageStore } from '../../stores/messageStore'
 import type { Message } from '../../stores/messageStore'
-import MarkdownContent from './MarkdownContent'
+
+const MarkdownContent = lazy(() => import('./MarkdownContent'))
 
 interface PinnedEntry {
   id: string
@@ -103,7 +104,9 @@ export default function PinsPanel({ channelId, topic, onClose }: Props): React.J
                 </button>
               </div>
               <div className="text-text-secondary text-xs">
-                <MarkdownContent content={pin.message.content || ''} />
+                <Suspense fallback={<div>{pin.message.content || ''}</div>}>
+                  <MarkdownContent content={pin.message.content || ''} />
+                </Suspense>
               </div>
             </div>
           ))

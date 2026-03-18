@@ -6,6 +6,7 @@ defmodule VesperWeb.DmChannel do
   alias Vesper.Runtime
   alias Vesper.Sync
   alias Vesper.Voice
+  alias VesperWeb.ScopeSummary
   alias Vesper.Workers.ProcessPendingCryptoEvictions
   import VesperWeb.ChannelHelpers
 
@@ -92,6 +93,8 @@ defmodule VesperWeb.DmChannel do
             sender_info,
             message
           )
+
+          ScopeSummary.broadcast_dm_update(conversation_id, message, participant_ids)
 
           {:reply, :ok, socket}
 
@@ -378,6 +381,12 @@ defmodule VesperWeb.DmChannel do
           socket.assigns.participant_ids,
           "dm",
           socket.assigns.conversation_id
+        )
+
+        ScopeSummary.broadcast_dm_update(
+          socket.assigns.conversation_id,
+          latest_message,
+          socket.assigns.participant_ids
         )
 
         {:reply, :ok, socket}

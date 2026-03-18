@@ -403,8 +403,28 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 
-  handleDeviceEvent: async (_device) => {
-    await get().fetchDevices()
+  handleDeviceEvent: async (device) => {
+    const state = get()
+    const existingCurrentDevice = state.currentDevice
+    const currentDeviceUpdated = existingCurrentDevice?.id === device.id
+    const nextCurrentDevice = currentDeviceUpdated ? device : existingCurrentDevice
+    const nextCanUseE2EE =
+      nextCurrentDevice?.trust_state === 'trusted' ? state.canUseE2EE : false
+
+    set({
+      devices: [
+        device,
+        ...state.devices.filter((entry) => entry.id !== device.id)
+      ],
+      currentDevice: nextCurrentDevice,
+      canUseE2EE: nextCanUseE2EE,
+      error: nextCurrentDevice?.trust_state === 'trusted' ? null : state.error
+    })
+
+    if (state.canUseE2EE && !nextCanUseE2EE) {
+      await resetEncryptedRuntime()
+      await refreshActiveEncryptedViews()
+    }
   },
 
   updateProfile: async (attrs) => {

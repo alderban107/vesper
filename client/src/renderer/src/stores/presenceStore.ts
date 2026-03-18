@@ -27,8 +27,6 @@ let presenceSourcesByTopic = new Map<string, Record<string, PresenceStatus>>()
 let pendingScopeMutations = new Set<string>()
 let scopeMutationRefreshPromise: Promise<void> | null = null
 let recentUnreadMessageKeys = new Map<string, number>()
-let unreadRefreshPromise: Promise<void> | null = null
-let unreadRefreshRequested = false
 
 const HEARTBEAT_INTERVAL = 30_000 // 30 seconds
 const IDLE_TIMEOUT = 300_000 // 5 minutes
@@ -148,12 +146,6 @@ async function flushScopeMutations(): Promise<void> {
           messageState.activeScopeId,
           ...messageState.recentScopeIds
         ].filter((scopeId): scopeId is string => Boolean(scopeId)))
-        const changedScopeKinds = new Set(
-          scopeKeys
-            .map((scopeKey) => scopeKey.split(':', 2)[0] ?? null)
-            .filter((kind): kind is 'channel' | 'dm' => kind === 'channel' || kind === 'dm')
-        )
-
         const changedTrackedScopeIds = [
           ...new Set(
             scopeKeys
@@ -171,25 +163,6 @@ async function flushScopeMutations(): Promise<void> {
           await useMessageStore.getState().syncRecentScopes(previousSyncToken, {
             scopeIds: changedTrackedScopeIds
           })
-        }
-
-        const refreshTasks: Promise<unknown>[] = []
-
-        if (changedScopeKinds.has('dm')) {
-          const [{ useDmStore }, { useUnreadStore }] = await Promise.all([
-            import('./dmStore'),
-            import('./unreadStore')
-          ])
-
-          refreshTasks.push(useDmStore.getState().fetchConversations())
-          refreshTasks.push(useUnreadStore.getState().fetchUnreadCounts())
-        } else if (changedScopeKinds.has('channel')) {
-          const { useUnreadStore } = await import('./unreadStore')
-          refreshTasks.push(useUnreadStore.getState().fetchUnreadCounts())
-        }
-
-        if (refreshTasks.length > 0) {
-          await Promise.all(refreshTasks)
         }
       }
     } finally {
@@ -229,28 +202,6 @@ function claimUnreadMessageKey(
 
   recentUnreadMessageKeys.set(dedupeKey, now)
   return true
-}
-
-function scheduleUnreadCountsRefresh(): void {
-  unreadRefreshRequested = true
-
-  if (unreadRefreshPromise) {
-    return
-  }
-
-  unreadRefreshPromise = (async () => {
-    try {
-      while (unreadRefreshRequested) {
-        unreadRefreshRequested = false
-        const { useUnreadStore } = await import('./unreadStore')
-        await useUnreadStore.getState().fetchUnreadCounts()
-      }
-    } finally {
-      unreadRefreshPromise = null
-    }
-  })()
-
-  void unreadRefreshPromise.catch(() => {})
 }
 
 function resetIdleTimer(): void {
@@ -305,6 +256,62 @@ function triggerUrgentBackgroundSync(): void {
   })
 }
 
+function applyScopeSummaryUpdate(payload: unknown): void {
+  if (!payload || typeof payload !== 'object') {
+    return
+  }
+
+  const data = payload as {
+    kind?: 'channel' | 'dm'
+    channel_activity?: {
+      channel_id?: string
+      message_id?: string | null
+      inserted_at?: string | null
+      sender_id?: string | null
+      sender?: {
+        id: string
+        username: string
+        display_name?: string | null
+        avatar_url?: string | null
+      } | null
+    } | null
+    conversation_reset?: {
+      conversation_id?: string
+      last_message?: DmConversation['last_message'] | null
+    } | null
+  }
+
+  if (data.kind === 'channel' && data.channel_activity?.channel_id) {
+    const activity = data.channel_activity
+
+    if (activity.message_id && activity.inserted_at) {
+      useServerStore.getState().applyChannelActivity({
+        channelId: activity.channel_id,
+        messageId: activity.message_id,
+        insertedAt: activity.inserted_at,
+        senderId: activity.sender_id ?? null,
+        sender: activity.sender ?? null
+      })
+    } else {
+      useServerStore.getState().syncChannelLastMessage({
+        channelId: activity.channel_id,
+        lastMessage: null
+      })
+    }
+
+    return
+  }
+
+  if (data.kind === 'dm' && data.conversation_reset?.conversation_id) {
+    import('./dmStore').then(({ useDmStore }) => {
+      useDmStore.getState().syncConversationLastMessage({
+        conversationId: data.conversation_reset?.conversation_id ?? '',
+        lastMessage: data.conversation_reset?.last_message ?? null
+      })
+    })
+  }
+}
+
 export const usePresenceStore = create<PresenceState>((set, get) => ({
   statuses: {},
   myStatus: 'online',
@@ -331,6 +338,8 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
           const data = payload as { conversation: DmConversation }
           useDmStore.getState().addConversation(data.conversation)
         })
+      } else if (event === 'scope_summary_updated') {
+        applyScopeSummaryUpdate(payload)
       } else if (event === 'server_membership_revoked') {
         Promise.all([
           import('./cryptoStore'),
@@ -362,7 +371,6 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
           }
         })
       } else if (event === 'dm_message') {
-        triggerUrgentBackgroundSync()
         Promise.all([
           import('./dmStore'),
           import('./unreadStore')
@@ -467,7 +475,6 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
           void processPendingHistoryScope(data.scope_id, data.topic).catch(() => {})
         })
       } else if (event === 'unread_update') {
-        triggerUrgentBackgroundSync()
         const data = payload as {
           channel_id: string
           message_id: string
@@ -496,12 +503,10 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
           if (useServerStore.getState().activeChannelId !== data.channel_id) {
             useUnreadStore.getState().incrementChannel(data.channel_id)
           }
-          queueScopeMutation('channel', data.channel_id)
         })
       } else if (event === 'mention') {
         triggerUrgentBackgroundSync()
       } else if (event === 'dm_unread_update') {
-        triggerUrgentBackgroundSync()
         const data = payload as { conversation_id: string; message_id: string }
         Promise.all([
           import('./dmStore'),
@@ -514,8 +519,6 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
             useUnreadStore.getState().incrementDm(data.conversation_id)
           }
         })
-        scheduleUnreadCountsRefresh()
-        queueScopeMutation('dm', data.conversation_id)
       } else if (event === 'scope_mutation') {
         const data = payload as { kind: 'channel' | 'dm'; scope_id: string }
         queueScopeMutation(data.kind, data.scope_id)

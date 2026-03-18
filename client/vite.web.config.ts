@@ -24,6 +24,46 @@ export default defineConfig({
   build: {
     outDir: resolve(__dirname, 'dist-web'),
     emptyOutDir: true,
-    sourcemap: true
+    sourcemap: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) {
+            return undefined
+          }
+
+          if (
+            id.includes('/react-markdown/') ||
+            id.includes('/remark-gfm/') ||
+            id.includes('/remark-math/') ||
+            id.includes('/rehype-katex/') ||
+            id.includes('/katex/') ||
+            id.includes('/highlight.js/')
+          ) {
+            return 'markdown'
+          }
+
+          if (
+            id.includes('/ts-mls/') ||
+            id.includes('/@noble/') ||
+            id.includes('/@hpke/') ||
+            id.includes('/hash-wasm/')
+          ) {
+            return 'crypto-vendor'
+          }
+
+          if (
+            id.includes('/react/') ||
+            id.includes('/react-dom/') ||
+            id.includes('/zustand/') ||
+            id.includes('/lucide-react/')
+          ) {
+            return 'app-vendor'
+          }
+
+          return undefined
+        }
+      }
+    }
   }
 })

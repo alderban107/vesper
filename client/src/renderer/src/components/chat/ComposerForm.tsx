@@ -7,6 +7,7 @@ import type {
   RefObject,
   UIEventHandler
 } from 'react'
+import { Suspense, lazy } from 'react'
 import { Loader2, Paperclip, SendHorizonal, Smile } from 'lucide-react'
 import type { DmConversation } from '../../stores/dmStore'
 import type { Message } from '../../stores/messageStore'
@@ -14,8 +15,9 @@ import type { Member, Server } from '../../stores/serverStore'
 import type { PickerEmoji } from './EmojiPicker'
 import EmojiPicker from './EmojiPicker'
 import ComposerAutocomplete, { type ComposerAutocompleteItem } from './ComposerAutocomplete'
-import ComposerRichTextPreview from './ComposerRichTextPreview'
 import ComposerShell, { type StagedFile } from './message/ComposerShell'
+
+const ComposerRichTextPreview = lazy(() => import('./ComposerRichTextPreview'))
 
 interface Props {
   autocompleteItems: ComposerAutocompleteItem[]
@@ -182,13 +184,15 @@ export default function ComposerForm({
           </div>
           <div className={`vesper-composer-input-stack${showRichPreview ? ' vesper-composer-input-stack-rich' : ''}`}>
             {showRichPreview && (
-              <ComposerRichTextPreview
-                containerRef={previewRef}
-                content={content}
-                members={members}
-                conversation={conversation}
-                server={server}
-              />
+              <Suspense fallback={null}>
+                <ComposerRichTextPreview
+                  containerRef={previewRef}
+                  content={content}
+                  members={members}
+                  conversation={conversation}
+                  server={server}
+                />
+              </Suspense>
             )}
             <textarea
               ref={textareaRef}

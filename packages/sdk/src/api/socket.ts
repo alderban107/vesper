@@ -15,6 +15,7 @@ const CHAT_EVENTS = [
   'mention',
   'new_conversation', 'dm_message',
   'dm_typing_start', 'dm_typing_stop',
+  'scope_summary_updated',
   'scope_mutation',
   'mls_history_request_pending', 'mls_history_bundle_pending',
   'unread_update', 'dm_unread_update',

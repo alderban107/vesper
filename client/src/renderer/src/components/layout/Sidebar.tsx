@@ -185,7 +185,6 @@ export default function Sidebar(): React.JSX.Element {
   const leaveServer = useServerStore((s) => s.leaveServer)
   const selectedConversationId = useDmStore((s) => s.selectedConversationId)
   const selectConversation = useDmStore((s) => s.selectConversation)
-  const fetchConversations = useDmStore((s) => s.fetchConversations)
   const channelUnreads = useUnreadStore((s) => s.channelUnreads)
   const dmUnreads = useUnreadStore((s) => s.dmUnreads)
   const serverMenu = useContextMenu<string>()
@@ -274,7 +273,6 @@ export default function Sidebar(): React.JSX.Element {
     selectConversation(null)
     setActiveServer(null)
     setActiveChannel(null)
-    fetchConversations()
     setServerHeaderOpen(false)
     if (isMobileLayout) {
       closeMobileNav()

@@ -1,4 +1,3 @@
-import { useEffect } from 'react'
 import { Plus } from 'lucide-react'
 import { useDmStore, type DmConversation } from '../../stores/dmStore'
 import { useAuthStore } from '../../stores/authStore'
@@ -11,17 +10,12 @@ export default function DmSidebar(): React.JSX.Element {
   const conversations = useDmStore((s) => s.conversations)
   const selectedId = useDmStore((s) => s.selectedConversationId)
   const selectConversation = useDmStore((s) => s.selectConversation)
-  const fetchConversations = useDmStore((s) => s.fetchConversations)
   const openNewDmModal = useUIStore((s) => s.openNewDmModal)
   const closeMobileNav = useUIStore((s) => s.closeMobileNav)
   const currentUserId = useAuthStore((s) => s.user?.id)
   const dmUnreads = useUnreadStore((s) => s.dmUnreads)
   const getPresenceStatus = usePresenceStore((s) => s.getStatus)
   const isMobileLayout = typeof window !== 'undefined' && window.innerWidth <= 768
-
-  useEffect(() => {
-    fetchConversations()
-  }, [fetchConversations])
 
   const getDisplayName = (conv: DmConversation): string => {
     if (conv.name) return conv.name
