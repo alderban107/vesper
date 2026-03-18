@@ -9,8 +9,14 @@ export default defineConfig({
     alias: {
       '@vesper/sdk/api': resolve(__dirname, '../packages/sdk/src/api/index.ts'),
       '@vesper/sdk/auth': resolve(__dirname, '../packages/sdk/src/auth/index.ts'),
+      '@vesper/sdk/client': resolve(__dirname, '../packages/sdk/src/client/index.ts'),
+      '@vesper/sdk/client/file-session-store': resolve(
+        __dirname,
+        '../packages/sdk/src/client/fileSessionStore.ts'
+      ),
       '@vesper/sdk/crypto': resolve(__dirname, '../packages/sdk/src/crypto/index.ts'),
       '@vesper/sdk/storage': resolve(__dirname, '../packages/sdk/src/storage/index.ts'),
+      '@vesper/sdk/storage/file': resolve(__dirname, '../packages/sdk/src/storage/file.ts'),
       '@vesper/sdk/testing': resolve(__dirname, '../packages/sdk/src/testing/index.ts'),
       '@vesper/sdk/transport': resolve(__dirname, '../packages/sdk/src/transport/index.ts'),
       '@vesper/sdk/types': resolve(__dirname, '../packages/sdk/src/types/index.ts'),

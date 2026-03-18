@@ -1475,12 +1475,13 @@ VoiceChannel join handlers. Eliminates TOCTOU races from separate lookup + check
 │   │       │   ├── serverStore.ts
 │   │       │   ├── messageStore.ts
 │   │       │   ├── voiceStore.ts
-│   │       │   ├── cryptoStore.ts
 │   │       │   ├── dmStore.ts
 │   │       │   ├── presenceStore.ts
 │   │       │   ├── unreadStore.ts
 │   │       │   ├── settingsStore.ts
 │   │       │   └── uiStore.ts
+│   │       ├── sdk/
+│   │       │   └── client.ts    # Renderer SDK singleton + encrypted chat runtime
 │   │       ├── crypto/
 │   │       │   ├── mls.ts       # ts-mls wrapper
 │   │       │   ├── identity.ts  # Key generation, backup, recovery

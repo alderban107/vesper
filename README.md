@@ -57,6 +57,12 @@ mix phx.server   # start on localhost:4000
 
 Dev database defaults: `postgres:postgres@localhost/vesper_dev`
 
+To point local Phoenix dev at a custom Postgres instance, set:
+`DEV_DB_HOST`, `DEV_DB_PORT`, `DEV_DB_USER`, `DEV_DB_PASS`, and optionally `DEV_DB_NAME`.
+
+The repo pre-commit hook now defaults its test database settings to the SDK local DB helper
+(`localhost:55432`, user/password `vesper_sdk`) unless `TEST_DB_*` is already set.
+
 ## Downloading the Client
 
 ### Pre-built releases
@@ -181,6 +187,11 @@ All variables are set in `.env` (loaded by Docker Compose) or exported in the sh
 | `DATABASE_URL` | — | **Yes** (prod) | Full Ecto connection string, e.g. `ecto://user:pass@host/db`. Only used in production; dev/test use compiled config. |
 | `POOL_SIZE` | `10` | No | Database connection pool size |
 | `ECTO_IPV6` | — | No | Set to `true` or `1` to connect to PostgreSQL over IPv6 |
+| `DEV_DB_HOST` | `localhost` | No | Phoenix dev PostgreSQL host when running from source |
+| `DEV_DB_PORT` | `5432` | No | Phoenix dev PostgreSQL port when running from source |
+| `DEV_DB_USER` | `postgres` | No | Phoenix dev PostgreSQL username when running from source |
+| `DEV_DB_PASS` | `postgres` | No | Phoenix dev PostgreSQL password when running from source |
+| `DEV_DB_NAME` | `vesper_dev` | No | Phoenix dev PostgreSQL database name when running from source |
 
 ### Server
 

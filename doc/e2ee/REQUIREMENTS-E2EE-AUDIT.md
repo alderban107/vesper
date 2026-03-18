@@ -39,7 +39,7 @@ Removing the code that fixes them would reintroduce the vulnerability.
 | H6 | High | `handleCommit()` caught all errors silently — failed commits were swallowed with no retry or user feedback | 3-attempt retry with exponential backoff; evict state on total failure |
 | C4 | Critical | `decodeMlsMessage` called without required `offset` argument — all MLS decode operations returned `undefined`, blocking group creation, welcome processing, commit handling, and message decryption | `decodeMlsMessageFromBytes()` wrapper in `mls.ts` passes `offset = 0` and extracts value from tuple. **Do not call `decodeMlsMessage` directly.** |
 | C5 | Critical | `clientConfig` lost on group state deserialization — `encodeGroupState` does not serialize `clientConfig`, so encrypt/decrypt crashed with `paddingConfig` undefined after any state reload | `deserializeGroupState()` in `mls.ts` reattaches `vesperClientConfig` after decoding. **Do not call `decodeGroupState` directly.** |
-| C6 | High | No self-decrypt mechanism — sender's own messages always showed as "[Message unavailable]" because MLS ratchet key is consumed on encrypt | Sent-message cache (100-entry LRU) in `decryptionCache.ts`, populated by `encryptForChannel()` in `cryptoStore.ts`, checked by `processIncomingMessage()` and reaction/edit handlers in `messageStore.ts` |
+| C6 | High | No self-decrypt mechanism — sender's own messages always showed as "[Message unavailable]" because MLS ratchet key is consumed on encrypt | Sent-message cache (100-entry LRU) in `decryptionCache.ts`, populated by the SDK encrypted chat runtime send path, checked by `processIncomingMessage()` and reaction/edit handlers |
 
 ---
 
@@ -471,7 +471,8 @@ retention window rather than by actual message lifecycle.
 > `ensureGroupMembership()`.
 >
 > **What satisfies the partial implementation:** `ensureGroupMembership()` in
-> `cryptoStore.ts` (3-tier check: memory → DB → pending welcomes),
+> `packages/sdk/src/client/encryptedChat.ts` (3-tier check: memory → DB →
+> pending welcomes),
 > `mls_pending_welcomes` server-side storage, `fetchPendingWelcomes()` API.
 
 A new device downloads the encrypted key bundle and recovers the identity keys. But it
@@ -542,7 +543,8 @@ Discord, where new members can scroll back — but the privacy tradeoff is worth
 > Commit), server-side batching coordination, and lazy rotation for large channels.
 >
 > **What satisfies the partial implementation:** `withGroupLock()` wrapping all
-> state-mutating operations in `cryptoStore.ts`, the retry logic in `handleCommit()`.
+> state-mutating operations in `packages/sdk/src/client/encryptedChat.ts`, the retry
+> logic in `handleCommit()`.
 >
 > **Do not remove:** The group lock or the commit retry logic. Without these,
 > concurrent operations corrupt MLS state (bug H5) and failed commits are silently
@@ -570,8 +572,8 @@ retry, but not yet by batching.
 > **Status: ⚠️ Partial**
 >
 > Any member can create the MLS group if none exists (`createGroup()` in
-> `cryptoStore.ts`). The `groupSetupInProgress` flag prevents double-creation within
-> a single client.
+> `packages/sdk/src/client/encryptedChat.ts`). The `groupSetupInProgress` flag
+> prevents double-creation within a single client.
 >
 > **What's missing:** Server-side first-wins coordination. If two members simultaneously
 > create the group, both succeed locally but only one Commit can be authoritative. The
@@ -824,8 +826,8 @@ to see. Inviting a bot must explicitly communicate that it gains decryption acce
 > the voice channel handlers issue MLS events but the client-side voice encryption
 > pipeline doesn't automatically re-derive the key on epoch change.
 >
-> **What satisfies the partial implementation:** `deriveVoiceKey()`, `getVoiceKey()`
-> in `cryptoStore.ts`.
+> **What satisfies the partial implementation:** `deriveVoiceKey()` plus the SDK
+> runtime voice helpers in `packages/sdk/src/client/encryptedChat.ts`.
 
 ### R-VOICE-2: Voice and text channels should use separate MLS groups
 
