@@ -1,9 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AlertCircle, Download, FileText, Loader2, Paperclip, Play, Volume2 } from 'lucide-react'
-import { apiFetch } from '../../api/client'
 import { decryptFile } from '../../crypto/fileEncryption'
 import { useVisibility } from '../../hooks/useVisibility'
 import type { FileMessageContent } from '../../stores/messageStore'
+import { fetchAttachmentBytes } from '../../utils/attachmentFetch'
+import {
+  acquireCachedAttachmentObjectUrl,
+  loadCachedAttachmentObjectUrl,
+  releaseCachedAttachmentObjectUrl
+} from '../../utils/attachmentObjectUrlCache'
 import { resolveContentType } from '../../utils/mimeSniff'
 import AudioPlayer from './AudioPlayer'
 import ImageLightbox from './ImageLightbox'
@@ -45,37 +50,57 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
 
   // Audio cover art
   const [coverUrl, setCoverUrl] = useState<string | null>(null)
-  const coverUrlRef = useRef<string | null>(null)
+  const coverCacheKey = file.audio_metadata?.cover ? `attachment-cover:${file.audio_metadata.cover.id}` : null
+  const coverRetainedRef = useRef(false)
 
-  // Track the blob URL in a ref so cleanup doesn't depend on stale state
-  const blobUrlRef = useRef<string | null>(null)
+  const previewCacheKey = `attachment-preview:${file.id}`
+  const previewRetainedRef = useRef(false)
 
-  const revokeUrl = useCallback(() => {
-    if (blobUrlRef.current) {
-      URL.revokeObjectURL(blobUrlRef.current)
-      blobUrlRef.current = null
+  const releasePreviewUrl = useCallback(() => {
+    if (previewRetainedRef.current) {
+      releaseCachedAttachmentObjectUrl(previewCacheKey)
+      previewRetainedRef.current = false
       setPreviewUrl(null)
     }
-  }, [])
+  }, [previewCacheKey])
+
+  const releaseCoverUrl = useCallback(() => {
+    if (coverRetainedRef.current && coverCacheKey) {
+      releaseCachedAttachmentObjectUrl(coverCacheKey)
+      coverRetainedRef.current = false
+      setCoverUrl(null)
+    }
+  }, [coverCacheKey])
 
   // Image: auto-fetch when visible. Audio: fetch only after explicit click.
   useEffect(() => {
     if (!isImage || !hasBeenVisible) return
-    if (blobUrlRef.current) return // already loaded
+    if (previewRetainedRef.current) return
 
     let cancelled = false
+    const cachedUrl = acquireCachedAttachmentObjectUrl(previewCacheKey)
+    if (cachedUrl) {
+      previewRetainedRef.current = true
+      setError(false)
+      setLoading(false)
+      setPreviewUrl(cachedUrl)
+
+      return () => {
+        releasePreviewUrl()
+      }
+    }
+
     setLoading(true)
     setError(false)
+    previewRetainedRef.current = true
 
-    void apiFetch(`/api/v1/attachments/${file.id}`)
-      .then(async (res) => {
-        if (!res.ok) throw new Error('fetch failed')
-        const encrypted = await res.arrayBuffer()
-        const decrypted = await decryptFile(encrypted, file.key, file.iv)
+    void loadCachedAttachmentObjectUrl(previewCacheKey, async () => {
+      const encrypted = await fetchAttachmentBytes(file.id)
+      const decrypted = await decryptFile(encrypted, file.key, file.iv)
+      return new Blob([decrypted], { type: effectiveType })
+    })
+      .then((url) => {
         if (cancelled) return
-        const blob = new Blob([decrypted], { type: effectiveType })
-        const url = URL.createObjectURL(blob)
-        blobUrlRef.current = url
         setPreviewUrl(url)
       })
       .catch(() => {
@@ -87,27 +112,39 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
 
     return () => {
       cancelled = true
+      releasePreviewUrl()
     }
-  }, [isImage, hasBeenVisible, file.id, file.key, file.iv, effectiveType])
+  }, [isImage, hasBeenVisible, file.id, file.key, file.iv, effectiveType, previewCacheKey, releasePreviewUrl])
 
   // Audio: fetch when explicitly requested
   useEffect(() => {
     if (!isAudio || !audioRequested) return
-    if (blobUrlRef.current) return
+    if (previewRetainedRef.current) return
 
     let cancelled = false
+    const cachedUrl = acquireCachedAttachmentObjectUrl(previewCacheKey)
+    if (cachedUrl) {
+      previewRetainedRef.current = true
+      setError(false)
+      setLoading(false)
+      setPreviewUrl(cachedUrl)
+
+      return () => {
+        releasePreviewUrl()
+      }
+    }
+
     setLoading(true)
     setError(false)
+    previewRetainedRef.current = true
 
-    void apiFetch(`/api/v1/attachments/${file.id}`)
-      .then(async (res) => {
-        if (!res.ok) throw new Error('fetch failed')
-        const encrypted = await res.arrayBuffer()
-        const decrypted = await decryptFile(encrypted, file.key, file.iv)
+    void loadCachedAttachmentObjectUrl(previewCacheKey, async () => {
+      const encrypted = await fetchAttachmentBytes(file.id)
+      const decrypted = await decryptFile(encrypted, file.key, file.iv)
+      return new Blob([decrypted], { type: effectiveType })
+    })
+      .then((url) => {
         if (cancelled) return
-        const blob = new Blob([decrypted], { type: effectiveType })
-        const url = URL.createObjectURL(blob)
-        blobUrlRef.current = url
         setPreviewUrl(url)
       })
       .catch(() => {
@@ -119,33 +156,44 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
 
     return () => {
       cancelled = true
+      releasePreviewUrl()
     }
-  }, [isAudio, audioRequested, file.id, file.key, file.iv, effectiveType])
+  }, [isAudio, audioRequested, file.id, file.key, file.iv, effectiveType, previewCacheKey, releasePreviewUrl])
 
-  // Memory eviction: revoke blob URLs for images that scroll far away
+  // Release the row's local hold when it scrolls far away.
+  // The shared cache keeps hot previews around until LRU pressure evicts them.
   useEffect(() => {
-    if (isImage && isFarAway && blobUrlRef.current) {
-      revokeUrl()
+    if (isImage && isFarAway && previewRetainedRef.current) {
+      releasePreviewUrl()
     }
-  }, [isImage, isFarAway, revokeUrl])
+  }, [isImage, isFarAway, releasePreviewUrl])
 
   // Audio: eagerly fetch and decrypt cover art thumbnail when available
   const audioMeta = isAudio ? file.audio_metadata : undefined
   useEffect(() => {
     const cover = audioMeta?.cover
     if (!cover) return
-    if (coverUrlRef.current) return
+    if (!coverCacheKey || coverRetainedRef.current) return
 
     let cancelled = false
-    void apiFetch(`/api/v1/attachments/${cover.id}`)
-      .then(async (res) => {
-        if (!res.ok) return
-        const encrypted = await res.arrayBuffer()
-        const decrypted = await decryptFile(encrypted, cover.key, cover.iv)
+    const cachedUrl = acquireCachedAttachmentObjectUrl(coverCacheKey)
+    if (cachedUrl) {
+      coverRetainedRef.current = true
+      setCoverUrl(cachedUrl)
+
+      return () => {
+        releaseCoverUrl()
+      }
+    }
+
+    coverRetainedRef.current = true
+    void loadCachedAttachmentObjectUrl(coverCacheKey, async () => {
+      const encrypted = await fetchAttachmentBytes(cover.id)
+      const decrypted = await decryptFile(encrypted, cover.key, cover.iv)
+      return new Blob([decrypted], { type: 'image/jpeg' })
+    })
+      .then((url) => {
         if (cancelled) return
-        const blob = new Blob([decrypted], { type: 'image/jpeg' })
-        const url = URL.createObjectURL(blob)
-        coverUrlRef.current = url
         setCoverUrl(url)
       })
       .catch(() => {
@@ -154,28 +202,21 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
 
     return () => {
       cancelled = true
+      releaseCoverUrl()
     }
-  }, [audioMeta?.cover])
+  }, [audioMeta?.cover, coverCacheKey, releaseCoverUrl])
 
   // Cleanup blob URLs on unmount
   useEffect(() => {
     return () => {
-      revokeUrl()
-      if (coverUrlRef.current) {
-        URL.revokeObjectURL(coverUrlRef.current)
-        coverUrlRef.current = null
-      }
+      releasePreviewUrl()
+      releaseCoverUrl()
     }
-  }, [revokeUrl])
+  }, [releaseCoverUrl, releasePreviewUrl])
 
   const handleDownload = async (): Promise<void> => {
     try {
-      const res = await apiFetch(`/api/v1/attachments/${file.id}`)
-      if (!res.ok) {
-        setError(true)
-        return
-      }
-      const encryptedBlob = await res.arrayBuffer()
+      const encryptedBlob = await fetchAttachmentBytes(file.id)
       const decrypted = await decryptFile(encryptedBlob, file.key, file.iv)
       const blob = new Blob([decrypted], { type: effectiveType })
       const url = URL.createObjectURL(blob)

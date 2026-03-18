@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Hash, AtSign, Phone, PhoneOff, Pin, PanelRightClose, PanelRightOpen, Menu, Settings, Users } from 'lucide-react'
+import { Hash, AtSign, Phone, Pin, PanelRightClose, PanelRightOpen, Menu, Settings, Users } from 'lucide-react'
 import { useServerStore } from '../../stores/serverStore'
 import { useDmStore } from '../../stores/dmStore'
 import { useAuthStore } from '../../stores/authStore'
@@ -30,16 +30,13 @@ export default function Header({ mobile = false }: Props): React.JSX.Element {
   const isServerOwner = activeServer?.owner_id === currentUserId
   const myMembership = members.find((member) => member.user_id === currentUserId)
   const canManagePins = Boolean(isServerOwner || myMembership?.role === 'admin')
-  const voiceRoomId = useVoiceStore((s) => s.roomId)
-  const voiceRoomType = useVoiceStore((s) => s.roomType)
-  const disconnect = useVoiceStore((s) => s.disconnect)
-  const connectionQuality = useVoiceStore((s) => s.connectionQuality)
   const [showPinnedPopover, setShowPinnedPopover] = useState(false)
   const pinnedButtonRef = useRef<HTMLButtonElement>(null)
 
   const startDmCall = useVoiceStore((s) => s.startDmCall)
   const voiceState = useVoiceStore((s) => s.state)
   const activeConversation = conversations.find((c) => c.id === selectedConversationId)
+  const channelTopic = activeChannel?.topic?.trim() || null
 
   useEffect(() => {
     setShowPinnedPopover(false)
@@ -94,15 +91,22 @@ export default function Header({ mobile = false }: Props): React.JSX.Element {
               <div className="vesper-mobile-header-title">#{activeChannel.name}</div>
               <div className="vesper-mobile-header-subtitle">{activeServer?.name || 'Channel'}</div>
             </div>
-            <button
-              data-testid="toggle-members"
-              type="button"
-              onClick={toggleMemberList}
-              className={`vesper-mobile-header-button${showMemberList ? ' vesper-mobile-header-button-active' : ''}`}
-              title="Members"
-            >
-              <Users className="w-5 h-5" />
-            </button>
+            <div className="flex items-center gap-2">
+              <DisappearingSettings
+                currentTtl={activeChannel.disappearing_ttl ?? null}
+                topic={`chat:channel:${activeChannel.id}`}
+                buttonClassName="vesper-mobile-header-button"
+              />
+              <button
+                data-testid="toggle-members"
+                type="button"
+                onClick={toggleMemberList}
+                className={`vesper-mobile-header-button${showMemberList ? ' vesper-mobile-header-button-active' : ''}`}
+                title="Members"
+              >
+                <Users className="w-5 h-5" />
+              </button>
+            </div>
           </>
         ) : (
           <>
@@ -126,106 +130,92 @@ export default function Header({ mobile = false }: Props): React.JSX.Element {
 
   return (
     <div className="vesper-chat-header">
-      {activeConversation ? (
-        <div className="flex items-center gap-2 flex-1 min-w-0">
-          <AtSign className="w-4 h-4 text-text-faint" />
-          <span className="text-text-primary font-semibold">{getDmDisplayName()}</span>
-          <div className="flex-1" />
-          <SearchBar />
-          <DisappearingSettings
-            currentTtl={activeConversation.disappearing_ttl ?? null}
-            topic={`dm:${activeConversation.id}`}
-          />
-          <button
-            data-testid="dm-call-button"
-            onClick={() => startDmCall(activeConversation.id)}
-            className="text-text-muted hover:text-text-primary transition-colors p-1.5 rounded hover:bg-bg-tertiary/50"
-            title={voiceState === 'idle' ? 'Start voice call' : 'Switch to this call'}
-          >
-            <Phone className="w-4 h-4" />
-          </button>
-        </div>
-      ) : activeChannel ? (
-        <div className="flex items-center gap-2 flex-1 min-w-0">
-          <Hash className="w-4 h-4 text-text-faint" />
-          <span className="text-text-primary font-semibold">{activeChannel.name}</span>
-          {activeChannel.topic && (
-            <>
-              <span className="text-text-disabled mx-2">|</span>
-              <span className="text-text-faint text-sm truncate">{activeChannel.topic}</span>
-            </>
-          )}
-          <div className="flex-1" />
-          <SearchBar />
-          <div className="relative">
+      <div className="vesper-chat-header-inner">
+        {activeConversation ? (
+          <div className="flex items-center gap-2 flex-1 min-w-0">
+            <AtSign className="w-4 h-4 text-text-faint" />
+            <span className="text-text-primary font-semibold">{getDmDisplayName()}</span>
+            <div className="flex-1" />
+            <SearchBar />
+            <DisappearingSettings
+              currentTtl={activeConversation.disappearing_ttl ?? null}
+              topic={`dm:${activeConversation.id}`}
+            />
             <button
-              data-testid="toggle-pins"
-              ref={pinnedButtonRef}
-              onClick={() => setShowPinnedPopover((value) => !value)}
-              className={`text-text-muted hover:text-text-primary transition-colors p-1.5 rounded hover:bg-bg-tertiary/50 ${showPinnedPopover ? 'text-accent' : ''}`}
-              title="Pinned Messages"
-            >
-              <Pin className="w-4 h-4" />
-            </button>
-            {showPinnedPopover && activeChannel && (
-              <PinnedMessagesPopover
-                channelId={activeChannel.id}
-                topic={`chat:channel:${activeChannel.id}`}
-                canManage={canManagePins}
-                onClose={() => setShowPinnedPopover(false)}
-                anchorRef={pinnedButtonRef}
-              />
-            )}
-          </div>
-          {voiceRoomType === 'channel' && voiceRoomId === activeChannel.id && (
-            <button
-              onClick={disconnect}
-              className="text-emerald-300 hover:text-white transition-colors px-2.5 py-1.5 rounded-full bg-emerald-500/12 hover:bg-emerald-500/18 text-xs font-semibold"
-              title="Disconnect from voice"
-            >
-              <span className="inline-flex items-center gap-1.5">
-                <span className={`w-2 h-2 rounded-full animate-pulse ${
-                  connectionQuality === 'good'
-                    ? 'bg-emerald-400'
-                    : connectionQuality === 'fair'
-                      ? 'bg-amber-400'
-                      : connectionQuality === 'poor'
-                        ? 'bg-red-400'
-                        : 'bg-text-faint'
-                }`} />
-                {connectionQuality === 'unknown'
-                  ? 'Connected'
-                  : `Connected · ${connectionQuality}`}
-                <PhoneOff className="w-3.5 h-3.5" />
-              </span>
-            </button>
-          )}
-          {isServerOwner && (
-            <button
-              data-testid="channel-settings-button"
-              onClick={() => openChannelSettingsModal(activeChannel.id)}
+              data-testid="dm-call-button"
+              onClick={() => startDmCall(activeConversation.id)}
               className="text-text-muted hover:text-text-primary transition-colors p-1.5 rounded hover:bg-bg-tertiary/50"
-              title="Channel Settings"
+              title={voiceState === 'idle' ? 'Start voice call' : 'Switch to this call'}
             >
-              <Settings className="w-4 h-4" />
+              <Phone className="w-4 h-4" />
             </button>
-          )}
-          <button
-            data-testid="toggle-members"
-            onClick={toggleMemberList}
-            className={`text-text-muted hover:text-text-primary transition-colors p-1.5 rounded hover:bg-bg-tertiary/50 ${showMemberList ? 'text-accent' : ''}`}
-            title={showMemberList ? 'Hide Member List' : 'Show Member List'}
-          >
-            {showMemberList ? <PanelRightClose className="w-4 h-4" /> : <PanelRightOpen className="w-4 h-4" />}
-          </button>
-          <DisappearingSettings
-            currentTtl={activeChannel.disappearing_ttl ?? null}
-            topic={`chat:channel:${activeChannel.id}`}
-          />
-        </div>
-      ) : activeServer ? (
-        <span className="text-text-faint">{activeServer.name}</span>
-      ) : null}
+          </div>
+        ) : activeChannel ? (
+          <div className="vesper-chat-header-channel-shell">
+            <div className="vesper-chat-header-channel-copy">
+              <div className="vesper-chat-header-channel-title-row">
+                <Hash className="w-4 h-4 text-text-faint" />
+                <span className="vesper-chat-header-channel-title">{activeChannel.name}</span>
+              </div>
+              {channelTopic ? (
+                <div className="vesper-chat-header-channel-subtitle">{channelTopic}</div>
+              ) : null}
+            </div>
+            <div className="flex-1" />
+            <SearchBar />
+            <div className="vesper-chat-header-actions">
+              <div className="relative">
+                <button
+                  data-testid="toggle-pins"
+                  ref={pinnedButtonRef}
+                  onClick={() => setShowPinnedPopover((value) => !value)}
+                  className={`vesper-chat-header-action${showPinnedPopover ? ' vesper-chat-header-action-active' : ''}`}
+                  title="Pinned messages"
+                  aria-label="Pinned messages"
+                >
+                  <Pin className="w-4 h-4" />
+                </button>
+                {showPinnedPopover && activeChannel && (
+                  <PinnedMessagesPopover
+                    channelId={activeChannel.id}
+                    topic={`chat:channel:${activeChannel.id}`}
+                    canManage={canManagePins}
+                    onClose={() => setShowPinnedPopover(false)}
+                    anchorRef={pinnedButtonRef}
+                  />
+                )}
+              </div>
+              {isServerOwner && (
+                <button
+                  data-testid="channel-settings-button"
+                  onClick={() => openChannelSettingsModal(activeChannel.id)}
+                  className="vesper-chat-header-action"
+                  title="Channel settings"
+                  aria-label="Channel settings"
+                >
+                  <Settings className="w-4 h-4" />
+                </button>
+              )}
+              <button
+                data-testid="toggle-members"
+                onClick={toggleMemberList}
+                className={`vesper-chat-header-action${showMemberList ? ' vesper-chat-header-action-active' : ''}`}
+                title={showMemberList ? 'Hide member list' : 'Show member list'}
+                aria-label={showMemberList ? 'Hide member list' : 'Show member list'}
+              >
+                {showMemberList ? <PanelRightClose className="w-4 h-4" /> : <PanelRightOpen className="w-4 h-4" />}
+              </button>
+            </div>
+            <DisappearingSettings
+              currentTtl={activeChannel.disappearing_ttl ?? null}
+              topic={`chat:channel:${activeChannel.id}`}
+              buttonClassName="vesper-chat-header-action"
+            />
+          </div>
+        ) : activeServer ? (
+          <span className="text-text-faint">{activeServer.name}</span>
+        ) : null}
+      </div>
     </div>
   )
 }

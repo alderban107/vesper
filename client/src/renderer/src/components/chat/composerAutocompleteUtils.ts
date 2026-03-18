@@ -11,6 +11,10 @@ export interface ComposerTriggerMatch {
   start: number
 }
 
+function toEmojiShortcode(value: string): string {
+  return value.trim().toLowerCase().replace(/[\s-]+/g, '_')
+}
+
 export function detectComposerTrigger(
   value: string,
   cursorPos: number
@@ -141,17 +145,17 @@ export function buildEmojiSuggestions(
   query: string,
   server?: Server | null
 ): ComposerAutocompleteItem[] {
-  const normalized = query.toLowerCase()
+  const normalized = toEmojiShortcode(query)
   const native = EMOJIS
     .filter((emoji) =>
       normalized === '' ||
-      emoji.name.toLowerCase().includes(normalized) ||
-      emoji.keywords.some((keyword) => keyword.toLowerCase().includes(normalized))
+      toEmojiShortcode(emoji.name).includes(normalized) ||
+      emoji.keywords.some((keyword) => toEmojiShortcode(keyword).includes(normalized))
     )
     .slice(0, 6)
     .map((emoji) => ({
       id: `unicode:${emoji.name}`,
-      label: `:${emoji.name}:`,
+      label: `:${toEmojiShortcode(emoji.name)}:`,
       sublabel: emoji.keywords.slice(0, 3).join(' • ') || undefined,
       value: emoji.emoji,
       type: 'emoji' as const,
@@ -159,11 +163,11 @@ export function buildEmojiSuggestions(
     }))
 
   const custom = (server?.emojis ?? [])
-    .filter((emoji) => normalized === '' || emoji.name.toLowerCase().includes(normalized))
+    .filter((emoji) => normalized === '' || toEmojiShortcode(emoji.name).includes(normalized))
     .slice(0, 6)
     .map((emoji) => ({
       id: `custom:${emoji.id}`,
-      label: `:${emoji.name}:`,
+      label: `:${toEmojiShortcode(emoji.name)}:`,
       sublabel: 'Custom emoji',
       value: formatCustomEmojiToken(emoji),
       type: 'emoji' as const,

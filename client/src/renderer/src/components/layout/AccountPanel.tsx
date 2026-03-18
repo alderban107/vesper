@@ -33,13 +33,6 @@ const STATUS_CLASSES: Record<PresenceStatus, string> = {
   offline: 'vesper-account-panel-status-offline'
 }
 
-const VOICE_QUALITY_COPY = {
-  good: 'Good',
-  fair: 'Fair',
-  poor: 'Poor',
-  unknown: 'Unknown'
-} as const
-
 export default function AccountPanel({
   user,
   logout,
@@ -62,7 +55,6 @@ export default function AccountPanel({
   const toggleDeafen = useVoiceStore((s) => s.toggleDeafen)
   const toggleCamera = useVoiceStore((s) => s.toggleCamera)
   const toggleScreenShare = useVoiceStore((s) => s.toggleScreenShare)
-  const connectionQuality = useVoiceStore((s) => s.connectionQuality)
   const activeServer = useServerStore((s) => s.servers.find((server) => server.id === s.activeServerId))
   const conversations = useDmStore((s) => s.conversations)
 
@@ -80,17 +72,16 @@ export default function AccountPanel({
         ? STATUS_COPY[myStatus]
         : voiceState === 'connecting'
           ? `Joining ${roomLabel ?? 'voice'}`
-          : voiceState === 'ringing'
+        : voiceState === 'ringing'
             ? `Calling ${roomLabel ?? 'DM'}`
-            : voiceState === 'in_call'
-              ? `In call${roomLabel ? ` · ${roomLabel}` : ''}`
-              : `Connected${roomLabel ? ` · ${roomLabel}` : ''}`
+          : voiceState === 'in_call'
+              ? roomLabel ?? 'In voice'
+              : roomLabel ?? 'Connected'
 
-  const voiceSubcopy =
-    voiceState === 'idle' || voiceError
-      ? voiceStatusCopy
-      : `${voiceStatusCopy} · ${VOICE_QUALITY_COPY[connectionQuality]}`
+  const voiceSubcopy = voiceState === 'idle' || voiceError ? voiceStatusCopy : voiceStatusCopy
   const canPublishVideo = voiceState === 'connected' || voiceState === 'in_call'
+  const displayName = user?.display_name || user?.username || 'You'
+  const subcopy = voiceState === 'idle' ? STATUS_COPY[myStatus] : voiceSubcopy
 
   const cycleStatus = (): void => {
     const cycle: PresenceStatus[] = ['online', 'idle', 'dnd']
@@ -100,107 +91,112 @@ export default function AccountPanel({
 
   return (
     <div className="vesper-account-panel">
-      <div className="vesper-account-panel-identity-shell">
-        <button
-          type="button"
-          className="vesper-account-panel-identity"
-          onClick={onOpenProfile}
-        >
-          <div className="vesper-account-panel-avatar-wrap">
-            <Avatar
-              userId={user?.id || 'me'}
-              avatarUrl={user?.avatar_url}
-              displayName={user?.display_name || user?.username || 'You'}
-              size="sm"
-            />
-          </div>
+      <div className="vesper-account-panel-main">
+        <div className="vesper-account-panel-identity-shell">
+          <button
+            type="button"
+            className="vesper-account-panel-identity"
+            onClick={onOpenProfile}
+          >
+            <div className="vesper-account-panel-avatar-wrap">
+              <Avatar
+                userId={user?.id || 'me'}
+                avatarUrl={user?.avatar_url}
+                displayName={user?.display_name || user?.username || 'You'}
+                size="sm"
+              />
 
-          <div className="vesper-account-panel-copy">
-            <div className="vesper-account-panel-name">
-              {user?.display_name || user?.username}
+              <button
+                type="button"
+                onClick={cycleStatus}
+                title={`Change status from ${STATUS_COPY[myStatus]}`}
+                aria-label={`Change status from ${STATUS_COPY[myStatus]}`}
+                className={`vesper-account-panel-status ${STATUS_CLASSES[myStatus]}`}
+              />
             </div>
-            <div className="vesper-account-panel-subcopy">
-              {voiceSubcopy}
-            </div>
-          </div>
-        </button>
 
-        <button
-          type="button"
-          onClick={cycleStatus}
-          title={`Status: ${STATUS_COPY[myStatus]}`}
-          className={`vesper-account-panel-status ${STATUS_CLASSES[myStatus]}`}
-        />
+            <div className="vesper-account-panel-copy">
+              <div className="vesper-account-panel-name">{displayName}</div>
+              <div className="vesper-account-panel-subcopy">
+                {subcopy}
+              </div>
+            </div>
+          </button>
+
+        </div>
+
+        <div className="vesper-account-panel-controls vesper-account-panel-utility-controls">
+          <button
+            type="button"
+            className="vesper-account-panel-button"
+            onClick={openSettingsModal}
+            title="Open settings"
+            aria-label="Open settings"
+          >
+            <Settings className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            className="vesper-account-panel-button"
+            onClick={logout}
+            title="Sign out"
+            aria-label="Sign out"
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
-      <div className="vesper-account-panel-controls">
-        {voiceState !== 'idle' && (
-          <>
-            <button
-              type="button"
-              className={`vesper-account-panel-button${muted ? ' vesper-account-panel-button-danger' : ''}`}
-              onClick={toggleMute}
-              title={muted ? 'Unmute' : 'Mute'}
-            >
-              {muted ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-            </button>
-            <button
-              type="button"
-              className={`vesper-account-panel-button${deafened ? ' vesper-account-panel-button-danger' : ''}`}
-              onClick={toggleDeafen}
-              title={deafened ? 'Undeafen' : 'Deafen'}
-            >
-              {deafened ? <HeadphoneOff className="w-4 h-4" /> : <Headphones className="w-4 h-4" />}
-            </button>
-            <button
-              type="button"
-              className={`vesper-account-panel-button${cameraEnabled ? ' vesper-account-panel-button-active' : ''}${!canPublishVideo ? ' vesper-account-panel-button-disabled' : ''}`}
-              onClick={() => {
-                void toggleCamera()
-              }}
-              disabled={!canPublishVideo}
-              title={cameraEnabled ? 'Stop Camera' : 'Start Camera'}
-            >
-              {cameraEnabled ? <VideoOff className="w-4 h-4" /> : <Video className="w-4 h-4" />}
-            </button>
-            <button
-              type="button"
-              className={`vesper-account-panel-button${screenShareEnabled ? ' vesper-account-panel-button-active' : ''}${!canPublishVideo ? ' vesper-account-panel-button-disabled' : ''}`}
-              onClick={() => {
-                void toggleScreenShare(undefined, shareAudioPreferred)
-              }}
-              disabled={!canPublishVideo}
-              title={screenShareEnabled ? 'Stop Screen Share' : 'Start Screen Share'}
-            >
-              {screenShareEnabled ? <ScreenShareOff className="w-4 h-4" /> : <ScreenShare className="w-4 h-4" />}
-            </button>
-            <button
-              type="button"
-              className="vesper-account-panel-button vesper-account-panel-button-danger"
-              onClick={disconnect}
-              title="Disconnect"
-            >
-              <PhoneOff className="w-4 h-4" />
-            </button>
-          </>
-        )}
-        <button
-          type="button"
-          className="vesper-account-panel-button"
-          onClick={openSettingsModal}
-          title="Settings"
-        >
-          <Settings className="w-4 h-4" />
-        </button>
-        <button
-          type="button"
-          className="vesper-account-panel-button"
-          onClick={logout}
-          title="Logout"
-        >
-          <LogOut className="w-4 h-4" />
-        </button>
-      </div>
+      {voiceState !== 'idle' && (
+        <div className="vesper-account-panel-controls vesper-account-panel-voice-controls">
+          <button
+            type="button"
+            className={`vesper-account-panel-button${muted ? ' vesper-account-panel-button-danger' : ''}`}
+            onClick={toggleMute}
+            title={muted ? 'Unmute' : 'Mute'}
+          >
+            {muted ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+          </button>
+          <button
+            type="button"
+            className={`vesper-account-panel-button${deafened ? ' vesper-account-panel-button-danger' : ''}`}
+            onClick={toggleDeafen}
+            title={deafened ? 'Undeafen' : 'Deafen'}
+          >
+            {deafened ? <HeadphoneOff className="w-4 h-4" /> : <Headphones className="w-4 h-4" />}
+          </button>
+          <button
+            type="button"
+            className={`vesper-account-panel-button${cameraEnabled ? ' vesper-account-panel-button-active' : ''}${!canPublishVideo ? ' vesper-account-panel-button-disabled' : ''}`}
+            onClick={() => {
+              void toggleCamera()
+            }}
+            disabled={!canPublishVideo}
+            title={cameraEnabled ? 'Stop Camera' : 'Start Camera'}
+          >
+            {cameraEnabled ? <VideoOff className="w-4 h-4" /> : <Video className="w-4 h-4" />}
+          </button>
+          <button
+            type="button"
+            className={`vesper-account-panel-button${screenShareEnabled ? ' vesper-account-panel-button-active' : ''}${!canPublishVideo ? ' vesper-account-panel-button-disabled' : ''}`}
+            onClick={() => {
+              void toggleScreenShare(undefined, shareAudioPreferred)
+            }}
+            disabled={!canPublishVideo}
+            title={screenShareEnabled ? 'Stop Screen Share' : 'Start Screen Share'}
+          >
+            {screenShareEnabled ? <ScreenShareOff className="w-4 h-4" /> : <ScreenShare className="w-4 h-4" />}
+          </button>
+          <button
+            type="button"
+            className="vesper-account-panel-button vesper-account-panel-button-danger"
+            onClick={disconnect}
+            title="Disconnect"
+          >
+            <PhoneOff className="w-4 h-4" />
+          </button>
+        </div>
+      )}
     </div>
   )
 }

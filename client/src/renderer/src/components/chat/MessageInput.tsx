@@ -1,5 +1,4 @@
-import { useState, useRef, useCallback } from 'react'
-import { Paperclip, SendHorizonal, Smile, Loader2 } from 'lucide-react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { useServerStore } from '../../stores/serverStore'
 import {
   useMessageStore,
@@ -8,20 +7,14 @@ import {
   pushToChannelWithAck,
   waitForChannelMembershipReady
 } from '../../stores/messageStore'
-import { apiUpload } from '../../api/client'
-import { encryptFile } from '../../crypto/fileEncryption'
 import { encodePayload } from '../../crypto/payload'
-import type { FilePayload } from '../../crypto/payload'
 import { useCryptoStore } from '../../stores/cryptoStore'
 import { pushToChannel } from '../../api/socket'
 import { useAuthStore } from '../../stores/authStore'
-import EmojiPicker from './EmojiPicker'
-import ComposerAutocomplete from './ComposerAutocomplete'
-import ComposerShell from './message/ComposerShell'
+import ComposerForm from './ComposerForm'
 import type { StagedFile } from './message/ComposerShell'
-import { formatCustomEmojiToken } from '../../utils/emoji'
-import { extractVideoThumbnail } from '../../utils/videoThumbnail'
-import { extractAudioMetadata } from '../../utils/audioMetadata'
+import { formatCustomEmojiToken, type CustomEmoji } from '../../utils/emoji'
+import { prepareMessageAttachment } from '../../utils/messageAttachment'
 import {
   applyAutocompleteSelection,
   buildChannelSuggestions,
@@ -34,6 +27,7 @@ import type { Message } from '../../stores/messageStore'
 
 let stagedIdCounter = 0
 const EMPTY_MESSAGES: Message[] = []
+const COMPOSER_MIN_HEIGHT = 56
 
 export default function MessageInput(): React.JSX.Element {
   const [content, setContent] = useState('')
@@ -44,6 +38,7 @@ export default function MessageInput(): React.JSX.Element {
   const [stagedFiles, setStagedFiles] = useState<StagedFile[]>([])
   const activeChannelId = useServerStore((s) => s.activeChannelId)
   const servers = useServerStore((s) => s.servers)
+  const members = useServerStore((s) => s.members)
   const activeServerId = useServerStore((s) => s.activeServerId)
   const sendMessage = useMessageStore((s) => s.sendMessage)
   const sendTypingStart = useMessageStore((s) => s.sendTypingStart)
@@ -63,6 +58,7 @@ export default function MessageInput(): React.JSX.Element {
   const isTypingRef = useRef(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const previewRef = useRef<HTMLDivElement>(null)
   const emojiButtonRef = useRef<HTMLButtonElement>(null)
   const dragDepthRef = useRef(0)
   const [dragActive, setDragActive] = useState(false)
@@ -102,112 +98,16 @@ export default function MessageInput(): React.JSX.Element {
       return false
     }
 
-    const fileData = await file.arrayBuffer()
-    const encrypted = await encryptFile(fileData)
-    const blob = new Blob([encrypted.ciphertext])
-    const formData = new FormData()
-    formData.append('file', blob, file.name)
-    formData.append('encrypted', 'true')
-
-    const res = await apiUpload('/api/v1/attachments', formData)
-    if (!res.ok) return false
-
-    const data = await res.json()
-    const attachmentId = data.attachment.id
-
-    // Build the file payload fields
-    const fileFields: FilePayload['file'] = {
-      id: attachmentId,
-      name: file.name,
-      content_type: file.type || 'application/octet-stream',
-      size: file.size,
-      key: encrypted.key,
-      iv: encrypted.iv
-    }
-
-    // Video thumbnail extraction + upload
-    const isVideo = file.type.startsWith('video/')
-    if (isVideo) {
-      try {
-        const thumb = await extractVideoThumbnail(file)
-        if (thumb) {
-          const thumbData = await thumb.blob.arrayBuffer()
-          const thumbEncrypted = await encryptFile(thumbData)
-          const thumbBlob = new Blob([thumbEncrypted.ciphertext])
-          const thumbForm = new FormData()
-          thumbForm.append('file', thumbBlob, 'thumbnail.jpg')
-          thumbForm.append('encrypted', 'true')
-
-          const thumbRes = await apiUpload('/api/v1/attachments', thumbForm)
-          if (thumbRes.ok) {
-            const thumbJson = await thumbRes.json()
-            fileFields.thumbnail = {
-              id: thumbJson.attachment.id,
-              key: thumbEncrypted.key,
-              iv: thumbEncrypted.iv
-            }
-            fileFields.duration = thumb.duration
-          }
-        }
-      } catch {
-        // Thumbnail extraction failed — video still uploads without one
-      }
-    }
-
-    const attachmentIds = [attachmentId]
-    if (fileFields.thumbnail) {
-      attachmentIds.push(fileFields.thumbnail.id)
-    }
-
-    // Audio metadata extraction + cover art upload
-    const isAudio = file.type.startsWith('audio/')
-    if (isAudio) {
-      try {
-        const meta = await extractAudioMetadata(file)
-        if (meta) {
-          if (meta.duration) {
-            fileFields.duration = meta.duration
-          }
-          const audioMeta: NonNullable<FilePayload['file']['audio_metadata']> = {}
-          if (meta.title) audioMeta.title = meta.title
-          if (meta.artist) audioMeta.artist = meta.artist
-          if (meta.album) audioMeta.album = meta.album
-
-          if (meta.coverBlob) {
-            const coverData = await meta.coverBlob.arrayBuffer()
-            const coverEncrypted = await encryptFile(coverData)
-            const coverBlob = new Blob([coverEncrypted.ciphertext])
-            const coverForm = new FormData()
-            coverForm.append('file', coverBlob, 'cover.jpg')
-            coverForm.append('encrypted', 'true')
-
-            const coverRes = await apiUpload('/api/v1/attachments', coverForm)
-            if (coverRes.ok) {
-              const coverJson = await coverRes.json()
-              audioMeta.cover = {
-                id: coverJson.attachment.id,
-                key: coverEncrypted.key,
-                iv: coverEncrypted.iv
-              }
-              attachmentIds.push(coverJson.attachment.id)
-            }
-          }
-
-          if (audioMeta.title || audioMeta.artist || audioMeta.album || audioMeta.cover) {
-            fileFields.audio_metadata = audioMeta
-          }
-        }
-      } catch {
-        // Metadata extraction failed — audio still uploads without metadata
-      }
-    }
+    const preparedAttachment = await prepareMessageAttachment(file)
+    if (!preparedAttachment) return false
 
     const envelope = encodePayload({
       v: 1,
       type: 'file',
-      text: text || undefined,
-      file: fileFields
+      text: text ?? null,
+      file: preparedAttachment.file
     })
+    const { attachmentIds } = preparedAttachment
 
     const topic = `chat:channel:${activeChannelId}`
     const crypto = useCryptoStore.getState()
@@ -279,6 +179,7 @@ export default function MessageInput(): React.JSX.Element {
     requestAnimationFrame(() => {
       textareaRef.current?.focus()
       textareaRef.current?.setSelectionRange(next.caret, next.caret)
+      syncPreviewScroll()
     })
   }
 
@@ -287,6 +188,29 @@ export default function MessageInput(): React.JSX.Element {
     setTrigger(nextTrigger)
     setSelectedAutocompleteIndex(0)
   }
+
+  const syncPreviewScroll = (): void => {
+    if (!previewRef.current || !textareaRef.current) {
+      return
+    }
+
+    previewRef.current.scrollTop = textareaRef.current.scrollTop
+    previewRef.current.scrollLeft = textareaRef.current.scrollLeft
+  }
+
+  useEffect(() => {
+    if (!textareaRef.current) {
+      return
+    }
+
+    const maxHeight = Math.max(Math.round(window.innerHeight * 0.5), COMPOSER_MIN_HEIGHT)
+    textareaRef.current.style.height = '0px'
+    textareaRef.current.style.height = `${Math.min(
+      Math.max(textareaRef.current.scrollHeight, COMPOSER_MIN_HEIGHT),
+      maxHeight
+    )}px`
+    syncPreviewScroll()
+  }, [content])
 
   const handleSubmit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault()
@@ -405,6 +329,7 @@ export default function MessageInput(): React.JSX.Element {
     setContent(value)
     handleTyping()
     updateAutocompleteState(value, e.target.selectionStart)
+    syncPreviewScroll()
   }
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>): void => {
@@ -451,108 +376,56 @@ export default function MessageInput(): React.JSX.Element {
   const canSend = content.trim().length > 0 || stagedFiles.length > 0
 
   return (
-    <form
-      onSubmit={(e) => { void handleSubmit(e) }}
-      onDragEnter={handleDragEnter}
-      onDragOver={(event) => {
-        event.preventDefault()
-        event.stopPropagation()
+    <ComposerForm
+      autocompleteItems={autocompleteItems}
+      content={content}
+      dragActive={dragActive}
+      emojiButtonRef={emojiButtonRef}
+      encryptionError={encryptionError}
+      fileInputRef={fileInputRef}
+      members={members}
+      onAutocompleteHover={setSelectedAutocompleteIndex}
+      onAutocompleteSelect={(item) => {
+        const index = autocompleteItems.findIndex((entry) => entry.id === item.id)
+        commitAutocompleteSelection(index)
       }}
+      onCancelReply={() => setReplyingTo(null)}
+      onClearEncryptionError={() => useMessageStore.setState({ encryptionError: null })}
+      onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className={`vesper-composer-form${dragActive ? ' vesper-composer-form-dragging' : ''}`}
-    >
-      {dragActive && (
-        <div className="vesper-composer-drop-overlay" aria-hidden="true">
-          <div className="vesper-composer-drop-card">
-            <Paperclip className="w-5 h-5" />
-            <span>Drop a file to attach it</span>
-          </div>
-        </div>
-      )}
-      {trigger && autocompleteItems.length > 0 && (
-        <ComposerAutocomplete
-          anchorRef={textareaRef}
-          query={trigger.query}
-          items={autocompleteItems}
-          selectedIndex={selectedAutocompleteIndex}
-          onSelect={(item) => {
-            const index = autocompleteItems.findIndex((entry) => entry.id === item.id)
-            commitAutocompleteSelection(index)
-          }}
-          onHover={setSelectedAutocompleteIndex}
-        />
-      )}
-
-      <ComposerShell
-        encryptionError={encryptionError}
-        onClearEncryptionError={() => useMessageStore.setState({ encryptionError: null })}
-        replyingTo={replyingTo}
-        onCancelReply={() => setReplyingTo(null)}
-        stagedFiles={stagedFiles}
-        onRemoveStagedFile={removeStagedFile}
-      >
-        <div className="vesper-composer-controls">
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={uploading}
-            className="vesper-composer-icon-button"
-            title="Attach file"
-          >
-            {uploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Paperclip className="w-5 h-5" />}
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            onChange={handleFileSelect}
-            className="hidden"
-          />
-          <div className="relative">
-            <button
-              ref={emojiButtonRef}
-              type="button"
-              onClick={() => setShowEmojiPicker(!showEmojiPicker)}
-              className="vesper-composer-icon-button"
-              title="Emoji"
-            >
-              <Smile className="w-5 h-5" />
-            </button>
-            {showEmojiPicker && (
-              <EmojiPicker
-                anchorRef={emojiButtonRef}
-                onSelect={(emoji, item) => {
-                  const value = item?.type === 'custom' ? formatCustomEmojiToken(item) : emoji
-                  setContent((prev) => prev + value)
-                  setShowEmojiPicker(false)
-                }}
-                onClose={() => setShowEmojiPicker(false)}
-              />
-            )}
-          </div>
-          <textarea
-            ref={textareaRef}
-            data-testid="message-input"
-            value={content}
-            onChange={handleChange}
-            onClick={(event) => updateAutocompleteState(event.currentTarget.value, event.currentTarget.selectionStart)}
-            onKeyUp={(event) => updateAutocompleteState(event.currentTarget.value, event.currentTarget.selectionStart)}
-            onKeyDown={handleKeyDown}
-            placeholder="Message this channel"
-            rows={1}
-            className="vesper-composer-textarea"
-            style={{ minHeight: '46px' }}
-          />
-          <button
-            data-testid="send-button"
-            type="submit"
-            disabled={!canSend || uploading}
-            className="vesper-composer-send"
-          >
-            <SendHorizonal className="w-5 h-5" />
-          </button>
-        </div>
-      </ComposerShell>
-    </form>
+      onEmojiClose={() => setShowEmojiPicker(false)}
+      onEmojiSelect={(emoji, item) => {
+        const value = item?.type === 'custom' ? formatCustomEmojiToken(item as CustomEmoji) : emoji
+        setContent((prev) => prev + value)
+        setShowEmojiPicker(false)
+        requestAnimationFrame(() => {
+          textareaRef.current?.focus()
+          syncPreviewScroll()
+        })
+      }}
+      onFileSelect={handleFileSelect}
+      onRemoveStagedFile={removeStagedFile}
+      onSubmit={(event) => { void handleSubmit(event) }}
+      onTextareaChange={handleChange}
+      onTextareaClick={(event) => updateAutocompleteState(event.currentTarget.value, event.currentTarget.selectionStart)}
+      onTextareaKeyDown={handleKeyDown}
+      onTextareaKeyUp={(event) => updateAutocompleteState(event.currentTarget.value, event.currentTarget.selectionStart)}
+      onTextareaScroll={syncPreviewScroll}
+      onToggleEmojiPicker={() => setShowEmojiPicker(!showEmojiPicker)}
+      placeholder="Message this channel"
+      previewRef={previewRef}
+      replyingTo={replyingTo}
+      selectedAutocompleteIndex={selectedAutocompleteIndex}
+      sendButtonTestId="send-button"
+      server={activeServer}
+      showEmojiPicker={showEmojiPicker}
+      stagedFiles={stagedFiles}
+      textareaRef={textareaRef}
+      textareaTestId="message-input"
+      triggerQuery={trigger?.query ?? null}
+      uploading={uploading}
+      canSend={canSend}
+    />
   )
 }

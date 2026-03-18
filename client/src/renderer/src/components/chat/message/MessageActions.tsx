@@ -2,6 +2,7 @@ import { MessageSquare, MoreHorizontal, Pencil, Reply, SmilePlus } from 'lucide-
 
 interface Props {
   canEdit: boolean
+  canInteract?: boolean
   onReply: () => void
   onThread?: () => void
   onReact: () => void
@@ -13,6 +14,7 @@ interface Props {
 
 export default function MessageActions({
   canEdit,
+  canInteract = true,
   onReply,
   onThread,
   onReact,
@@ -29,57 +31,58 @@ export default function MessageActions({
         </span>
       )}
 
-      <button
-        data-testid="react-button"
-        type="button"
-        onClick={onReact}
-        className="vesper-message-action-button"
-        title="Add reaction"
-        aria-label="Add reaction"
-      >
-        <SmilePlus className="w-4 h-4" />
-      </button>
-
-      <button
-        type="button"
-        onClick={onReply}
-        className="vesper-message-action-button"
-        title="Reply"
-        aria-label="Reply"
-      >
-        <Reply className="w-4 h-4" />
-      </button>
-
-      {onThread && (
-        <button
-          data-testid="thread-button"
-          type="button"
-          onClick={onThread}
-          className="vesper-message-action-button"
-          title={threadLabel ?? 'Open thread'}
-          aria-label={threadLabel ?? 'Open thread'}
-        >
-          <MessageSquare className="w-4 h-4" />
-        </button>
-      )}
-
-      {canEdit && (
+      {canInteract && (
         <>
           <button
-            data-testid="edit-message"
+            data-testid="react-button"
             type="button"
-            onClick={onEdit}
+            onClick={onReact}
             className="vesper-message-action-button"
-            title="Edit message"
-            aria-label="Edit message"
+            title="Add reaction"
+            aria-label="Add reaction"
           >
-            <Pencil className="w-4 h-4" />
+            <SmilePlus className="w-4 h-4" />
           </button>
 
+          <button
+            type="button"
+            onClick={onReply}
+            className="vesper-message-action-button"
+            title="Reply"
+            aria-label="Reply"
+          >
+            <Reply className="w-4 h-4" />
+          </button>
+
+          {onThread && (
+            <button
+              data-testid="thread-button"
+              type="button"
+              onClick={onThread}
+              className="vesper-message-action-button"
+              title={threadLabel ?? 'Open thread'}
+              aria-label={threadLabel ?? 'Open thread'}
+            >
+              <MessageSquare className="w-4 h-4" />
+            </button>
+          )}
+
+          {canEdit && (
+            <button
+              data-testid="edit-message"
+              type="button"
+              onClick={onEdit}
+              className="vesper-message-action-button"
+              title="Edit message"
+              aria-label="Edit message"
+            >
+              <Pencil className="w-4 h-4" />
+            </button>
+          )}
         </>
       )}
 
-      {onMore && (
+      {canInteract && onMore && (
         <button
           data-testid="message-menu-button"
           type="button"

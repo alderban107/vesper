@@ -838,8 +838,8 @@ body,
   display: grid;
   grid-template-columns: 3rem minmax(0, 1fr);
   gap: 0.75rem;
-  margin-inline: -0.5rem;
-  padding: 0.2rem 0.5rem 0.3rem;
+  min-width: 0;
+  padding: 0.2rem 0.25rem 0.3rem 0.15rem;
   border-radius: 1rem;
   transition: background-color 0.16s ease;
 }
@@ -895,26 +895,28 @@ body,
 
 .vesper-avatar-status {
   position: absolute;
-  right: -1px;
-  bottom: -1px;
+  right: -2px;
+  bottom: -2px;
   border-radius: 999px;
-  border: 2px solid var(--color-bg-secondary);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12);
+  border: 2px solid var(--color-bg-base);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--color-bg-secondary) 88%, transparent),
+    0 4px 10px rgba(0, 0, 0, 0.28);
 }
 
 .vesper-avatar-shell-sm .vesper-avatar-status {
-  width: 0.72rem;
-  height: 0.72rem;
-}
-
-.vesper-avatar-shell-md .vesper-avatar-status {
   width: 0.82rem;
   height: 0.82rem;
 }
 
+.vesper-avatar-shell-md .vesper-avatar-status {
+  width: 0.96rem;
+  height: 0.96rem;
+}
+
 .vesper-avatar-shell-lg .vesper-avatar-status {
-  width: 0.98rem;
-  height: 0.98rem;
+  width: 1.08rem;
+  height: 1.08rem;
   border-width: 3px;
 }
 
@@ -931,7 +933,7 @@ body,
 }
 
 .vesper-avatar-status-offline {
-  background: #6b7280;
+  background: #94a3b8;
 }
 
 .vesper-avatar-speaking::after {
@@ -951,16 +953,98 @@ body,
 .vesper-chat-header {
   position: relative;
   z-index: 20;
-  height: 3.5rem;
+  height: 3.1rem;
   display: flex;
   align-items: center;
-  padding: 0 1.1rem;
+  padding: 0 0.95rem;
   border-bottom: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent),
     color-mix(in srgb, var(--color-bg-secondary) 78%, transparent);
   backdrop-filter: blur(18px);
   flex-shrink: 0;
+}
+
+.vesper-chat-header-inner {
+  width: min(100%, 72rem);
+  min-width: 0;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex: 1 1 auto;
+}
+
+.vesper-chat-header-channel-shell {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.vesper-chat-header-channel-copy {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  min-height: 1.5rem;
+}
+
+.vesper-chat-header-channel-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.vesper-chat-header-channel-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+  font-size: 0.98rem;
+  font-weight: 700;
+}
+
+.vesper-chat-header-channel-subtitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-faint);
+  font-size: 0.76rem;
+}
+
+.vesper-chat-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.vesper-chat-header-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 0;
+  border-radius: 0.65rem;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: background-color 0.16s ease, color 0.16s ease;
+}
+
+.vesper-chat-header-action:hover {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 82%, transparent);
+  color: var(--color-text-primary);
+}
+
+.vesper-chat-header-action-active {
+  color: var(--color-accent-text);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
 }
 
 .vesper-chat-header-mobile {
@@ -1017,12 +1101,21 @@ body,
 .vesper-message-feed {
   flex: 1;
   overflow-y: auto;
-  padding: 0.8rem 0.9rem 0.4rem;
+  overflow-x: hidden;
+  padding: 0.8rem 0.75rem 0.4rem;
   min-height: 0;
+}
+
+.vesper-message-feed-root {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .vesper-message-feed-inner {
   padding-bottom: 0.5rem;
+  overflow-x: clip;
 }
 
 .vesper-message-empty-state {
@@ -1037,24 +1130,123 @@ body,
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  margin: 1rem 0 0.85rem;
-  padding: 0 0.25rem;
+  margin: 1.15rem 0 0.95rem;
+  padding: 0 0.15rem;
 }
 
 .vesper-date-divider-line {
   flex: 1;
   height: 1px;
-  background: color-mix(in srgb, var(--color-border) 88%, transparent);
+  background:
+    linear-gradient(90deg, transparent, color-mix(in srgb, var(--color-border) 96%, transparent), transparent);
 }
 
 .vesper-date-divider-label {
-  padding: 0.3rem 0.7rem;
-  border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--color-bg-secondary) 80%, transparent);
-  color: var(--color-text-faint);
-  font-size: 0.72rem;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 0.78rem;
+  font-weight: 700;
   letter-spacing: 0.02em;
+  box-shadow: none;
+}
+
+.vesper-server-rail {
+  width: 72px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent),
+    color-mix(in srgb, var(--color-bg-base) 94%, transparent);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.85rem 0;
+}
+
+.vesper-rail-button {
+  position: relative;
+  width: 3rem;
+  height: 3rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 1rem;
+  cursor: pointer;
+  transition:
+    border-radius 0.18s ease,
+    background-color 0.18s ease,
+    color 0.18s ease,
+    transform 0.18s ease;
+}
+
+.vesper-rail-button:hover {
+  transform: translateY(-1px);
+  border-radius: 1rem;
+}
+
+.vesper-rail-button-neutral {
+  background: color-mix(in srgb, var(--color-bg-secondary) 88%, transparent);
+  color: var(--color-text-primary);
+}
+
+.vesper-rail-button-neutral:hover {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 88%, transparent);
+}
+
+.vesper-rail-button-active {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 92%, transparent);
+  color: var(--color-text-primary);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 34%, transparent),
+    0 10px 18px rgba(0, 0, 0, 0.18);
+}
+
+.vesper-rail-button-ghost {
+  background: transparent;
+  color: var(--color-text-faint);
+}
+
+.vesper-rail-button-ghost:hover {
+  background: color-mix(in srgb, var(--color-bg-secondary) 68%, transparent);
+  color: var(--color-text-primary);
+}
+
+.vesper-rail-button-copy {
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.vesper-rail-badge {
+  position: absolute;
+  top: -0.2rem;
+  right: -0.24rem;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  background: #ef4444;
+  color: white;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.6rem;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.35);
+}
+
+.vesper-rail-separator {
+  width: 2rem;
+  height: 1px;
+  border-radius: 999px;
+  background:
+    linear-gradient(90deg, transparent, color-mix(in srgb, var(--color-border) 96%, transparent), transparent);
+  margin: 0.15rem 0 0.1rem;
 }
 
 .vesper-message-row:hover {
@@ -1090,6 +1282,7 @@ body,
 }
 
 .vesper-message-avatar-column {
+  position: relative;
   display: flex;
   min-height: 2.5rem;
   align-items: flex-start;
@@ -1102,13 +1295,20 @@ body,
 }
 
 .vesper-message-inline-time {
-  font-size: 0.68rem;
+  position: absolute;
+  top: 0.1rem;
+  right: 0.15rem;
+  width: 2.3rem;
+  font-size: 0.4rem;
   color: var(--color-text-faintest);
   line-height: 1;
   display: block;
   opacity: 0;
   transform: translateY(2px);
   transition: opacity 0.16s ease;
+  text-align: right;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
 }
 
 .vesper-message-row:hover .vesper-message-inline-time {
@@ -1118,15 +1318,17 @@ body,
 .vesper-message-body {
   min-width: 0;
   position: relative;
-  overflow: visible;
+  overflow-x: clip;
+  overflow-y: visible;
 }
 
 .vesper-message-toolbar-slot {
   pointer-events: none;
   position: absolute;
-  right: 0.9rem;
+  right: 0.6rem;
   top: -1rem;
   z-index: 10;
+  max-width: calc(100% - 1rem);
 }
 
 .vesper-message-toolbar-anchor {
@@ -1141,7 +1343,7 @@ body,
   gap: 0.08rem;
   padding: 0.2rem;
   border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
-  border-radius: 0.8rem;
+  border-radius: 0.7rem;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.045), transparent),
     color-mix(in srgb, var(--color-bg-secondary) 94%, transparent);
@@ -1242,6 +1444,227 @@ body,
   user-select: text;
 }
 
+.vesper-message-unavailable {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: #fca5a5;
+}
+
+.vesper-message-unavailable-icon {
+  flex: 0 0 auto;
+  color: #f87171;
+}
+
+.vesper-message-unavailable-title {
+  color: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.vesper-markdown {
+  color: inherit;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.vesper-markdown > :first-child {
+  margin-top: 0;
+}
+
+.vesper-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.vesper-markdown-paragraph {
+  margin: 0;
+  color: var(--color-text-secondary);
+  white-space: break-spaces;
+}
+
+.vesper-markdown-paragraph + .vesper-markdown-paragraph {
+  margin-top: 0.18rem;
+}
+
+.vesper-markdown-strong {
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.vesper-markdown-emphasis {
+  font-style: italic;
+}
+
+.vesper-markdown-strike {
+  color: var(--color-text-muted);
+}
+
+.vesper-markdown-inline-code {
+  display: inline-block;
+  margin: -0.12rem 0;
+  padding: 0.02rem 0.28rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 86%, transparent);
+  border-radius: 0.38rem;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 80%, transparent);
+  color: var(--color-accent-text);
+  font-family: var(--font-mono, 'SFMono-Regular', 'Menlo', monospace);
+  font-size: 0.84em;
+  line-height: 1.3;
+  white-space: break-spaces;
+  vertical-align: baseline;
+}
+
+.vesper-markdown-code-container {
+  max-width: min(100%, 48rem);
+  margin: 0.38rem 0 0.18rem;
+}
+
+.vesper-markdown-code-lang {
+  display: block;
+  padding: 0.36rem 0.72rem 0.28rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 86%, transparent);
+  border-bottom: 0;
+  border-radius: 0.7rem 0.7rem 0 0;
+  background: color-mix(in srgb, var(--color-bg-base) 92%, transparent);
+  color: var(--color-text-faint);
+  font-family: var(--font-mono, 'SFMono-Regular', 'Menlo', monospace);
+  font-size: 0.68rem;
+  line-height: 1;
+  text-transform: lowercase;
+}
+
+.vesper-markdown-code-container .vesper-markdown-pre {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+.vesper-markdown-pre {
+  margin: 0;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--color-border) 86%, transparent);
+  border-radius: 0.7rem;
+  background: color-mix(in srgb, var(--color-bg-base) 92%, transparent);
+  overflow-x: auto;
+  overflow-y: hidden;
+  box-sizing: border-box;
+}
+
+.vesper-markdown-code-block {
+  display: block;
+  min-width: max-content;
+  padding: 0.72rem 0.88rem;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono, 'SFMono-Regular', 'Menlo', monospace);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  white-space: pre;
+}
+
+.vesper-mermaid-block {
+  max-width: min(100%, 48rem);
+  margin: 0.38rem 0 0.18rem;
+  padding: 0.85rem 0.95rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 86%, transparent);
+  border-radius: 0.7rem;
+  background: color-mix(in srgb, var(--color-bg-base) 92%, transparent);
+  overflow-x: auto;
+  box-sizing: border-box;
+}
+
+.vesper-mermaid-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 0.65rem;
+}
+
+.vesper-mermaid-toggle {
+  display: inline-flex;
+  gap: 0.25rem;
+  padding: 0.2rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 60%, transparent);
+}
+
+.vesper-mermaid-toggle-button {
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-faint);
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0.28rem 0.55rem;
+}
+
+.vesper-mermaid-toggle-button.is-active {
+  background: color-mix(in srgb, var(--color-bg-secondary) 88%, transparent);
+  color: var(--color-text-primary);
+}
+
+.vesper-mermaid-toggle-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.vesper-mermaid-diagram svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+
+.vesper-mermaid-block-loading {
+  color: var(--color-text-faint);
+  font-size: 0.82rem;
+}
+
+.vesper-mermaid-block-error {
+  color: #fca5a5;
+}
+
+.vesper-mermaid-error-copy {
+  margin-bottom: 0.5rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.vesper-markdown .katex {
+  color: var(--color-text-primary);
+  font-size: 1em;
+}
+
+.vesper-markdown .katex-display {
+  margin: 0.55rem 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.1rem 0;
+}
+
+.vesper-markdown-blockquote {
+  margin: 0.28rem 0;
+  padding-left: 0.72rem;
+  border-left: 3px solid color-mix(in srgb, var(--color-accent) 38%, transparent);
+  color: var(--color-text-muted);
+}
+
+.vesper-markdown-list {
+  margin: 0.22rem 0;
+  padding-left: 1.15rem;
+  list-style: disc;
+}
+
+.vesper-markdown-list-ordered {
+  list-style: decimal;
+}
+
+.vesper-markdown-list-item {
+  color: var(--color-text-secondary);
+  white-space: break-spaces;
+}
+
 .vesper-message-reply {
   display: flex;
   align-items: center;
@@ -1328,6 +1751,11 @@ body,
 
 .vesper-message-row-thread-active {
   background: color-mix(in srgb, var(--color-accent) 10%, var(--color-bg-secondary));
+}
+
+.vesper-message-row-focused {
+  background: color-mix(in srgb, var(--color-accent) 8%, var(--color-bg-secondary));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 42%, transparent);
 }
 
 .vesper-message-thread-meta {
@@ -1523,6 +1951,24 @@ body,
   border-left: 0;
 }
 
+.vesper-desktop-shell,
+.vesper-desktop-body,
+.vesper-main-chat-column {
+  min-width: 0;
+  overflow-x: clip;
+}
+
+.vesper-main-chat-column .vesper-chat-header-inner,
+.vesper-main-chat-column .vesper-message-feed-inner,
+.vesper-main-chat-column .vesper-composer-wrap {
+  width: 100%;
+  margin-inline: 0;
+}
+
+.vesper-main-chat-column .vesper-message-feed {
+  padding-inline: 0.8rem;
+}
+
 .vesper-panel-shell-left {
   border-left: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
 }
@@ -1542,11 +1988,33 @@ body,
     color-mix(in srgb, var(--color-bg-base) 84%, transparent);
 }
 
+.vesper-member-list-mobile-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 75;
+  display: flex;
+  align-items: flex-end;
+  background: rgba(10, 11, 19, 0.4);
+  backdrop-filter: blur(8px);
+}
+
 .vesper-member-list-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0.95rem 1rem 0.75rem;
+}
+
+.vesper-member-list-close {
+  width: 2rem;
+  height: 2rem;
+  border: 0;
+  border-radius: 0.8rem;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 72%, transparent);
+  color: var(--color-text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .vesper-member-list-title {
@@ -2778,14 +3246,21 @@ body,
 
 .vesper-account-panel {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0.7rem;
-  align-items: center;
-  padding: 0.75rem;
+  gap: 0.55rem;
+  align-items: start;
+  padding: 0.7rem 0.75rem;
   border-top: 1px solid color-mix(in srgb, var(--color-border) 90%, transparent);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent),
     color-mix(in srgb, var(--color-bg-base) 82%, transparent);
+}
+
+.vesper-account-panel-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.65rem;
+  min-width: 0;
 }
 
 .vesper-account-panel-identity {
@@ -2793,7 +3268,8 @@ body,
   display: flex;
   align-items: center;
   gap: 0.7rem;
-  padding: 0.25rem;
+  min-height: 2rem;
+  padding: 0.1rem 0.25rem;
   border: 0;
   border-radius: 0.9rem;
   background: transparent;
@@ -2803,6 +3279,8 @@ body,
 
 .vesper-account-panel-identity-shell {
   position: relative;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .vesper-account-panel-identity:hover {
@@ -2816,8 +3294,8 @@ body,
 
 .vesper-account-panel-status {
   position: absolute;
-  left: 1.9rem;
-  bottom: -0.05rem;
+  right: -0.08rem;
+  bottom: -0.08rem;
   width: 0.9rem;
   height: 0.9rem;
   border: 2px solid var(--color-bg-base);
@@ -2843,6 +3321,15 @@ body,
 
 .vesper-account-panel-copy {
   min-width: 0;
+  display: grid;
+  gap: 0.18rem;
+}
+
+.vesper-account-panel-name-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
 }
 
 .vesper-account-panel-name {
@@ -2852,11 +3339,41 @@ body,
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.vesper-account-panel-status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.1rem 0.42rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 68%, transparent);
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.vesper-account-panel-status-pill.vesper-account-panel-status-online {
+  color: #86efac;
+}
+
+.vesper-account-panel-status-pill.vesper-account-panel-status-idle {
+  color: #fcd34d;
+}
+
+.vesper-account-panel-status-pill.vesper-account-panel-status-dnd {
+  color: #fca5a5;
+}
+
+.vesper-account-panel-status-pill.vesper-account-panel-status-offline {
+  color: #cbd5e1;
 }
 
 .vesper-account-panel-subcopy {
-  color: var(--color-text-faint);
-  font-size: 0.74rem;
+  color: var(--color-text-secondary);
+  font-size: 0.72rem;
+  font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2868,9 +3385,21 @@ body,
   gap: 0.25rem;
 }
 
+.vesper-account-panel-utility-controls {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  align-self: center;
+}
+
+.vesper-account-panel-voice-controls {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
 .vesper-account-panel-button {
   width: 2rem;
   height: 2rem;
+  flex: 0 0 auto;
   border: 0;
   border-radius: 0.7rem;
   background: transparent;
@@ -3247,11 +3776,14 @@ body,
 }
 
 .vesper-composer {
+  --vesper-composer-textarea-height: 56px;
+  --vesper-composer-textarea-max-height: 50vh;
+  --vesper-composer-line-height: 1.375rem;
   width: 100%;
   min-width: 0;
   overflow-x: clip;
   border: 1px solid color-mix(in srgb, var(--color-border) 92%, transparent);
-  border-radius: 1.2rem;
+  border-radius: 1rem;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent),
     color-mix(in srgb, var(--color-bg-secondary) 90%, transparent);
@@ -3365,23 +3897,45 @@ body,
 .vesper-composer-controls {
   display: flex;
   align-items: flex-end;
-  gap: 0.15rem;
-  padding: 0.35rem;
+  gap: 0.35rem;
+  min-height: var(--vesper-composer-textarea-height);
+  padding: 0 0.45rem 0 0.9rem;
+}
+
+.vesper-composer-input-stack {
+  position: relative;
+  display: grid;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: var(--vesper-composer-textarea-height);
+  align-self: stretch;
+}
+
+.vesper-composer-input-stack > * {
+  grid-area: 1 / 1;
 }
 
 .vesper-composer-icon-button,
 .vesper-composer-send {
-  width: 2.65rem;
-  height: 2.65rem;
+  width: 2rem;
+  height: var(--vesper-composer-textarea-height);
+  min-height: 0;
+  flex: 0 0 auto;
+  align-self: flex-end;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: 0.95rem;
+  border-radius: 0.8rem;
   background: transparent;
   color: var(--color-text-faint);
   cursor: pointer;
   transition: background-color 0.16s ease, color 0.16s ease, transform 0.16s ease;
+}
+
+.vesper-composer-controls > .relative {
+  display: flex;
+  align-self: flex-end;
 }
 
 .vesper-composer-icon-button:hover,
@@ -3406,19 +3960,242 @@ body,
 
 .vesper-composer-textarea {
   flex: 1;
-  max-height: 9rem;
+  max-height: var(--vesper-composer-textarea-max-height);
   border: 0;
   background: transparent;
-  padding: 0.7rem 0.6rem 0.7rem 0.4rem;
+  box-sizing: border-box;
+  min-height: var(--vesper-composer-textarea-height);
+  padding-block: calc(
+    (var(--vesper-composer-textarea-height) - var(--vesper-composer-line-height)) / 2
+  );
+  padding-inline: 0 0.65rem;
   color: var(--color-text-primary);
   resize: none;
   outline: none;
   font-size: 0.92rem;
-  line-height: 1.4;
+  line-height: var(--vesper-composer-line-height);
+  overflow-y: hidden;
 }
 
 .vesper-composer-textarea::placeholder {
   color: var(--color-text-faintest);
+}
+
+.vesper-composer-textarea-rich {
+  color: transparent;
+  caret-color: var(--color-text-primary);
+  font-family: var(--font-mono, 'SFMono-Regular', 'Menlo', monospace);
+  tab-size: 2;
+}
+
+.vesper-composer-rich-preview {
+  min-height: var(--vesper-composer-textarea-height);
+  max-height: var(--vesper-composer-textarea-max-height);
+  overflow: auto;
+  display: flex;
+  align-items: flex-start;
+  box-sizing: border-box;
+  padding-block: calc(
+    (var(--vesper-composer-textarea-height) - var(--vesper-composer-line-height)) / 2
+  );
+  padding-inline: 0 0.65rem;
+  color: var(--color-text-primary);
+  font-size: 0.92rem;
+  line-height: var(--vesper-composer-line-height);
+  word-break: break-word;
+  pointer-events: none;
+  scrollbar-width: none;
+}
+
+.vesper-composer-rich-preview::-webkit-scrollbar {
+  display: none;
+}
+
+.vesper-composer-rich-markdown {
+  color: inherit;
+  min-width: 0;
+  width: 100%;
+}
+
+.vesper-composer-code-fence-preview {
+  margin: 0;
+  min-width: 0;
+  width: 100%;
+  color: inherit;
+  font-family: var(--font-mono, 'SFMono-Regular', 'Menlo', monospace);
+  font-size: inherit;
+  line-height: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  tab-size: 2;
+}
+
+.vesper-composer-code-fence-mark {
+  color: color-mix(in srgb, var(--color-text-muted) 84%, transparent);
+}
+
+.vesper-composer-code-fence-preview .hljs {
+  color: inherit;
+}
+
+.vesper-composer-code-fence-preview .hljs-keyword,
+.vesper-composer-code-fence-preview .hljs-selector-tag,
+.vesper-composer-code-fence-preview .hljs-literal,
+.vesper-composer-code-fence-preview .hljs-title.function_,
+.vesper-composer-code-fence-preview .hljs-title.class_,
+.vesper-composer-code-fence-preview .hljs-operator {
+  color: #7aa2f7;
+}
+
+.vesper-composer-code-fence-preview .hljs-string,
+.vesper-composer-code-fence-preview .hljs-attr,
+.vesper-composer-code-fence-preview .hljs-template-variable {
+  color: #9ece6a;
+}
+
+.vesper-composer-code-fence-preview .hljs-number,
+.vesper-composer-code-fence-preview .hljs-symbol,
+.vesper-composer-code-fence-preview .hljs-bullet {
+  color: #ff9e64;
+}
+
+.vesper-composer-code-fence-preview .hljs-comment,
+.vesper-composer-code-fence-preview .hljs-quote {
+  color: #6b7280;
+}
+
+.vesper-composer-code-fence-preview .hljs-built_in,
+.vesper-composer-code-fence-preview .hljs-variable,
+.vesper-composer-code-fence-preview .hljs-params {
+  color: #f7768e;
+}
+
+.vesper-composer-markdown-paragraph {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.vesper-composer-markdown-paragraph + .vesper-composer-markdown-paragraph {
+  margin-top: 0.2rem;
+}
+
+.vesper-composer-markdown-strong {
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.vesper-composer-markdown-emphasis {
+  font-style: italic;
+}
+
+.vesper-composer-markdown-strike {
+  color: var(--color-text-muted);
+}
+
+.vesper-composer-markdown-code {
+  padding: 0.05rem 0.28rem;
+  border-radius: 0.38rem;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 80%, transparent);
+  color: var(--color-accent-text);
+  font-family: var(--font-mono, 'SFMono-Regular', 'Menlo', monospace);
+  font-size: 0.84em;
+}
+
+.vesper-composer-markdown-pre {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
+  white-space: pre-wrap;
+}
+
+.vesper-composer-markdown-code-container {
+  margin: 0;
+}
+
+.vesper-composer-markdown-code-lang {
+  display: none;
+}
+
+.vesper-composer-markdown-code-container .vesper-composer-markdown-pre {
+  margin: 0;
+}
+
+.vesper-composer-markdown-code-block {
+  display: block;
+  min-width: 0;
+  padding: 0;
+  color: inherit;
+  font-family: var(--font-mono, 'SFMono-Regular', 'Menlo', monospace);
+  font-size: inherit;
+  line-height: inherit;
+  white-space: pre-wrap;
+}
+
+.vesper-composer-markdown-quote {
+  margin: 0.2rem 0;
+  padding-left: 0.7rem;
+  border-left: 2px solid color-mix(in srgb, var(--color-accent) 45%, transparent);
+  color: var(--color-text-muted);
+}
+
+.vesper-composer-markdown-list {
+  margin: 0.2rem 0;
+  padding-left: 1.1rem;
+  list-style: disc;
+}
+
+.vesper-composer-markdown-list-ordered {
+  list-style: decimal;
+}
+
+.vesper-composer-markdown-list-item {
+  white-space: pre-wrap;
+}
+
+.vesper-composer-markdown-link {
+  color: var(--color-accent-text);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+}
+
+.vesper-composer-token {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.45rem;
+  margin: 0 0.08rem;
+  padding: 0 0.42rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+  border-radius: 0.55rem;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 74%, transparent);
+  color: var(--color-text-primary);
+  font-size: 0.88rem;
+  font-weight: 600;
+  vertical-align: baseline;
+}
+
+.vesper-composer-token-mention {
+  background: color-mix(in srgb, var(--color-accent) 18%, var(--color-bg-tertiary));
+  border-color: color-mix(in srgb, var(--color-accent) 32%, transparent);
+  color: var(--color-accent-text);
+}
+
+.vesper-composer-token-everyone {
+  background: rgba(245, 158, 11, 0.18);
+  border-color: rgba(245, 158, 11, 0.3);
+  color: #fcd34d;
+}
+
+.vesper-composer-token-channel {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 84%, transparent);
+  color: var(--color-text-secondary);
+}
+
+.vesper-composer-token-emoji {
+  vertical-align: text-bottom;
 }
 
 .vesper-composer-autocomplete {
@@ -3786,6 +4563,15 @@ body,
     color-mix(in srgb, var(--color-bg-secondary) 96%, transparent);
   box-shadow: 0 30px 70px rgba(0, 0, 0, 0.42);
   backdrop-filter: blur(18px);
+}
+
+.vesper-search-palette-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  padding: 2.5rem 1rem;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(10px);
 }
 
 .vesper-search-palette-header {
@@ -4937,7 +5723,7 @@ body,
   position: sticky;
   top: 0;
   z-index: 12;
-  padding: 0.9rem 1rem 0.85rem;
+  padding: 0.7rem 0.95rem;
   border-bottom: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent),
@@ -4949,9 +5735,9 @@ body,
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.5rem;
   min-width: 0;
-  padding: 0.25rem 0;
+  padding: 0.1rem 0;
   border: 0;
   background: transparent;
   color: inherit;
@@ -4984,16 +5770,17 @@ body,
 
 .vesper-guild-header-menu {
   position: absolute;
-  top: calc(100% - 0.15rem);
-  left: 0.75rem;
-  right: 0.75rem;
-  padding: 0.45rem;
+  top: calc(100% + 1px);
+  left: 0;
+  right: 0;
+  padding: 0.3rem;
   border: 1px solid color-mix(in srgb, var(--color-border) 92%, transparent);
-  border-radius: 1rem;
+  border-top: 0;
+  border-radius: 0 0 0.95rem 0.95rem;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent),
     color-mix(in srgb, var(--color-bg-secondary) 96%, transparent);
-  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.28);
+  box-shadow: 0 16px 28px rgba(0, 0, 0, 0.22);
   backdrop-filter: blur(18px);
 }
 
@@ -5217,21 +6004,21 @@ body,
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 0.65rem;
+  gap: 0.55rem;
   min-width: 0;
-  padding: 0.6rem 0.72rem;
+  padding: 0.42rem 0.62rem;
   border: 0;
-  border-radius: 0.9rem;
+  border-radius: 0.7rem;
   background: transparent;
-  color: var(--color-text-muted);
+  color: var(--color-text-faint);
   cursor: pointer;
   text-align: left;
   transition: background-color 0.16s ease, color 0.16s ease, transform 0.16s ease;
 }
 
 .vesper-channel-row:hover {
-  background: color-mix(in srgb, var(--color-bg-tertiary) 58%, transparent);
-  color: var(--color-text-primary);
+  background: color-mix(in srgb, var(--color-bg-tertiary) 34%, transparent);
+  color: var(--color-text-secondary);
 }
 
 .vesper-channel-row-shell-dragging {
@@ -5239,17 +6026,19 @@ body,
 }
 
 .vesper-channel-row-active {
-  background:
-    linear-gradient(90deg, color-mix(in srgb, var(--color-accent) 16%, transparent), transparent 70%),
-    color-mix(in srgb, var(--color-bg-tertiary) 78%, transparent);
   color: var(--color-text-primary);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 18%, transparent);
+  background: transparent;
+  box-shadow: none;
+}
+
+.vesper-channel-row-unread {
+  color: var(--color-text-secondary);
 }
 
 .vesper-channel-row-unread::before {
   content: '';
   position: absolute;
-  left: 0.28rem;
+  left: 0.16rem;
   top: 50%;
   width: 0.34rem;
   height: 0.34rem;
@@ -5279,7 +6068,7 @@ body,
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
-  font-size: 0.9rem;
+  font-size: 0.88rem;
 }
 
 .vesper-channel-row-action {
@@ -5307,7 +6096,7 @@ body,
 }
 
 .vesper-channel-row-unread .vesper-channel-row-label {
-  font-weight: 600;
+  font-weight: 550;
 }
 
 .vesper-channel-create-scope {
@@ -6092,6 +6881,17 @@ body,
   bottom: 1rem;
   z-index: 40;
   width: min(22rem, calc(100vw - 2rem));
+}
+
+.vesper-call-overlay-docked {
+  position: static;
+  right: auto;
+  bottom: auto;
+  left: auto;
+  width: auto;
+  z-index: auto;
+  flex: 0 0 auto;
+  padding: 0.65rem 0.75rem calc(0.65rem + env(safe-area-inset-bottom, 0px));
 }
 
 .vesper-call-overlay-shell {
@@ -7094,6 +7894,10 @@ body,
   width: min(26rem, calc(100vw - 2rem));
 }
 
+.vesper-call-overlay-docked.vesper-call-overlay-discord {
+  width: auto;
+}
+
 .vesper-call-overlay-discord .vesper-call-overlay-shell {
   padding: 0.95rem;
   border-radius: 1.5rem;
@@ -7364,6 +8168,10 @@ body,
   align-items: start;
 }
 
+.vesper-voice-room-discord .vesper-voice-room-discord-layout-simple {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .vesper-voice-room-discord .vesper-voice-room-discord-main,
 .vesper-voice-room-discord .vesper-voice-room-discord-sidebar {
   min-width: 0;
@@ -7398,7 +8206,7 @@ body,
   align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
-  margin-bottom: 0.95rem;
+  margin-bottom: 0.75rem;
 }
 
 .vesper-voice-room-discord .vesper-voice-room-discord-focus {
@@ -7643,7 +8451,7 @@ body,
 }
 
 .vesper-voice-room-discord .vesper-voice-room-discord-audio-strip {
-  margin-top: 0.9rem;
+  margin-top: 0.75rem;
 }
 
 .vesper-voice-room-discord .vesper-voice-room-discord-audio-list {
@@ -7657,6 +8465,9 @@ body,
   display: flex;
   align-items: center;
   gap: 0.65rem;
+  margin-top: 0.9rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
 }
 
 .vesper-voice-room-discord .vesper-voice-room-discord-status-dot {
@@ -7682,7 +8493,7 @@ body,
 }
 
 .vesper-voice-room-discord .vesper-voice-room-actions {
-  margin-top: 0.9rem;
+  margin-top: 0.75rem;
   justify-content: flex-start;
 }
 

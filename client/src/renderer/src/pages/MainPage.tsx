@@ -382,6 +382,7 @@ export default function MainPage(): React.JSX.Element {
               )}
             </div>
 
+            {shouldShowCallOverlay && <CallOverlay mobileDocked />}
             {isChannelView && showMemberList && !showThreadPanel && <MemberListPanel />}
             {renderThreadPanel(true)}
           </div>
@@ -396,7 +397,6 @@ export default function MainPage(): React.JSX.Element {
         {showServerSettingsModal && <ServerSettingsModal />}
         {showChannelSettingsModal && <ChannelSettingsModal />}
         {incomingCall && <IncomingCallModal />}
-        {shouldShowCallOverlay && <CallOverlay />}
       </div>
     )
   }
@@ -405,11 +405,11 @@ export default function MainPage(): React.JSX.Element {
     <div data-testid="main-page" className="h-screen bg-bg-primary flex overflow-hidden">
       <Sidebar />
 
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="vesper-desktop-shell flex-1 flex flex-col min-w-0">
         <Header />
 
-        <div className="flex-1 flex min-h-0">
-          <div className="flex-1 flex flex-col min-w-0">
+        <div className="vesper-desktop-body flex-1 flex min-h-0">
+          <div className="vesper-main-chat-column flex-1 flex flex-col min-w-0">
             {isChannelView ? (
               <>
                 {isVoiceChannelView ? (
