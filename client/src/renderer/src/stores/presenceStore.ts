@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { joinChannel, leaveChannel, pushToChannel } from '@vesper/sdk/transport'
 import { useServerStore } from './serverStore'
 import type { DmConversation } from './dmStore'
+import { getRendererEncryptedChat } from '../sdk/client'
 
 export type PresenceStatus = 'online' | 'idle' | 'dnd' | 'offline'
 
@@ -341,10 +342,7 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
       } else if (event === 'scope_summary_updated') {
         applyScopeSummaryUpdate(payload)
       } else if (event === 'server_membership_revoked') {
-        Promise.all([
-          import('./cryptoStore'),
-          import('./serverStore')
-        ]).then(([{ useCryptoStore }, { useServerStore }]) => {
+        import('./serverStore').then(({ useServerStore }) => {
           const data = payload as {
             server_id?: string
             channel_ids?: string[]
@@ -355,15 +353,9 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
             ? data.channel_ids.filter((channelId): channelId is string => typeof channelId === 'string')
             : []
 
-          const groupIds = Array.from(
-            new Set([
-              ...channelIds,
-              ...channelIds.map((channelId) => `voice:channel:${channelId}`)
-            ])
-          )
-
-          for (const groupId of groupIds) {
-            void useCryptoStore.getState().resetGroup(groupId).catch(() => {})
+          for (const channelId of channelIds) {
+            void getRendererEncryptedChat().resetScope(channelId).catch(() => {})
+            void getRendererEncryptedChat().resetScope(`voice:channel:${channelId}`).catch(() => {})
           }
 
           if (serverId) {

@@ -1,9 +1,9 @@
 import { create } from 'zustand'
+import { type EncryptedScopeWatchEvent, type ProcessedScopeMessage } from '@vesper/sdk/client'
 import {
   ackPendingHistoryBundle,
   ackPendingHistoryRequest,
   ackPendingResyncRequest,
-  ackPendingWelcome,
   base64ToUint8,
   fetchPendingHistoryBundles,
   fetchPendingHistoryRequests,
@@ -36,12 +36,12 @@ import {
   leaveChannel,
   pushToChannel
 } from '@vesper/sdk/transport'
-import { useCryptoStore } from './cryptoStore'
 import { useAuthStore } from './authStore'
 import { useVoiceStore } from './voiceStore'
 import { useServerStore } from './serverStore'
 import { useDmStore } from './dmStore'
 import { queueScopeMutationHint, usePresenceStore } from './presenceStore'
+import { getRendererClient, getRendererEncryptedChat } from '../sdk/client'
 import { replaceEmojiShortcodes } from '../utils/emoji'
 export function cacheSentPlaintext(ciphertext: string, plaintext: string): void {
   void cacheSentMessage(ciphertext, plaintext)
@@ -83,6 +83,8 @@ const inFlightJoinRequests = new Set<string>()
 const inFlightScopeMessageFetches = new Map<string, Promise<void>>()
 const inFlightOlderScopeMessageFetches = new Set<string>()
 const inFlightNewerScopeMessageFetches = new Set<string>()
+const liveScopeWatchDisposers = new Map<string, () => void>()
+const liveScopeWatchTokens = new Map<string, symbol>()
 const RECENT_NOTIFICATION_TTL_MS = 30_000
 const RECENT_MUTATION_SEQ_WINDOW = 256
 const PENDING_MLS_FETCH_COOLDOWN_MS = 1_000
@@ -102,6 +104,12 @@ interface ScopeLifecycleEntry {
 
 interface SyncRecentScopesOptions {
   scopeIds?: string[] | null
+}
+
+function releaseLiveScopeWatch(topic: string): void {
+  liveScopeWatchTokens.delete(topic)
+  liveScopeWatchDisposers.get(topic)?.()
+  liveScopeWatchDisposers.delete(topic)
 }
 
 function clearHistorySyncRetry(scopeId: string): void {
@@ -268,7 +276,7 @@ function requestHistorySync(
   clearHistorySyncRetry(scopeId)
 
   if (
-    !useCryptoStore.getState().hasGroup(scopeId) ||
+    !getRendererEncryptedChat().hasGroup(scopeId) ||
     (!force && !scopeNeedsHistorySync(scopeId))
   ) {
     return
@@ -448,6 +456,82 @@ function buildMessageFromCache(record: CachedMessageRecord): Message {
   }
 }
 
+function normalizeMessageSender(
+  sender: {
+    id?: string | null
+    username?: string | null
+    display_name?: string | null
+    avatar_url?: string | null
+  } | null | undefined,
+  senderId: string | null,
+  senderUsername: string | null
+): MessageSender | null {
+  const resolvedId = sender?.id ?? senderId
+  const resolvedUsername = sender?.username ?? senderUsername
+  if (!resolvedId || !resolvedUsername) {
+    return null
+  }
+
+  return {
+    id: resolvedId,
+    username: resolvedUsername,
+    display_name: sender?.display_name ?? null,
+    avatar_url: sender?.avatar_url ?? null
+  }
+}
+
+async function buildMessageFromSdkProcessed(
+  targetId: string,
+  processed: ProcessedScopeMessage
+): Promise<Message> {
+  const raw = processed.raw as ProcessedScopeMessage['raw'] & {
+    attachments?: Attachment[]
+    reactions?: RawReaction[]
+    expires_at?: string | null
+    edited_at?: string | null
+    client_nonce?: string | null
+    server_id?: string | null
+  }
+
+  return {
+    id: processed.id,
+    room_seq: getRoomSeq(raw.room_seq),
+    content: processed.decryptionFailed
+      ? (canUseEncryptedFeatures()
+          ? ENCRYPTED_MESSAGE_SYNCING_PLACEHOLDER
+          : ENCRYPTED_MESSAGE_APPROVAL_PLACEHOLDER)
+      : (processed.plaintext ?? processed.content),
+    channel_id: raw.channel_id ?? null,
+    conversation_id: raw.conversation_id ?? null,
+    server_id: raw.server_id ?? null,
+    sender_id: raw.sender_id ?? null,
+    sender: normalizeMessageSender(raw.sender, raw.sender_id ?? null, processed.senderUsername),
+    inserted_at: raw.inserted_at,
+    expires_at: raw.expires_at ?? null,
+    parent_message_id: raw.parent_message_id ?? null,
+    attachments: raw.attachments ?? [],
+    reactions: await resolveReactionGroups(targetId, raw.reactions),
+    encrypted: processed.encrypted,
+    decryptionFailed: processed.decryptionFailed,
+    edited_at: raw.edited_at ?? undefined,
+    client_nonce: raw.client_nonce ?? undefined,
+    delivery_state: 'sent'
+  }
+}
+
+async function loadScopeMessagesViaSdk(scope: {
+  kind: 'channel' | 'dm'
+  id: string
+}): Promise<Message[]> {
+  const synced = await getRendererEncryptedChat().syncScope(scope, {
+    limit: MESSAGE_PAGE_SIZE
+  })
+
+  return await Promise.all(
+    synced.messages.map((message) => buildMessageFromSdkProcessed(scope.id, message))
+  )
+}
+
 async function loadScopeMessagesFromCache(scopeId: string): Promise<Message[]> {
   const cachedMessages = await loadCachedMessages(scopeId).catch(() => [])
   if (cachedMessages.length === 0) {
@@ -460,6 +544,270 @@ async function loadScopeMessagesFromCache(scopeId: string): Promise<Message[]> {
       (left, right) =>
         new Date(left.inserted_at).getTime() - new Date(right.inserted_at).getTime()
     )
+}
+
+function applySdkMessageUpdate(
+  targetId: string,
+  message: Message,
+  set: (fn: (s: MessageState) => Partial<MessageState>) => void
+): void {
+  set((s) => {
+    const residentMessages = s.messagesByChannel[targetId] ?? []
+    const patchedMessages = patchResidentMessagesById(residentMessages, [message])
+
+    if (patchedMessages === residentMessages) {
+      return {
+        latestRoomSeqByScope: updateLatestRoomSeqByScope(
+          s.latestRoomSeqByScope,
+          targetId,
+          message.room_seq
+        ),
+        ...patchThreadStateForMessage(s, message.id, (current) => ({
+          ...current,
+          ...message,
+          sender: message.sender ?? current.sender,
+          attachments: message.attachments ?? current.attachments,
+          reactions: message.reactions ?? current.reactions
+        }))
+      }
+    }
+
+    return {
+      messagesByChannel: {
+        ...s.messagesByChannel,
+        [targetId]: patchedMessages
+      },
+      latestRoomSeqByScope: updateLatestRoomSeqByScope(
+        s.latestRoomSeqByScope,
+        targetId,
+        getMaxRoomSeq(patchedMessages),
+        message.room_seq
+      ),
+      ...patchThreadStateForMessage(s, message.id, (current) => ({
+        ...current,
+        ...message,
+        sender: message.sender ?? current.sender,
+        attachments: message.attachments ?? current.attachments,
+        reactions: message.reactions ?? current.reactions
+      }))
+    }
+  })
+}
+
+async function handleSdkScopeEvent(
+  scope: EncryptedScopeDescriptor,
+  scopeEvent: EncryptedScopeWatchEvent,
+  set: (fn: (s: MessageState) => Partial<MessageState>) => void
+): Promise<void> {
+  const payload = scopeEvent.payload ?? {}
+
+  if (scopeEvent.event === 'new_message' && scopeEvent.message) {
+    const processed = await buildMessageFromSdkProcessed(scope.scopeId, scopeEvent.message)
+    applyProcessedIncomingMessage(scope.scopeId, processed, payload, set)
+    maybeShowDesktopNotification(processed)
+    return
+  }
+
+  if (
+    (scopeEvent.event === 'reaction_update' || scopeEvent.event === 'message_edited') &&
+    scopeEvent.message
+  ) {
+    const processed = await buildMessageFromSdkProcessed(scope.scopeId, scopeEvent.message)
+    applySdkMessageUpdate(scope.scopeId, processed, set)
+    rememberScopeMutationSeq(scope.scopeId, getRoomSeq(payload.room_seq))
+    return
+  }
+
+  if (scopeEvent.event === 'message_deleted') {
+    handleMessageDeleted(scope.scopeId, payload, set)
+    rememberScopeMutationSeq(scope.scopeId, getRoomSeq(payload.room_seq))
+    return
+  }
+
+  if (scopeEvent.event === 'typing_start') {
+    set((s) => {
+      const current = s.typingUsers[scope.scopeId] || []
+      const typing = payload as TypingUser
+      if (current.some((entry) => entry.user_id === typing.user_id)) {
+        return s
+      }
+
+      return {
+        typingUsers: {
+          ...s.typingUsers,
+          [scope.scopeId]: [...current, typing]
+        }
+      }
+    })
+    return
+  }
+
+  if (scopeEvent.event === 'typing_stop') {
+    set((s) => ({
+      typingUsers: {
+        ...s.typingUsers,
+        [scope.scopeId]: (s.typingUsers[scope.scopeId] || []).filter(
+          (entry) => entry.user_id !== (payload as { user_id?: string }).user_id
+        )
+      }
+    }))
+    return
+  }
+
+  if (scopeEvent.event === 'disappearing_ttl_updated') {
+    if (scope.kind === 'channel') {
+      useServerStore.getState().updateChannelTtl(
+        payload.channel_id as string,
+        payload.disappearing_ttl as number | null
+      )
+    } else {
+      useDmStore.getState().updateConversationTtl(
+        payload.conversation_id as string,
+        payload.disappearing_ttl as number | null
+      )
+    }
+    return
+  }
+
+  if (scopeEvent.event === 'message_pinned') {
+    handlePinBroadcast(scope.scopeId, payload, set, 'pin')
+    rememberScopeMutationSeq(scope.scopeId, getRoomSeq(payload.room_seq))
+    return
+  }
+
+  if (scopeEvent.event === 'message_unpinned') {
+    handlePinBroadcast(scope.scopeId, payload, set, 'unpin')
+    rememberScopeMutationSeq(scope.scopeId, getRoomSeq(payload.room_seq))
+    return
+  }
+
+  if (scopeEvent.event === 'mls_commit') {
+    rememberScopeMutationSeq(scope.scopeId, getRoomSeq(payload.room_seq))
+    if (scope.kind === 'channel') {
+      void useMessageStore.getState().fetchMessages(scope.scopeId)
+    } else {
+      void useMessageStore.getState().fetchDmMessages(scope.scopeId)
+    }
+    return
+  }
+
+  if (scopeEvent.event === 'mls_welcome') {
+    const recipientId = payload.recipient_id as string
+    const recipientDeviceId =
+      typeof payload.recipient_device_id === 'string' ? payload.recipient_device_id : null
+    const currentUserId = useAuthStore.getState().user?.id
+    if (
+      recipientId === currentUserId &&
+      (!recipientDeviceId || recipientDeviceId === getLocalDeviceIdentity().id)
+    ) {
+      recentWelcomeProcessed.set(scope.scopeId, Date.now())
+      if (scope.kind === 'channel') {
+        void useMessageStore.getState().fetchMessages(scope.scopeId)
+      } else {
+        void useMessageStore.getState().fetchDmMessages(scope.scopeId)
+      }
+      requestHistorySync(scope.scopeId, scope.topic, 0, true)
+    }
+    rememberScopeMutationSeq(scope.scopeId, getRoomSeq(payload.room_seq))
+    return
+  }
+
+  if (scopeEvent.event === 'mls_history_request') {
+    const requesterId = payload.user_id as string
+    const requesterDeviceId =
+      typeof payload.device_id === 'string' ? payload.device_id : null
+    const currentUserId = useAuthStore.getState().user?.id
+    const localDeviceId = getLocalDeviceIdentity().id
+    if (
+      requesterDeviceId &&
+      !(requesterId === currentUserId && requesterDeviceId === localDeviceId)
+    ) {
+      void sendHistoryBundle(
+        scope.scopeId,
+        scope.topic,
+        requesterId,
+        requesterDeviceId,
+        typeof payload.id === 'string' ? payload.id : undefined
+      ).catch(() => {})
+    }
+    return
+  }
+
+  if (scopeEvent.event === 'mls_history_bundle') {
+    const recipientId = payload.recipient_id as string
+    const recipientDeviceId =
+      typeof payload.recipient_device_id === 'string' ? payload.recipient_device_id : null
+    const currentUserId = useAuthStore.getState().user?.id
+    if (
+      recipientId === currentUserId &&
+      recipientDeviceId === getLocalDeviceIdentity().id
+    ) {
+      void processHistoryBundle(scope.scopeId, payload, set).catch(() => {})
+    }
+    return
+  }
+
+  if (scopeEvent.event === 'mls_resync_request') {
+    void processMlsResyncRequest(scope.scopeId, scope.topic, {
+      id: payload.id as string | undefined,
+      requester_id: payload.user_id as string,
+      requester_username: (payload.username as string | undefined) ?? undefined,
+      requester_client_id: (payload.device_id as string | undefined) ?? undefined,
+      request_id: payload.request_id as string | undefined,
+      last_known_epoch: (payload.last_known_epoch as number | null | undefined) ?? null,
+      reason: (payload.reason as string | null | undefined) ?? null
+    }).catch(() => {})
+    return
+  }
+
+  if (scopeEvent.event === 'incoming_call') {
+    const userId = useAuthStore.getState().user?.id
+    if ((payload.caller_id as string) !== userId) {
+      useVoiceStore.getState().setIncomingCall({
+        callerId: payload.caller_id as string,
+        conversationId: payload.conversation_id as string
+      })
+    }
+    return
+  }
+
+  if (scopeEvent.event === 'call_rejected') {
+    useVoiceStore.getState().handleDmCallRejected(payload.conversation_id as string)
+    return
+  }
+}
+
+function startLiveScopeWatch(
+  scope: EncryptedScopeDescriptor,
+  set: (fn: (s: MessageState) => Partial<MessageState>) => void
+): void {
+  releaseLiveScopeWatch(scope.topic)
+  const token = Symbol(scope.topic)
+  liveScopeWatchTokens.set(scope.topic, token)
+
+  void getRendererEncryptedChat()
+    .watchScope(
+      {
+        kind: scope.kind,
+        id: scope.scopeId
+      },
+      async (scopeEvent) => {
+        await handleSdkScopeEvent(scope, scopeEvent, set)
+      }
+    )
+    .then((dispose) => {
+      if (liveScopeWatchTokens.get(scope.topic) !== token) {
+        dispose()
+        return
+      }
+
+      liveScopeWatchDisposers.set(scope.topic, dispose)
+    })
+    .catch(() => {
+      if (liveScopeWatchTokens.get(scope.topic) === token) {
+        liveScopeWatchTokens.delete(scope.topic)
+      }
+    })
 }
 
 export interface MessageSender {
@@ -738,8 +1086,8 @@ function hasFailedEncryptedMessages(messages: Message[] | undefined): boolean {
 }
 
 async function maybeRequestMlsJoin(targetId: string, topic: string): Promise<void> {
-  const crypto = useCryptoStore.getState()
-  if (crypto.hasGroup(targetId)) {
+  const encryptedChat = getRendererEncryptedChat()
+  if (encryptedChat.hasGroup(targetId)) {
     return
   }
 
@@ -752,9 +1100,7 @@ async function maybeRequestMlsJoin(targetId: string, topic: string): Promise<voi
   }
 
   recentMlsJoinRequests.set(topic, now)
-  pushToChannel(topic, 'mls_request_join', {
-    device_id: getLocalDeviceIdentity().id
-  })
+  await encryptedChat.requestJoin(scopeFromTopic(targetId, topic)).catch(() => {})
 }
 
 function getMlsJoinDeviceKey(topic: string, userId: string): string {
@@ -810,6 +1156,20 @@ interface EncryptedScopeDescriptor {
   topic: string
 }
 
+function scopeFromTopic(targetId: string, topic: string): { kind: 'channel' | 'dm'; id: string } {
+  return {
+    kind: topic.startsWith('dm:') ? 'dm' : 'channel',
+    id: targetId
+  }
+}
+
+function scopeForId(scopeId: string): { kind: 'channel' | 'dm'; id: string } {
+  return {
+    kind: getDmConversation(scopeId) ? 'dm' : 'channel',
+    id: scopeId
+  }
+}
+
 function maybeRequestMlsResync(
   _targetId: string,
   scopeId: string,
@@ -844,13 +1204,12 @@ async function processMlsResyncRequest(
   request: PendingMlsResyncRequest
 ): Promise<boolean> {
   const requesterId = request.requester_id
-  const requesterUsername = request.requester_username ?? undefined
   const requesterDeviceId = request.requester_client_id ?? undefined
   const localUser = useAuthStore.getState().user
   const localDeviceId = getLocalDeviceIdentity().id
-  const crypto = useCryptoStore.getState()
+  const encryptedChat = getRendererEncryptedChat()
 
-  if (!requesterId || !crypto.hasGroup(targetId)) {
+  if (!requesterId || !encryptedChat.hasGroup(targetId)) {
     return false
   }
 
@@ -858,11 +1217,10 @@ async function processMlsResyncRequest(
     return false
   }
 
-  const result = await crypto.handleResyncRequest(
-    targetId,
+  const result = await encryptedChat.handleExternalResyncRequest(
+    scopeFromTopic(targetId, topic),
     requesterId,
-    requesterUsername,
-    requesterDeviceId
+    requesterDeviceId ?? null
   )
   if (!result) {
     return false
@@ -946,8 +1304,8 @@ async function processMlsEvictionRequest(
       return false
     }
 
-    const crypto = useCryptoStore.getState()
-    if (!crypto.hasGroup(targetId)) {
+    const encryptedChat = getRendererEncryptedChat()
+    if (!encryptedChat.hasGroup(targetId)) {
       return false
     }
 
@@ -958,34 +1316,20 @@ async function processMlsEvictionRequest(
       return false
     }
 
-    const result = await crypto.handleEvictionRequest(
-      targetId,
-      targetUserId,
-      targetDeviceId ?? undefined
+    const handled = await encryptedChat.handleExternalEvictionRequest(
+      scopeFromTopic(targetId, topic),
+      {
+        eviction_id: evictionId,
+        target_user_id: targetUserId,
+        ...(targetDeviceId ? { target_device_id: targetDeviceId } : {})
+      }
     )
-    if (!result) {
+    if (!handled) {
       return false
     }
 
-    const pushed =
-      result.action === 'skip'
-        ? await pushToChannelWithAck(topic, 'mls_eviction_skip', {
-            id: evictionId,
-            target_user_id: targetUserId,
-            ...(targetDeviceId ? { target_device_id: targetDeviceId } : {}),
-            reason: result.reason
-          })
-        : await pushToChannelWithAck(topic, 'mls_remove', {
-            removed_user_id: targetUserId,
-            ...(targetDeviceId ? { removed_device_id: targetDeviceId } : {}),
-            commit_data: result.commitBytes,
-            eviction_id: evictionId
-          })
-
-    if (pushed) {
-      recentMlsEvictionRequests.set(evictionId, Date.now())
-    }
-    return pushed
+    recentMlsEvictionRequests.set(evictionId, Date.now())
+    return true
   })().finally(() => {
     inFlightMlsEvictionRequests.delete(evictionId)
   })
@@ -1255,7 +1599,7 @@ export async function processUrgentSyncEvents(
         ((rawMessage.channel_id as string | null) ??
           (rawMessage.conversation_id as string | null) ??
           event.scope_id) || event.scope_id
-      const processed = await processIncomingMessage(targetId, rawMessage, undefined, 'urgent')
+      const processed = await processIncomingMessage(targetId, rawMessage)
 
       applyProcessedIncomingMessage(targetId, processed, rawMessage, useMessageStore.setState)
       maybeShowDesktopNotification(processed)
@@ -1272,9 +1616,10 @@ async function waitForChannelBootstrap(
   const deadline = Date.now() + 5000
   let lastCount = initialMemberCount
   let lastChangeTime = Date.now()
+  const encryptedChat = getRendererEncryptedChat()
 
   while (Date.now() < deadline) {
-    const currentCount = useCryptoStore.getState().getMemberCount(channelId)
+    const currentCount = encryptedChat.getMemberCount(channelId)
     if (currentCount !== lastCount) {
       lastCount = currentCount
       lastChangeTime = Date.now()
@@ -1321,7 +1666,9 @@ export async function waitForChannelMembershipReady(
   }
 
   const deadline = Date.now() + 5000
-  let lastCount = useCryptoStore.getState().getMemberCount(channelId)
+  const encryptedChat = getRendererEncryptedChat()
+  const scope = scopeFromTopic(channelId, topic)
+  let lastCount = encryptedChat.getMemberCount(channelId)
   let lastChangeTime = Date.now()
   let requestedJoinAll = false
 
@@ -1330,12 +1677,12 @@ export async function waitForChannelMembershipReady(
     lastCount > 0 &&
     lastCount < expectedMemberCount
   ) {
-    pushToChannel(topic, 'mls_request_join_all', {})
+    await encryptedChat.requestJoinAll(scope).catch(() => {})
     requestedJoinAll = true
   }
 
   while (Date.now() < deadline) {
-    const currentCount = useCryptoStore.getState().getMemberCount(channelId)
+    const currentCount = encryptedChat.getMemberCount(channelId)
     if (currentCount !== lastCount) {
       lastCount = currentCount
       lastChangeTime = Date.now()
@@ -1347,7 +1694,7 @@ export async function waitForChannelMembershipReady(
       currentCount < expectedMemberCount &&
       !requestedJoinAll
     ) {
-      pushToChannel(topic, 'mls_request_join_all', {})
+      await encryptedChat.requestJoinAll(scope).catch(() => {})
       requestedJoinAll = true
     }
 
@@ -1391,8 +1738,8 @@ async function bootstrapDmGroupIfLeader(
   conversationId: string,
   topic: string
 ): Promise<boolean> {
-  const crypto = useCryptoStore.getState()
-  if (crypto.hasGroup(conversationId)) {
+  const encryptedChat = getRendererEncryptedChat()
+  if (encryptedChat.hasGroup(conversationId)) {
     return true
   }
 
@@ -1403,8 +1750,8 @@ async function bootstrapDmGroupIfLeader(
     return false
   }
 
-  await crypto.createGroup(conversationId)
-  if (!useCryptoStore.getState().hasGroup(conversationId)) {
+  await encryptedChat.createScopeGroup({ kind: 'dm', id: conversationId })
+  if (!encryptedChat.hasGroup(conversationId)) {
     return false
   }
 
@@ -1414,11 +1761,10 @@ async function bootstrapDmGroupIfLeader(
     }
 
     const preferredDeviceId = getPreferredMlsJoinDeviceId(topic, participant.user_id)
-    const result = await crypto.handleJoinRequest(
-      conversationId,
+    const result = await encryptedChat.handleExternalJoinRequest(
+      { kind: 'dm', id: conversationId },
       participant.user_id,
-      participant.user.username,
-      preferredDeviceId
+      preferredDeviceId ?? null
     )
 
     if (!result) {
@@ -1439,7 +1785,7 @@ async function bootstrapDmGroupIfLeader(
     }
   }
 
-  return useCryptoStore.getState().hasGroup(conversationId)
+  return encryptedChat.hasGroup(conversationId)
 }
 
 async function waitForDmBootstrap(
@@ -1447,22 +1793,23 @@ async function waitForDmBootstrap(
   timeoutMs = DM_JOIN_WAIT_TIMEOUT_MS
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
+  const encryptedChat = getRendererEncryptedChat()
 
   while (Date.now() < deadline) {
-    if (useCryptoStore.getState().hasGroup(conversationId)) {
+    if (encryptedChat.hasGroup(conversationId)) {
       return true
     }
 
-    await useCryptoStore.getState().ensureGroupMembership(conversationId).catch(() => {})
+    await encryptedChat.ensureMembership({ kind: 'dm', id: conversationId }).catch(() => {})
 
-    if (useCryptoStore.getState().hasGroup(conversationId)) {
+    if (encryptedChat.hasGroup(conversationId)) {
       return true
     }
 
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
 
-  return useCryptoStore.getState().hasGroup(conversationId)
+  return encryptedChat.hasGroup(conversationId)
 }
 
 /**
@@ -1474,25 +1821,24 @@ async function forceBootstrapDmGroup(
   conversationId: string,
   topic: string
 ): Promise<boolean> {
-  const crypto = useCryptoStore.getState()
-  if (crypto.hasGroup(conversationId)) return true
+  const encryptedChat = getRendererEncryptedChat()
+  if (encryptedChat.hasGroup(conversationId)) return true
 
   const userId = useAuthStore.getState().user?.id
   const conversation = getDmConversation(conversationId)
   if (!userId || !conversation) return false
 
-  await crypto.createGroup(conversationId)
-  if (!useCryptoStore.getState().hasGroup(conversationId)) return false
+  await encryptedChat.createScopeGroup({ kind: 'dm', id: conversationId })
+  if (!encryptedChat.hasGroup(conversationId)) return false
 
   for (const participant of conversation.participants) {
     if (participant.user_id === userId) continue
 
     const preferredDeviceId = getPreferredMlsJoinDeviceId(topic, participant.user_id)
-    const result = await crypto.handleJoinRequest(
-      conversationId,
+    const result = await encryptedChat.handleExternalJoinRequest(
+      { kind: 'dm', id: conversationId },
       participant.user_id,
-      participant.user.username,
-      preferredDeviceId
+      preferredDeviceId ?? null
     )
 
     if (!result) continue
@@ -1511,15 +1857,15 @@ async function forceBootstrapDmGroup(
     }
   }
 
-  return useCryptoStore.getState().hasGroup(conversationId)
+  return encryptedChat.hasGroup(conversationId)
 }
 
 export async function ensureChannelGroupReady(
   channelId: string,
   allowCreate = false
 ): Promise<boolean> {
-  const crypto = useCryptoStore.getState()
-  if (crypto.hasGroup(channelId)) {
+  const encryptedChat = getRendererEncryptedChat()
+  if (encryptedChat.hasGroup(channelId)) {
     return true
   }
 
@@ -1532,12 +1878,12 @@ export async function ensureChannelGroupReady(
 
   // Try to join an existing group first — another member may have already
   // created one. Check local DB, pending welcomes, etc.
-  const processedPendingWelcome = await crypto.ensureGroupMembership(channelId)
-  if (processedPendingWelcome || crypto.consumeWelcomeApplied(channelId)) {
-    crypto.consumeWelcomeApplied(channelId)
+  const processedPendingWelcome = await encryptedChat.ensureMembership({ kind: 'channel', id: channelId })
+  if (processedPendingWelcome || encryptedChat.consumeWelcomeApplied(channelId)) {
+    encryptedChat.consumeWelcomeApplied(channelId)
     await handleWelcomeProcessedForScope(scope)
   }
-  if (useCryptoStore.getState().hasGroup(channelId)) {
+  if (encryptedChat.hasGroup(channelId)) {
     return true
   }
 
@@ -1545,26 +1891,23 @@ export async function ensureChannelGroupReady(
   const topic = scope.topic
   recentMlsJoinRequests.delete(topic)
   await ensureLocalJoinKeyPackagesReady()
-  pushToChannel(topic, 'mls_request_join', {
-    device_id: getLocalDeviceIdentity().id
-  })
+  await encryptedChat.requestJoin({ kind: 'channel', id: channelId }).catch(() => {})
 
   // Wait for a welcome — if someone has the group, they'll add us
   const joinDeadline = Date.now() + 2000
   while (Date.now() < joinDeadline) {
-    if (useCryptoStore.getState().hasGroup(channelId)) {
+    if (encryptedChat.hasGroup(channelId)) {
       return true
     }
 
-    const processedWelcome = await useCryptoStore
-      .getState()
-      .ensureGroupMembership(channelId)
+    const processedWelcome = await encryptedChat
+      .ensureMembership({ kind: 'channel', id: channelId })
       .catch(() => false)
-    if (processedWelcome || useCryptoStore.getState().consumeWelcomeApplied(channelId)) {
-      useCryptoStore.getState().consumeWelcomeApplied(channelId)
+    if (processedWelcome || encryptedChat.consumeWelcomeApplied(channelId)) {
+      encryptedChat.consumeWelcomeApplied(channelId)
       await handleWelcomeProcessedForScope(scope)
     }
-    if (useCryptoStore.getState().hasGroup(channelId)) {
+    if (encryptedChat.hasGroup(channelId)) {
       return true
     }
 
@@ -1573,12 +1916,12 @@ export async function ensureChannelGroupReady(
 
   // Last chance: check server-side pending welcomes — the WebSocket
   // broadcast may have been missed but the server stores welcomes in DB.
-  const processedWelcome = await useCryptoStore.getState().ensureGroupMembership(channelId)
-  if (processedWelcome || useCryptoStore.getState().consumeWelcomeApplied(channelId)) {
-    useCryptoStore.getState().consumeWelcomeApplied(channelId)
+  const processedWelcome = await encryptedChat.ensureMembership({ kind: 'channel', id: channelId })
+  if (processedWelcome || encryptedChat.consumeWelcomeApplied(channelId)) {
+    encryptedChat.consumeWelcomeApplied(channelId)
     await handleWelcomeProcessedForScope(scope)
   }
-  if (useCryptoStore.getState().hasGroup(channelId)) {
+  if (encryptedChat.hasGroup(channelId)) {
     return true
   }
 
@@ -1594,16 +1937,16 @@ export async function ensureChannelGroupReady(
   }
 
   // Nobody responded — create the group ourselves
-  await crypto.createGroup(channelId)
-  if (!useCryptoStore.getState().hasGroup(channelId)) {
+  await encryptedChat.createScopeGroup({ kind: 'channel', id: channelId })
+  if (!encryptedChat.hasGroup(channelId)) {
     return false
   }
 
-  const initialMemberCount = useCryptoStore.getState().getMemberCount(channelId)
-  pushToChannel(topic, 'mls_request_join_all', {})
+  const initialMemberCount = encryptedChat.getMemberCount(channelId)
+  await encryptedChat.requestJoinAll({ kind: 'channel', id: channelId }).catch(() => {})
   await waitForChannelBootstrap(channelId, initialMemberCount)
 
-  return useCryptoStore.getState().hasGroup(channelId)
+  return encryptedChat.hasGroup(channelId)
 }
 
 function getScopeRecoveryKey(scope: EncryptedScopeDescriptor): string {
@@ -1636,14 +1979,17 @@ async function ensureEncryptedScopeMembership(
     return
   }
 
-  const crypto = useCryptoStore.getState()
+  const encryptedChat = getRendererEncryptedChat()
 
-  const processedPendingWelcome = await crypto.ensureGroupMembership(scope.targetId)
-  if (processedPendingWelcome || crypto.consumeWelcomeApplied(scope.targetId)) {
-    crypto.consumeWelcomeApplied(scope.targetId)
+  const processedPendingWelcome = await encryptedChat.ensureMembership({
+    kind: scope.kind,
+    id: scope.targetId
+  })
+  if (processedPendingWelcome || encryptedChat.consumeWelcomeApplied(scope.targetId)) {
+    encryptedChat.consumeWelcomeApplied(scope.targetId)
     await handleWelcomeProcessedForScope(scope)
   }
-  if (crypto.hasGroup(scope.targetId)) {
+  if (encryptedChat.hasGroup(scope.targetId)) {
     return
   }
 
@@ -1669,20 +2015,21 @@ function requestEncryptedScopeRecovery(
     return
   }
 
-  const crypto = useCryptoStore.getState()
+  const encryptedChat = getRendererEncryptedChat()
 
-  if (crypto.hasGroup(scope.targetId)) {
-    maybeRequestMlsResync(
-      scope.targetId,
-      scope.scopeId,
-      scope.topic,
-      lastKnownEpoch,
-      reason
-    )
+  if (encryptedChat.hasGroup(scope.targetId)) {
+    void encryptedChat.requestResync(
+      { kind: scope.kind, id: scope.targetId },
+      {
+        lastKnownEpoch,
+        reason,
+        username: useAuthStore.getState().user?.username ?? null
+      }
+    ).catch(() => {})
     return
   }
 
-  void maybeRequestMlsJoin(scope.targetId, scope.topic)
+  void encryptedChat.requestJoin({ kind: scope.kind, id: scope.targetId }).catch(() => {})
 }
 
 async function recoverEncryptedScope(
@@ -1703,10 +2050,10 @@ async function recoverEncryptedScope(
     return
   }
 
-  const crypto = useCryptoStore.getState()
+  const encryptedChat = getRendererEncryptedChat()
   const shouldAvoidResync =
     scope.kind === 'dm' &&
-    (!crypto.hasGroup(scope.targetId) || crypto.getMemberCount(scope.targetId) < 2)
+    (!encryptedChat.hasGroup(scope.targetId) || encryptedChat.getMemberCount(scope.targetId) < 2)
 
   const key = getScopeRecoveryKey(scope)
   const existing = inFlightScopeRecoveries.get(key)
@@ -1721,10 +2068,10 @@ async function recoverEncryptedScope(
     ): Promise<boolean> => {
       if (strategy === 'resync') {
         requestEncryptedScopeRecovery(scope, lastKnownEpoch, roundReason)
-      } else if (useCryptoStore.getState().hasGroup(scope.targetId)) {
+      } else if (encryptedChat.hasGroup(scope.targetId)) {
         requestHistorySync(scope.scopeId, scope.topic, 0, true)
       } else {
-        await maybeRequestMlsJoin(scope.targetId, scope.topic)
+        await encryptedChat.requestJoin({ kind: scope.kind, id: scope.targetId }).catch(() => {})
       }
 
       await ensureEncryptedScopeMembership(scope).catch(() => {})
@@ -1741,10 +2088,10 @@ async function recoverEncryptedScope(
         await new Promise((resolve) => setTimeout(resolve, delayMs))
         if (strategy === 'resync') {
           requestEncryptedScopeRecovery(scope, lastKnownEpoch, roundReason)
-        } else if (useCryptoStore.getState().hasGroup(scope.targetId)) {
+        } else if (encryptedChat.hasGroup(scope.targetId)) {
           requestHistorySync(scope.scopeId, scope.topic, 0, true)
         } else {
-          await maybeRequestMlsJoin(scope.targetId, scope.topic)
+          await encryptedChat.requestJoin({ kind: scope.kind, id: scope.targetId }).catch(() => {})
         }
         await ensureEncryptedScopeMembership(scope).catch(() => {})
         await refreshEncryptedScope(scope, getState).catch(() => {})
@@ -1862,7 +2209,7 @@ async function refreshScopeAfterCryptoUpdate(
     await processPendingMlsResyncRequests(scope.targetId, scope.scopeId, scope.topic).catch(() => {})
   }
 
-  if (useCryptoStore.getState().hasGroup(scope.targetId)) {
+  if (getRendererEncryptedChat().hasGroup(scope.targetId)) {
     await processPendingHistoryRequests(scope.targetId, scope.scopeId, scope.topic).catch(() => {})
   }
 }
@@ -1872,7 +2219,7 @@ export async function handleWelcomeProcessedForScope(
 ): Promise<void> {
   recentWelcomeProcessed.set(scope.targetId, Date.now())
   await refreshScopeAfterCryptoUpdate(scope, useMessageStore.getState, useMessageStore.setState, true)
-  if (useCryptoStore.getState().hasGroup(scope.targetId)) {
+  if (getRendererEncryptedChat().hasGroup(scope.targetId)) {
     requestHistorySync(scope.scopeId, scope.topic, 0, true)
   }
 }
@@ -1920,6 +2267,10 @@ async function resolveReactionGroups(
   const ciphertextsToDecrypt: string[] = []
 
   for (const reaction of reactions) {
+    if (reaction.emoji && reaction.emoji !== 'encrypted') {
+      continue
+    }
+
     if (!reaction.ciphertext || typeof reaction.ciphertext !== 'string') {
       continue
     }
@@ -1937,9 +2288,10 @@ async function resolveReactionGroups(
   }
 
   if (ciphertextsToDecrypt.length > 0 && useAuthStore.getState().canUseE2EE) {
-    const decrypted = await useCryptoStore
-      .getState()
-      .decryptBatchForChannel(targetId, ciphertextsToDecrypt, 'normal')
+    const decrypted = await getRendererEncryptedChat().decryptOpaqueBatch(
+      scopeForId(targetId),
+      ciphertextsToDecrypt.map((ciphertext) => ({ ciphertext }))
+    )
 
     decrypted.forEach((plaintext, index) => {
       decryptedByCiphertext.set(ciphertextsToDecrypt[index], plaintext)
@@ -2245,203 +2597,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       topic
     }
 
-    joinChannel(topic, (event, payload) => {
-      const msg = payload as Record<string, unknown>
-
-      if (event === 'new_message') {
-        handleNewMessage(channelId, msg, set)
-      } else if (event === 'typing_start') {
-        set((s) => {
-          const current = s.typingUsers[channelId] || []
-          const typing = msg as unknown as TypingUser
-          if (current.some((t) => t.user_id === typing.user_id)) return s
-          return {
-            typingUsers: {
-              ...s.typingUsers,
-              [channelId]: [...current, typing]
-            }
-          }
-        })
-      } else if (event === 'typing_stop') {
-        set((s) => ({
-          typingUsers: {
-            ...s.typingUsers,
-            [channelId]: (s.typingUsers[channelId] || []).filter(
-              (t) => t.user_id !== (msg as { user_id: string }).user_id
-            )
-          }
-        }))
-      } else if (event === 'disappearing_ttl_updated') {
-        useServerStore.getState().updateChannelTtl(
-          msg.channel_id as string,
-          msg.disappearing_ttl as number | null
-        )
-      } else if (event === 'mls_request_join_all') {
-        if (!useCryptoStore.getState().hasGroup(channelId)) {
-          // mls_request_join_all is a direct invitation from the group creator.
-          // Bypass the cooldown — always respond so the creator can add us.
-          // NOTE: Do NOT send mls_resync_request here — the join request is
-          // sufficient. A resync would cause the leader to remove-then-re-add us,
-          // inflating the epoch and producing stale welcomes.
-          recentMlsJoinRequests.delete(topic)
-          void maybeRequestMlsJoin(channelId, topic)
-        }
-      } else if (event === 'mls_request_join') {
-        handleMlsJoinRequest(channelId, msg, `chat:channel:${channelId}`)
-      } else if (event === 'mls_resync_request') {
-        void processMlsResyncRequest(channelId, topic, {
-          id: msg.id as string | undefined,
-          requester_id: msg.user_id as string,
-          requester_username: (msg.username as string | undefined) ?? undefined,
-          requester_client_id: (msg.device_id as string | undefined) ?? undefined,
-          request_id: msg.request_id as string | undefined,
-          last_known_epoch: (msg.last_known_epoch as number | null | undefined) ?? null,
-          reason: (msg.reason as string | null | undefined) ?? null
-        }).catch(() => {})
-      } else if (event === 'mls_eviction_request') {
-        void processMlsEvictionRequest(channelId, topic, {
-          id: msg.id as string | undefined,
-          eviction_id: msg.eviction_id as string | undefined,
-          target_user_id: (msg.target_user_id as string | undefined) ?? undefined,
-          target_username: (msg.target_username as string | undefined) ?? undefined,
-          target_device_id: (msg.target_device_id as string | undefined) ?? undefined,
-          removed_user_id: (msg.removed_user_id as string | undefined) ?? undefined,
-          removed_device_id: (msg.removed_device_id as string | undefined) ?? undefined,
-          user_id: (msg.user_id as string | undefined) ?? undefined,
-          device_id: (msg.device_id as string | undefined) ?? undefined,
-          request_id: (msg.request_id as string | undefined) ?? undefined
-        }).catch(() => {})
-      } else if (event === 'mls_commit') {
-        const senderId = msg.sender_id as string
-        const senderDeviceId =
-          typeof msg.sender_device_id === 'string' ? msg.sender_device_id : null
-        const eventSeq = typeof msg.seq === 'number' ? msg.seq : null
-        const userId = useAuthStore.getState().user?.id
-        const localDeviceId = getLocalDeviceIdentity().id
-        if (senderId !== userId || senderDeviceId !== localDeviceId) {
-          void useCryptoStore
-            .getState()
-            .handleCommit(channelId, msg.commit_data as string, eventSeq)
-            .then(async () => {
-              // Only refresh if we actually have a group after the commit.
-              // Without group state (commit stored as pending for later Welcome),
-              // refreshing fetches messages we can't decrypt and triggers
-              // destructive recovery that interferes with the MLS handshake.
-              if (useCryptoStore.getState().hasGroup(channelId)) {
-                await refreshScopeAfterCryptoUpdate(scope, get, set, true)
-              }
-            })
-            .catch(() => {})
-        } else if (eventSeq != null) {
-          void useCryptoStore.getState().markScopeEventApplied(channelId, eventSeq).catch(() => {})
-        }
-      } else if (event === 'mls_welcome') {
-        const recipientId = msg.recipient_id as string
-        const recipientDeviceId =
-          typeof msg.recipient_device_id === 'string' ? msg.recipient_device_id : null
-        const userId = useAuthStore.getState().user?.id
-        if (
-          recipientId === userId &&
-          (!recipientDeviceId || recipientDeviceId === getLocalDeviceIdentity().id)
-        ) {
-          const welcomeId = typeof msg.id === 'string' ? msg.id : null
-          void useCryptoStore
-            .getState()
-            .handleWelcome(
-              channelId,
-              msg.welcome_data as string,
-              (msg.key_package_ref as string | undefined) ?? null
-            )
-            .then(async (processed) => {
-              if (processed) {
-                useCryptoStore.getState().consumeWelcomeApplied(channelId)
-                if (welcomeId) {
-                  await ackPendingWelcome(welcomeId).catch(() => {})
-                }
-                await handleWelcomeProcessedForScope(scope)
-              }
-            })
-            .catch(() => {})
-        }
-      } else if (event === 'mls_remove') {
-        const userId = useAuthStore.getState().user?.id
-        const removedId =
-          typeof msg.removed_user_id === 'string' ? msg.removed_user_id : null
-        const removedDeviceId =
-          typeof msg.removed_device_id === 'string' ? msg.removed_device_id : null
-        const senderId = msg.sender_id as string
-        const senderDeviceId =
-          typeof msg.sender_device_id === 'string' ? msg.sender_device_id : null
-        const eventSeq = typeof msg.seq === 'number' ? msg.seq : null
-        const localDeviceId = getLocalDeviceIdentity().id
-        const isLocalSender = senderId === userId && senderDeviceId === localDeviceId
-        if (
-          isLocalRemovalTarget(removedId, removedDeviceId, userId, localDeviceId) &&
-          !isLocalSender
-        ) {
-          void useCryptoStore
-            .getState()
-            .resetGroup(channelId)
-            .then(async () => {
-              if (eventSeq != null) {
-                await useCryptoStore.getState().markScopeEventApplied(channelId, eventSeq)
-              }
-            })
-            .catch(() => {})
-        } else if (!isLocalSender) {
-          if (msg.commit_data) {
-            void useCryptoStore
-              .getState()
-              .handleCommit(channelId, msg.commit_data as string, eventSeq)
-              .catch(() => {})
-          }
-        } else if (eventSeq != null) {
-          void useCryptoStore.getState().markScopeEventApplied(channelId, eventSeq).catch(() => {})
-        }
-      } else if (event === 'mls_history_request') {
-        const requesterId = msg.user_id as string
-        const requesterDeviceId =
-          typeof msg.device_id === 'string' ? msg.device_id : null
-        const currentUserId = useAuthStore.getState().user?.id
-        const localDeviceId = getLocalDeviceIdentity().id
-        if (
-          requesterDeviceId &&
-          !(requesterId === currentUserId && requesterDeviceId === localDeviceId)
-        ) {
-          void sendHistoryBundle(
-            channelId,
-            topic,
-            requesterId,
-            requesterDeviceId,
-            typeof msg.id === 'string' ? msg.id : undefined
-          ).catch(() => {})
-        }
-      } else if (event === 'mls_history_bundle') {
-        const recipientId = msg.recipient_id as string
-        const recipientDeviceId =
-          typeof msg.recipient_device_id === 'string' ? msg.recipient_device_id : null
-        const currentUserId = useAuthStore.getState().user?.id
-        if (
-          recipientId === currentUserId &&
-          recipientDeviceId === getLocalDeviceIdentity().id
-        ) {
-          void processHistoryBundle(channelId, msg, set).catch(() => {})
-        }
-      } else if (event === 'reaction_update') {
-        void applyScopeMutationEvent(channelId, event, msg, set)
-      } else if (event === 'message_pinned') {
-        void applyScopeMutationEvent(channelId, event, msg, set)
-      } else if (event === 'message_unpinned') {
-        void applyScopeMutationEvent(channelId, event, msg, set)
-      } else if (event === 'message_edited') {
-        void applyScopeMutationEvent(channelId, event, msg, set)
-      } else if (event === 'message_deleted') {
-        void applyScopeMutationEvent(channelId, event, msg, set)
-      }
-    })
+    startLiveScopeWatch(scope, set)
 
     if (canUseEncryptedFeatures()) {
-      if (useCryptoStore.getState().consumeWelcomeApplied(channelId)) {
+      if (getRendererEncryptedChat().consumeWelcomeApplied(channelId)) {
         void handleWelcomeProcessedForScope(scope).catch(() => {})
       }
 
@@ -2450,7 +2609,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           // Continue without encryption
         })
         .finally(() => {
-          if (useCryptoStore.getState().consumeWelcomeApplied(channelId)) {
+          if (getRendererEncryptedChat().consumeWelcomeApplied(channelId)) {
             void handleWelcomeProcessedForScope(scope).catch(() => {})
           }
           get().fetchMessages(channelId)
@@ -2465,7 +2624,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
   leaveChannelChat: (channelId) => {
     clearHistorySyncRetry(channelId)
-    leaveChannel(`chat:channel:${channelId}`)
+    releaseLiveScopeWatch(`chat:channel:${channelId}`)
   },
 
   fetchMessages: async (channelId) => {
@@ -2523,62 +2682,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       }
 
       if (canUseEncryptedFeatures()) {
-        await ensureEncryptedScopeMembership({
+        const messages = await loadScopeMessagesViaSdk({
           kind: 'channel',
-          targetId: channelId,
-          scopeId: channelId,
-          topic: `chat:channel:${channelId}`
-        }).catch(() => {})
-      }
-
-      const res = await apiFetch(`/api/v1/channels/${channelId}/messages?limit=${MESSAGE_PAGE_SIZE}`)
-      if (res.ok) {
-        const data = await res.json()
-        const rawMessages = (data.messages as Record<string, unknown>[]).reverse()
-        const residentMessages = get().messagesByChannel[channelId] ?? []
-        const hasResidentMessages = residentMessages.length > 0
-        const provisionalWindow = applyMessageWindow(
-          rawMessages.map((message) => buildProvisionalMessage(message)),
-          'replace'
-        )
-
-        if (!hasResidentMessages && isCurrentScopeMessageRefresh(channelId, refreshToken)) {
-          scheduleExpiryTimers(channelId, provisionalWindow.messages)
-          set((s) => ({
-            messagesByChannel: {
-              ...s.messagesByChannel,
-              [channelId]: provisionalWindow.messages
-            },
-            latestRoomSeqByScope: updateLatestRoomSeqByScope(
-              s.latestRoomSeqByScope,
-              channelId,
-              getMaxRoomSeq(provisionalWindow.messages)
-            ),
-            hasMore: {
-              ...s.hasMore,
-              [channelId]:
-                data.messages.length === MESSAGE_PAGE_SIZE || provisionalWindow.trimmedOlder
-            },
-            hasNewer: {
-              ...s.hasNewer,
-              [channelId]: provisionalWindow.trimmedNewer
-            },
-            loadedByScope: {
-              ...s.loadedByScope,
-              [channelId]: true
-            },
-            scopeLifecycleById: {
-              ...s.scopeLifecycleById,
-              [channelId]: {
-                kind: s.scopeLifecycleById[channelId]?.kind ?? 'channel',
-                state: s.activeScopeId === channelId ? 'active' : 'warm',
-                lastVisitedAt: s.scopeLifecycleById[channelId]?.lastVisitedAt ?? Date.now()
-              }
-            }
-          }))
-        }
-
-        const messages = await processIncomingMessageBatch(channelId, rawMessages, 'normal')
+          id: channelId
+        })
         const mergedMessages = mergeFetchedMessagesWithResidentState(
           messages,
           hasResidentMessages
@@ -2616,7 +2723,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
             ),
             hasMore: {
               ...s.hasMore,
-              [channelId]: data.messages.length === MESSAGE_PAGE_SIZE || finalWindow.trimmedOlder
+              [channelId]: messages.length === MESSAGE_PAGE_SIZE || finalWindow.trimmedOlder
             },
             hasNewer: {
               ...s.hasNewer,
@@ -2655,7 +2762,121 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           null,
           'message_fetch'
         )
+        return
       }
+
+      const rawMessages = [
+        ...(await getRendererClient().fetchChannelMessages(channelId, {
+          limit: MESSAGE_PAGE_SIZE
+        }))
+      ].reverse() as Record<string, unknown>[]
+      const provisionalWindow = applyMessageWindow(
+        rawMessages.map((message) => buildProvisionalMessage(message)),
+        'replace'
+      )
+
+      if (!hasResidentMessages && isCurrentScopeMessageRefresh(channelId, refreshToken)) {
+        scheduleExpiryTimers(channelId, provisionalWindow.messages)
+        set((s) => ({
+          messagesByChannel: {
+            ...s.messagesByChannel,
+            [channelId]: provisionalWindow.messages
+          },
+          latestRoomSeqByScope: updateLatestRoomSeqByScope(
+            s.latestRoomSeqByScope,
+            channelId,
+            getMaxRoomSeq(provisionalWindow.messages)
+          ),
+          hasMore: {
+            ...s.hasMore,
+            [channelId]:
+              rawMessages.length === MESSAGE_PAGE_SIZE || provisionalWindow.trimmedOlder
+          },
+          hasNewer: {
+            ...s.hasNewer,
+            [channelId]: provisionalWindow.trimmedNewer
+          },
+          loadedByScope: {
+            ...s.loadedByScope,
+            [channelId]: true
+          },
+          scopeLifecycleById: {
+            ...s.scopeLifecycleById,
+            [channelId]: {
+              kind: s.scopeLifecycleById[channelId]?.kind ?? 'channel',
+              state: s.activeScopeId === channelId ? 'active' : 'warm',
+              lastVisitedAt: s.scopeLifecycleById[channelId]?.lastVisitedAt ?? Date.now()
+            }
+          }
+        }))
+      }
+
+      const messages = await processIncomingMessageBatch(channelId, rawMessages)
+      const mergedMessages = mergeFetchedMessagesWithResidentState(
+        messages,
+        hasResidentMessages
+          ? residentMessages
+          : (get().messagesByChannel[channelId] ?? [])
+      )
+      const windowed = applyMessageWindow(mergedMessages, 'replace')
+
+      if (!isCurrentScopeMessageRefresh(channelId, refreshToken)) {
+        return
+      }
+
+      scheduleExpiryTimers(channelId, windowed.messages)
+      set((s) => {
+        const finalWindow = applyMessageWindow(
+          mergeResidentTailMessages(
+            mergeFetchedMessagesWithResidentState(
+              windowed.messages,
+              s.messagesByChannel[channelId] ?? []
+            ),
+            s.messagesByChannel[channelId] ?? []
+          ),
+          'replace'
+        )
+
+        return {
+          messagesByChannel: {
+            ...s.messagesByChannel,
+            [channelId]: finalWindow.messages
+          },
+          latestRoomSeqByScope: updateLatestRoomSeqByScope(
+            s.latestRoomSeqByScope,
+            channelId,
+            getMaxRoomSeq(finalWindow.messages)
+          ),
+          hasMore: {
+            ...s.hasMore,
+            [channelId]: rawMessages.length === MESSAGE_PAGE_SIZE || finalWindow.trimmedOlder
+          },
+          hasNewer: {
+            ...s.hasNewer,
+            [channelId]: finalWindow.trimmedNewer
+          },
+          loadedByScope: {
+            ...s.loadedByScope,
+            [channelId]: true
+          },
+          scopeLifecycleById: {
+            ...s.scopeLifecycleById,
+            [channelId]: {
+              kind: s.scopeLifecycleById[channelId]?.kind ?? 'channel',
+              state:
+                hasFailedEncryptedMessages(finalWindow.messages) ||
+                finalWindow.messages.some(
+                  (message) => message.content === ENCRYPTED_MESSAGE_SYNCING_PLACEHOLDER
+                )
+                  ? 'stale'
+                  : s.activeScopeId === channelId
+                    ? 'active'
+                    : 'warm',
+              lastVisitedAt: s.scopeLifecycleById[channelId]?.lastVisitedAt ?? Date.now()
+            }
+          }
+        }
+      })
     } catch {
       // ignore
     } finally {
@@ -2702,12 +2923,13 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const oldest = existing[0]
     inFlightOlderScopeMessageFetches.add(`channel:${channelId}`)
     try {
-      const res = await apiFetch(
-        `/api/v1/channels/${channelId}/messages?limit=${MESSAGE_PAGE_SIZE}&before=${encodeURIComponent(encodeMessageCursor(oldest))}`
-      )
-      if (res.ok) {
-        const data = await res.json()
-        const rawMessages = (data.messages as Record<string, unknown>[]).reverse()
+      const rawMessages = [
+        ...(await getRendererClient().fetchChannelMessages(channelId, {
+          limit: MESSAGE_PAGE_SIZE,
+          before: encodeMessageCursor(oldest)
+        }))
+      ].reverse() as Record<string, unknown>[]
+      if (rawMessages.length > 0) {
         const provisionalOlderMessages = rawMessages.map((message) => buildProvisionalMessage(message))
         const mergedWindow = applyMessageWindow(
           [...provisionalOlderMessages, ...(get().messagesByChannel[channelId] ?? existing)],
@@ -2728,7 +2950,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           ),
           hasMore: {
             ...s.hasMore,
-            [channelId]: data.messages.length === MESSAGE_PAGE_SIZE
+            [channelId]: rawMessages.length === MESSAGE_PAGE_SIZE
           },
           hasNewer: {
             ...s.hasNewer,
@@ -2736,7 +2958,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
               (s.hasNewer[channelId] ?? false) || mergedWindow.trimmedNewer
           }
         }))
-        const olderMessages = await processIncomingMessageBatch(channelId, rawMessages, 'background')
+        const olderMessages = await processIncomingMessageBatch(channelId, rawMessages)
         set((s) => {
           const residentMessages = s.messagesByChannel[channelId] ?? []
           const patchedMessages = patchResidentMessagesById(residentMessages, olderMessages)
@@ -2790,12 +3012,13 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const newest = existing[existing.length - 1]
     inFlightNewerScopeMessageFetches.add(`channel:${channelId}`)
     try {
-      const res = await apiFetch(
-        `/api/v1/channels/${channelId}/messages?limit=${MESSAGE_PAGE_SIZE}&after=${encodeURIComponent(encodeMessageCursor(newest))}`
-      )
-      if (res.ok) {
-        const data = await res.json()
-        const rawMessages = (data.messages as Record<string, unknown>[]).reverse()
+      const rawMessages = [
+        ...(await getRendererClient().fetchChannelMessages(channelId, {
+          limit: MESSAGE_PAGE_SIZE,
+          after: encodeMessageCursor(newest)
+        }))
+      ].reverse() as Record<string, unknown>[]
+      if (rawMessages.length > 0) {
         const provisionalNewerMessages = rawMessages.map((message) => buildProvisionalMessage(message))
         const mergedWindow = applyMessageWindow(
           [...(get().messagesByChannel[channelId] ?? existing), ...provisionalNewerMessages],
@@ -2821,10 +3044,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           },
           hasNewer: {
             ...s.hasNewer,
-            [channelId]: data.messages.length === MESSAGE_PAGE_SIZE
+            [channelId]: rawMessages.length === MESSAGE_PAGE_SIZE
           }
         }))
-        const newerMessages = await processIncomingMessageBatch(channelId, rawMessages, 'normal')
+        const newerMessages = await processIncomingMessageBatch(channelId, rawMessages)
         set((s) => {
           const residentMessages = s.messagesByChannel[channelId] ?? []
           const patchedMessages = patchResidentMessagesById(residentMessages, newerMessages)
@@ -2903,37 +3126,26 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     }
 
     try {
-      const res = await apiFetch('/api/v1/sync/scopes', {
-        method: 'POST',
-        body: JSON.stringify({
-          scopes,
-          since: sinceToken,
-          limit: MESSAGE_PAGE_SIZE
-        })
+      const data = await getRendererClient().fetchScopeSync({
+        scopes,
+        since: sinceToken,
+        limit: MESSAGE_PAGE_SIZE
       })
-
-      if (!res.ok) {
-        return
-      }
-
-      const data = await res.json()
-      const nextToken = typeof data.token === 'string' ? data.token : null
-      const batches = Array.isArray(data.scopes)
-        ? (data.scopes as Array<{
-            scope_id: string
-            kind: ScopeKind
-            has_more: boolean
-            messages: Record<string, unknown>[]
-            events?: Array<{
-              id: string
-              room_seq?: number | null
-              event_type: string
-              message_id?: string | null
-              inserted_at: string
-              payload?: Record<string, unknown>
-            }>
-          }>)
-        : []
+      const nextToken = data.token
+      const batches = data.scopes as Array<{
+        scope_id: string
+        kind: ScopeKind
+        has_more: boolean
+        messages: Record<string, unknown>[]
+        events?: Array<{
+          id?: number | null
+          seq?: number | null
+          room_seq?: number | null
+          event_type: string
+          inserted_at: string
+          payload?: Record<string, unknown> | null
+        }>
+      }>
 
       if (nextToken) {
         const { persistSyncTokens } = await import('./syncStore')
@@ -2944,7 +3156,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         const syncEvents = Array.isArray(batch.events) ? batch.events : []
         const processedMessages =
           batch.messages.length > 0
-            ? await processIncomingMessageBatch(batch.scope_id, batch.messages, 'background')
+            ? await processIncomingMessageBatch(batch.scope_id, batch.messages)
             : []
 
         const orderedOps = [
@@ -3016,7 +3228,6 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       return
     }
 
-    const crypto = useCryptoStore.getState()
     const replyingTo = get().replyingTo
     const parentId = parentMessageId ?? replyingTo?.id ?? undefined
     const shouldClearInlineReply = !parentMessageId
@@ -3026,8 +3237,6 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     )
     const clientNonce = generateClientNonce()
     const resolvedContent = replaceEmojiShortcodes(content, activeServer?.emojis ?? [])
-    const payloadStr = encodePayload({ v: 1, type: 'text', text: resolvedContent })
-    const topic = `chat:channel:${channelId}`
     const optimisticMessage = buildOptimisticMessage({
       targetId: channelId,
       content: resolvedContent,
@@ -3040,50 +3249,35 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     upsertOptimisticMessage(channelId, optimisticMessage, set)
     syncChannelActivity(optimisticMessage)
 
-    if (!crypto.hasGroup(channelId)) {
-      const ready = await ensureChannelGroupReady(channelId, true)
-      if (!ready) {
-        updateOptimisticMessageState(channelId, clientNonce, 'failed', set)
-        set({ encryptionError: 'Message could not be encrypted. Please try again.' })
-        return
-      }
-    }
-
-    if (crypto.hasGroup(channelId)) {
-      await waitForChannelMembershipReady(channelId, topic)
-      const encrypted = await crypto.encryptForChannel(channelId, payloadStr)
-      if (encrypted) {
-        cacheSentPlaintext(encrypted.ciphertext, resolvedContent)
-        const pushed = await pushToChannelWithAck(topic, 'new_message', {
-          ciphertext: encrypted.ciphertext,
-          mls_epoch: encrypted.epoch,
-          client_nonce: clientNonce,
-          ...(parentId && { parent_message_id: parentId }),
-          ...(mentionedUserIds.length > 0 && { mentioned_user_ids: mentionedUserIds })
-        })
-        if (!pushed) {
-          updateOptimisticMessageState(channelId, clientNonce, 'failed', set)
-          set({ encryptionError: 'Message could not be sent. Please try again.' })
-          return
+    try {
+      await getRendererEncryptedChat().sendText(
+        {
+          kind: 'channel',
+          id: channelId
+        },
+        resolvedContent,
+        {
+          parentMessageId: parentId,
+          mentionedUserIds,
+          clientNonce
         }
-        set({
-          ...(shouldClearInlineReply ? { replyingTo: null } : {}),
-          encryptionError: null
-        })
-        return
-      }
+      )
+      set({
+        ...(shouldClearInlineReply ? { replyingTo: null } : {}),
+        encryptionError: null
+      })
+    } catch {
+      updateOptimisticMessageState(channelId, clientNonce, 'failed', set)
+      set({ encryptionError: 'Message could not be encrypted. Please try again.' })
     }
-
-    updateOptimisticMessageState(channelId, clientNonce, 'failed', set)
-    set({ encryptionError: 'Message could not be encrypted. Please try again.' })
   },
 
   sendTypingStart: (channelId) => {
-    pushToChannel(`chat:channel:${channelId}`, 'typing_start', {})
+    void getRendererEncryptedChat().sendTyping({ kind: 'channel', id: channelId }, true)
   },
 
   sendTypingStop: (channelId) => {
-    pushToChannel(`chat:channel:${channelId}`, 'typing_stop', {})
+    void getRendererEncryptedChat().sendTyping({ kind: 'channel', id: channelId }, false)
   },
 
   // --- DM conversation messaging ---
@@ -3097,231 +3291,28 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       topic
     }
 
-    joinChannel(topic, (event, payload) => {
-      const msg = payload as Record<string, unknown>
-
-      if (event === 'new_message') {
-        handleNewMessage(conversationId, msg, set)
-      } else if (event === 'typing_start') {
-        set((s) => {
-          const current = s.typingUsers[conversationId] || []
-          const typing = msg as unknown as TypingUser
-          if (current.some((t) => t.user_id === typing.user_id)) return s
-          return {
-            typingUsers: {
-              ...s.typingUsers,
-              [conversationId]: [...current, typing]
-            }
-          }
-        })
-      } else if (event === 'typing_stop') {
-        set((s) => ({
-          typingUsers: {
-            ...s.typingUsers,
-            [conversationId]: (s.typingUsers[conversationId] || []).filter(
-              (t) => t.user_id !== (msg as { user_id: string }).user_id
-            )
-          }
-        }))
-      } else if (event === 'disappearing_ttl_updated') {
-        useDmStore.getState().updateConversationTtl(
-          msg.conversation_id as string,
-          msg.disappearing_ttl as number | null
-        )
-      } else if (event === 'mls_request_join') {
-        handleMlsJoinRequest(conversationId, msg, topic)
-      } else if (event === 'mls_resync_request') {
-        void processMlsResyncRequest(conversationId, topic, {
-          id: msg.id as string | undefined,
-          requester_id: msg.user_id as string,
-          requester_username: (msg.username as string | undefined) ?? undefined,
-          requester_client_id: (msg.device_id as string | undefined) ?? undefined,
-          request_id: msg.request_id as string | undefined,
-          last_known_epoch: (msg.last_known_epoch as number | null | undefined) ?? null,
-          reason: (msg.reason as string | null | undefined) ?? null
-        }).catch(() => {})
-      } else if (event === 'mls_eviction_request') {
-        void processMlsEvictionRequest(conversationId, topic, {
-          id: msg.id as string | undefined,
-          eviction_id: msg.eviction_id as string | undefined,
-          target_user_id: (msg.target_user_id as string | undefined) ?? undefined,
-          target_username: (msg.target_username as string | undefined) ?? undefined,
-          target_device_id: (msg.target_device_id as string | undefined) ?? undefined,
-          removed_user_id: (msg.removed_user_id as string | undefined) ?? undefined,
-          removed_device_id: (msg.removed_device_id as string | undefined) ?? undefined,
-          user_id: (msg.user_id as string | undefined) ?? undefined,
-          device_id: (msg.device_id as string | undefined) ?? undefined,
-          request_id: (msg.request_id as string | undefined) ?? undefined
-        }).catch(() => {})
-      } else if (event === 'mls_commit') {
-        const senderId = msg.sender_id as string
-        const senderDeviceId =
-          typeof msg.sender_device_id === 'string' ? msg.sender_device_id : null
-        const eventSeq = typeof msg.seq === 'number' ? msg.seq : null
-        const userId = useAuthStore.getState().user?.id
-        const localDeviceId = getLocalDeviceIdentity().id
-        if (senderId !== userId || senderDeviceId !== localDeviceId) {
-          void useCryptoStore
-            .getState()
-            .handleCommit(conversationId, msg.commit_data as string, eventSeq)
-            .then(async () => {
-              if (useCryptoStore.getState().hasGroup(conversationId)) {
-                await refreshScopeAfterCryptoUpdate(scope, get, set, true)
-              }
-            })
-            .catch(() => {})
-        } else if (eventSeq != null) {
-          void useCryptoStore
-            .getState()
-            .markScopeEventApplied(conversationId, eventSeq)
-            .catch(() => {})
-        }
-      } else if (event === 'mls_welcome') {
-        const recipientId = msg.recipient_id as string
-        const recipientDeviceId =
-          typeof msg.recipient_device_id === 'string' ? msg.recipient_device_id : null
-        const userId = useAuthStore.getState().user?.id
-        if (
-          recipientId === userId &&
-          (!recipientDeviceId || recipientDeviceId === getLocalDeviceIdentity().id)
-        ) {
-          const welcomeId = typeof msg.id === 'string' ? msg.id : null
-          void useCryptoStore
-            .getState()
-            .handleWelcome(
-              conversationId,
-              msg.welcome_data as string,
-              (msg.key_package_ref as string | undefined) ?? null
-            )
-            .then(async (processed) => {
-              if (processed) {
-                useCryptoStore.getState().consumeWelcomeApplied(conversationId)
-                if (welcomeId) {
-                  await ackPendingWelcome(welcomeId).catch(() => {})
-                }
-                await handleWelcomeProcessedForScope(scope)
-              }
-            })
-            .catch(() => {})
-        }
-      } else if (event === 'mls_remove') {
-        const userId = useAuthStore.getState().user?.id
-        const removedId =
-          typeof msg.removed_user_id === 'string' ? msg.removed_user_id : null
-        const removedDeviceId =
-          typeof msg.removed_device_id === 'string' ? msg.removed_device_id : null
-        const senderId = msg.sender_id as string
-        const senderDeviceId =
-          typeof msg.sender_device_id === 'string' ? msg.sender_device_id : null
-        const eventSeq = typeof msg.seq === 'number' ? msg.seq : null
-        const localDeviceId = getLocalDeviceIdentity().id
-        const isLocalSender = senderId === userId && senderDeviceId === localDeviceId
-        // Only reset if someone ELSE removed us. If we sent the remove
-        // ourselves (e.g., resync), our state is already updated.
-        if (
-          isLocalRemovalTarget(removedId, removedDeviceId, userId, localDeviceId) &&
-          !isLocalSender
-        ) {
-          void useCryptoStore
-            .getState()
-            .resetGroup(conversationId)
-            .then(async () => {
-              if (eventSeq != null) {
-                await useCryptoStore.getState().markScopeEventApplied(conversationId, eventSeq)
-              }
-            })
-            .catch(() => {})
-        } else if (!isLocalSender) {
-          if (msg.commit_data) {
-            void useCryptoStore
-              .getState()
-              .handleCommit(conversationId, msg.commit_data as string, eventSeq)
-              .catch(() => {})
-          }
-        } else if (eventSeq != null) {
-          void useCryptoStore
-            .getState()
-            .markScopeEventApplied(conversationId, eventSeq)
-            .catch(() => {})
-        }
-      } else if (event === 'mls_history_request') {
-        const requesterId = msg.user_id as string
-        const requesterDeviceId =
-          typeof msg.device_id === 'string' ? msg.device_id : null
-        const currentUserId = useAuthStore.getState().user?.id
-        const localDeviceId = getLocalDeviceIdentity().id
-        if (
-          requesterDeviceId &&
-          !(requesterId === currentUserId && requesterDeviceId === localDeviceId)
-        ) {
-          void sendHistoryBundle(
-            conversationId,
-            topic,
-            requesterId,
-            requesterDeviceId,
-            typeof msg.id === 'string' ? msg.id : undefined
-          ).catch((error) => {
-            console.warn(
-              '[mls] history bundle failed',
-              JSON.stringify({
-                conversationId,
-                requesterDeviceId,
-                error: error instanceof Error ? error.message : String(error)
-              })
-            )
-          })
-        }
-      } else if (event === 'mls_history_bundle') {
-        const recipientId = msg.recipient_id as string
-        const recipientDeviceId =
-          typeof msg.recipient_device_id === 'string' ? msg.recipient_device_id : null
-        const currentUserId = useAuthStore.getState().user?.id
-        if (
-          recipientId === currentUserId &&
-          recipientDeviceId === getLocalDeviceIdentity().id
-        ) {
-          void processHistoryBundle(conversationId, msg, set).catch(() => {})
-        }
-      } else if (event === 'reaction_update') {
-        void applyScopeMutationEvent(conversationId, event, msg, set)
-      } else if (event === 'incoming_call') {
-        const userId = useAuthStore.getState().user?.id
-        if ((msg.caller_id as string) !== userId) {
-          useVoiceStore.getState().setIncomingCall({
-            callerId: msg.caller_id as string,
-            conversationId: msg.conversation_id as string
-          })
-        }
-      } else if (event === 'call_rejected') {
-        useVoiceStore.getState().handleDmCallRejected(msg.conversation_id as string)
-      } else if (event === 'message_edited') {
-        void applyScopeMutationEvent(conversationId, event, msg, set)
-      } else if (event === 'message_deleted') {
-        void applyScopeMutationEvent(conversationId, event, msg, set)
-      }
-    })
+    startLiveScopeWatch(scope, set)
 
     if (canUseEncryptedFeatures()) {
-      if (useCryptoStore.getState().consumeWelcomeApplied(conversationId)) {
+      if (getRendererEncryptedChat().consumeWelcomeApplied(conversationId)) {
         void handleWelcomeProcessedForScope(scope).catch(() => {})
       }
 
       const conversation = getDmConversation(conversationId)
       const isExistingConversation = conversation?.last_message != null
 
-      useCryptoStore
-        .getState()
-        .ensureGroupMembership(conversationId)
+      getRendererEncryptedChat()
+        .ensureMembership({ kind: 'dm', id: conversationId })
         .then(async (processedPendingWelcome) => {
           if (
             processedPendingWelcome ||
-            useCryptoStore.getState().consumeWelcomeApplied(conversationId)
+            getRendererEncryptedChat().consumeWelcomeApplied(conversationId)
           ) {
-            useCryptoStore.getState().consumeWelcomeApplied(conversationId)
+            getRendererEncryptedChat().consumeWelcomeApplied(conversationId)
             await handleWelcomeProcessedForScope(scope)
           }
 
-          if (useCryptoStore.getState().hasGroup(conversationId)) {
+          if (getRendererEncryptedChat().hasGroup(conversationId)) {
             return
           }
 
@@ -3342,19 +3333,21 @@ export const useMessageStore = create<MessageState>((set, get) => ({
             // a moment to publish key packages instead of forcing a resync.
             recentMlsJoinRequests.delete(topic)
             await maybeRequestMlsJoin(conversationId, topic)
-            await useCryptoStore.getState().ensureGroupMembership(conversationId).catch(() => {})
+            await getRendererEncryptedChat()
+              .ensureMembership({ kind: 'dm', id: conversationId })
+              .catch(() => {})
 
-            if (useCryptoStore.getState().hasGroup(conversationId)) {
+            if (getRendererEncryptedChat().hasGroup(conversationId)) {
               return
             }
 
             const bootstrapped = await bootstrapDmGroupIfLeader(conversationId, topic)
-            if (bootstrapped || useCryptoStore.getState().hasGroup(conversationId)) {
+            if (bootstrapped || getRendererEncryptedChat().hasGroup(conversationId)) {
               return
             }
 
             const forced = await forceBootstrapDmGroup(conversationId, topic)
-            if (forced || useCryptoStore.getState().hasGroup(conversationId)) {
+            if (forced || getRendererEncryptedChat().hasGroup(conversationId)) {
               return
             }
 
@@ -3368,12 +3361,12 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           } else {
             // New conversation — create the group immediately
             const bootstrapped = await bootstrapDmGroupIfLeader(conversationId, topic)
-            if (bootstrapped || useCryptoStore.getState().hasGroup(conversationId)) {
+            if (bootstrapped || getRendererEncryptedChat().hasGroup(conversationId)) {
               return
             }
 
             const forced = await forceBootstrapDmGroup(conversationId, topic)
-            if (forced || useCryptoStore.getState().hasGroup(conversationId)) {
+            if (forced || getRendererEncryptedChat().hasGroup(conversationId)) {
               return
             }
 
@@ -3391,7 +3384,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           // Continue without encryption
         })
         .finally(() => {
-          if (useCryptoStore.getState().consumeWelcomeApplied(conversationId)) {
+          if (getRendererEncryptedChat().consumeWelcomeApplied(conversationId)) {
             void handleWelcomeProcessedForScope(scope).catch(() => {})
           }
           // Skip re-fetch if Welcome was processed — the Welcome handler
@@ -3417,7 +3410,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
   leaveDmChat: (conversationId) => {
     clearHistorySyncRetry(conversationId)
-    leaveChannel(`dm:${conversationId}`)
+    releaseLiveScopeWatch(`dm:${conversationId}`)
   },
 
   fetchDmMessages: async (conversationId) => {
@@ -3478,64 +3471,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       }
 
       if (canUseEncryptedFeatures()) {
-        await ensureEncryptedScopeMembership({
+        const messages = await loadScopeMessagesViaSdk({
           kind: 'dm',
-          targetId: conversationId,
-          scopeId: conversationId,
-          topic: `dm:${conversationId}`
-        }).catch(() => {})
-      }
-
-      const res = await apiFetch(
-        `/api/v1/conversations/${conversationId}/messages?limit=${MESSAGE_PAGE_SIZE}`
-      )
-      if (res.ok) {
-        const data = await res.json()
-        const rawMessages = (data.messages as Record<string, unknown>[]).reverse()
-        const residentMessages = get().messagesByChannel[conversationId] ?? []
-        const hasResidentMessages = residentMessages.length > 0
-        const provisionalWindow = applyMessageWindow(
-          rawMessages.map((message) => buildProvisionalMessage(message)),
-          'replace'
-        )
-
-        if (!hasResidentMessages && isCurrentScopeMessageRefresh(conversationId, refreshToken)) {
-          scheduleExpiryTimers(conversationId, provisionalWindow.messages)
-          set((s) => ({
-            messagesByChannel: {
-              ...s.messagesByChannel,
-              [conversationId]: provisionalWindow.messages
-            },
-            latestRoomSeqByScope: updateLatestRoomSeqByScope(
-              s.latestRoomSeqByScope,
-              conversationId,
-              getMaxRoomSeq(provisionalWindow.messages)
-            ),
-            hasMore: {
-              ...s.hasMore,
-              [conversationId]:
-                data.messages.length === MESSAGE_PAGE_SIZE || provisionalWindow.trimmedOlder
-            },
-            hasNewer: {
-              ...s.hasNewer,
-              [conversationId]: provisionalWindow.trimmedNewer
-            },
-            loadedByScope: {
-              ...s.loadedByScope,
-              [conversationId]: true
-            },
-            scopeLifecycleById: {
-              ...s.scopeLifecycleById,
-              [conversationId]: {
-                kind: s.scopeLifecycleById[conversationId]?.kind ?? 'dm',
-                state: s.activeScopeId === conversationId ? 'active' : 'warm',
-                lastVisitedAt: s.scopeLifecycleById[conversationId]?.lastVisitedAt ?? Date.now()
-              }
-            }
-          }))
-        }
-
-        const messages = await processIncomingMessageBatch(conversationId, rawMessages, 'normal')
+          id: conversationId
+        })
         const mergedMessages = mergeFetchedMessagesWithResidentState(
           messages,
           hasResidentMessages
@@ -3574,7 +3513,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
             hasMore: {
               ...s.hasMore,
               [conversationId]:
-                data.messages.length === MESSAGE_PAGE_SIZE || finalWindow.trimmedOlder
+                messages.length === MESSAGE_PAGE_SIZE || finalWindow.trimmedOlder
             },
             hasNewer: {
               ...s.hasNewer,
@@ -3613,7 +3552,122 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           null,
           'message_fetch'
         )
+        return
       }
+
+      const rawMessages = [
+        ...(await getRendererClient().fetchConversationMessages(conversationId, {
+          limit: MESSAGE_PAGE_SIZE
+        }))
+      ].reverse() as Record<string, unknown>[]
+      const provisionalWindow = applyMessageWindow(
+        rawMessages.map((message) => buildProvisionalMessage(message)),
+        'replace'
+      )
+
+      if (!hasResidentMessages && isCurrentScopeMessageRefresh(conversationId, refreshToken)) {
+        scheduleExpiryTimers(conversationId, provisionalWindow.messages)
+        set((s) => ({
+          messagesByChannel: {
+            ...s.messagesByChannel,
+            [conversationId]: provisionalWindow.messages
+          },
+          latestRoomSeqByScope: updateLatestRoomSeqByScope(
+            s.latestRoomSeqByScope,
+            conversationId,
+            getMaxRoomSeq(provisionalWindow.messages)
+          ),
+          hasMore: {
+            ...s.hasMore,
+            [conversationId]:
+              rawMessages.length === MESSAGE_PAGE_SIZE || provisionalWindow.trimmedOlder
+          },
+          hasNewer: {
+            ...s.hasNewer,
+            [conversationId]: provisionalWindow.trimmedNewer
+          },
+          loadedByScope: {
+            ...s.loadedByScope,
+            [conversationId]: true
+          },
+          scopeLifecycleById: {
+            ...s.scopeLifecycleById,
+            [conversationId]: {
+              kind: s.scopeLifecycleById[conversationId]?.kind ?? 'dm',
+              state: s.activeScopeId === conversationId ? 'active' : 'warm',
+              lastVisitedAt: s.scopeLifecycleById[conversationId]?.lastVisitedAt ?? Date.now()
+            }
+          }
+        }))
+      }
+
+      const messages = await processIncomingMessageBatch(conversationId, rawMessages)
+      const mergedMessages = mergeFetchedMessagesWithResidentState(
+        messages,
+        hasResidentMessages
+          ? residentMessages
+          : (get().messagesByChannel[conversationId] ?? [])
+      )
+      const windowed = applyMessageWindow(mergedMessages, 'replace')
+
+      if (!isCurrentScopeMessageRefresh(conversationId, refreshToken)) {
+        return
+      }
+
+      scheduleExpiryTimers(conversationId, windowed.messages)
+      set((s) => {
+        const finalWindow = applyMessageWindow(
+          mergeResidentTailMessages(
+            mergeFetchedMessagesWithResidentState(
+              windowed.messages,
+              s.messagesByChannel[conversationId] ?? []
+            ),
+            s.messagesByChannel[conversationId] ?? []
+          ),
+          'replace'
+        )
+
+        return {
+          messagesByChannel: {
+            ...s.messagesByChannel,
+            [conversationId]: finalWindow.messages
+          },
+          latestRoomSeqByScope: updateLatestRoomSeqByScope(
+            s.latestRoomSeqByScope,
+            conversationId,
+            getMaxRoomSeq(finalWindow.messages)
+          ),
+          hasMore: {
+            ...s.hasMore,
+            [conversationId]:
+              rawMessages.length === MESSAGE_PAGE_SIZE || finalWindow.trimmedOlder
+          },
+          hasNewer: {
+            ...s.hasNewer,
+            [conversationId]: finalWindow.trimmedNewer
+          },
+          loadedByScope: {
+            ...s.loadedByScope,
+            [conversationId]: true
+          },
+          scopeLifecycleById: {
+            ...s.scopeLifecycleById,
+            [conversationId]: {
+              kind: s.scopeLifecycleById[conversationId]?.kind ?? 'dm',
+              state:
+                hasFailedEncryptedMessages(finalWindow.messages) ||
+                finalWindow.messages.some(
+                  (message) => message.content === ENCRYPTED_MESSAGE_SYNCING_PLACEHOLDER
+                )
+                  ? 'stale'
+                  : s.activeScopeId === conversationId
+                    ? 'active'
+                    : 'warm',
+              lastVisitedAt: s.scopeLifecycleById[conversationId]?.lastVisitedAt ?? Date.now()
+            }
+          }
+        }
+      })
     } catch {
       // ignore
     } finally {
@@ -3660,12 +3714,13 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const oldest = existing[0]
     inFlightOlderScopeMessageFetches.add(`dm:${conversationId}`)
     try {
-      const res = await apiFetch(
-        `/api/v1/conversations/${conversationId}/messages?limit=${MESSAGE_PAGE_SIZE}&before=${encodeURIComponent(encodeMessageCursor(oldest))}`
-      )
-      if (res.ok) {
-        const data = await res.json()
-        const rawMessages = (data.messages as Record<string, unknown>[]).reverse()
+      const rawMessages = [
+        ...(await getRendererClient().fetchConversationMessages(conversationId, {
+          limit: MESSAGE_PAGE_SIZE,
+          before: encodeMessageCursor(oldest)
+        }))
+      ].reverse() as Record<string, unknown>[]
+      if (rawMessages.length > 0) {
         const provisionalOlderMessages = rawMessages.map((message) => buildProvisionalMessage(message))
         const mergedWindow = applyMessageWindow(
           [...provisionalOlderMessages, ...(get().messagesByChannel[conversationId] ?? existing)],
@@ -3686,7 +3741,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           ),
           hasMore: {
             ...s.hasMore,
-            [conversationId]: data.messages.length === MESSAGE_PAGE_SIZE
+            [conversationId]: rawMessages.length === MESSAGE_PAGE_SIZE
           },
           hasNewer: {
             ...s.hasNewer,
@@ -3694,11 +3749,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
               (s.hasNewer[conversationId] ?? false) || mergedWindow.trimmedNewer
           }
         }))
-        const olderMessages = await processIncomingMessageBatch(
-          conversationId,
-          rawMessages,
-          'background'
-        )
+        const olderMessages = await processIncomingMessageBatch(conversationId, rawMessages)
         set((s) => {
           const residentMessages = s.messagesByChannel[conversationId] ?? []
           const patchedMessages = patchResidentMessagesById(residentMessages, olderMessages)
@@ -3752,12 +3803,13 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const newest = existing[existing.length - 1]
     inFlightNewerScopeMessageFetches.add(`dm:${conversationId}`)
     try {
-      const res = await apiFetch(
-        `/api/v1/conversations/${conversationId}/messages?limit=${MESSAGE_PAGE_SIZE}&after=${encodeURIComponent(encodeMessageCursor(newest))}`
-      )
-      if (res.ok) {
-        const data = await res.json()
-        const rawMessages = (data.messages as Record<string, unknown>[]).reverse()
+      const rawMessages = [
+        ...(await getRendererClient().fetchConversationMessages(conversationId, {
+          limit: MESSAGE_PAGE_SIZE,
+          after: encodeMessageCursor(newest)
+        }))
+      ].reverse() as Record<string, unknown>[]
+      if (rawMessages.length > 0) {
         const provisionalNewerMessages = rawMessages.map((message) => buildProvisionalMessage(message))
         const mergedWindow = applyMessageWindow(
           [...(get().messagesByChannel[conversationId] ?? existing), ...provisionalNewerMessages],
@@ -3784,10 +3836,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           },
           hasNewer: {
             ...s.hasNewer,
-            [conversationId]: data.messages.length === MESSAGE_PAGE_SIZE
+            [conversationId]: rawMessages.length === MESSAGE_PAGE_SIZE
           }
         }))
-        const newerMessages = await processIncomingMessageBatch(conversationId, rawMessages, 'normal')
+        const newerMessages = await processIncomingMessageBatch(conversationId, rawMessages)
         set((s) => {
           const residentMessages = s.messagesByChannel[conversationId] ?? []
           const patchedMessages = patchResidentMessagesById(residentMessages, newerMessages)
@@ -3825,13 +3877,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       return
     }
 
-    const crypto = useCryptoStore.getState()
-    const topic = `dm:${conversationId}`
     const replyingTo = get().replyingTo
     const parentId = parentMessageId ?? replyingTo?.id ?? undefined
     const shouldClearInlineReply = !parentMessageId
     const clientNonce = generateClientNonce()
-    const payloadStr = encodePayload({ v: 1, type: 'text', text: content })
     const optimisticMessage = buildOptimisticMessage({
       targetId: conversationId,
       content,
@@ -3843,102 +3892,34 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     upsertOptimisticMessage(conversationId, optimisticMessage, set)
     syncDmConversationActivity(optimisticMessage)
 
-    // For DMs, wait briefly for the other participant to join the group.
-    // When both parties are on new devices, the group creator may have a solo
-    // group until the other party processes a Welcome via mls_request_join.
-    // Encrypting before they join means they can't decrypt (MLS forward secrecy).
-    if (crypto.hasGroup(conversationId) && crypto.getMemberCount(conversationId) < 2) {
-      const memberDeadline = Date.now() + 5000
-      while (Date.now() < memberDeadline) {
-        if (useCryptoStore.getState().getMemberCount(conversationId) >= 2) break
-        await new Promise((resolve) => setTimeout(resolve, 100))
-      }
-    }
-
-    // Try encrypting with existing group, or create a new one
-    const encrypted = useCryptoStore.getState().hasGroup(conversationId)
-      ? await useCryptoStore.getState().encryptForChannel(conversationId, payloadStr)
-      : null
-
-    if (encrypted) {
-      cacheSentPlaintext(encrypted.ciphertext, content)
-      const pushed = await pushToChannelWithAck(topic, 'new_message', {
-        ciphertext: encrypted.ciphertext,
-        mls_epoch: encrypted.epoch,
-        client_nonce: clientNonce,
-        ...(parentId && { parent_message_id: parentId })
-      })
-      if (!pushed) {
-        updateOptimisticMessageState(conversationId, clientNonce, 'failed', set)
-        set({ encryptionError: 'Message could not be sent. Please try again.' })
-        return
-      }
-      if (shouldClearInlineReply) {
-        set({ replyingTo: null })
-      }
-      return
-    }
-
-    // Encryption failed or no group — reset stale state, then let the elected
-    // DM bootstrap leader recreate the group to avoid split-brain state.
-    if (crypto.hasGroup(conversationId)) {
-      await crypto.resetGroup(conversationId)
-    }
-
-    const bootstrapped = await bootstrapDmGroupIfLeader(conversationId, topic)
-    if (!bootstrapped) {
-      await maybeRequestMlsJoin(conversationId, topic)
-      maybeRequestMlsResync(
-        conversationId,
-        conversationId,
-        topic,
-        null,
-        'missing_state'
+    try {
+      await getRendererEncryptedChat().sendText(
+        {
+          kind: 'dm',
+          id: conversationId
+        },
+        content,
+        {
+          parentMessageId: parentId,
+          clientNonce
+        }
       )
-      await waitForDmBootstrap(conversationId)
-
-      // If we're still without a group, force-bootstrap regardless of leader
-      // status. The other participant may not have opened the conversation yet
-      // so waiting for them to bootstrap would hang indefinitely.
-      if (!useCryptoStore.getState().hasGroup(conversationId)) {
-        await forceBootstrapDmGroup(conversationId, topic)
-      }
-    }
-
-    const freshEncrypted = useCryptoStore.getState().hasGroup(conversationId)
-      ? await useCryptoStore.getState().encryptForChannel(conversationId, payloadStr)
-      : null
-
-    if (freshEncrypted) {
-      cacheSentPlaintext(freshEncrypted.ciphertext, content)
-      const pushed = await pushToChannelWithAck(topic, 'new_message', {
-        ciphertext: freshEncrypted.ciphertext,
-        mls_epoch: freshEncrypted.epoch,
-        client_nonce: clientNonce,
-        ...(parentId && { parent_message_id: parentId })
+      set({
+        ...(shouldClearInlineReply ? { replyingTo: null } : {}),
+        encryptionError: null
       })
-      if (!pushed) {
-        updateOptimisticMessageState(conversationId, clientNonce, 'failed', set)
-        set({ encryptionError: 'Message could not be sent. Please try again.' })
-        return
-      }
-      if (shouldClearInlineReply) {
-        set({ replyingTo: null })
-      }
-      set({ encryptionError: null })
-      return
+    } catch {
+      updateOptimisticMessageState(conversationId, clientNonce, 'failed', set)
+      set({ encryptionError: 'Conversation encryption is still syncing. Please try again.' })
     }
-
-    updateOptimisticMessageState(conversationId, clientNonce, 'failed', set)
-    set({ encryptionError: 'Conversation encryption is still syncing. Please try again.' })
   },
 
   sendDmTypingStart: (conversationId) => {
-    pushToChannel(`dm:${conversationId}`, 'typing_start', {})
+    void getRendererEncryptedChat().sendTyping({ kind: 'dm', id: conversationId }, true)
   },
 
   sendDmTypingStop: (conversationId) => {
-    pushToChannel(`dm:${conversationId}`, 'typing_stop', {})
+    void getRendererEncryptedChat().sendTyping({ kind: 'dm', id: conversationId }, false)
   },
 
   // Threads
@@ -4001,9 +3982,9 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         return
       }
 
-      const parent = await processIncomingMessage(targetId, parentPayload, undefined, 'normal')
+      const parent = await processIncomingMessage(targetId, parentPayload)
       const replyPayloads = data.messages ?? []
-      const replies = await processIncomingMessageBatch(targetId, replyPayloads, 'normal')
+      const replies = await processIncomingMessageBatch(targetId, replyPayloads)
 
       if (
         get().activeThreadParentId !== parentMessageId ||
@@ -4095,76 +4076,43 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       return
     }
 
-    const crypto = useCryptoStore.getState()
-    const payloadStr = encodePayload({ v: 1, type: 'text', text: newContent })
-
-    if (crypto.hasGroup(targetId)) {
-      const encrypted = await crypto.encryptForChannel(targetId, payloadStr)
-      if (encrypted) {
-        cacheSentPlaintext(encrypted.ciphertext, newContent)
-        pushToChannel(topic, 'edit_message', {
-          message_id: messageId,
-          ciphertext: encrypted.ciphertext,
-          mls_epoch: encrypted.epoch
-        })
-        set({ editingMessage: null, encryptionError: null })
-        return
-      }
+    try {
+      await getRendererEncryptedChat().editText(scopeFromTopic(targetId, topic), messageId, newContent)
+      set({ editingMessage: null, encryptionError: null })
+    } catch {
+      set({ encryptionError: 'Edit could not be encrypted. Please try again.' })
     }
-
-    set({ encryptionError: 'Edit could not be encrypted. Please try again.' })
   },
 
   deleteMessage: (_targetId, topic, messageId) => {
-    pushToChannel(topic, 'delete_message', {
-      message_id: messageId
-    })
+    void getRendererEncryptedChat().deleteMessage(
+      scopeFromTopic(_targetId, topic),
+      messageId
+    )
   },
 
   // Reactions
-  addReaction: async (_targetId, topic, messageId, emoji) => {
-    const channelId = topic.replace(/^chat:channel:|^dm:/, '')
-    const crypto = useCryptoStore.getState()
-    if (crypto.hasGroup(channelId)) {
-      const encrypted = await crypto.encryptForChannel(channelId, emoji)
-      if (encrypted) {
-        pushToChannel(topic, 'add_reaction', {
-          message_id: messageId,
-          ciphertext: encrypted.ciphertext,
-          mls_epoch: encrypted.epoch
-        })
-        return
-      }
-    }
-
-    pushToChannel(topic, 'add_reaction', { message_id: messageId, emoji })
+  addReaction: async (targetId, topic, messageId, emoji) => {
+    await getRendererEncryptedChat().addReaction(scopeFromTopic(targetId, topic), messageId, emoji)
   },
 
-  removeReaction: async (_targetId, topic, messageId, emoji) => {
-    const channelId = topic.replace(/^chat:channel:|^dm:/, '')
-    const crypto = useCryptoStore.getState()
-    if (crypto.hasGroup(channelId)) {
-      const encrypted = await crypto.encryptForChannel(channelId, emoji)
-      if (encrypted) {
-        pushToChannel(topic, 'remove_reaction', {
-          message_id: messageId,
-          ciphertext: encrypted.ciphertext,
-          mls_epoch: encrypted.epoch
-        })
-        return
-      }
-    }
-
-    pushToChannel(topic, 'remove_reaction', { message_id: messageId, emoji })
+  removeReaction: async (targetId, topic, messageId, emoji) => {
+    await getRendererEncryptedChat().removeReaction(
+      scopeFromTopic(targetId, topic),
+      messageId,
+      emoji
+    )
   },
 
   // Pinning
   pinMessage: (topic, messageId) => {
-    pushToChannel(topic, 'pin_message', { message_id: messageId })
+    const targetId = topic.replace(/^chat:channel:|^dm:/, '')
+    void getRendererEncryptedChat().pinMessage(scopeFromTopic(targetId, topic), messageId)
   },
 
   unpinMessage: (topic, messageId) => {
-    pushToChannel(topic, 'unpin_message', { message_id: messageId })
+    const targetId = topic.replace(/^chat:channel:|^dm:/, '')
+    void getRendererEncryptedChat().unpinMessage(scopeFromTopic(targetId, topic), messageId)
   },
 
   fetchPinnedMessages: async (channelId) => {
@@ -4186,8 +4134,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       const pinsRaw = data.pins ?? []
       const pinMessages = await processIncomingMessageBatch(
         channelId,
-        pinsRaw.map((pin) => pin.message),
-        'normal'
+        pinsRaw.map((pin) => pin.message)
       )
       const pins = pinsRaw.map((pin, index) => ({
         id: pin.id,
@@ -4245,7 +4192,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
         const data = await res.json()
         const rawMessages = (data.messages as Record<string, unknown>[]).reverse()
-        const olderMessages = await processIncomingMessageBatch(channelId, rawMessages, 'normal')
+        const olderMessages = await processIncomingMessageBatch(channelId, rawMessages)
         scheduleExpiryTimers(channelId, olderMessages)
 
         set((s) => {
@@ -4544,9 +4491,11 @@ async function handleReactionUpdate(
       if (sentPlaintext) {
         emoji = sentPlaintext
       } else {
-        const decrypted = await useCryptoStore
-          .getState()
-          .decryptForChannel(targetId, msg.ciphertext)
+        const decrypted = await getRendererEncryptedChat().decryptOpaque(
+          scopeForId(targetId),
+          msg.ciphertext,
+          (msg.mls_epoch as number | null | undefined) ?? null
+        )
         if (decrypted) {
           emoji = decrypted
         }
@@ -4899,19 +4848,36 @@ function applyProcessedIncomingMessage(
  * Handle a new real-time message (from WebSocket broadcast).
  */
 async function handleNewMessage(
-  targetId: string,
+  scope: EncryptedScopeDescriptor,
   msg: Record<string, unknown>,
   set: (fn: (s: MessageState) => Partial<MessageState>) => void
 ): Promise<void> {
-  const processed = await processIncomingMessage(targetId, msg, undefined, 'urgent')
-  applyProcessedIncomingMessage(targetId, processed, msg, set)
+  if (canUseEncryptedFeatures()) {
+    const scopeEvent = await getRendererEncryptedChat().processScopeEvent(
+      {
+        kind: scope.kind,
+        id: scope.scopeId
+      },
+      'new_message',
+      msg
+    )
+
+    if (scopeEvent?.message) {
+      const processed = await buildMessageFromSdkProcessed(scope.scopeId, scopeEvent.message)
+      applyProcessedIncomingMessage(scope.scopeId, processed, msg, set)
+      maybeShowDesktopNotification(processed)
+      return
+    }
+  }
+
+  const processed = await processIncomingMessage(scope.scopeId, msg)
+  applyProcessedIncomingMessage(scope.scopeId, processed, msg, set)
   maybeShowDesktopNotification(processed)
 }
 
 async function processIncomingMessageBatch(
   targetId: string,
-  rawMessages: Record<string, unknown>[],
-  decryptPriority: 'urgent' | 'normal' | 'background' = 'background'
+  rawMessages: Record<string, unknown>[]
 ): Promise<Message[]> {
   const resolvedPlaintexts = new Array<string | null | undefined>(rawMessages.length)
   const ciphertextsToDecrypt: string[] = []
@@ -4940,42 +4906,23 @@ async function processIncomingMessageBatch(
   }
 
   if (ciphertextsToDecrypt.length > 0 && useAuthStore.getState().canUseE2EE) {
-    const decryptedBatch = await useCryptoStore
-      .getState()
-      .decryptBatchForChannel(targetId, ciphertextsToDecrypt, decryptPriority)
+    const decryptedBatch = await getRendererEncryptedChat().decryptOpaqueBatch(
+      scopeForId(targetId),
+      ciphertextIndexes.map((messageIndex, batchIndex) => ({
+        ciphertext: ciphertextsToDecrypt[batchIndex],
+        messageEpoch: (rawMessages[messageIndex]?.mls_epoch as number | null | undefined) ?? null
+      }))
+    )
 
     decryptedBatch.forEach((plaintext, batchIndex) => {
       const messageIndex = ciphertextIndexes[batchIndex]
       resolvedPlaintexts[messageIndex] = plaintext
     })
-
-    const unresolvedBatchIndexes = decryptedBatch.flatMap((plaintext, batchIndex) =>
-      plaintext ? [] : [batchIndex]
-    )
-
-    if (unresolvedBatchIndexes.length > 0) {
-      await useCryptoStore.getState().ensureGroupMembership(targetId).catch(() => {})
-
-      if (useCryptoStore.getState().hasGroup(targetId)) {
-        const retryCiphertexts = unresolvedBatchIndexes.map(
-          (batchIndex) => ciphertextsToDecrypt[batchIndex]
-        )
-        const retriedBatch = await useCryptoStore
-          .getState()
-          .decryptBatchForChannel(targetId, retryCiphertexts, decryptPriority)
-
-        retriedBatch.forEach((plaintext, retryIndex) => {
-          const originalBatchIndex = unresolvedBatchIndexes[retryIndex]
-          const messageIndex = ciphertextIndexes[originalBatchIndex]
-          resolvedPlaintexts[messageIndex] = plaintext
-        })
-      }
-    }
   }
 
   return Promise.all(
     rawMessages.map((message, index) =>
-      processIncomingMessage(targetId, message, resolvedPlaintexts[index], decryptPriority)
+      processIncomingMessage(targetId, message, resolvedPlaintexts[index])
     )
   )
 }
@@ -4986,8 +4933,7 @@ async function processIncomingMessageBatch(
 async function processIncomingMessage(
   targetId: string,
   msg: Record<string, unknown>,
-  resolvedPlaintext?: string | null,
-  decryptPriority: 'urgent' | 'normal' | 'background' = 'normal'
+  resolvedPlaintext?: string | null
 ): Promise<Message> {
   if (msg.ciphertext) {
     const messageId = msg.id as string
@@ -5001,9 +4947,11 @@ async function processIncomingMessage(
             (await getStoredSentMessage(ciphertextB64)) ??
             (await loadCachedMessageDecryption(messageId)) ??
             (useAuthStore.getState().canUseE2EE
-              ? await useCryptoStore
-                  .getState()
-                  .decryptForChannel(targetId, ciphertextB64, decryptPriority)
+              ? await getRendererEncryptedChat().decryptOpaque(
+                  scopeForId(targetId),
+                  ciphertextB64,
+                  mlsEpoch
+                )
               : null))
 
     if (plaintext) {
@@ -5163,16 +5111,14 @@ async function sendHistoryBundle(
   pendingRequestId?: string
 ): Promise<void> {
   let messages = useMessageStore.getState().messagesByChannel[targetId] || []
+  const scope =
+    topic.startsWith('dm:')
+      ? { kind: 'dm' as const, id: targetId }
+      : { kind: 'channel' as const, id: targetId }
 
   try {
-    const endpoint = topic.startsWith('dm:')
-      ? `/api/v1/conversations/${targetId}/messages?limit=${MESSAGE_PAGE_SIZE}`
-      : `/api/v1/channels/${targetId}/messages?limit=${MESSAGE_PAGE_SIZE}`
-    const res = await apiFetch(endpoint)
-    if (res.ok) {
-      const data = await res.json()
-      const rawMessages = (data.messages as Record<string, unknown>[]).reverse()
-      const fetchedMessages = await processIncomingMessageBatch(targetId, rawMessages, 'background')
+    const fetchedMessages = await loadScopeMessagesViaSdk(scope)
+    if (fetchedMessages.length > 0) {
       messages = mergeFetchedMessagesWithResidentState(fetchedMessages, messages)
     }
   } catch {
@@ -5223,9 +5169,11 @@ async function sendHistoryBundle(
               ? await loadCachedMessageDecryption(cachedMessage.id)
               : null) ??
             (cachedMessage.ciphertext && useAuthStore.getState().canUseE2EE
-              ? await useCryptoStore
-                  .getState()
-                  .decryptForChannel(targetId, uint8ToBase64(cachedMessage.ciphertext))
+              ? await getRendererEncryptedChat().decryptOpaque(
+                  scope,
+                  uint8ToBase64(cachedMessage.ciphertext),
+                  cachedMessage.mlsEpoch ?? null
+                )
               : null))
 
     if (!content) {
@@ -5292,9 +5240,7 @@ async function sendHistoryBundle(
     text: JSON.stringify(items)
   })
 
-  const crypto = useCryptoStore.getState()
-  const encrypted = await crypto.encryptForChannel(targetId, bundlePayload)
-  if (!encrypted) return
+  const encrypted = await getRendererEncryptedChat().encryptOpaque(scope, bundlePayload)
 
   const pushed = await pushToChannelWithAck(topic, 'mls_history_bundle', {
     ciphertext: encrypted.ciphertext,
@@ -5316,8 +5262,15 @@ async function processHistoryBundle(
   msg: Record<string, unknown>,
   set: (fn: (s: MessageState) => Partial<MessageState>) => void
 ): Promise<void> {
-  const crypto = useCryptoStore.getState()
-  const decrypted = await crypto.decryptForChannel(targetId, msg.ciphertext as string)
+  const scope =
+    typeof msg.conversation_id === 'string'
+      ? { kind: 'dm' as const, id: targetId }
+      : { kind: 'channel' as const, id: targetId }
+  const decrypted = await getRendererEncryptedChat().decryptOpaque(
+    scope,
+    msg.ciphertext as string,
+    (msg.mls_epoch as number | null | undefined) ?? null
+  )
   if (!decrypted) {
     return
   }
@@ -5436,13 +5389,12 @@ async function handleMlsJoinRequest(
   topic: string
 ): Promise<void> {
   const userId = msg.user_id as string
-  const username = (msg.username as string | undefined) ?? undefined
   const deviceId = (msg.device_id as string | undefined) ?? undefined
   const joinRequestKey = `${targetId}:${userId}:${deviceId ?? 'unknown'}`
   rememberMlsJoinDeviceId(topic, userId, deviceId)
-  const crypto = useCryptoStore.getState()
+  const encryptedChat = getRendererEncryptedChat()
 
-  if (!crypto.hasGroup(targetId)) return
+  if (!encryptedChat.hasGroup(targetId)) return
   if (inFlightJoinRequests.has(joinRequestKey)) return
 
   const lastHandledAt = recentHandledJoinRequests.get(joinRequestKey) ?? 0
@@ -5456,8 +5408,11 @@ async function handleMlsJoinRequest(
     inFlightJoinRequests.add(joinRequestKey)
 
     try {
-      const crypto = useCryptoStore.getState()
-      const result = await crypto.handleJoinRequest(targetId, userId, username, deviceId)
+      const result = await encryptedChat.handleExternalJoinRequest(
+        scopeFromTopic(targetId, topic),
+        userId,
+        deviceId ?? null
+      )
 
       if (result) {
         pushToChannel(topic, 'mls_commit', { commit_data: result.commitBytes })
@@ -5500,7 +5455,11 @@ async function handleMessageEdited(
     const ciphertextB64 = msg.ciphertext as string
     const plaintext =
       (await getStoredSentMessage(ciphertextB64)) ??
-      (await useCryptoStore.getState().decryptForChannel(targetId, ciphertextB64))
+      (await getRendererEncryptedChat().decryptOpaque(
+        scopeForId(targetId),
+        ciphertextB64,
+        (msg.mls_epoch as number | null | undefined) ?? null
+      ))
 
     if (plaintext) {
       setCachedDecryption(messageId, plaintext)

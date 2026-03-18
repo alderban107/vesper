@@ -15,7 +15,7 @@ import {
 import { AudioManager } from '../voice/audio'
 import { VoiceEncryption } from '../voice/encryption'
 import { useAuthStore } from './authStore'
-import { useCryptoStore } from './cryptoStore'
+import { getRendererEncryptedChat } from '../sdk/client'
 
 const INPUT_DEVICE_KEY = 'voice:inputDeviceId'
 const OUTPUT_DEVICE_KEY = 'voice:outputDeviceId'
@@ -32,8 +32,6 @@ const REMOTE_STREAM_VOLUMES_KEY = 'voice:remoteStreamVolumes'
 const SHARE_AUDIO_PREFERRED_KEY = 'voice:shareAudioPreferred'
 const MLS_JOIN_REQUEST_COOLDOWN_MS = 2000
 const MLS_RESYNC_REQUEST_COOLDOWN_MS = 5000
-const VOICE_MLS_RECOVERY_BACKOFF_MS = [150, 500, 1500] as const
-
 const recentVoiceJoinRequests = new Map<string, number>()
 const recentVoiceResyncRequests = new Map<string, number>()
 const inFlightVoiceRecoveries = new Map<string, Promise<void>>()
@@ -88,13 +86,12 @@ async function processVoiceMlsResyncRequest(
   request: PendingVoiceMlsResyncRequest
 ): Promise<boolean> {
   const requesterId = request.requester_id
-  const requesterUsername = request.requester_username ?? undefined
   const requesterDeviceId = request.requester_client_id ?? undefined
   const localUser = useAuthStore.getState().user
   const localDeviceId = getLocalDeviceIdentity().id
-  const cryptoStore = useCryptoStore.getState()
+  const encryptedChat = getRendererEncryptedChat()
 
-  if (!requesterId || !cryptoStore.hasGroup(topic)) {
+  if (!requesterId || !encryptedChat.hasGroup(topic)) {
     return false
   }
 
@@ -102,11 +99,10 @@ async function processVoiceMlsResyncRequest(
     return false
   }
 
-  const result = await cryptoStore.handleResyncRequest(
+  const result = await encryptedChat.handleScopeResyncRequest(
     topic,
     requesterId,
-    requesterUsername,
-    requesterDeviceId
+    requesterDeviceId ?? null
   )
   if (!result) {
     return false
@@ -147,7 +143,7 @@ async function processPendingVoiceMlsResyncRequests(topic: string): Promise<void
 }
 
 async function applyVoiceKeyIfAvailable(topic: string): Promise<boolean> {
-  const voiceKey = await useCryptoStore.getState().getVoiceKey(topic)
+  const voiceKey = await getRendererEncryptedChat().deriveScopeVoiceKey(topic)
   if (!voiceKey) {
     return false
   }
@@ -161,22 +157,23 @@ async function ensureVoiceGroupReady(
   topic: string,
   preferredCreatorId?: string
 ): Promise<void> {
-  const crypto = useCryptoStore.getState()
+  const encryptedChat = getRendererEncryptedChat()
   const userId = useAuthStore.getState().user?.id
 
   if (!userId) {
     return
   }
 
-  await crypto.ensureGroupMembership(topic)
-  if (crypto.hasGroup(topic)) {
+  await encryptedChat.ensureScopeState(topic)
+  await encryptedChat.replayScopeEvents(topic).catch(() => {})
+  if (encryptedChat.hasGroup(topic)) {
     return
   }
 
   const creatorId = preferredCreatorId ?? userId
   if (creatorId === userId) {
-    await crypto.createGroup(topic)
-    if (crypto.hasGroup(topic)) {
+    await encryptedChat.createScopeState(topic)
+    if (encryptedChat.hasGroup(topic)) {
       pushToChannel(topic, 'mls_request_join_all', {})
       return
     }
@@ -197,38 +194,28 @@ async function recoverVoiceMlsState(
   }
 
   const run = (async () => {
-    const crypto = useCryptoStore.getState()
+    const encryptedChat = getRendererEncryptedChat()
 
-    const tryRecoveryRound = async (roundReason: string): Promise<boolean> => {
-      await ensureVoiceGroupReady(topic, preferredCreatorId).catch(() => {})
-      maybeRequestVoiceMlsResync(topic, roundReason)
-
-      if (await applyVoiceKeyIfAvailable(topic)) {
-        return true
-      }
-
-      for (const delayMs of VOICE_MLS_RECOVERY_BACKOFF_MS) {
-        await new Promise((resolve) => setTimeout(resolve, delayMs))
-        await ensureVoiceGroupReady(topic, preferredCreatorId).catch(() => {})
-        maybeRequestVoiceMlsResync(topic, roundReason)
-
-        if (await applyVoiceKeyIfAvailable(topic)) {
-          return true
-        }
-      }
-
-      return false
-    }
-
-    if (await tryRecoveryRound(reason)) {
+    await ensureVoiceGroupReady(topic, preferredCreatorId).catch(() => {})
+    await processPendingVoiceMlsResyncRequests(topic).catch(() => {})
+    if (await applyVoiceKeyIfAvailable(topic)) {
       return
     }
 
-    if (crypto.hasGroup(topic)) {
-      await crypto.resetGroup(topic).catch(() => {})
+    maybeRequestVoiceMlsResync(topic, reason)
+    await processPendingVoiceMlsResyncRequests(topic).catch(() => {})
+    if (await applyVoiceKeyIfAvailable(topic)) {
+      return
     }
 
-    await tryRecoveryRound('local_state_reset')
+    if (encryptedChat.hasGroup(topic)) {
+      await encryptedChat.resetScope(topic).catch(() => {})
+    }
+
+    await ensureVoiceGroupReady(topic, preferredCreatorId).catch(() => {})
+    maybeRequestVoiceMlsResync(topic, 'local_state_reset')
+    await processPendingVoiceMlsResyncRequests(topic).catch(() => {})
+    await applyVoiceKeyIfAvailable(topic)
   })().finally(() => {
     inFlightVoiceRecoveries.delete(topic)
   })
@@ -441,7 +428,7 @@ function cleanup(get: () => VoiceState): void {
   if (roomId) {
     const topic = roomType === 'dm' ? `voice:dm:${roomId}` : `voice:channel:${roomId}`
     leaveChannel(topic)
-    useCryptoStore.getState().resetGroup(topic).catch(() => {})
+    getRendererEncryptedChat().resetScope(topic).catch(() => {})
   }
 
   webrtcManager?.destroy()
@@ -1551,7 +1538,7 @@ async function initVoice(
         })
       }
     } else if (event === 'mls_request_join_all') {
-      if (!useCryptoStore.getState().hasGroup(topic)) {
+      if (!getRendererEncryptedChat().hasGroup(topic)) {
         void recoverVoiceMlsState(topic, 'missing_state', preferredCreatorId).catch(() => {})
       }
     } else if (event === 'mls_request_join') {
@@ -1573,8 +1560,7 @@ async function initVoice(
       const userId = useAuthStore.getState().user?.id
       const localDeviceId = getLocalDeviceIdentity().id
       if (senderId !== userId || senderDeviceId !== localDeviceId) {
-        const crypto = useCryptoStore.getState()
-        await crypto.handleCommit(topic, data.commit_data as string)
+        await getRendererEncryptedChat().applyScopeCommit(topic, data.commit_data as string)
         if (!(await applyVoiceKeyIfAvailable(topic))) {
           void recoverVoiceMlsState(topic, 'voice_key_missing', preferredCreatorId).catch(() => {})
         }
@@ -1588,9 +1574,8 @@ async function initVoice(
         recipientId === userId &&
         (!recipientDeviceId || recipientDeviceId === getLocalDeviceIdentity().id)
       ) {
-        const crypto = useCryptoStore.getState()
         const welcomeId = typeof data.id === 'string' ? data.id : null
-        const processed = await crypto.handleWelcome(
+        const processed = await getRendererEncryptedChat().applyScopeWelcome(
           topic,
           data.welcome_data as string,
           (data.key_package_ref as string | undefined) ?? null
@@ -1613,11 +1598,10 @@ async function initVoice(
       const localDeviceId = getLocalDeviceIdentity().id
       const isLocalSender = senderId === userId && senderDeviceId === localDeviceId
       if (removedId === userId && !isLocalSender) {
-        await useCryptoStore.getState().resetGroup(topic)
+        await getRendererEncryptedChat().resetScope(topic)
         void recoverVoiceMlsState(topic, 'removed_from_group', preferredCreatorId).catch(() => {})
       } else if (!isLocalSender && data.commit_data) {
-        const crypto = useCryptoStore.getState()
-        await crypto.handleCommit(topic, data.commit_data as string)
+        await getRendererEncryptedChat().applyScopeCommit(topic, data.commit_data as string)
         if (!(await applyVoiceKeyIfAvailable(topic))) {
           void recoverVoiceMlsState(topic, 'voice_key_missing', preferredCreatorId).catch(() => {})
         }
@@ -1672,13 +1656,12 @@ async function handleVoiceMlsJoinRequest(
   topic: string
 ): Promise<void> {
   const userId = msg.user_id as string
-  const username = (msg.username as string | undefined) ?? undefined
   const deviceId = (msg.device_id as string | undefined) ?? undefined
-  const crypto = useCryptoStore.getState()
+  const encryptedChat = getRendererEncryptedChat()
 
-  if (!crypto.hasGroup(topic)) return
+  if (!encryptedChat.hasGroup(topic)) return
 
-  const result = await crypto.handleJoinRequest(topic, userId, username, deviceId)
+  const result = await encryptedChat.handleScopeJoinRequest(topic, userId, deviceId ?? null)
 
   if (!result) return
 
@@ -1696,6 +1679,6 @@ async function handleVoiceMlsJoinRequest(
   }
 
   // Key rotated after adding member — update our voice key
-  const newKey = await crypto.getVoiceKey(topic)
+  const newKey = await encryptedChat.deriveScopeVoiceKey(topic)
   if (newKey) voiceEncryption?.setKey(newKey)
 }

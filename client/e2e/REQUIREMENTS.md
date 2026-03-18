@@ -30,7 +30,6 @@ to protect:
 - `client/src/renderer/src/stores/dmStore.ts`
 - `client/src/renderer/src/stores/unreadStore.ts`
 - `client/src/renderer/src/stores/authStore.ts`
-- `client/src/renderer/src/stores/cryptoStore.ts`
 - `client/src/renderer/src/stores/voiceStore.ts`
 - `client/src/renderer/src/api/socket.ts`
 - `client/src/renderer/src/pages/MainPage.tsx`

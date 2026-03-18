@@ -751,7 +751,7 @@ async function hydrateTrustedCryptoFromPasswordResponse(
 
 async function hashRecoveryMnemonic(mnemonic: string): Promise<string> {
   const keyBytes = await recoveryKeyToBytes(mnemonic)
-  const hashBuffer = await crypto.subtle.digest('SHA-256', keyBytes)
+  const hashBuffer = await crypto.subtle.digest('SHA-256', keyBytes as unknown as BufferSource)
 
   return [...new Uint8Array(hashBuffer)]
     .map((value) => value.toString(16).padStart(2, '0'))

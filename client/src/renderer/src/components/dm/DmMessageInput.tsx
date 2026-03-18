@@ -1,19 +1,13 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { useDmStore } from '../../stores/dmStore'
 import { useServerStore } from '../../stores/serverStore'
-import {
-  useMessageStore,
-  cacheSentPlaintext,
-  getPreferredMlsJoinDeviceId
-} from '../../stores/messageStore'
-import { encodePayload } from '@vesper/sdk/crypto'
-import { useCryptoStore } from '../../stores/cryptoStore'
-import { pushToChannel } from '@vesper/sdk/transport'
+import { useMessageStore } from '../../stores/messageStore'
 import { useAuthStore } from '../../stores/authStore'
 import ComposerForm from '../chat/ComposerForm'
 import type { StagedFile } from '../chat/message/ComposerShell'
 import { formatCustomEmojiToken, type CustomEmoji } from '../../utils/emoji'
 import { prepareMessageAttachment } from '../../utils/messageAttachment'
+import { getRendererEncryptedChat } from '../../sdk/client'
 import {
   applyAutocompleteSelection,
   buildEmojiSuggestions,
@@ -114,48 +108,6 @@ export default function DmMessageInput(): React.JSX.Element {
     setStagedFiles((prev) => prev.filter((entry) => entry.id !== id))
   }
 
-  const ensureDmGroup = async (topic: string): Promise<boolean> => {
-    const crypto = useCryptoStore.getState()
-    if (crypto.hasGroup(conversationId!)) return true
-
-    await crypto.createGroup(conversationId!)
-    if (!crypto.hasGroup(conversationId!)) return false
-
-    const conversation = useDmStore
-      .getState()
-      .conversations.find((entry) => entry.id === conversationId)
-    const myId = useAuthStore.getState().user?.id
-
-    if (conversation && myId) {
-      for (const participant of conversation.participants) {
-        if (participant.user_id === myId) continue
-        const preferredDeviceId = getPreferredMlsJoinDeviceId(topic, participant.user_id)
-        const result = await crypto.handleJoinRequest(
-          conversationId!,
-          participant.user_id,
-          participant.user.username,
-          preferredDeviceId
-        )
-        if (!result) continue
-
-        pushToChannel(topic, 'mls_commit', {
-          commit_data: result.commitBytes
-        })
-
-        if (result.welcomeBytes) {
-          pushToChannel(topic, 'mls_welcome', {
-            recipient_id: participant.user_id,
-            recipient_device_id: preferredDeviceId,
-            welcome_data: result.welcomeBytes,
-            key_package_ref: result.keyPackageRef
-          })
-        }
-      }
-    }
-
-    return crypto.hasGroup(conversationId!)
-  }
-
   const uploadAndSendFile = async (file: File, text: string | undefined): Promise<boolean> => {
     if (!conversationId) return false
     if (!canUseE2EE) {
@@ -168,60 +120,30 @@ export default function DmMessageInput(): React.JSX.Element {
     const preparedAttachment = await prepareMessageAttachment(file)
     if (!preparedAttachment) return false
 
-    const envelope = encodePayload({
-      v: 1,
-      type: 'file',
-      text: text ?? null,
-      file: preparedAttachment.file
-    })
-    const { attachmentIds } = preparedAttachment
-
-    const topic = `dm:${conversationId}`
-    const crypto = useCryptoStore.getState()
     const replyTo = useMessageStore.getState().replyingTo
     const parentId = replyTo?.id || undefined
 
-    // Try encrypting with existing group
-    const enc = crypto.hasGroup(conversationId)
-      ? await crypto.encryptForChannel(conversationId, envelope)
-      : null
-
-    if (enc) {
-      cacheSentPlaintext(enc.ciphertext, envelope)
-      pushToChannel(topic, 'new_message', {
-        ciphertext: enc.ciphertext,
-        mls_epoch: enc.epoch,
-        attachment_ids: attachmentIds,
-        ...(parentId && { parent_message_id: parentId })
-      })
+    try {
+      await getRendererEncryptedChat().sendPayload(
+        { kind: 'dm', id: conversationId },
+        {
+          v: 1,
+          type: 'file',
+          text: text ?? null,
+          file: preparedAttachment.file
+        },
+        {
+          attachmentIds: preparedAttachment.attachmentIds,
+          ...(parentId ? { parentMessageId: parentId } : {})
+        }
+      )
       return true
-    }
-
-    // Reset and create fresh group
-    if (crypto.hasGroup(conversationId)) {
-      await crypto.resetGroup(conversationId)
-    }
-
-    const groupReady = await ensureDmGroup(topic)
-    if (!groupReady) {
-      useMessageStore.setState({ encryptionError: 'File could not be encrypted. Please try again.' })
+    } catch {
+      useMessageStore.setState({
+        encryptionError: 'File could not be encrypted. Please try again.'
+      })
       return false
     }
-
-    const freshEncrypted = await crypto.encryptForChannel(conversationId, envelope)
-    if (freshEncrypted) {
-      cacheSentPlaintext(freshEncrypted.ciphertext, envelope)
-      pushToChannel(topic, 'new_message', {
-        ciphertext: freshEncrypted.ciphertext,
-        mls_epoch: freshEncrypted.epoch,
-        attachment_ids: attachmentIds,
-        ...(parentId && { parent_message_id: parentId })
-      })
-      return true
-    }
-
-    useMessageStore.setState({ encryptionError: 'File could not be encrypted. Please try again.' })
-    return false
   }
 
   const autocompleteItems = trigger

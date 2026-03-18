@@ -1506,8 +1506,8 @@ class OpenTuiChatClient {
       this.runtime = null
     }
 
-    process.env.VESPER_API_URL = nextUrl
     this.runtime = new VesperChatRuntime({
+      baseUrl: nextUrl,
       deviceLabel: 'opentui-chat',
       deviceName: 'SDK Sample OpenTUI Chat'
     })

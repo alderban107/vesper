@@ -1,20 +1,12 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { useServerStore } from '../../stores/serverStore'
-import {
-  useMessageStore,
-  cacheSentPlaintext,
-  ensureChannelGroupReady,
-  pushToChannelWithAck,
-  waitForChannelMembershipReady
-} from '../../stores/messageStore'
-import { encodePayload } from '@vesper/sdk/crypto'
-import { useCryptoStore } from '../../stores/cryptoStore'
-import { pushToChannel } from '@vesper/sdk/transport'
+import { useMessageStore } from '../../stores/messageStore'
 import { useAuthStore } from '../../stores/authStore'
 import ComposerForm from './ComposerForm'
 import type { StagedFile } from './message/ComposerShell'
 import { formatCustomEmojiToken, type CustomEmoji } from '../../utils/emoji'
 import { prepareMessageAttachment } from '../../utils/messageAttachment'
+import { getRendererEncryptedChat } from '../../sdk/client'
 import {
   applyAutocompleteSelection,
   buildChannelSuggestions,
@@ -126,47 +118,30 @@ export default function MessageInput(): React.JSX.Element {
     const preparedAttachment = await prepareMessageAttachment(file)
     if (!preparedAttachment) return false
 
-    const envelope = encodePayload({
-      v: 1,
-      type: 'file',
-      text: text ?? null,
-      file: preparedAttachment.file
-    })
-    const { attachmentIds } = preparedAttachment
-
-    const topic = `chat:channel:${activeChannelId}`
-    const crypto = useCryptoStore.getState()
     const replyTo = useMessageStore.getState().replyingTo
     const parentId = replyTo?.id || undefined
-    if (!crypto.hasGroup(activeChannelId)) {
-      const ready = await ensureChannelGroupReady(activeChannelId, true)
-      if (!ready) {
-        useMessageStore.setState({
-          encryptionError: 'File could not be encrypted. Please try again.'
-        })
-        return false
-      }
-    }
 
-    if (crypto.hasGroup(activeChannelId)) {
-      await waitForChannelMembershipReady(activeChannelId, topic)
-      const enc = await crypto.encryptForChannel(activeChannelId, envelope)
-      if (enc) {
-        cacheSentPlaintext(enc.ciphertext, envelope)
-        const pushed = await pushToChannelWithAck(topic, 'new_message', {
-          ciphertext: enc.ciphertext,
-          mls_epoch: enc.epoch,
-          attachment_ids: attachmentIds,
-          ...(parentId && { parent_message_id: parentId })
-        })
-        if (pushed) {
-          return true
+    try {
+      await getRendererEncryptedChat().sendPayload(
+        { kind: 'channel', id: activeChannelId },
+        {
+          v: 1,
+          type: 'file',
+          text: text ?? null,
+          file: preparedAttachment.file
+        },
+        {
+          attachmentIds: preparedAttachment.attachmentIds,
+          ...(parentId ? { parentMessageId: parentId } : {})
         }
-      }
+      )
+      return true
+    } catch {
+      useMessageStore.setState({
+        encryptionError: 'File could not be encrypted. Please try again.'
+      })
+      return false
     }
-
-    useMessageStore.setState({ encryptionError: 'File could not be encrypted. Please try again.' })
-    return false
   }
 
   const autocompleteItems = trigger

@@ -2,6 +2,10 @@ import { argon2id } from 'hash-wasm'
 import type { EncryptedKeyBundle, RecoveryKeyData } from './types.js'
 import { WORDLIST } from './bip39-wordlist.js'
 
+function asBufferSource(value: Uint8Array): BufferSource {
+  return value as unknown as BufferSource
+}
+
 // BIP39 mnemonic encoding: 24 words from the standard 2048-word English list.
 // Each word encodes 11 bits. 24 words × 11 bits = 264 bits = 256 bits of key + 8-bit checksum.
 //
@@ -27,7 +31,7 @@ export async function derivePasswordKey(
     outputType: 'binary'
   })
 
-  return crypto.subtle.importKey('raw', hash, { name: 'AES-GCM' }, false, [
+  return crypto.subtle.importKey('raw', asBufferSource(hash), { name: 'AES-GCM' }, false, [
     'encrypt',
     'decrypt'
   ])
@@ -42,9 +46,9 @@ export async function encryptKeyBundle(
 ): Promise<{ ciphertext: Uint8Array; nonce: Uint8Array }> {
   const nonce = crypto.getRandomValues(new Uint8Array(12))
   const ciphertext = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv: nonce },
+    { name: 'AES-GCM', iv: asBufferSource(nonce) },
     passwordKey,
-    privateKeys
+    asBufferSource(privateKeys)
   )
   return { ciphertext: new Uint8Array(ciphertext), nonce }
 }
@@ -58,9 +62,9 @@ export async function decryptKeyBundle(
   passwordKey: CryptoKey
 ): Promise<Uint8Array> {
   const plaintext = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: nonce },
+    { name: 'AES-GCM', iv: asBufferSource(nonce) },
     passwordKey,
-    ciphertext
+    asBufferSource(ciphertext)
   )
   return new Uint8Array(plaintext)
 }
@@ -103,7 +107,7 @@ export async function generateRecoveryKey(): Promise<{
   // Convert 32 bytes (256 bits) to 24 words from 2048-word list
   // Each word encodes 11 bits (BIP39 style)
   // 24 words * 11 bits = 264 bits — last 8 bits are checksum
-  const hashBuffer = await crypto.subtle.digest('SHA-256', keyBytes)
+  const hashBuffer = await crypto.subtle.digest('SHA-256', asBufferSource(keyBytes))
   const checksum = new Uint8Array(hashBuffer)[0]
 
   // Combine key bytes + checksum byte for 33 bytes = 264 bits
@@ -193,7 +197,7 @@ export async function createRecoveryData(
   // Use recovery key bytes as AES key directly
   const recoveryAesKey = await crypto.subtle.importKey(
     'raw',
-    keyBytes,
+    asBufferSource(keyBytes),
     { name: 'AES-GCM' },
     false,
     ['encrypt']
@@ -201,13 +205,13 @@ export async function createRecoveryData(
 
   const nonce = crypto.getRandomValues(new Uint8Array(12))
   const encrypted = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv: nonce },
+    { name: 'AES-GCM', iv: asBufferSource(nonce) },
     recoveryAesKey,
-    privateKeys
+    asBufferSource(privateKeys)
   )
 
   // Hash the recovery key for server-side verification
-  const hashBuffer = await crypto.subtle.digest('SHA-256', keyBytes)
+  const hashBuffer = await crypto.subtle.digest('SHA-256', asBufferSource(keyBytes))
   const hashArray = new Uint8Array(hashBuffer)
   const hash = Array.from(hashArray)
     .map((b) => b.toString(16).padStart(2, '0'))
@@ -232,7 +236,7 @@ export async function decryptWithRecoveryKey(
 
   const recoveryAesKey = await crypto.subtle.importKey(
     'raw',
-    keyBytes,
+    asBufferSource(keyBytes),
     { name: 'AES-GCM' },
     false,
     ['decrypt']
@@ -243,9 +247,9 @@ export async function decryptWithRecoveryKey(
   const ciphertext = encryptedBundle.slice(12)
 
   const plaintext = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: nonce },
+    { name: 'AES-GCM', iv: asBufferSource(nonce) },
     recoveryAesKey,
-    ciphertext
+    asBufferSource(ciphertext)
   )
 
   return new Uint8Array(plaintext)

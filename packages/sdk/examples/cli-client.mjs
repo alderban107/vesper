@@ -1,13 +1,34 @@
+import { homedir } from 'node:os'
+import path from 'node:path'
+
 import {
-  createConversation,
-  createSdkHarness,
-  getCurrentUser,
-  listConversations,
-  listServers,
-  registerOrLogin,
-  requiredEnv,
-  searchUsers
-} from './_shared.mjs'
+  VesperStorage,
+  createFileSessionStore,
+  createVesperClient
+} from '../dist/index.js'
+
+function requiredEnv(name) {
+  const value = process.env[name]
+  if (!value) {
+    throw new Error(`Missing required environment variable: ${name}`)
+  }
+
+  return value
+}
+
+function slugify(value) {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+
+  return normalized || 'sample'
+}
+
+function resolveSampleStateDir(deviceLabel) {
+  return path.join(homedir(), '.vesper-sdk-samples', slugify(deviceLabel))
+}
 
 function usage() {
   console.error(`Usage:
@@ -31,15 +52,21 @@ function printJson(value) {
 }
 
 async function ensureSession() {
+  const baseUrl = requiredEnv('VESPER_API_URL')
+  const baseDir = resolveSampleStateDir('cli')
+  const client = createVesperClient({
+    baseUrl,
+    sessionStore: createFileSessionStore(path.join(baseDir, 'session.json'), baseUrl),
+    storage: (userId) =>
+      new VesperStorage.FileCryptoStorage(path.join(baseDir, 'crypto', `${userId}.json`))
+  })
   const username = requiredEnv('VESPER_USERNAME')
   const password = requiredEnv('VESPER_PASSWORD')
-  const harness = createSdkHarness('cli')
-  const session = await registerOrLogin(harness.auth, username, password)
 
-  return {
-    ...harness,
-    session
-  }
+  const session = (await client.restoreSession()) ?? (await client.login(username, password))
+  await client.start(false)
+
+  return { client, session }
 }
 
 async function commandMe() {
@@ -52,13 +79,13 @@ async function commandMe() {
 }
 
 async function commandServers() {
-  await ensureSession()
-  printJson(await listServers())
+  const { client } = await ensureSession()
+  printJson(client.getState().servers)
 }
 
 async function commandConversations() {
-  await ensureSession()
-  printJson(await listConversations())
+  const { client } = await ensureSession()
+  printJson(client.getState().conversations)
 }
 
 async function commandSearchUser(username) {
@@ -66,8 +93,8 @@ async function commandSearchUser(username) {
     throw new Error('search-user requires a username')
   }
 
-  await ensureSession()
-  printJson(await searchUsers(username))
+  const { client } = await ensureSession()
+  printJson(await client.searchUsers(username))
 }
 
 async function commandCreateConversation(username, name) {
@@ -75,38 +102,33 @@ async function commandCreateConversation(username, name) {
     throw new Error('create-conversation requires a username')
   }
 
-  await ensureSession()
-  const users = await searchUsers(username)
+  const { client } = await ensureSession()
+  const users = await client.searchUsers(username)
   const user = users[0]
   if (!user) {
     throw new Error(`User not found: ${username}`)
   }
 
-  const conversation = await createConversation([user.id], name)
+  const conversation = await client.createConversation([user.id], name)
   printJson(conversation)
 }
 
 async function commandDevices() {
-  const { auth, session } = await ensureSession()
-  const devices = await auth.fetchDevices({
-    devices: session.devices,
-    currentDevice: session.currentDevice,
-    user: session.user
+  const { client } = await ensureSession()
+  const state = await client.fetchDevices()
+  printJson({
+    devices: state.devices,
+    currentDevice: state.currentDevice,
+    canUseE2EE: state.canUseE2EE
   })
-  printJson(devices)
 }
 
 async function commandApprovePending() {
-  const { auth, session } = await ensureSession()
-  const devices = await auth.fetchDevices({
-    devices: session.devices,
-    currentDevice: session.currentDevice,
-    user: session.user
-  })
-
-  const pending = devices.devices.filter((device) => device.trust_state === 'pending')
+  const { client } = await ensureSession()
+  const state = await client.fetchDevices()
+  const pending = state.devices.filter((device) => device.trust_state === 'pending')
   for (const device of pending) {
-    await auth.approveDevice(device.id)
+    await client.approveDevice(device.id)
   }
 
   printJson({
@@ -119,28 +141,20 @@ async function commandApprovePending() {
 }
 
 async function commandWatch() {
-  const { session, socket } = await ensureSession()
-  const topic = `user:${session.user.id}`
-
-  socket.connect()
-  await socket.joinChannelWithAck(topic, (event, payload) => {
+  const { client, session } = await ensureSession()
+  const stopRaw = client.on('raw', ({ event, payload }) => {
     printJson({
-      topic,
+      topic: `user:${session.user.id}`,
       event,
       payload
     })
   })
 
-  socket.pushToChannel(topic, 'heartbeat', {})
-  console.error(`Watching ${topic}`)
-
-  const heartbeat = setInterval(() => {
-    socket.pushToChannel(topic, 'heartbeat', {})
-  }, 60_000)
+  console.error(`Watching user:${session.user.id}`)
 
   const shutdown = () => {
-    clearInterval(heartbeat)
-    socket.disconnect()
+    stopRaw()
+    client.stop()
     process.exit(0)
   }
 

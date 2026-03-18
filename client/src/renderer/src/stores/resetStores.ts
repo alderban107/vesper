@@ -8,7 +8,6 @@
  * Fixes: https://github.com/vesper-chat/vesper/issues/21
  */
 import { useMessageStore, clearExpiryTimers } from './messageStore'
-import { useCryptoStore } from './cryptoStore'
 import { useServerStore } from './serverStore'
 import { useDmStore } from './dmStore'
 import { useUnreadStore } from './unreadStore'
@@ -64,11 +63,6 @@ export function resetAllStores(): void {
     pendingJumpTarget: null,
     focusedMessageId: null,
     pinnedByChannel: {}
-  })
-
-  useCryptoStore.setState({
-    groupStates: {},
-    groupSetupInProgress: {}
   })
 
   useServerStore.setState({

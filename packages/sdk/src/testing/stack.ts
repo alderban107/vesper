@@ -19,7 +19,7 @@ function resolveTestDbEnv(): Record<string, string> {
 }
 
 async function withStackLifecycleLock<T>(operation: () => Promise<T> | T): Promise<T> {
-  let releaseQueue: (() => void) | null = null
+  let releaseQueue: (() => void) | undefined
   const previous = stackLifecycleQueue
   stackLifecycleQueue = new Promise<void>((resolve) => {
     releaseQueue = resolve
@@ -30,9 +30,7 @@ async function withStackLifecycleLock<T>(operation: () => Promise<T> | T): Promi
   try {
     return await operation()
   } finally {
-    if (releaseQueue) {
-      releaseQueue()
-    }
+    releaseQueue?.()
   }
 }
 

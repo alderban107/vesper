@@ -1,5 +1,7 @@
 export * as VesperApi from './api/index.js'
 export * as VesperAuth from './auth/index.js'
+export * from './client/index.js'
+export * from './client/fileSessionStore.js'
 export * as VesperCrypto from './crypto/index.js'
 export * as VesperStorage from './storage/index.js'
 export * as VesperTesting from './testing/index.js'

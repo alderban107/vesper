@@ -62,13 +62,33 @@ export interface VesperMessage {
   room_seq?: number | null
   channel_id?: string | null
   conversation_id?: string | null
+  server_id?: string | null
   sender_id: string | null
   sender: VesperMemberPreview | null
   parent_message_id?: string | null
   inserted_at: string
+  expires_at?: string | null
   content?: string
   ciphertext?: string
   mls_epoch?: number | null
+  attachments?: Array<{
+    id: string
+    filename: string
+    content_type: string
+    size_bytes: number
+    message_id?: string
+    encrypted?: boolean
+  }>
+  reactions?: Array<{
+    id: string
+    emoji: string
+    sender_id: string
+    ciphertext?: string | null
+    mls_epoch?: number | null
+    inserted_at: string
+  }>
+  edited_at?: string | null
+  client_nonce?: string | null
 }
 
 export interface VesperChannelActivityPatch {

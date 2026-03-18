@@ -1,6 +1,8 @@
+import { homedir } from 'node:os'
+import path from 'node:path'
+
 import {
   ackPendingWelcome,
-  apiFetch,
   fetchKeyPackage,
   fetchPendingWelcomes,
   uint8ToBase64
@@ -31,7 +33,12 @@ import {
   saveGroupState
 } from '../dist/storage/index.js'
 import {
-  createSdkHarness,
+  VesperStorage,
+  createFileSessionStore,
+  createVesperClient
+} from '../dist/index.js'
+import {
+  createSampleDeviceIdentity,
   registerOrLogin,
   requiredEnv
 } from './_shared.mjs'
@@ -46,6 +53,20 @@ function sleep(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms)
   })
+}
+
+function slugify(value) {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+
+  return normalized || 'sample'
+}
+
+function resolveSampleStateDir(deviceLabel) {
+  return path.join(homedir(), '.vesper-sdk-samples', slugify(deviceLabel))
 }
 
 function extractMentionedUserIds(content) {
@@ -98,7 +119,10 @@ export class VesperBot {
     this.joinedChannels = new Set()
     this.recentJoinRequests = new Map()
     this.handledMessageIds = []
-    this.harness = null
+    this.client = null
+    this.chat = null
+    this.deviceIdentityValue =
+      options.deviceIdentity || createSampleDeviceIdentity(this.deviceLabel, options)
     this.session = null
     this.heartbeat = null
   }
@@ -120,23 +144,30 @@ export class VesperBot {
   }
 
   get auth() {
-    return this.harness?.auth ?? null
+    return this.client
   }
 
   get deviceIdentity() {
-    return this.harness?.deviceIdentity ?? null
+    return this.client?.deviceIdentity ?? this.deviceIdentityValue
   }
 
   async start() {
-    this.harness = createSdkHarness(this.deviceLabel, {
-      deviceId: this.deviceId,
-      deviceName: this.deviceName
+    const apiUrl = requiredEnv('VESPER_API_URL')
+    const baseDir = resolveSampleStateDir(this.deviceLabel)
+    this.client = createVesperClient({
+      baseUrl: apiUrl,
+      sessionStore: createFileSessionStore(path.join(baseDir, 'session.json'), apiUrl),
+      storage: (userId) =>
+        new VesperStorage.FileCryptoStorage(path.join(baseDir, 'crypto', `${userId}.json`)),
+      auth: {
+        getDeviceIdentity: () => this.deviceIdentityValue
+      }
     })
-    this.session = await registerOrLogin(
-      this.harness.auth,
-      this.username,
-      this.password
-    )
+    this.session =
+      (await this.client.restoreSession()) ??
+      (await registerOrLogin(this.client, this.username, this.password))
+    this.chat = this.client.createEncryptedChat()
+    await this.client.start(false)
 
     if (!this.session.canUseE2EE) {
       const trustState = this.session.currentDevice?.trust_state ?? 'unknown'
@@ -145,30 +176,21 @@ export class VesperBot {
       )
     }
 
-    await this.harness.auth.replenishKeyPackages(
-      this.session.user,
-      this.session.canUseE2EE
-    )
+    await this.client.replenishKeyPackages()
 
-    const topic = `user:${this.session.user.id}`
-    this.harness.socket.connect()
-    await this.harness.socket.joinChannelWithAck(topic, async (event, payload) => {
-      if (event === 'mention') {
-        await this.handleMentionEvent(payload)
-      }
+    this.client.on('raw', ({ event, payload }) => {
+      void (async () => {
+        if (event === 'mention') {
+          await this.handleMentionEvent(payload)
+        }
 
-      await this.emit(event, {
-        bot: this,
-        event,
-        payload
-      })
+        await this.emit(event, {
+          bot: this,
+          event,
+          payload
+        })
+      })()
     })
-
-    this.heartbeat = setInterval(() => {
-      this.harness.socket.pushToChannel(topic, 'heartbeat', {})
-    }, 60_000)
-
-    this.harness.socket.pushToChannel(topic, 'heartbeat', {})
     return this
   }
 
@@ -181,9 +203,10 @@ export class VesperBot {
     this.joinedChannels.clear()
     this.groupStates.clear()
     this.pendingCommits.clear()
+    this.chat?.reset()
 
-    if (this.harness) {
-      this.harness.socket.disconnect()
+    if (this.client) {
+      this.client.stop()
     }
   }
 
@@ -192,42 +215,18 @@ export class VesperBot {
   }
 
   async sendChannelText(channelId, text, options = {}) {
-    await this.watchChannel(channelId)
-
-    const ready = await this.ensureChannelGroupReady(channelId, true)
-    if (!ready) {
-      throw new Error(`Channel ${channelId} is not ready for encrypted replies`)
-    }
-
-    const topic = this.getChannelTopic(channelId)
     const parentMessageId = options.parentMessageId || undefined
     const mentionUserId = options.mentionUserId || null
     const finalText = mentionUserId ? `<@${mentionUserId}> ${text}` : text
-    const payloadStr = encodePayload({
-      v: 1,
-      type: 'text',
-      text: finalText
-    })
-    const encrypted = await this.encryptForChannel(channelId, payloadStr)
-
-    const payload = {
-      ciphertext: encrypted.ciphertext,
-      mls_epoch: encrypted.epoch
-    }
-
-    if (parentMessageId) {
-      payload.parent_message_id = parentMessageId
-    }
-
     const mentionedUserIds = extractMentionedUserIds(finalText)
-    if (mentionedUserIds.length > 0) {
-      payload.mentioned_user_ids = mentionedUserIds
-    }
-
-    const pushed = await this.pushToChannelWithAck(topic, 'new_message', payload)
-    if (!pushed) {
-      throw new Error(`Failed to send message to ${topic}`)
-    }
+    await this.chat.sendText(
+      { kind: 'channel', id: channelId },
+      finalText,
+      {
+        parentMessageId,
+        mentionedUserIds
+      }
+    )
   }
 
   async watchChannel(channelId) {
@@ -235,13 +234,28 @@ export class VesperBot {
       return
     }
 
-    const topic = this.getChannelTopic(channelId)
-    await this.harness.socket.joinChannelWithAck(topic, async (event, payload) => {
-      await this.handleChannelEvent(channelId, event, payload)
+    await this.chat.watchScope({ kind: 'channel', id: channelId }, async ({ event, message }) => {
+      if (event !== 'new_message' || !message) {
+        return
+      }
+
+      await this.dispatchChannelMessage(
+        {
+          id: message.id,
+          channelId,
+          senderId: message.senderId,
+          senderUsername: message.senderUsername,
+          parentMessageId: message.parentMessageId,
+          insertedAt: message.insertedAt,
+          text: message.content,
+          raw: message.raw
+        },
+        'channel'
+      )
     })
 
     this.joinedChannels.add(channelId)
-    await this.ensureChannelGroupReady(channelId, false).catch(() => {})
+    await this.chat.ensureScopeReady({ kind: 'channel', id: channelId }, false).catch(() => {})
   }
 
   async handleMentionEvent(payload) {
@@ -433,27 +447,34 @@ export class VesperBot {
   }
 
   async findRecentMentionedMessage(channelId, senderId) {
-    const ready = await this.ensureChannelGroupReady(channelId, false)
+    const ready = await this.chat.ensureScopeReady({ kind: 'channel', id: channelId }, false)
     if (!ready) {
       return null
     }
 
-    const messages = await this.fetchChannelMessages(channelId, this.historyLimit)
-    for (const rawMessage of messages) {
-      const message = await this.resolveChannelMessage(channelId, rawMessage)
-      if (!message) {
-        continue
-      }
-
+    const { messages } = await this.chat.syncScope(
+      { kind: 'channel', id: channelId },
+      { limit: this.historyLimit }
+    )
+    for (const message of messages) {
       if (senderId && message.senderId !== senderId) {
         continue
       }
 
       if (
-        message.text.includes(`<@${this.user.id}>`) ||
-        message.text.includes('<@everyone>')
+        message.content.includes(`<@${this.user.id}>`) ||
+        message.content.includes('<@everyone>')
       ) {
-        return message
+        return {
+          id: message.id,
+          channelId,
+          senderId: message.senderId,
+          senderUsername: message.senderUsername,
+          parentMessageId: message.parentMessageId,
+          insertedAt: message.insertedAt,
+          text: message.content,
+          raw: message.raw
+        }
       }
     }
 
@@ -490,15 +511,7 @@ export class VesperBot {
   }
 
   async fetchChannelMessages(channelId, limit = CHANNEL_HISTORY_LIMIT) {
-    const response = await apiFetch(
-      `/api/v1/channels/${channelId}/messages?limit=${limit}`
-    )
-    if (!response.ok) {
-      throw new Error(`Could not load channel history for ${channelId}`)
-    }
-
-    const data = await response.json()
-    return Array.isArray(data.messages) ? data.messages : []
+    return await this.client.fetchChannelMessages(channelId, limit)
   }
 
   async ensureChannelGroupReady(channelId, allowCreate = false) {
@@ -595,7 +608,7 @@ export class VesperBot {
     }
 
     this.recentJoinRequests.set(topic, now)
-    await this.auth.replenishKeyPackages(this.user, true)
+    await this.client.replenishKeyPackages()
 
     await this.pushToChannelWithAck(topic, 'mls_request_join', {
       device_id: this.deviceIdentity.id
@@ -608,7 +621,7 @@ export class VesperBot {
     }
 
     await initCipherSuite()
-    await this.auth.replenishKeyPackages(this.user, true)
+    await this.client.replenishKeyPackages()
 
     const localPackages = await loadKeyPackages()
     let publicPackage = null
@@ -630,7 +643,7 @@ export class VesperBot {
 
     const state = await createMLSGroup(channelId, publicPackage, privatePackage)
     await this.setGroupState(channelId, state)
-    await this.auth.replenishKeyPackages(this.user, true)
+    await this.client.replenishKeyPackages()
   }
 
   async handleJoinRequest(channelId, userId, deviceId) {
@@ -696,7 +709,7 @@ export class VesperBot {
         await this.setGroupState(channelId, state)
         await consumeKeyPackage(pkg.id)
         await this.processPendingCommits(channelId)
-        await this.auth.replenishKeyPackages(this.user, true)
+        await this.client.replenishKeyPackages()
         return true
       } catch {
         continue
@@ -820,18 +833,12 @@ export class VesperBot {
   }
 
   async pushToChannelWithAck(topic, event, payload) {
-    const channel = this.harness.socket.getChannel(topic)
-    if (!channel) {
+    const channelId = topic.startsWith('chat:channel:') ? topic.slice('chat:channel:'.length) : null
+    if (!channelId) {
       return false
     }
 
-    return await new Promise((resolve) => {
-      channel
-        .push(event, payload)
-        .receive('ok', () => resolve(true))
-        .receive('error', () => resolve(false))
-        .receive('timeout', () => resolve(false))
-    })
+    return await this.client.pushScopeEvent('channel', channelId, event, payload)
   }
 
   async emit(event, payload) {

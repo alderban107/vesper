@@ -56,6 +56,10 @@ export class VesperSocketClient {
   private readonly resolveServerUrl: () => string
   private socket: Socket | null = null
   private readonly channels = new Map<string, Channel>()
+  private readonly channelListeners = new Map<
+    string,
+    Set<(event: string, payload: unknown) => void>
+  >()
   private readonly openListeners = new Set<() => void>()
 
   constructor(options: VesperSocketClientOptions = {}) {
@@ -93,6 +97,7 @@ export class VesperSocketClient {
   disconnect(): void {
     this.channels.forEach((channel) => channel.leave())
     this.channels.clear()
+    this.channelListeners.clear()
     this.socket?.disconnect()
     this.socket = null
   }
@@ -107,16 +112,28 @@ export class VesperSocketClient {
       throw new Error('Socket not connected')
     }
 
+    const listeners = this.channelListeners.get(topic) ?? new Set()
+    listeners.add(onMessage)
+    this.channelListeners.set(topic, listeners)
+
     const existing = this.channels.get(topic)
     if (existing) {
-      existing.leave()
-      this.channels.delete(topic)
+      return awaitJoin ? Promise.resolve(existing) : existing
     }
 
     const channel = this.socket.channel(topic, {})
 
     for (const event of events) {
-      channel.on(event, (payload) => onMessage(event, payload))
+      channel.on(event, (payload: unknown) => {
+        const topicListeners = this.channelListeners.get(topic)
+        if (!topicListeners) {
+          return
+        }
+
+        for (const listener of topicListeners) {
+          listener(event, payload)
+        }
+      })
     }
 
     this.channels.set(topic, channel)
@@ -128,7 +145,7 @@ export class VesperSocketClient {
         .receive('ok', () => {
           this.logger.log(`Joined ${topic}`)
         })
-        .receive('error', (resp) => {
+        .receive('error', (resp: unknown) => {
           this.logger.error(`Failed to join ${topic}:`, resp)
         })
 
@@ -141,12 +158,14 @@ export class VesperSocketClient {
           this.logger.log(`Joined ${topic}`)
           resolve(channel)
         })
-        .receive('error', (resp) => {
+        .receive('error', (resp: unknown) => {
           this.logger.error(`Failed to join ${topic}:`, resp)
+          this.channelListeners.delete(topic)
           this.channels.delete(topic)
           reject(new Error(`Failed to join ${topic}`))
         })
         .receive('timeout', () => {
+          this.channelListeners.delete(topic)
           this.channels.delete(topic)
           reject(new Error(`Timed out joining ${topic}`))
         })
@@ -168,6 +187,25 @@ export class VesperSocketClient {
   }
 
   leaveChannel(topic: string): void {
+    this.leaveChannelListener(topic)
+  }
+
+  leaveChannelListener(
+    topic: string,
+    onMessage?: (event: string, payload: unknown) => void
+  ): void {
+    const listeners = this.channelListeners.get(topic)
+    if (listeners) {
+      if (onMessage) {
+        listeners.delete(onMessage)
+        if (listeners.size > 0) {
+          return
+        }
+      }
+
+      this.channelListeners.delete(topic)
+    }
+
     const channel = this.channels.get(topic)
     if (channel) {
       channel.leave()
@@ -180,6 +218,25 @@ export class VesperSocketClient {
     if (channel) {
       channel.push(event, payload)
     }
+  }
+
+  async pushToChannelWithAck(
+    topic: string,
+    event: string,
+    payload: object
+  ): Promise<boolean> {
+    const channel = this.channels.get(topic)
+    if (!channel) {
+      return false
+    }
+
+    return await new Promise<boolean>((resolve) => {
+      channel
+        .push(event, payload)
+        .receive('ok', () => resolve(true))
+        .receive('error', () => resolve(false))
+        .receive('timeout', () => resolve(false))
+    })
   }
 
   getChannel(topic: string): Channel | undefined {
@@ -229,8 +286,23 @@ export function leaveChannel(topic: string): void {
   defaultSocketClient.leaveChannel(topic)
 }
 
+export function leaveChannelListener(
+  topic: string,
+  onMessage?: (event: string, payload: unknown) => void
+): void {
+  defaultSocketClient.leaveChannelListener(topic, onMessage)
+}
+
 export function pushToChannel(topic: string, event: string, payload: object): void {
   defaultSocketClient.pushToChannel(topic, event, payload)
+}
+
+export async function pushToChannelWithAck(
+  topic: string,
+  event: string,
+  payload: object
+): Promise<boolean> {
+  return await defaultSocketClient.pushToChannelWithAck(topic, event, payload)
 }
 
 export function getChannel(topic: string): Channel | undefined {

@@ -79,7 +79,7 @@ async function withSdkContext<T>(
     return await operation()
   }
 
-  let releaseQueue: (() => void) | null = null
+  let releaseQueue: (() => void) | undefined
   const priorQueue = sdkContextQueue
   sdkContextQueue = new Promise<void>((resolve) => {
     releaseQueue = resolve
@@ -96,9 +96,7 @@ async function withSdkContext<T>(
   try {
     return await sdkOperationContext.run(ownerToken, operation)
   } finally {
-    if (releaseQueue) {
-      releaseQueue()
-    }
+    releaseQueue?.()
   }
 }
 

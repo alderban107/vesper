@@ -24,7 +24,7 @@ function emitSessionNotice(): void {
   window.dispatchEvent(new CustomEvent(SESSION_NOTICE_EVENT))
 }
 
-const rendererSessionStore: SessionStore = {
+export const rendererSessionStore: SessionStore = {
   getServerUrl(): string {
     const serverUrl = useSettingsStore.getState().serverUrl.trim()
     if (!serverUrl) {

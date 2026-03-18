@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { apiFetch, apiUpload } from '@vesper/sdk/transport'
 import { useDmStore } from './dmStore'
 import type { CustomEmoji } from '../utils/emoji'
+import { getRendererEncryptedChat } from '../sdk/client'
 
 const LAST_SERVER_KEY = 'vesper:lastServerId'
 const LAST_CHANNEL_KEY = 'vesper:lastChannelId'
@@ -32,17 +33,15 @@ async function resetServerGroups(server: Server | undefined): Promise<void> {
     return
   }
 
-  const { useCryptoStore } = await import('./cryptoStore')
-
-  const groupIds = Array.from(
-    new Set([
-      ...server.channels.map((channel) => channel.id),
-      ...server.channels.map((channel) => `voice:channel:${channel.id}`)
-    ])
-  )
+  const channelIds = Array.from(new Set(server.channels.map((channel) => channel.id)))
 
   await Promise.all(
-    groupIds.map((groupId) => useCryptoStore.getState().resetGroup(groupId).catch(() => {}))
+    channelIds.map((channelId) => getRendererEncryptedChat().resetScope(channelId).catch(() => {}))
+  )
+  await Promise.all(
+    channelIds.map((channelId) =>
+      getRendererEncryptedChat().resetScope(`voice:channel:${channelId}`).catch(() => {})
+    )
   )
 }
 

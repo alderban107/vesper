@@ -1,12 +1,12 @@
 import { create } from 'zustand'
 import {
-  VesperAuthClient,
   type VesperAuthDevice as AuthDevice,
   type VesperAuthSession,
   type VesperUser as User
-} from '@vesper/sdk/auth'
+} from '@vesper/sdk/client'
 import { useServerStore } from './serverStore'
 import { resetAllStores } from './resetStores'
+import { getRendererClient, getRendererEncryptedChat, resetRendererClient } from '../sdk/client'
 
 function cacheBustAssetUrl(url: string | null | undefined): string | null {
   if (!url) {
@@ -108,8 +108,6 @@ interface AuthState {
   handleDeviceEvent: (device: AuthDevice) => Promise<void>
 }
 
-const authClient = new VesperAuthClient()
-
 function applyAuthenticatedState(
   set: (partial: Partial<AuthState>) => void,
   session: VesperAuthSession,
@@ -128,23 +126,22 @@ function applyAuthenticatedState(
 }
 
 async function refreshActiveEncryptedViews(): Promise<void> {
-  const [{ useMessageStore }, { useServerStore }, { useDmStore }, { useCryptoStore }] = await Promise.all([
+  const [{ useMessageStore }, { useServerStore }, { useDmStore }] = await Promise.all([
     import('./messageStore'),
     import('./serverStore'),
-    import('./dmStore'),
-    import('./cryptoStore')
+    import('./dmStore')
   ])
 
   const activeChannelId = useServerStore.getState().activeChannelId
   const selectedConversationId = useDmStore.getState().selectedConversationId
   const messageStore = useMessageStore.getState()
+  const encryptedChat = getRendererEncryptedChat()
 
   // For active DMs, re-join the channel to trigger MLS group setup now that
   // E2EE may have become available (e.g. after device approval). Simply
   // re-fetching messages without the group ready will leave them as "syncing".
   if (selectedConversationId) {
-    const crypto = useCryptoStore.getState()
-    if (!crypto.hasGroup(selectedConversationId)) {
+    if (!encryptedChat.hasGroup(selectedConversationId)) {
       // Leave and rejoin to re-trigger the MLS bootstrap flow
       messageStore.leaveDmChat(selectedConversationId)
       messageStore.joinDmChat(selectedConversationId)
@@ -155,8 +152,7 @@ async function refreshActiveEncryptedViews(): Promise<void> {
   }
 
   if (activeChannelId) {
-    const crypto = useCryptoStore.getState()
-    if (!crypto.hasGroup(activeChannelId)) {
+    if (!encryptedChat.hasGroup(activeChannelId)) {
       messageStore.leaveChannelChat(activeChannelId)
       messageStore.joinChannelChat(activeChannelId)
     } else {
@@ -170,16 +166,8 @@ async function refreshActiveEncryptedViews(): Promise<void> {
 }
 
 async function resetEncryptedRuntime(): Promise<void> {
-  const [{ useCryptoStore }, { useVoiceStore }] = await Promise.all([
-    import('./cryptoStore'),
-    import('./voiceStore')
-  ])
-
-  useCryptoStore.setState({
-    groupStates: {},
-    groupSetupInProgress: {},
-    pendingCommits: {}
-  })
+  const { useVoiceStore } = await import('./voiceStore')
+  getRendererEncryptedChat().reset()
 
   const voice = useVoiceStore.getState()
   if (voice.state !== 'idle') {
@@ -201,8 +189,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ error: null })
 
     try {
-      const session = await authClient.register(username, password)
+      const session = await getRendererClient().register(username, password)
       applyAuthenticatedState(set, session)
+      void getRendererClient().start(false).catch(() => {})
       void get().fetchDevices().catch(() => {})
 
       return true
@@ -218,8 +207,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ error: null })
 
     try {
-      const session = await authClient.login(username, password)
+      const session = await getRendererClient().login(username, password)
       applyAuthenticatedState(set, session, { recoveryMnemonic: null })
+      void getRendererClient().start(false).catch(() => {})
       if (session.canUseE2EE) {
         void get().replenishKeyPackages().catch(() => {})
         void refreshActiveEncryptedViews().catch(() => {})
@@ -236,7 +226,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   logout: async () => {
-    await authClient.logout()
+    await getRendererClient().logout()
+    resetRendererClient()
     resetAllStores()
     set({
       user: null,
@@ -253,7 +244,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ error: null })
 
     try {
-      await authClient.verifyRecoveryKey(mnemonic)
+      await getRendererClient().verifyRecoveryKey(mnemonic)
       return true
     } catch (error) {
       set({
@@ -267,8 +258,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ error: null })
 
     try {
-      const session = await authClient.recoverAccount(mnemonic, newPassword)
+      const session = await getRendererClient().recoverAccount(mnemonic, newPassword)
       applyAuthenticatedState(set, session, { recoveryMnemonic: null })
+      void getRendererClient().start(false).catch(() => {})
 
       if (session.canUseE2EE) {
         void get().replenishKeyPackages().catch(() => {})
@@ -287,13 +279,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   checkAuth: async () => {
     try {
-      const session = await authClient.checkAuth()
+      const session = await getRendererClient().restoreSession()
       if (!session) {
         set({ isLoading: false, isAuthenticated: false, canUseE2EE: false })
         return
       }
 
       applyAuthenticatedState(set, session, { isLoading: false, recoveryMnemonic: null })
+      void getRendererClient().start(false).catch(() => {})
       if (session.canUseE2EE) {
         void get().replenishKeyPackages().catch(() => {})
         void refreshActiveEncryptedViews().catch(() => {})
@@ -311,11 +304,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   fetchDevices: async () => {
     const state = get()
-    const nextState = await authClient.fetchDevices({
-      devices: state.devices,
-      currentDevice: state.currentDevice,
-      user: state.user
-    })
+    const nextState = await getRendererClient().fetchDevices()
     const wasUsingE2EE = state.canUseE2EE
 
     set({
@@ -339,7 +328,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   approveDevice: async (deviceId) => {
     try {
-      await authClient.approveDevice(deviceId)
+      await getRendererClient().approveDevice(deviceId)
       set({ error: null })
       await get().fetchDevices()
       return true
@@ -351,7 +340,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   revokeDevice: async (deviceId) => {
     try {
-      await authClient.revokeDevice(deviceId)
+      await getRendererClient().revokeDevice(deviceId)
       set({ error: null })
       await get().fetchDevices()
       return true
@@ -363,8 +352,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   approveCurrentDeviceWithRecovery: async (mnemonic) => {
     try {
-      const session = await authClient.approveCurrentDeviceWithRecovery(mnemonic)
+      await getRendererClient().approveCurrentDeviceWithRecovery(mnemonic)
+      const session = getRendererClient().getAuthSession()
+      if (!session) {
+        throw new Error('Device approval did not produce a session')
+      }
       applyAuthenticatedState(set, session, { recoveryMnemonic: null })
+      void getRendererClient().start(false).catch(() => {})
       await get().fetchDevices()
       await get().replenishKeyPackages()
       await refreshActiveEncryptedViews()
@@ -378,20 +372,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   unlockTrustedDevice: async (password) => {
-    const state = get()
     try {
-      if (!state.user) {
+      if (!get().user) {
         set({ error: 'This device is not approved yet.' })
         return false
       }
 
-      const session = await authClient.unlockTrustedDevice(
-        state.user,
-        state.currentDevice,
-        password
-      )
-
+      await getRendererClient().unlockTrustedDevice(password)
+      const session = getRendererClient().getAuthSession()
+      if (!session) {
+        throw new Error('Trusted device unlock did not produce a session')
+      }
       applyAuthenticatedState(set, session, { recoveryMnemonic: null })
+      void getRendererClient().start(false).catch(() => {})
       await get().replenishKeyPackages()
       await refreshActiveEncryptedViews()
       return true
@@ -429,7 +422,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   updateProfile: async (attrs) => {
     try {
-      const user = await authClient.updateProfile(attrs)
+      const user = await getRendererClient().updateProfile(attrs)
       set({ user })
       await syncUpdatedUserCaches(user)
       const serverId = useServerStore.getState().activeServerId
@@ -444,7 +437,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   uploadAvatar: async (file) => {
     try {
-      const user = await authClient.uploadAvatar(file)
+      const user = await getRendererClient().uploadAvatar(file)
       const nextUser = {
         ...user,
         avatar_url: cacheBustAssetUrl(user.avatar_url)
@@ -463,7 +456,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   uploadBanner: async (file) => {
     try {
-      const user = await authClient.uploadBanner(file)
+      const user = await getRendererClient().uploadBanner(file)
       const nextUser = {
         ...user,
         banner_url: cacheBustAssetUrl(user.banner_url)
@@ -481,6 +474,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   replenishKeyPackages: async () => {
-    await authClient.replenishKeyPackages(get().user, get().canUseE2EE)
+    await getRendererClient().replenishKeyPackages()
   }
 }))
