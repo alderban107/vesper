@@ -311,7 +311,6 @@ export default function MessageInput(): React.JSX.Element {
       window.removeEventListener('drop', handleWindowDrop)
     }
   }, [stageFiles, uploading])
-
   const handleSubmit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault()
     if (!activeChannelId) return

@@ -327,7 +327,6 @@ export default function DmMessageInput(): React.JSX.Element {
       window.removeEventListener('drop', handleWindowDrop)
     }
   }, [stageFiles, uploading])
-
   const commitAutocompleteSelection = (index: number): void => {
     if (!trigger) {
       return
