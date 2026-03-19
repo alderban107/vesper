@@ -60,6 +60,10 @@ jobs:
         working-directory: client
         run: npm ci
 
+      - name: Ensure Rollup native package
+        working-directory: client
+        run: node ./scripts/ensure-rollup-native.mjs
+
       - name: Typecheck and build
         working-directory: client
         run: npm run check:web
