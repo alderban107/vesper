@@ -31,7 +31,7 @@ defmodule VesperWeb.EmojiController do
   def create(conn, %{"server_id" => server_id, "file" => %Plug.Upload{} = upload} = params) do
     user = conn.assigns.current_user
 
-    if Servers.user_can?(user.id, server_id, Permissions.manage_roles()) do
+    if Servers.user_can?(user.id, server_id, Permissions.manage_server()) do
       content_type = upload.content_type || "application/octet-stream"
 
       cond do
@@ -113,7 +113,7 @@ defmodule VesperWeb.EmojiController do
   def delete(conn, %{"server_id" => server_id, "emoji_id" => emoji_id}) do
     user = conn.assigns.current_user
 
-    if Servers.user_can?(user.id, server_id, Permissions.manage_roles()) do
+    if Servers.user_can?(user.id, server_id, Permissions.manage_server()) do
       case Servers.get_server_emoji(server_id, emoji_id) do
         nil ->
           conn |> put_status(:not_found) |> json(%{error: "emoji not found"})

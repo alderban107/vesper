@@ -593,49 +593,53 @@ defmodule VesperWeb.DmChannel do
       |> maybe_put(:removed_device_id, removed_device_id)
       |> maybe_put(:eviction_id, eviction_id)
 
-    case Encryption.store_mls_event(%{
-           group_id: socket.assigns.conversation_id,
-           conversation_id: socket.assigns.conversation_id,
-           event_type: "mls_remove",
-           payload: event_payload,
-           sender_id: socket.assigns.user_id,
-           sender_device_id: socket.assigns.device_client_id
-         }) do
+    crypto_eviction =
+      if eviction_id do
+        %{
+          eviction_id: eviction_id,
+          scope_kind: "dm",
+          scope_id: socket.assigns.conversation_id,
+          removed_user_id: removed_user_id,
+          removed_device_id: removed_device_id,
+          sponsor_user_id: socket.assigns.user_id,
+          sponsor_device_id: socket.assigns.device_client_id
+        }
+      end
+
+    case Encryption.store_mls_remove_event(
+           %{
+             group_id: socket.assigns.conversation_id,
+             conversation_id: socket.assigns.conversation_id,
+             event_type: "mls_remove",
+             payload: event_payload,
+             sender_id: socket.assigns.user_id,
+             sender_device_id: socket.assigns.device_client_id
+           },
+           crypto_eviction
+         ) do
       {:ok, event} ->
-        case maybe_complete_crypto_eviction(
-               eviction_id,
-               "dm",
-               socket.assigns.conversation_id,
-               removed_user_id,
-               removed_device_id,
-               event.id,
-               socket.assigns.user_id,
-               socket.assigns.device_client_id
-             ) do
-          :ok ->
-            broadcast!(
-              socket,
-              "mls_remove",
-              %{
-                seq: event.id,
-                removed_user_id: removed_user_id,
-                commit_data: commit_data,
-                sender_id: socket.assigns.user_id,
-                sender_device_id: socket.assigns.device_client_id
-              }
-              |> maybe_put(:removed_device_id, removed_device_id)
-              |> maybe_put(:eviction_id, eviction_id)
-            )
+        broadcast!(
+          socket,
+          "mls_remove",
+          %{
+            seq: event.id,
+            removed_user_id: removed_user_id,
+            commit_data: commit_data,
+            sender_id: socket.assigns.user_id,
+            sender_device_id: socket.assigns.device_client_id
+          }
+          |> maybe_put(:removed_device_id, removed_device_id)
+          |> maybe_put(:eviction_id, eviction_id)
+        )
 
-            if eviction_id do
-              request_next_crypto_eviction("dm", socket.assigns.conversation_id)
-            end
-
-            {:noreply, socket}
-
-          {:error, reason} ->
-            {:reply, {:error, %{reason: eviction_error_reason(reason)}}, socket}
+        if eviction_id do
+          request_next_crypto_eviction("dm", socket.assigns.conversation_id)
         end
+
+        {:noreply, socket}
+
+      {:error, reason} when is_atom(reason) ->
+        {:reply, {:error, %{reason: eviction_error_reason(reason)}}, socket}
 
       {:error, _changeset} ->
         {:reply, {:error, %{reason: "could not store remove"}}, socket}
@@ -874,43 +878,6 @@ defmodule VesperWeb.DmChannel do
       :ok
     else
       {:error, :trusted_device_required}
-    end
-  end
-
-  defp maybe_complete_crypto_eviction(
-         nil,
-         _scope_kind,
-         _scope_id,
-         _removed_user_id,
-         _removed_device_id,
-         _commit_event_id,
-         _sponsor_user_id,
-         _sponsor_device_id
-       ),
-       do: :ok
-
-  defp maybe_complete_crypto_eviction(
-         eviction_id,
-         scope_kind,
-         scope_id,
-         removed_user_id,
-         removed_device_id,
-         commit_event_id,
-         sponsor_user_id,
-         sponsor_device_id
-       ) do
-    case Encryption.complete_pending_crypto_eviction(
-           eviction_id,
-           scope_kind,
-           scope_id,
-           removed_user_id,
-           removed_device_id,
-           commit_event_id,
-           sponsor_user_id,
-           sponsor_device_id
-         ) do
-      {:ok, _eviction} -> :ok
-      {:error, reason} -> {:error, reason}
     end
   end
 

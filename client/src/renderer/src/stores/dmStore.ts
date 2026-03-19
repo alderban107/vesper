@@ -1,27 +1,15 @@
 import { create } from 'zustand'
-import { apiFetch } from '@vesper/sdk/transport'
+import { getRendererClient } from '../sdk/client'
+import { getStoredValue, writeStoredValue } from '../utils/localStorage'
 
 const LAST_CONVERSATION_KEY = 'vesper:lastConversationId'
 
 function readStoredConversationId(): string | null {
-  if (typeof window === 'undefined') {
-    return null
-  }
-
-  return localStorage.getItem(LAST_CONVERSATION_KEY)
+  return getStoredValue(LAST_CONVERSATION_KEY)
 }
 
 function writeStoredConversationId(conversationId: string | null): void {
-  if (typeof window === 'undefined') {
-    return
-  }
-
-  if (conversationId) {
-    localStorage.setItem(LAST_CONVERSATION_KEY, conversationId)
-    return
-  }
-
-  localStorage.removeItem(LAST_CONVERSATION_KEY)
+  writeStoredValue(LAST_CONVERSATION_KEY, conversationId)
 }
 
 function parseActivityTimestamp(value: string | null | undefined): number {
@@ -123,40 +111,40 @@ export const useDmStore = create<DmState>((set, get) => ({
 
   fetchConversations: async () => {
     try {
-      const res = await apiFetch('/api/v1/conversations')
-      if (res.ok) {
-        const data = await res.json()
-        const incomingConversations = data.conversations as DmConversation[]
+      const incomingConversations =
+        await getRendererClient().listConversations() as DmConversation[]
 
-        set((state) => {
-          const mergedById = new Map<string, DmConversation>()
+      set((state) => {
+        const mergedById = new Map<string, DmConversation>()
 
-          for (const conversation of state.conversations) {
-            mergedById.set(conversation.id, conversation)
-          }
+        for (const conversation of state.conversations) {
+          mergedById.set(conversation.id, conversation)
+        }
 
-          for (const conversation of incomingConversations) {
-            mergedById.set(conversation.id, mergeConversation(mergedById.get(conversation.id), conversation))
-          }
-
-          const conversations = [...mergedById.values()].sort(
-            (left, right) =>
-              getConversationActivityTimestamp(right) - getConversationActivityTimestamp(left)
+        for (const conversation of incomingConversations) {
+          mergedById.set(
+            conversation.id,
+            mergeConversation(mergedById.get(conversation.id), conversation)
           )
+        }
 
-          const selectedConversationId = state.selectedConversationId
-          const restoredConversation = selectedConversationId
-            ? mergedById.get(selectedConversationId) ?? null
-            : null
+        const conversations = [...mergedById.values()].sort(
+          (left, right) =>
+            getConversationActivityTimestamp(right) - getConversationActivityTimestamp(left)
+        )
 
-          writeStoredConversationId(restoredConversation?.id ?? null)
+        const selectedConversationId = state.selectedConversationId
+        const restoredConversation = selectedConversationId
+          ? mergedById.get(selectedConversationId) ?? null
+          : null
 
-          return {
-            conversations,
-            selectedConversationId: restoredConversation?.id ?? null
-          }
-        })
-      }
+        writeStoredConversationId(restoredConversation?.id ?? null)
+
+        return {
+          conversations,
+          selectedConversationId: restoredConversation?.id ?? null
+        }
+      })
     } catch {
       // ignore
     }
@@ -198,29 +186,19 @@ export const useDmStore = create<DmState>((set, get) => ({
 
   createConversation: async (userIds, name?) => {
     try {
-      const body: Record<string, unknown> = { participant_ids: userIds }
-      if (name) body.name = name
-
-      const res = await apiFetch('/api/v1/conversations', {
-        method: 'POST',
-        body: JSON.stringify(body)
+      const conversation =
+        await getRendererClient().createConversation(userIds, name) as DmConversation
+      set((s) => {
+        const exists = s.conversations.some((c) => c.id === conversation.id)
+        writeStoredConversationId(conversation.id)
+        return exists
+          ? { selectedConversationId: conversation.id }
+          : {
+              conversations: [conversation, ...s.conversations],
+              selectedConversationId: conversation.id
+            }
       })
-      if (res.ok) {
-        const data = await res.json()
-        const conversation = data.conversation as DmConversation
-        // Add to list if not already present
-        set((s) => {
-          const exists = s.conversations.some((c) => c.id === conversation.id)
-          writeStoredConversationId(conversation.id)
-          return exists
-            ? { selectedConversationId: conversation.id }
-            : {
-                conversations: [conversation, ...s.conversations],
-                selectedConversationId: conversation.id
-              }
-        })
-        return conversation
-      }
+      return conversation
     } catch {
       // ignore
     }
@@ -311,11 +289,7 @@ export const useDmStore = create<DmState>((set, get) => ({
   searchUsers: async (username) => {
     if (username.length < 2) return []
     try {
-      const res = await apiFetch(`/api/v1/users/search?username=${encodeURIComponent(username)}`)
-      if (res.ok) {
-        const data = await res.json()
-        return data.users || []
-      }
+      return await getRendererClient().searchUsers(username) as DmUser[]
     } catch {
       // ignore
     }

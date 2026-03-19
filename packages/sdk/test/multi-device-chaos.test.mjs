@@ -212,8 +212,8 @@ async function assertNoLiveMessage(chat, scopeId, expectedText, timeoutMs = 750)
 
 test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable', { concurrency: false }, async (t) => {
   const stack = await bootServerStack()
-  t.after(() => {
-    teardownServerStack(stack)
+  t.after(async () => {
+    await teardownServerStack(stack)
   })
 
   await t.test('same-user offline catch-up decrypts the latest channel message in under 20ms', async () => {

@@ -1,40 +1,55 @@
 import {
+  ackPendingHistoryBundle,
+  ackPendingHistoryRequest,
+  ackPendingResyncRequest,
+  ackPendingWelcome,
+  fetchPendingHistoryBundles,
+  fetchPendingHistoryRequests,
+  fetchPendingResyncRequests,
+  fetchPendingWelcomes
+} from '../api/crypto.js'
+import {
   createConversation,
   createServer,
+  createServerChannel,
   fetchChannelMessages,
   fetchConversationMessages,
   fetchScopesSync,
   fetchWorkspaceSync,
   getCurrentUser,
+  getServerInviteCode,
   joinServerByInvite,
   leaveServer,
+  listConversations,
+  listServers,
   searchUsers,
+  type CreateServerChannelInput,
+  type VesperAttachmentUpload,
+  type VesperAuditLogEntry,
   type VesperChannel,
   type VesperChannelActivityPatch,
+  type VesperChannelPin,
   type VesperConversation,
   type VesperConversationMessagePreview,
   type VesperConversationResetPatch,
+  type VesperCustomEmoji,
   type VesperMessage,
   type VesperScopeSyncScopeRequest,
   type VesperScopeSyncResponse,
   type VesperServer,
+  type VesperServerBan,
+  type VesperServerInvite,
+  type VesperServerMember,
+  type VesperServerRole,
+  type VesperWorkspaceSyncResponse,
   type VesperUnreadCounts
 } from '../api/chat.js'
 import {
-  configureHttpClient,
-  createBrowserSessionStore,
-  createMemorySessionStore,
+  VesperHttpClient,
   type SessionStore
 } from '../api/client.js'
-import {
-  connectSocket,
-  joinChannelWithAck,
-  leaveChannel,
-  leaveChannelListener,
-  onSocketOpen,
-  pushToChannel,
-  pushToChannelWithAck
-} from '../api/socket.js'
+import { VesperSocketClient } from '../api/socket.js'
+import { getVoiceRtcConfig, type VoiceRtcConfig } from '../api/voiceConfig.js'
 import {
   VesperAuthClient,
   type VesperAuthClientOptions,
@@ -48,13 +63,15 @@ import {
   resetStorage,
   type CryptoStorageAdapter
 } from '../crypto/storage.js'
+import { createVesperTransport } from '../transport/context.js'
 import { createEncryptedChat, type VesperEncryptedChat } from './encryptedChat.js'
 
 type ClientStatus = 'signed_out' | 'ready'
 type ScopeKind = 'channel' | 'dm'
 type ScopeWatcher = {
   topic: string
-  dispose: () => void
+  listeners: Set<Listener<VesperClientScopeEvent>>
+  disposeChannel: () => void
 }
 
 export interface VesperClientState {
@@ -93,6 +110,8 @@ export interface VesperClientEvents {
   state: VesperClientState
   ready: VesperClientState
   connected: VesperClientState
+  'connection.lost': VesperClientState
+  'connection.error': Error
   disconnected: VesperClientState
   'workspace.updated': VesperClientState
   'servers.updated': VesperServer[]
@@ -113,6 +132,7 @@ export interface VesperClientOptions {
 }
 
 type Listener<T> = (payload: T) => void
+type TopicListener = (event: string, payload: unknown) => void
 
 class TypedEmitter<Events extends object> {
   private readonly listeners = new Map<keyof Events, Set<Listener<unknown>>>()
@@ -147,6 +167,18 @@ class TypedEmitter<Events extends object> {
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000
 const UNREAD_EVENT_DEDUPE_WINDOW_MS = 15_000
+const FIRE_AND_FORGET_SCOPE_EVENTS = new Set([
+  'typing_start',
+  'typing_stop',
+  'mls_request_join',
+  'mls_request_join_all',
+  'mls_resync_request',
+  'mls_commit',
+  'mls_remove',
+  'mls_welcome',
+  'mls_history_request',
+  'mls_history_bundle'
+])
 
 function defaultState(): VesperClientState {
   return {
@@ -174,6 +206,18 @@ function parseActivityTimestamp(value: string | null | undefined): number {
 
   const parsed = Date.parse(value)
   return Number.isNaN(parsed) ? 0 : parsed
+}
+
+function toError(value: unknown, fallback: string): Error {
+  if (value instanceof Error) {
+    return value
+  }
+
+  if (typeof value === 'string' && value.length > 0) {
+    return new Error(value)
+  }
+
+  return new Error(fallback)
 }
 
 function getConversationActivityTimestamp(conversation: VesperConversation): number {
@@ -220,6 +264,135 @@ function mergeConversations(
   )
 }
 
+function sortServerChannels(channels: VesperChannel[]): VesperChannel[] {
+  return [...channels].sort(
+    (left, right) => left.position - right.position || left.name.localeCompare(right.name)
+  )
+}
+
+function mergeServerChannel(
+  existing: VesperChannel | undefined,
+  incoming: VesperChannel
+): VesperChannel {
+  const existingActivityAt = parseActivityTimestamp(existing?.last_message_inserted_at)
+  const incomingActivityAt = parseActivityTimestamp(incoming.last_message_inserted_at)
+
+  if (existing && existingActivityAt > incomingActivityAt) {
+    return {
+      ...incoming,
+      last_message_id: existing.last_message_id ?? incoming.last_message_id ?? null,
+      last_message_inserted_at:
+        existing.last_message_inserted_at ?? incoming.last_message_inserted_at ?? null,
+      last_message_sender: existing.last_message_sender ?? incoming.last_message_sender ?? null
+    }
+  }
+
+  return {
+    ...incoming,
+    last_message_id: incoming.last_message_id ?? existing?.last_message_id ?? null,
+    last_message_inserted_at:
+      incoming.last_message_inserted_at ?? existing?.last_message_inserted_at ?? null,
+    last_message_sender: incoming.last_message_sender ?? existing?.last_message_sender ?? null
+  }
+}
+
+function mergeServerChannels(
+  existingChannels: VesperChannel[],
+  incomingChannels: VesperChannel[]
+): VesperChannel[] {
+  const existingById = new Map(existingChannels.map((channel) => [channel.id, channel]))
+  return sortServerChannels(
+    incomingChannels.map((channel) => mergeServerChannel(existingById.get(channel.id), channel))
+  )
+}
+
+function replaceServerInServers(
+  servers: VesperServer[],
+  incomingServer: VesperServer
+): VesperServer[] {
+  const current = servers.find((server) => server.id === incomingServer.id)
+
+  if (!current) {
+    return mergeServers(servers, [incomingServer])
+  }
+
+  return servers.map((server) =>
+    server.id === incomingServer.id
+      ? {
+          ...current,
+          ...incomingServer,
+          channels: mergeServerChannels(current.channels, incomingServer.channels)
+        }
+      : server
+  )
+}
+
+function replaceServerChannels(
+  servers: VesperServer[],
+  serverId: string,
+  channels: VesperChannel[]
+): VesperServer[] {
+  return servers.map((server) =>
+    server.id === serverId
+      ? {
+          ...server,
+          channels: mergeServerChannels(server.channels, channels)
+        }
+      : server
+  )
+}
+
+function upsertServerChannel(
+  servers: VesperServer[],
+  serverId: string,
+  incomingChannel: VesperChannel
+): VesperServer[] {
+  return servers.map((server) => {
+    if (server.id !== serverId) {
+      return server
+    }
+
+    const byId = new Map(server.channels.map((channel) => [channel.id, channel]))
+    byId.set(
+      incomingChannel.id,
+      mergeServerChannel(byId.get(incomingChannel.id), incomingChannel)
+    )
+
+    return {
+      ...server,
+      channels: sortServerChannels([...byId.values()])
+    }
+  })
+}
+
+function removeServerChannel(
+  servers: VesperServer[],
+  serverId: string,
+  channelId: string
+): VesperServer[] {
+  return servers.map((server) =>
+    server.id === serverId
+      ? {
+          ...server,
+          channels: server.channels.filter((channel) => channel.id !== channelId)
+        }
+      : server
+  )
+}
+
+function initializeChannelUnreadCounts(
+  unreadCounts: Record<string, number>,
+  channels: VesperChannel[]
+): Record<string, number> {
+  const next = { ...unreadCounts }
+
+  for (const channel of channels) {
+    next[channel.id] = next[channel.id] ?? 0
+  }
+
+  return next
+}
+
 function mergeServers(existing: VesperServer[], incoming: VesperServer[]): VesperServer[] {
   const merged = new Map(existing.map((server) => [server.id, server]))
 
@@ -233,7 +406,7 @@ function mergeServers(existing: VesperServer[], incoming: VesperServer[]): Vespe
     merged.set(server.id, {
       ...current,
       ...server,
-      channels: server.channels
+      channels: mergeServerChannels(current.channels, server.channels)
     })
   }
 
@@ -265,15 +438,18 @@ function applyConversationReset(
   conversations: VesperConversation[],
   reset: VesperConversationResetPatch
 ): VesperConversation[] {
-  return mergeConversations(
-    conversations,
-    conversations
-      .filter((conversation) => conversation.id === reset.conversation_id)
-      .map((conversation) => ({
-        ...conversation,
-        last_message: reset.last_message
-      }))
-  )
+  return conversations
+    .map((conversation) =>
+      conversation.id === reset.conversation_id
+        ? {
+            ...conversation,
+            last_message: reset.last_message
+          }
+        : conversation
+    )
+    .sort(
+      (left, right) => getConversationActivityTimestamp(right) - getConversationActivityTimestamp(left)
+    )
 }
 
 function applyConversationActivity(
@@ -337,36 +513,47 @@ function removeServer(
 export class VesperClient {
   private readonly emitter = new TypedEmitter<VesperClientEvents>()
   private readonly auth: VesperAuthClient
+  private readonly httpClient: VesperHttpClient
+  private readonly socketClient: VesperSocketClient
   private readonly heartbeatIntervalMs: number
   private readonly scopeWatchers = new Map<string, ScopeWatcher>()
+  private readonly pendingScopeWatchers = new Map<string, Promise<ScopeWatcher>>()
   private readonly recentUnreadMessageKeys = new Map<string, number>()
   private readonly resolveDeviceIdentity: (() => LocalDeviceIdentity) | null
 
   private authSession: VesperAuthSession | null = null
+  private encryptedChat: VesperEncryptedChat | null = null
   private state: VesperClientState = defaultState()
   private userTopic: string | null = null
   private heartbeat: ReturnType<typeof setInterval> | null = null
   private unsubscribeSocketOpen: (() => void) | null = null
+  private unsubscribeSocketClose: (() => void) | null = null
+  private unsubscribeSocketError: (() => void) | null = null
   private seenSocketOpen = false
 
   constructor(options: VesperClientOptions = {}) {
-    const sessionStore =
-      options.sessionStore ??
-      (typeof window === 'undefined'
-        ? createMemorySessionStore(requireBaseUrl(options.baseUrl))
-        : createBrowserSessionStore(options.baseUrl ?? null))
-
-    configureHttpClient({
-      fetchImpl: options.fetchImpl,
-      sessionStore
-    })
-
     if (options.storage) {
       configureCryptoStorage(options.storage)
     }
 
+    const transport = createVesperTransport({
+      baseUrl: options.baseUrl,
+      fetchImpl: options.fetchImpl,
+      sessionStore: options.sessionStore
+    })
+
+    this.httpClient = transport.httpClient
+    this.socketClient = transport.socketClient
     this.resolveDeviceIdentity = options.auth?.getDeviceIdentity ?? null
-    this.auth = new VesperAuthClient(options.auth)
+    this.auth = new VesperAuthClient({
+      ...options.auth,
+      transport: {
+        httpClient: this.httpClient,
+        socketClient: this.socketClient
+      },
+      httpClient: this.httpClient,
+      socketClient: this.socketClient
+    })
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS
   }
 
@@ -378,8 +565,64 @@ export class VesperClient {
     return this.authSession
   }
 
+  getHttpClient(): VesperHttpClient {
+    return this.httpClient
+  }
+
+  getSessionStore(): SessionStore {
+    return this.httpClient.getSessionStore()
+  }
+
+  getSocketClient(): VesperSocketClient {
+    return this.socketClient
+  }
+
+  getAuthClient(): VesperAuthClient {
+    return this.auth
+  }
+
+  getServerUrl(): string {
+    return this.httpClient.getServerUrl()
+  }
+
+  async apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
+    return await this.httpClient.apiFetch(path, options)
+  }
+
+  async apiUpload(path: string, formData: FormData): Promise<Response> {
+    return await this.httpClient.apiUpload(path, formData)
+  }
+
+  resolveUrl(path: string): string {
+    const baseUrl = this.httpClient.getServerUrl().replace(/\/+$/, '')
+    const normalizedPath = path.startsWith('/') ? path : `/${path}`
+    return `${baseUrl}${normalizedPath}`
+  }
+
+  async fetchJson<T>(path: string, options: RequestInit = {}, fallbackMessage?: string): Promise<T> {
+    const response = await this.httpClient.apiFetch(path, options)
+    await this.assertResponseOk(
+      response,
+      fallbackMessage ?? `Request to ${path} failed with status ${response.status}`
+    )
+    return (await response.json()) as T
+  }
+
+  async uploadJson<T>(path: string, formData: FormData, fallbackMessage?: string): Promise<T> {
+    const response = await this.httpClient.apiUpload(path, formData)
+    await this.assertResponseOk(
+      response,
+      fallbackMessage ?? `Upload to ${path} failed with status ${response.status}`
+    )
+    return (await response.json()) as T
+  }
+
   createEncryptedChat(): VesperEncryptedChat {
-    return createEncryptedChat(this)
+    if (!this.encryptedChat) {
+      this.encryptedChat = createEncryptedChat(this)
+    }
+
+    return this.encryptedChat
   }
 
   getState(): VesperClientState {
@@ -458,7 +701,7 @@ export class VesperClient {
     }
 
     if (!this.unsubscribeSocketOpen) {
-      this.unsubscribeSocketOpen = onSocketOpen(() => {
+      this.unsubscribeSocketOpen = this.socketClient.onSocketOpen(() => {
         this.setState({ connected: true })
         this.emitter.emit('connected', this.getState())
 
@@ -473,7 +716,32 @@ export class VesperClient {
       })
     }
 
-    connectSocket()
+    if (!this.unsubscribeSocketClose) {
+      this.unsubscribeSocketClose = this.socketClient.onSocketClose(() => {
+        if (!this.state.connected) {
+          return
+        }
+
+        this.setState({ connected: false })
+        this.emitter.emit('connection.lost', this.getState())
+      })
+    }
+
+    if (!this.unsubscribeSocketError) {
+      this.unsubscribeSocketError = this.socketClient.onSocketError((error) => {
+        const nextError = toError(error, 'Vesper socket transport failed.')
+
+        if (this.state.connected) {
+          this.setState({ connected: false })
+          this.emitter.emit('connection.lost', this.getState())
+        }
+
+        this.emitter.emit('connection.error', nextError)
+        this.emitError(nextError)
+      })
+    }
+
+    this.socketClient.connect()
     await this.connectUserFeed(session.user.id)
     await this.syncNow(forceFull)
     this.setState({ started: true })
@@ -488,17 +756,23 @@ export class VesperClient {
     }
 
     if (this.userTopic) {
-      leaveChannel(this.userTopic)
+      this.socketClient.leaveChannel(this.userTopic)
       this.userTopic = null
     }
 
     for (const watcher of this.scopeWatchers.values()) {
-      watcher.dispose()
+      watcher.disposeChannel()
     }
     this.scopeWatchers.clear()
+    this.pendingScopeWatchers.clear()
+    this.socketClient.disconnect()
 
     this.unsubscribeSocketOpen?.()
     this.unsubscribeSocketOpen = null
+    this.unsubscribeSocketClose?.()
+    this.unsubscribeSocketClose = null
+    this.unsubscribeSocketError?.()
+    this.unsubscribeSocketError = null
     this.seenSocketOpen = false
     this.setState({
       started: false,
@@ -517,7 +791,7 @@ export class VesperClient {
 
   async syncNow(forceFull = false): Promise<VesperClientState> {
     const since = forceFull ? null : this.state.syncToken
-    const syncState = await fetchWorkspaceSync(since)
+    const syncState = await fetchWorkspaceSync(since, this.httpClient)
 
     this.setState({
       status: this.state.user ? 'ready' : 'signed_out',
@@ -639,7 +913,25 @@ export class VesperClient {
   }
 
   async searchUsers(username: string): Promise<VesperUser[]> {
-    return await searchUsers(username)
+    return await searchUsers(username, this.httpClient)
+  }
+
+  async listServers(): Promise<VesperServer[]> {
+    const servers = await listServers(this.httpClient)
+    this.setState({
+      servers: mergeServers(this.state.servers, servers)
+    })
+    this.emitter.emit('servers.updated', [...this.state.servers])
+    return servers
+  }
+
+  async listConversations(): Promise<VesperConversation[]> {
+    const conversations = await listConversations(this.httpClient)
+    this.setState({
+      conversations: mergeConversations(this.state.conversations, conversations)
+    })
+    this.emitter.emit('conversations.updated', [...this.state.conversations])
+    return conversations
   }
 
   async replenishKeyPackages(): Promise<void> {
@@ -647,7 +939,7 @@ export class VesperClient {
   }
 
   async createConversation(participantIds: string[], name?: string): Promise<VesperConversation> {
-    const conversation = await createConversation(participantIds, name)
+    const conversation = await createConversation(participantIds, name, this.httpClient)
     this.setState({
       conversations: mergeConversations(this.state.conversations, [conversation]),
       unreadCounts: {
@@ -663,32 +955,501 @@ export class VesperClient {
   }
 
   async createServer(name: string): Promise<VesperServer> {
-    const server = await createServer(name)
+    const server = await createServer(name, this.httpClient)
     this.setState({
-      servers: mergeServers(this.state.servers, [server])
+      servers: mergeServers(this.state.servers, [server]),
+      unreadCounts: {
+        channels: initializeChannelUnreadCounts(this.state.unreadCounts.channels, server.channels),
+        conversations: this.state.unreadCounts.conversations
+      }
     })
     this.emitter.emit('servers.updated', [...this.state.servers])
     return server
   }
 
   async joinServerByInvite(inviteCode: string): Promise<VesperServer> {
-    const server = await joinServerByInvite(inviteCode)
+    const server = await joinServerByInvite(inviteCode, this.httpClient)
     this.setState({
-      servers: mergeServers(this.state.servers, [server])
+      servers: mergeServers(this.state.servers, [server]),
+      unreadCounts: {
+        channels: initializeChannelUnreadCounts(this.state.unreadCounts.channels, server.channels),
+        conversations: this.state.unreadCounts.conversations
+      }
     })
     this.emitter.emit('servers.updated', [...this.state.servers])
     return server
   }
 
   async leaveServer(serverId: string): Promise<void> {
-    await leaveServer(serverId)
+    await leaveServer(serverId, this.httpClient)
+    await this.resetServerScopes(serverId)
     const next = removeServer(this.state.servers, this.state.unreadCounts, serverId)
     this.setState(next)
     this.emitter.emit('servers.updated', [...this.state.servers])
   }
 
+  async deleteServer(serverId: string): Promise<void> {
+    const response = await this.httpClient.apiFetch(`/api/v1/servers/${serverId}`, {
+      method: 'DELETE'
+    })
+    await this.assertResponseOk(response, 'Could not delete server')
+    await this.resetServerScopes(serverId)
+    const next = removeServer(this.state.servers, this.state.unreadCounts, serverId)
+    this.setState(next)
+    this.emitter.emit('servers.updated', [...this.state.servers])
+  }
+
+  async fetchServerChannels(serverId: string): Promise<VesperChannel[]> {
+    const data = await this.fetchJson<{ channels?: VesperChannel[] }>(
+      `/api/v1/servers/${serverId}/channels`,
+      {},
+      'Could not load server channels'
+    )
+    const channels = data.channels ?? []
+
+    this.setState({
+      servers: replaceServerChannels(this.state.servers, serverId, channels)
+    })
+    this.emitter.emit('servers.updated', [...this.state.servers])
+
+    return channels
+  }
+
+  async createServerChannel(
+    serverId: string,
+    input: CreateServerChannelInput
+  ): Promise<VesperChannel> {
+    const channel = await createServerChannel(serverId, input, this.httpClient)
+
+    this.setState({
+      servers: upsertServerChannel(this.state.servers, serverId, channel),
+      unreadCounts: {
+        channels: {
+          ...this.state.unreadCounts.channels,
+          [channel.id]: this.state.unreadCounts.channels[channel.id] ?? 0
+        },
+        conversations: this.state.unreadCounts.conversations
+      }
+    })
+    this.emitter.emit('servers.updated', [...this.state.servers])
+
+    return channel
+  }
+
+  async updateServerChannel(
+    serverId: string,
+    channelId: string,
+    attrs: Record<string, unknown>
+  ): Promise<VesperChannel> {
+    const data = await this.fetchJson<{ channel?: VesperChannel }>(
+      `/api/v1/servers/${serverId}/channels/${channelId}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(attrs)
+      },
+      'Could not update channel'
+    )
+
+    if (!data.channel) {
+      throw new Error('Could not update channel: missing channel payload')
+    }
+
+    this.setState({
+      servers: upsertServerChannel(this.state.servers, serverId, data.channel)
+    })
+    this.emitter.emit('servers.updated', [...this.state.servers])
+
+    return data.channel
+  }
+
+  async deleteServerChannel(serverId: string, channelId: string): Promise<void> {
+    const response = await this.httpClient.apiFetch(`/api/v1/servers/${serverId}/channels/${channelId}`, {
+      method: 'DELETE'
+    })
+    await this.assertResponseOk(response, 'Could not delete channel')
+
+    await this.resetChannelScopes([channelId])
+
+    const nextChannelUnreads = { ...this.state.unreadCounts.channels }
+    delete nextChannelUnreads[channelId]
+
+    this.setState({
+      servers: removeServerChannel(this.state.servers, serverId, channelId),
+      unreadCounts: {
+        channels: nextChannelUnreads,
+        conversations: this.state.unreadCounts.conversations
+      }
+    })
+    this.emitter.emit('servers.updated', [...this.state.servers])
+  }
+
+  async fetchServerChannel(serverId: string, channelId: string): Promise<VesperChannel> {
+    const data = await this.fetchJson<{ channel?: VesperChannel }>(
+      `/api/v1/servers/${serverId}/channels/${channelId}`,
+      {},
+      'Could not load channel'
+    )
+
+    if (!data.channel) {
+      throw new Error('Could not load channel: missing channel payload')
+    }
+
+    this.setState({
+      servers: upsertServerChannel(this.state.servers, serverId, data.channel)
+    })
+    this.emitter.emit('servers.updated', [...this.state.servers])
+
+    return data.channel
+  }
+
+  async fetchServerMembers(serverId: string): Promise<VesperServerMember[]> {
+    const data = await this.fetchJson<{ members?: VesperServerMember[] }>(
+      `/api/v1/servers/${serverId}/members`,
+      {},
+      'Could not load server members'
+    )
+    return data.members ?? []
+  }
+
+  async fetchServerInviteCode(serverId: string): Promise<string> {
+    return await getServerInviteCode(serverId, this.httpClient)
+  }
+
+  async listServerInvites(serverId: string): Promise<VesperServerInvite[]> {
+    const data = await this.fetchJson<{ invites?: VesperServerInvite[] }>(
+      `/api/v1/servers/${serverId}/invites`,
+      {},
+      'Could not load invites'
+    )
+    return data.invites ?? []
+  }
+
+  async createServerInvite(
+    serverId: string,
+    input: {
+      expires_in_seconds?: number
+      max_uses?: number
+      role_id?: string
+    }
+  ): Promise<VesperServerInvite> {
+    const data = await this.fetchJson<{ invite?: VesperServerInvite }>(
+      `/api/v1/servers/${serverId}/invites`,
+      {
+        method: 'POST',
+        body: JSON.stringify(input)
+      },
+      'Could not create invite'
+    )
+
+    if (!data.invite) {
+      throw new Error('Could not create invite: missing invite payload')
+    }
+
+    return data.invite
+  }
+
+  async deleteServerInvite(serverId: string, inviteId: string): Promise<void> {
+    const response = await this.httpClient.apiFetch(`/api/v1/servers/${serverId}/invites/${inviteId}`, {
+      method: 'DELETE'
+    })
+    await this.assertResponseOk(response, 'Could not delete invite')
+  }
+
+  async listServerRoles(serverId: string): Promise<VesperServerRole[]> {
+    const data = await this.fetchJson<{ roles?: VesperServerRole[] }>(
+      `/api/v1/servers/${serverId}/roles`,
+      {},
+      'Could not load server roles'
+    )
+    return data.roles ?? []
+  }
+
+  async createServerRole(
+    serverId: string,
+    input: {
+      name: string
+      permissions: number
+      color: string | null
+    }
+  ): Promise<VesperServerRole> {
+    const data = await this.fetchJson<{ role?: VesperServerRole }>(
+      `/api/v1/servers/${serverId}/roles`,
+      {
+        method: 'POST',
+        body: JSON.stringify(input)
+      },
+      'Could not create role'
+    )
+
+    if (!data.role) {
+      throw new Error('Could not create role: missing role payload')
+    }
+
+    return data.role
+  }
+
+  async updateServerRole(
+    serverId: string,
+    roleId: string,
+    input: {
+      name: string
+      permissions: number
+      color: string | null
+    }
+  ): Promise<VesperServerRole> {
+    const data = await this.fetchJson<{ role?: VesperServerRole }>(
+      `/api/v1/servers/${serverId}/roles/${roleId}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(input)
+      },
+      'Could not update role'
+    )
+
+    if (!data.role) {
+      throw new Error('Could not update role: missing role payload')
+    }
+
+    return data.role
+  }
+
+  async deleteServerRole(serverId: string, roleId: string): Promise<void> {
+    const response = await this.httpClient.apiFetch(`/api/v1/servers/${serverId}/roles/${roleId}`, {
+      method: 'DELETE'
+    })
+    await this.assertResponseOk(response, 'Could not delete role')
+  }
+
+  async fetchServerBans(serverId: string): Promise<VesperServerBan[]> {
+    const data = await this.fetchJson<{ bans?: VesperServerBan[] }>(
+      `/api/v1/servers/${serverId}/bans`,
+      {},
+      'Could not load server bans'
+    )
+    return data.bans ?? []
+  }
+
+  async banServerMember(serverId: string, userId: string, reason?: string): Promise<void> {
+    const response = await this.httpClient.apiFetch(`/api/v1/servers/${serverId}/members/${userId}/ban`, {
+      method: 'POST',
+      body: JSON.stringify({
+        ...(reason?.trim() ? { reason: reason.trim() } : {})
+      })
+    })
+    await this.assertResponseOk(response, 'Could not ban member')
+  }
+
+  async unbanServerMember(serverId: string, userId: string): Promise<void> {
+    const response = await this.httpClient.apiFetch(`/api/v1/servers/${serverId}/members/${userId}/ban`, {
+      method: 'DELETE'
+    })
+    await this.assertResponseOk(response, 'Could not unban member')
+  }
+
+  async fetchServerAuditLog(serverId: string, limit = 100): Promise<VesperAuditLogEntry[]> {
+    const data = await this.fetchJson<{ audit_logs?: VesperAuditLogEntry[] }>(
+      `/api/v1/servers/${serverId}/audit-logs?limit=${limit}`,
+      {},
+      'Could not load audit log'
+    )
+    return data.audit_logs ?? []
+  }
+
+  async kickServerMember(serverId: string, userId: string): Promise<void> {
+    const response = await this.httpClient.apiFetch(`/api/v1/servers/${serverId}/members/${userId}`, {
+      method: 'DELETE'
+    })
+    await this.assertResponseOk(response, 'Could not remove member')
+  }
+
+  async updateServerDetails(
+    serverId: string,
+    attrs: Record<string, unknown>
+  ): Promise<VesperServer> {
+    const data = await this.fetchJson<{ server?: VesperServer }>(
+      `/api/v1/servers/${serverId}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ server: attrs })
+      },
+      'Could not update server'
+    )
+
+    if (!data.server) {
+      throw new Error('Could not update server: missing server payload')
+    }
+
+    this.setState({
+      servers: replaceServerInServers(this.state.servers, data.server)
+    })
+    this.emitter.emit('servers.updated', [...this.state.servers])
+
+    return data.server
+  }
+
+  async updateServerMemberRole(serverId: string, userId: string, role: string): Promise<void> {
+    const response = await this.httpClient.apiFetch(`/api/v1/servers/${serverId}/members/${userId}/roles`, {
+      method: 'PUT',
+      body: JSON.stringify({ role })
+    })
+    await this.assertResponseOk(response, 'Could not update member role')
+  }
+
+  async fetchServerEmojis(serverId: string): Promise<VesperCustomEmoji[]> {
+    const data = await this.fetchJson<{ emojis?: VesperCustomEmoji[] }>(
+      `/api/v1/servers/${serverId}/emojis`,
+      {},
+      'Could not load server emojis'
+    )
+    return data.emojis ?? []
+  }
+
+  async uploadServerEmoji(serverId: string, formData: FormData): Promise<VesperCustomEmoji> {
+    const data = await this.uploadJson<{ emoji?: VesperCustomEmoji }>(
+      `/api/v1/servers/${serverId}/emojis`,
+      formData,
+      'Could not upload emoji'
+    )
+
+    if (!data.emoji) {
+      throw new Error('Could not upload emoji: missing emoji payload')
+    }
+
+    return data.emoji
+  }
+
+  async deleteServerEmoji(serverId: string, emojiId: string): Promise<void> {
+    const response = await this.httpClient.apiFetch(`/api/v1/servers/${serverId}/emojis/${emojiId}`, {
+      method: 'DELETE'
+    })
+    await this.assertResponseOk(response, 'Could not delete emoji')
+  }
+
+  async listChannelPins(channelId: string): Promise<VesperChannelPin[]> {
+    const data = await this.fetchJson<{ pins?: VesperChannelPin[] }>(
+      `/api/v1/channels/${channelId}/pins`,
+      {},
+      'Could not load pinned messages'
+    )
+    return data.pins ?? []
+  }
+
+  async markChannelRead(channelId: string, messageId: string): Promise<void> {
+    const response = await this.httpClient.apiFetch(`/api/v1/channels/${channelId}/read`, {
+      method: 'PUT',
+      body: JSON.stringify({ message_id: messageId })
+    })
+    await this.assertResponseOk(response, 'Could not mark channel as read')
+    this.clearUnreadCount('channel', channelId)
+  }
+
+  async markConversationRead(conversationId: string, messageId: string): Promise<void> {
+    const response = await this.httpClient.apiFetch(`/api/v1/conversations/${conversationId}/read`, {
+      method: 'PUT',
+      body: JSON.stringify({ message_id: messageId })
+    })
+    await this.assertResponseOk(response, 'Could not mark conversation as read')
+    this.clearUnreadCount('dm', conversationId)
+  }
+
+  async fetchUnreadCounts(): Promise<VesperUnreadCounts> {
+    const data = await this.fetchJson<Partial<VesperUnreadCounts>>(
+      '/api/v1/unread',
+      {},
+      'Could not load unread counts'
+    )
+
+    return {
+      channels:
+        data.channels && typeof data.channels === 'object' ? data.channels : {},
+      conversations:
+        data.conversations && typeof data.conversations === 'object'
+          ? data.conversations
+          : {}
+    }
+  }
+
+  async fetchWorkspaceDelta(since?: string | null): Promise<VesperWorkspaceSyncResponse> {
+    return await fetchWorkspaceSync(since, this.httpClient)
+  }
+
+  async fetchUrgentSyncEvents(since?: string | null): Promise<{
+    token: string | null
+    events: Array<{
+      id: number
+      scope_kind: 'channel' | 'dm'
+      scope_id: string
+      event_type: string
+      inserted_at: string
+      payload?: Record<string, unknown>
+    }>
+  }> {
+    const query = since ? `?since=${encodeURIComponent(since)}` : ''
+    const data = await this.fetchJson<{
+      token?: string | null
+      events?: Array<{
+        id: number
+        scope_kind: 'channel' | 'dm'
+        scope_id: string
+        event_type: string
+        inserted_at: string
+        payload?: Record<string, unknown>
+      }>
+    }>(`/api/v1/sync/urgent${query}`, {}, 'Could not load urgent sync events')
+
+    return {
+      token: typeof data.token === 'string' ? data.token : null,
+      events: Array.isArray(data.events) ? data.events : []
+    }
+  }
+
+  async fetchMessagesByIds(messageIds: string[]): Promise<VesperMessage[]> {
+    const query = new URLSearchParams()
+    query.set('ids', messageIds.join(','))
+    const data = await this.fetchJson<{ messages?: VesperMessage[] }>(
+      `/api/v1/messages?${query.toString()}`,
+      {},
+      'Could not load messages'
+    )
+    return data.messages ?? []
+  }
+
+  async fetchMessageRecord(messageId: string): Promise<VesperMessage | null> {
+    const data = await this.fetchJson<{ message?: VesperMessage }>(
+      `/api/v1/messages/${messageId}`,
+      {},
+      'Could not load message'
+    )
+    return data.message ?? null
+  }
+
+  async fetchThreadRecords(parentMessageId: string, limit = 200): Promise<{
+    parent: VesperMessage | null
+    messages: VesperMessage[]
+  }> {
+    const data = await this.fetchJson<{
+      parent?: VesperMessage
+      messages?: VesperMessage[]
+    }>(`/api/v1/messages/${parentMessageId}/thread?limit=${limit}`, {}, 'Could not load thread')
+
+    return {
+      parent: data.parent ?? null,
+      messages: data.messages ?? []
+    }
+  }
+
+  async fetchAttachmentBytes(attachmentId: string): Promise<ArrayBuffer> {
+    const response = await this.httpClient.apiFetch(`/api/v1/attachments/${attachmentId}`)
+    await this.assertResponseOk(response, `Could not load attachment: status ${response.status}`)
+    return await response.arrayBuffer()
+  }
+
+  async uploadAttachment(formData: FormData): Promise<VesperAttachmentUpload> {
+    return await this.uploadJson<VesperAttachmentUpload>('/api/v1/attachments', formData, 'Could not upload attachment')
+  }
+
   async fetchCurrentUser(): Promise<VesperUser> {
-    const user = await getCurrentUser()
+    const user = await getCurrentUser(this.httpClient)
     this.setState({ user, status: 'ready' })
     return user
   }
@@ -702,10 +1463,10 @@ export class VesperClient {
       return await fetchChannelMessages(channelId, {
         limit: optionsOrLimit,
         before
-      })
+      }, this.httpClient)
     }
 
-    return await fetchChannelMessages(channelId, optionsOrLimit)
+    return await fetchChannelMessages(channelId, optionsOrLimit, this.httpClient)
   }
 
   async fetchConversationMessages(
@@ -717,10 +1478,10 @@ export class VesperClient {
       return await fetchConversationMessages(conversationId, {
         limit: optionsOrLimit,
         before
-      })
+      }, this.httpClient)
     }
 
-    return await fetchConversationMessages(conversationId, optionsOrLimit)
+    return await fetchConversationMessages(conversationId, optionsOrLimit, this.httpClient)
   }
 
   async fetchScopeSync(input: {
@@ -728,7 +1489,139 @@ export class VesperClient {
     limit?: number
     since?: string | null
   }): Promise<VesperScopeSyncResponse> {
-    return await fetchScopesSync(input)
+    return await fetchScopesSync(input, this.httpClient)
+  }
+
+  subscribeTopic(topic: string, listener: TopicListener): () => void {
+    const { wrapped, dispose } = this.prepareTopicSubscription(topic, listener)
+    this.socketClient.joinChannel(topic, wrapped)
+    return dispose
+  }
+
+  async subscribeTopicWithAck(topic: string, listener: TopicListener): Promise<() => void> {
+    const { wrapped, dispose } = this.prepareTopicSubscription(topic, listener)
+    await this.socketClient.joinChannelWithAck(topic, wrapped)
+    return dispose
+  }
+
+  subscribeVoiceTopic(topic: string, listener: TopicListener): () => void {
+    const { wrapped, dispose } = this.prepareTopicSubscription(topic, listener)
+    this.socketClient.joinVoiceChannel(topic, wrapped)
+    return dispose
+  }
+
+  private prepareTopicSubscription(
+    topic: string,
+    listener: TopicListener
+  ): { wrapped: TopicListener; dispose: () => void } {
+    this.socketClient.connect()
+
+    const wrapped = (event: string, payload: unknown): void => {
+      try {
+        listener(event, payload)
+      } catch (error) {
+        this.emitError(error)
+      }
+
+      this.emitter.emit('scope.event', {
+        topic,
+        event,
+        payload
+      })
+    }
+
+    const dispose = (): void => {
+      this.socketClient.leaveChannelListener(topic, wrapped)
+    }
+
+    return { wrapped, dispose }
+  }
+
+  disconnectTopic(topic: string): void {
+    this.socketClient.leaveChannel(topic)
+  }
+
+  hasTopicSubscription(topic: string): boolean {
+    return Boolean(this.socketClient.getChannel(topic))
+  }
+
+  pushTopicEvent(topic: string, event: string, payload: object): void {
+    this.socketClient.connect()
+    this.socketClient.pushToChannel(topic, event, payload)
+  }
+
+  async pushTopicEventWithAck(topic: string, event: string, payload: object): Promise<boolean> {
+    this.socketClient.connect()
+    return await this.socketClient.pushToChannelWithAck(topic, event, payload)
+  }
+
+  async fetchPendingWelcomes(scopeId: string): Promise<
+    Array<{
+      id: string
+      welcome_data: Uint8Array
+      key_package_ref?: string | null
+      sender_id: string
+    }>
+  > {
+    return await fetchPendingWelcomes(scopeId, this.httpClient)
+  }
+
+  async ackPendingWelcome(welcomeId: string): Promise<void> {
+    await ackPendingWelcome(welcomeId, this.httpClient)
+  }
+
+  async fetchPendingResyncRequests(scopeId: string): Promise<
+    Array<{
+      id: string
+      requester_id: string
+      requester_username: string | null
+      requester_client_id: string | null
+      request_id: string
+      last_known_epoch: number | null
+      reason: string | null
+    }>
+  > {
+    return await fetchPendingResyncRequests(scopeId, this.httpClient)
+  }
+
+  async ackPendingResyncRequest(requestId: string): Promise<void> {
+    await ackPendingResyncRequest(requestId, this.httpClient)
+  }
+
+  async fetchPendingHistoryRequests(scopeId: string): Promise<
+    Array<{
+      id: string
+      requester_id: string
+      requester_username: string | null
+      requester_client_id: string | null
+    }>
+  > {
+    return await fetchPendingHistoryRequests(scopeId, this.httpClient)
+  }
+
+  async ackPendingHistoryRequest(requestId: string): Promise<void> {
+    await ackPendingHistoryRequest(requestId, this.httpClient)
+  }
+
+  async fetchPendingHistoryBundles(scopeId: string): Promise<
+    Array<{
+      id: string
+      ciphertext: string
+      mls_epoch: number
+      recipient_id: string
+      recipient_client_id: string | null
+      sender_id: string
+    }>
+  > {
+    return await fetchPendingHistoryBundles(scopeId, this.httpClient)
+  }
+
+  async ackPendingHistoryBundle(bundleId: string): Promise<void> {
+    await ackPendingHistoryBundle(bundleId, this.httpClient)
+  }
+
+  async fetchVoiceRtcConfig(forceRefresh = false): Promise<VoiceRtcConfig> {
+    return await getVoiceRtcConfig(forceRefresh, this.httpClient)
   }
 
   async watchScope(
@@ -736,36 +1629,24 @@ export class VesperClient {
     scopeId: string,
     listener: Listener<VesperClientScopeEvent>
   ): Promise<() => void> {
-    const topic = kind === 'channel' ? `chat:channel:${scopeId}` : `dm:${scopeId}`
-    const watcherKey = `${kind}:${scopeId}`
+    const watcherKey = this.getScopeWatcherKey(kind, scopeId)
+    const watcher = await this.ensureScopeWatcher(kind, scopeId)
+    watcher.listeners.add(listener)
 
-    this.scopeWatchers.get(watcherKey)?.dispose()
-
-    connectSocket()
-    const onMessage = (event: string, payload: unknown) => {
-      const nextEvent = {
-        topic,
-        event,
-        payload
+    const dispose = (): void => {
+      const current = this.scopeWatchers.get(watcherKey)
+      if (!current) {
+        return
       }
 
-      void Promise.resolve(listener(nextEvent)).catch((error) => {
-        this.emitError(error)
-      })
-      this.emitter.emit('scope.event', nextEvent)
-    }
+      current.listeners.delete(listener)
+      if (current.listeners.size > 0) {
+        return
+      }
 
-    await joinChannelWithAck(topic, onMessage)
-
-    const dispose = () => {
-      leaveChannelListener(topic, onMessage)
+      current.disposeChannel()
       this.scopeWatchers.delete(watcherKey)
     }
-
-    this.scopeWatchers.set(watcherKey, {
-      topic,
-      dispose
-    })
 
     return dispose
   }
@@ -776,9 +1657,126 @@ export class VesperClient {
     event: string,
     payload: object
   ): Promise<boolean> {
-    const topic = kind === 'channel' ? `chat:channel:${scopeId}` : `dm:${scopeId}`
-    connectSocket()
-    return await pushToChannelWithAck(topic, event, payload)
+    const fireAndForget = FIRE_AND_FORGET_SCOPE_EVENTS.has(event)
+    const watcherKey = this.getScopeWatcherKey(kind, scopeId)
+    const existing = this.scopeWatchers.get(watcherKey)
+    if (existing) {
+      if (fireAndForget) {
+        this.socketClient.pushToChannel(existing.topic, event, payload)
+        return true
+      }
+
+      const pushed = await this.socketClient.pushToChannelWithAck(existing.topic, event, payload)
+      if (pushed) {
+        return true
+      }
+
+      existing.disposeChannel()
+      this.scopeWatchers.delete(watcherKey)
+      const recovered = await this.ensureScopeWatcher(kind, scopeId)
+      return await this.socketClient.pushToChannelWithAck(recovered.topic, event, payload)
+    }
+
+    const topic = this.getScopeTopic(kind, scopeId)
+    const noopListener = () => {}
+
+    this.socketClient.connect()
+    await this.socketClient.joinChannelWithAck(topic, noopListener)
+
+    try {
+      if (fireAndForget) {
+        this.socketClient.pushToChannel(topic, event, payload)
+        return true
+      }
+
+      return await this.socketClient.pushToChannelWithAck(topic, event, payload)
+    } finally {
+      this.socketClient.leaveChannelListener(topic, noopListener)
+    }
+  }
+
+  private getScopeWatcherKey(kind: ScopeKind, scopeId: string): string {
+    return `${kind}:${scopeId}`
+  }
+
+  private async assertResponseOk(response: Response, fallbackMessage: string): Promise<void> {
+    if (response.ok) {
+      return
+    }
+
+    const payload = await response.clone().json().catch(() => null) as
+      | { error?: string; errors?: Record<string, string[]> }
+      | null
+
+    const details = [
+      payload?.error,
+      ...Object.entries(payload?.errors ?? {}).flatMap(([field, messages]) =>
+        messages.map((message) => `${field}: ${message}`)
+      )
+    ].find((value): value is string => typeof value === 'string' && value.length > 0)
+
+    throw new Error(details ?? fallbackMessage)
+  }
+
+  private getScopeTopic(kind: ScopeKind, scopeId: string): string {
+    return kind === 'channel' ? `chat:channel:${scopeId}` : `dm:${scopeId}`
+  }
+
+  private async ensureScopeWatcher(kind: ScopeKind, scopeId: string): Promise<ScopeWatcher> {
+    const watcherKey = this.getScopeWatcherKey(kind, scopeId)
+    const existing = this.scopeWatchers.get(watcherKey)
+    if (existing) {
+      return existing
+    }
+
+    const pending = this.pendingScopeWatchers.get(watcherKey)
+    if (pending) {
+      return await pending
+    }
+
+    const topic = this.getScopeTopic(kind, scopeId)
+    const listeners = new Set<Listener<VesperClientScopeEvent>>()
+
+    const join = (async () => {
+      this.socketClient.connect()
+
+      const onMessage = (event: string, payload: unknown) => {
+        const nextEvent = {
+          topic,
+          event,
+          payload
+        }
+
+        for (const scopeListener of listeners) {
+          void Promise.resolve(scopeListener(nextEvent)).catch((error) => {
+            this.emitError(error)
+          })
+        }
+
+        this.emitter.emit('scope.event', nextEvent)
+      }
+
+      await this.socketClient.joinChannelWithAck(topic, onMessage)
+
+      const watcher: ScopeWatcher = {
+        topic,
+        listeners,
+        disposeChannel: () => {
+          this.socketClient.leaveChannelListener(topic, onMessage)
+        }
+      }
+
+      this.scopeWatchers.set(watcherKey, watcher)
+      return watcher
+    })()
+
+    this.pendingScopeWatchers.set(watcherKey, join)
+
+    try {
+      return await join
+    } finally {
+      this.pendingScopeWatchers.delete(watcherKey)
+    }
   }
 
   private async applySession(session: VesperAuthSession): Promise<void> {
@@ -805,10 +1803,10 @@ export class VesperClient {
     }
 
     if (this.userTopic) {
-      leaveChannel(this.userTopic)
+      this.socketClient.leaveChannel(this.userTopic)
     }
 
-    await joinChannelWithAck(topic, (event, payload) => {
+    await this.socketClient.joinChannelWithAck(topic, (event, payload) => {
       void this.handleUserEvent(event, payload).catch((error) => {
         this.emitError(error)
       })
@@ -823,7 +1821,7 @@ export class VesperClient {
 
     this.heartbeat = setInterval(() => {
       if (this.userTopic) {
-        pushToChannel(this.userTopic, 'heartbeat', {})
+        this.socketClient.pushToChannel(this.userTopic, 'heartbeat', {})
       }
     }, this.heartbeatIntervalMs)
   }
@@ -850,6 +1848,7 @@ export class VesperClient {
     if (event === 'server_membership_revoked') {
       const data = payload as { server_id?: string }
       if (typeof data.server_id === 'string') {
+        await this.resetServerScopes(data.server_id)
         const next = removeServer(this.state.servers, this.state.unreadCounts, data.server_id)
         this.setState(next)
         this.emitter.emit('servers.updated', [...this.state.servers])
@@ -1003,6 +2002,56 @@ export class VesperClient {
     this.emitter.emit('conversations.updated', [...this.state.conversations])
   }
 
+  private clearUnreadCount(kind: ScopeKind, scopeId: string): void {
+    if (kind === 'channel') {
+      this.setState({
+        unreadCounts: {
+          channels: {
+            ...this.state.unreadCounts.channels,
+            [scopeId]: 0
+          },
+          conversations: this.state.unreadCounts.conversations
+        }
+      })
+      return
+    }
+
+    this.setState({
+      unreadCounts: {
+        channels: this.state.unreadCounts.channels,
+        conversations: {
+          ...this.state.unreadCounts.conversations,
+          [scopeId]: 0
+        }
+      }
+    })
+  }
+
+  private async resetServerScopes(serverId: string): Promise<void> {
+    const server = this.state.servers.find((candidate) => candidate.id === serverId)
+    if (!server) {
+      return
+    }
+
+    await this.resetChannelScopes(server.channels.map((channel) => channel.id))
+  }
+
+  private async resetChannelScopes(channelIds: string[]): Promise<void> {
+    if (channelIds.length === 0) {
+      return
+    }
+
+    const encryptedChat = this.createEncryptedChat()
+    const uniqueChannelIds = [...new Set(channelIds)]
+
+    await Promise.allSettled(
+      uniqueChannelIds.flatMap((channelId) => [
+        encryptedChat.resetScope(channelId),
+        encryptedChat.resetScope(`voice:channel:${channelId}`)
+      ])
+    )
+  }
+
   private claimUnreadMessageKey(kind: ScopeKind, scopeId: string, messageId: string): boolean {
     const now = Date.now()
 
@@ -1049,14 +2098,6 @@ function mergeDevices(
   const byId = new Map(devices.map((entry) => [entry.id, entry]))
   byId.set(device.id, device)
   return [...byId.values()]
-}
-
-function requireBaseUrl(baseUrl: string | undefined): string {
-  if (typeof baseUrl === 'string' && baseUrl.trim()) {
-    return baseUrl
-  }
-
-  throw new Error('VesperClient requires a baseUrl outside the browser.')
 }
 
 export function createVesperClient(options: VesperClientOptions = {}): VesperClient {

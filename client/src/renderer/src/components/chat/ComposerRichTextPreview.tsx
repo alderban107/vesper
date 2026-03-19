@@ -16,7 +16,7 @@ import type { Components } from 'react-markdown'
 import type { DmConversation } from '../../stores/dmStore'
 import type { Member, Server } from '../../stores/serverStore'
 import { findCustomEmoji, parseCustomEmojiToken, type CustomEmoji } from '../../utils/emoji'
-import { extractMarkdownCodeBlock } from './markdownCodeBlock'
+import { extractMarkdownCodeBlock } from './MarkdownCodeBlock'
 import EmojiGlyph from './message/EmojiGlyph'
 
 hljs.registerLanguage('bash', bash)

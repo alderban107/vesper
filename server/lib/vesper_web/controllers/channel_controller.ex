@@ -1,6 +1,7 @@
 defmodule VesperWeb.ChannelController do
   use VesperWeb, :controller
   alias Vesper.Servers
+  alias Vesper.Servers.Permissions
   alias Vesper.Sync
   import VesperWeb.ControllerHelpers, only: [format_errors: 1]
 
@@ -17,9 +18,8 @@ defmodule VesperWeb.ChannelController do
 
   def create(conn, %{"server_id" => server_id} = params) do
     user = conn.assigns.current_user
-    role = Servers.user_role(user.id, server_id)
 
-    if role in ~w(owner admin) do
+    if Servers.user_can?(user.id, server_id, Permissions.manage_channels()) do
       case Servers.create_channel(server_id, params) do
         {:ok, channel} ->
           Sync.append_scope_events(
@@ -70,9 +70,8 @@ defmodule VesperWeb.ChannelController do
 
   def update(conn, %{"server_id" => server_id, "id" => id} = params) do
     user = conn.assigns.current_user
-    role = Servers.user_role(user.id, server_id)
 
-    if role in ~w(owner admin) do
+    if Servers.user_can?(user.id, server_id, Permissions.manage_channels()) do
       channel = Servers.get_channel(id)
 
       if is_nil(channel) or channel.server_id != server_id do
@@ -124,9 +123,8 @@ defmodule VesperWeb.ChannelController do
 
   def delete(conn, %{"server_id" => server_id, "id" => id}) do
     user = conn.assigns.current_user
-    role = Servers.user_role(user.id, server_id)
 
-    if role in ~w(owner admin) do
+    if Servers.user_can?(user.id, server_id, Permissions.manage_channels()) do
       channel = Servers.get_channel(id)
 
       if is_nil(channel) or channel.server_id != server_id do

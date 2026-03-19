@@ -1,5 +1,7 @@
 # Vesper SDK Samples
 
+Start with [../README.md](../README.md) for the shortest setup.
+
 These examples use the built SDK from `packages/sdk/dist`.
 
 They show the current contract clearly:

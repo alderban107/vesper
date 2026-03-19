@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { CheckCircle2, KeyRound, Laptop2, ShieldAlert } from 'lucide-react'
 import { useAuthStore } from '../../stores/authStore'
 import { useVoiceStore } from '../../stores/voiceStore'
+import { getRendererClient } from '../../sdk/client'
 
 export default function DeviceTrustGate(): React.JSX.Element | null {
   const currentDevice = useAuthStore((state) => state.currentDevice)
@@ -27,6 +28,33 @@ export default function DeviceTrustGate(): React.JSX.Element | null {
 
   useEffect(() => {
     void fetchDevices().catch(() => {})
+  }, [fetchDevices])
+
+  useEffect(() => {
+    const client = getRendererClient()
+    const refreshDevices = (): void => {
+      void fetchDevices().catch(() => {})
+    }
+    const handleVisibilityChange = (): void => {
+      if (!document.hidden) {
+        refreshDevices()
+      }
+    }
+
+    const unsubscribeDevices = client.on('devices.updated', ({ device }) => {
+      void useAuthStore.getState().handleDeviceEvent(device)
+    })
+    const unsubscribeConnected = client.on('connected', refreshDevices)
+
+    window.addEventListener('focus', refreshDevices)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      unsubscribeDevices()
+      unsubscribeConnected()
+      window.removeEventListener('focus', refreshDevices)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
   }, [fetchDevices])
 
   if (!currentDevice) {
@@ -75,13 +103,18 @@ export default function DeviceTrustGate(): React.JSX.Element | null {
       >
         <div className="flex items-center gap-2 text-text-primary font-medium mb-3">
           <ShieldAlert className="w-4 h-4" />
-          Review new device
+          Review device requests
         </div>
+        <p className="mb-3 text-xs leading-5 text-text-muted">
+          Approve new devices here so they can switch straight into encrypted chat instead of hanging in setup.
+        </p>
         <div className="space-y-3">
           {pendingDevices.map((device) => (
             <div key={device.id} className="rounded-xl border border-border/50 bg-bg-base/50 px-4 py-3">
               <div className="text-sm font-medium text-text-primary">{device.name}</div>
-              <div className="text-xs text-text-faint mt-1">Waiting for approval</div>
+              <div className="text-xs text-text-faint mt-1">
+                {device.platform || 'Unknown platform'} · Waiting for approval
+              </div>
               <div className="mt-3 flex items-center gap-2">
                 <button
                   type="button"
@@ -121,6 +154,19 @@ export default function DeviceTrustGate(): React.JSX.Element | null {
                 ? 'This device is approved. Enter your password once to unlock encrypted chats and calls here.'
                 : 'Use another device you already trust, or use your recovery key here if this is your only device.'}
             </p>
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+              <span className="rounded-full border border-border/60 bg-bg-base/40 px-3 py-1 text-text-secondary">
+                This device: {currentDevice.name}
+              </span>
+              <span className="rounded-full border border-border/60 bg-bg-base/40 px-3 py-1 text-text-secondary">
+                Status: {needsUnlock ? 'Trusted, waiting for unlock' : 'Waiting for trust'}
+              </span>
+              {pendingDevices.length > 0 ? (
+                <span className="rounded-full border border-amber-400/25 bg-amber-500/10 px-3 py-1 text-amber-100">
+                  {pendingDevices.length} pending {pendingDevices.length === 1 ? 'device' : 'devices'}
+                </span>
+              ) : null}
+            </div>
           </div>
         </div>
 
@@ -132,13 +178,17 @@ export default function DeviceTrustGate(): React.JSX.Element | null {
 
         {needsUnlock ? (
           <div className="rounded-2xl border border-border/60 bg-bg-base/40 p-5">
+            <div className="mb-4 rounded-2xl border border-emerald-400/15 bg-emerald-500/8 px-4 py-3 text-sm text-text-secondary">
+              Approval already landed. Unlock happens locally on this device and does not need another round-trip from your other clients.
+            </div>
             <label className="block text-sm text-text-muted mb-2">Password</label>
             <input
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
               className="block w-full rounded-xl bg-bg-base/60 border border-border text-text-primary px-4 py-3 input-focus"
-              placeholder="Enter your password"
+              placeholder="Enter your account password"
+              autoComplete="current-password"
             />
             <div className="mt-4 flex items-center gap-3">
               <button
@@ -162,6 +212,9 @@ export default function DeviceTrustGate(): React.JSX.Element | null {
         ) : (
           <div className="grid gap-5 lg:grid-cols-[1.2fr,0.8fr]">
             <div className="rounded-2xl border border-border/60 bg-bg-base/40 p-5">
+              <div className="mb-4 rounded-2xl border border-border/60 bg-bg-base/45 px-4 py-3 text-sm text-text-secondary">
+                If another trusted device approves this one, this screen switches to the unlock step automatically.
+              </div>
               <div className="flex items-center gap-2 text-text-primary font-medium mb-3">
                 <KeyRound className="w-4 h-4" />
                 Use your recovery key on this device
@@ -172,6 +225,7 @@ export default function DeviceTrustGate(): React.JSX.Element | null {
                 rows={4}
                 className="block w-full rounded-xl bg-bg-base/60 border border-border text-text-primary px-4 py-3 input-focus resize-none"
                 placeholder="Paste your 24-word recovery key"
+                spellCheck={false}
               />
               <div className="mt-4 flex items-center gap-3">
                 <button
@@ -196,8 +250,11 @@ export default function DeviceTrustGate(): React.JSX.Element | null {
             <div className="rounded-2xl border border-border/60 bg-bg-base/40 p-5">
               <div className="flex items-center gap-2 text-text-primary font-medium mb-3">
                 <ShieldAlert className="w-4 h-4" />
-                Your devices
+                Device trust
               </div>
+              <p className="mb-3 text-sm text-text-muted">
+                Any trusted device can approve pending ones. Revoking a device removes its access and forces chat re-setup there.
+              </p>
               <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
                 {devices.length === 0 ? (
                   <div className="text-sm text-text-faint">No device info yet.</div>

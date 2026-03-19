@@ -5,7 +5,11 @@ import {
   fetchPendingWelcomes,
   uint8ToBase64
 } from '../api/crypto.js'
-import type { VesperConversation, VesperMessage } from '../api/chat.js'
+import type {
+  VesperConversation,
+  VesperMessage,
+  VesperScopeSyncScopeResponse
+} from '../api/chat.js'
 import {
   addMemberToGroup,
   buildClientCredentialIdentity,
@@ -30,7 +34,6 @@ import {
   removeMemberFromGroup,
   serializeGroupState
 } from '../crypto/index.js'
-import type { MessagePayload } from '../crypto/payload.js'
 import {
   cacheMessage,
   consumeKeyPackage,
@@ -43,12 +46,14 @@ import {
   loadKeyPackageByRef,
   loadKeyPackages,
   loadSentMessagePlaintext,
+  removeCachedMessage,
   removeFromFtsIndex,
   saveCachedMessageDecryption,
   saveGroupState,
   saveGroupSyncCursor,
   saveSentMessagePlaintext
 } from '../crypto/storage.js'
+import type { MessagePayload } from '../crypto/payload.js'
 import type { VesperClient } from './index.js'
 
 const JOIN_WAIT_MS = 2_500
@@ -80,6 +85,17 @@ export interface ProcessedScopeMessage {
 export interface ScopeSyncResult {
   durationMs: number
   messages: ProcessedScopeMessage[]
+  events: ScopeSyncEvent[]
+  hasMore: boolean
+}
+
+export interface ScopeSyncEvent {
+  id: number | null
+  roomSeq: number | null
+  eventType: string
+  messageId: string | null
+  insertedAt: string
+  payload: Record<string, unknown> | null
 }
 
 export interface EncryptedScopeWatchEvent {
@@ -324,23 +340,21 @@ export class VesperEncryptedChat {
     const cached = await this.loadProcessedCachedMessages(scope.id)
     const existing = this.scopeMessages.get(scope.id) ?? cached
     const afterSeq = highestRoomSeq(existing)
-
-    const rawMessages =
+    const delta =
       afterSeq == null
-        ? await this.fetchScopeMessages(scope, limit)
-        : await this.fetchIncrementalScopeMessages(scope, limit, afterSeq)
-
-    const processed =
-      rawMessages.length > 0
-        ? await this.processScopeMessages(scope, rawMessages, true)
-        : []
-
-    const merged = this.mergeScopeMessages(existing, processed).slice(-MAX_MESSAGES_PER_SCOPE)
-    this.scopeMessages.set(scope.id, merged)
+        ? {
+            messages: await this.fetchScopeMessages(scope, limit),
+            events: [] as ScopeSyncEvent[],
+            hasMore: false
+          }
+        : await this.fetchIncrementalScopeDelta(scope, limit, afterSeq)
+    const applied = await this.applyScopeSyncDelta(scope, existing, delta.messages, delta.events)
 
     return {
       durationMs: performance.now() - startedAt,
-      messages: merged
+      messages: applied.messages,
+      events: applied.events,
+      hasMore: delta.hasMore
     }
   }
 
@@ -436,11 +450,15 @@ export class VesperEncryptedChat {
     scope: EncryptedScope,
     items: Array<{ ciphertext: string; messageEpoch?: number | null }>
   ): Promise<Array<string | null>> {
-    return await Promise.all(
-      items.map((item) =>
-        this.decryptForScopeWithRecovery(scope, item.ciphertext, item.messageEpoch ?? null)
+    const decrypted: Array<string | null> = []
+
+    for (const item of items) {
+      decrypted.push(
+        await this.decryptForScopeWithRecovery(scope, item.ciphertext, item.messageEpoch ?? null)
       )
-    )
+    }
+
+    return decrypted
   }
 
   async ensureMembership(scope: EncryptedScope): Promise<boolean> {
@@ -498,7 +516,11 @@ export class VesperEncryptedChat {
 
   async resetScope(scopeId: string): Promise<void> {
     this.groupStates.delete(scopeId)
+    this.pendingCommits.delete(scopeId)
+    this.scopeMessages.delete(scopeId)
     this.welcomeAppliedAtByScope.delete(scopeId)
+    this.notifyMembershipWaiters(scopeId, false)
+    this.membershipWaiters.delete(scopeId)
     await deleteGroupState(scopeId)
   }
 
@@ -748,7 +770,7 @@ export class VesperEncryptedChat {
         if (processed) {
           const welcomeId = this.getString(payload, 'id')
           if (welcomeId) {
-            await ackPendingWelcome(welcomeId).catch(() => {})
+            await ackPendingWelcome(welcomeId, this.client.getHttpClient()).catch(() => {})
           }
         }
       }
@@ -775,9 +797,7 @@ export class VesperEncryptedChat {
       (removedDeviceId == null || removedDeviceId === localDeviceId)
 
     if (isLocalTarget && !isLocalSender) {
-      this.groupStates.delete(scope.id)
-      this.welcomeAppliedAtByScope.delete(scope.id)
-      await deleteGroupState(scope.id)
+      await this.resetScope(scope.id)
       return
     }
 
@@ -1009,7 +1029,13 @@ export class VesperEncryptedChat {
       }
     }
 
-    const welcomes = await fetchPendingWelcomes(scopeId)
+    let welcomes: Awaited<ReturnType<typeof fetchPendingWelcomes>> = []
+    try {
+      welcomes = await fetchPendingWelcomes(scopeId, this.client.getHttpClient())
+    } catch {
+      // Server unreachable or error; treat as no pending welcomes.
+    }
+
     for (const welcome of welcomes) {
       const processed = await this.handleWelcome(
         scopeId,
@@ -1018,7 +1044,7 @@ export class VesperEncryptedChat {
       )
 
       if (processed) {
-        await ackPendingWelcome(welcome.id).catch(() => {})
+        await ackPendingWelcome(welcome.id, this.client.getHttpClient()).catch(() => {})
         this.welcomeAppliedAtByScope.set(scopeId, Date.now())
         this.notifyMembershipWaiters(scopeId, true)
         return true
@@ -1036,7 +1062,12 @@ export class VesperEncryptedChat {
     }
 
     const cursor = await loadGroupSyncCursor(scopeId)
-    const events = await fetchMlsEvents(scopeId, cursor)
+    let events: Awaited<ReturnType<typeof fetchMlsEvents>> = []
+    try {
+      events = await fetchMlsEvents(scopeId, cursor, 200, this.client.getHttpClient())
+    } catch {
+      return
+    }
     let latestSeq = cursor
 
     for (const event of events) {
@@ -1062,8 +1093,7 @@ export class VesperEncryptedChat {
           (removedDeviceId == null || removedDeviceId === localDeviceId)
 
         if (isLocalTarget) {
-          this.groupStates.delete(scopeId)
-          await deleteGroupState(scopeId)
+          await this.resetScope(scopeId)
         }
       }
 
@@ -1230,7 +1260,16 @@ export class VesperEncryptedChat {
     }
 
     await initCipherSuite()
-    const keyPackageBytes = await fetchKeyPackage(userId, deviceId ?? undefined)
+    let keyPackageBytes: Uint8Array | null
+    try {
+      keyPackageBytes = await fetchKeyPackage(
+        userId,
+        deviceId ?? undefined,
+        this.client.getHttpClient()
+      )
+    } catch {
+      return null
+    }
     if (!keyPackageBytes) {
       return null
     }
@@ -1355,7 +1394,11 @@ export class VesperEncryptedChat {
         return null
       }
 
-      const keyPackageBytes = await fetchKeyPackage(userId, deviceId ?? undefined)
+      const keyPackageBytes = await fetchKeyPackage(
+        userId,
+        deviceId ?? undefined,
+        this.client.getHttpClient()
+      )
       if (!keyPackageBytes) {
         return null
       }
@@ -1484,11 +1527,15 @@ export class VesperEncryptedChat {
     return await this.client.fetchConversationMessages(scope.id, limit)
   }
 
-  private async fetchIncrementalScopeMessages(
+  private async fetchIncrementalScopeDelta(
     scope: EncryptedScope,
     limit: number,
     afterSeq: number
-  ): Promise<VesperMessage[]> {
+  ): Promise<{
+    messages: VesperMessage[]
+    events: ScopeSyncEvent[]
+    hasMore: boolean
+  }> {
     const syncState = await this.client.fetchScopeSync({
       scopes: [
         {
@@ -1500,7 +1547,13 @@ export class VesperEncryptedChat {
       limit
     })
 
-    return sortRawMessages(syncState.scopes.find((entry) => entry.scope_id === scope.id)?.messages ?? [])
+    const entry = syncState.scopes.find((candidate) => candidate.scope_id === scope.id) ?? null
+
+    return {
+      messages: sortRawMessages(entry?.messages ?? []),
+      events: this.normalizeSyncEvents(entry),
+      hasMore: entry?.has_more ?? false
+    }
   }
 
   private async processScopeMessages(
@@ -1518,6 +1571,95 @@ export class VesperEncryptedChat {
     }
 
     return processed
+  }
+
+  private normalizeSyncEvents(entry: VesperScopeSyncScopeResponse | null): ScopeSyncEvent[] {
+    if (!entry) {
+      return []
+    }
+
+    return [...entry.events]
+      .map((event) => ({
+        id: typeof event.id === 'number' ? event.id : null,
+        roomSeq: typeof event.room_seq === 'number' ? event.room_seq : null,
+        eventType: event.event_type,
+        messageId: typeof event.message_id === 'string' ? event.message_id : null,
+        insertedAt: event.inserted_at,
+        payload: normalizePayload(event.payload)
+      }))
+      .sort((left, right) => {
+        const leftSeq = left.roomSeq ?? Number.MAX_SAFE_INTEGER
+        const rightSeq = right.roomSeq ?? Number.MAX_SAFE_INTEGER
+
+        if (leftSeq !== rightSeq) {
+          return leftSeq - rightSeq
+        }
+
+        const timeDelta = parseTimestamp(left.insertedAt) - parseTimestamp(right.insertedAt)
+        if (timeDelta !== 0) {
+          return timeDelta
+        }
+
+        return left.eventType.localeCompare(right.eventType)
+      })
+  }
+
+  private async applyScopeSyncDelta(
+    scope: EncryptedScope,
+    existing: ProcessedScopeMessage[],
+    rawMessages: VesperMessage[],
+    events: ScopeSyncEvent[]
+  ): Promise<{
+    messages: ProcessedScopeMessage[]
+    events: ScopeSyncEvent[]
+  }> {
+    this.scopeMessages.set(scope.id, [...existing])
+
+    const operations = [
+      ...rawMessages.map((message) => ({
+        kind: 'message' as const,
+        roomSeq: typeof message.room_seq === 'number' ? message.room_seq : Number.MAX_SAFE_INTEGER,
+        insertedAt: message.inserted_at,
+        message
+      })),
+      ...events.map((event) => ({
+        kind: 'event' as const,
+        roomSeq: event.roomSeq ?? Number.MAX_SAFE_INTEGER,
+        insertedAt: event.insertedAt,
+        event
+      }))
+    ].sort((left, right) => {
+      if (left.roomSeq !== right.roomSeq) {
+        return left.roomSeq - right.roomSeq
+      }
+
+      const timeDelta = parseTimestamp(left.insertedAt) - parseTimestamp(right.insertedAt)
+      if (timeDelta !== 0) {
+        return timeDelta
+      }
+
+      return left.kind.localeCompare(right.kind)
+    })
+
+    for (const operation of operations) {
+      if (operation.kind === 'message') {
+        const processed = await this.processIncomingMessage(scope, operation.message)
+        this.upsertScopeMessage(scope.id, processed)
+        continue
+      }
+
+      await this.handleScopeEvent(scope, operation.event.eventType, operation.event.payload)
+    }
+
+    const nextMessages = sortMessages(this.scopeMessages.get(scope.id) ?? []).slice(
+      -MAX_MESSAGES_PER_SCOPE
+    )
+    this.scopeMessages.set(scope.id, nextMessages)
+
+    return {
+      messages: nextMessages,
+      events
+    }
   }
 
   private async setGroupState(scopeId: string, state: GroupState): Promise<void> {
@@ -1997,6 +2139,7 @@ export class VesperEncryptedChat {
       scope.id,
       existing.filter((message) => message.id !== messageId)
     )
+    await removeCachedMessage(messageId).catch(() => {})
     await removeFromFtsIndex(messageId).catch(() => {})
     return messageId
   }

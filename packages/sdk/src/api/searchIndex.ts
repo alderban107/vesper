@@ -1,4 +1,4 @@
-import { apiFetch } from './client.js'
+import { getDefaultHttpClient, type VesperHttpClient } from './client.js'
 
 export interface SearchIndexSnapshotPayload {
   version: number
@@ -24,25 +24,29 @@ export interface SearchIndexSnapshotResponse {
   updated_at: string
 }
 
-export async function fetchSearchIndexSnapshot(): Promise<SearchIndexSnapshotResponse | null> {
-  const res = await apiFetch('/api/v1/search-index')
+export async function fetchSearchIndexSnapshot(
+  httpClient: VesperHttpClient = getDefaultHttpClient()
+): Promise<SearchIndexSnapshotResponse | null> {
+  const res = await httpClient.apiFetch('/api/v1/search-index')
   if (!res.ok) {
-    return null
+    throw new Error(`Could not fetch search index snapshot: ${res.status}`)
   }
 
   const data = await res.json()
   return (data.snapshot as SearchIndexSnapshotResponse | null) ?? null
 }
 
-export async function saveSearchIndexSnapshot(params: {
-  deviceId: string
-  ciphertext: string
-  nonce: string
-  expectedVersion?: number
-}): Promise<
+export async function saveSearchIndexSnapshot(
+  params: {
+    deviceId: string
+    ciphertext: string
+    nonce: string
+    expectedVersion?: number
+  },
+  httpClient: VesperHttpClient = getDefaultHttpClient()
+): Promise<
   | { ok: true; snapshot: SearchIndexSnapshotResponse }
   | { ok: false; conflict: SearchIndexSnapshotResponse | null }
-  | { ok: false; conflict: null }
 > {
   const body: Record<string, unknown> = {
     device_id: params.deviceId,
@@ -54,7 +58,7 @@ export async function saveSearchIndexSnapshot(params: {
     body.expected_version = params.expectedVersion
   }
 
-  const res = await apiFetch('/api/v1/search-index', {
+  const res = await httpClient.apiFetch('/api/v1/search-index', {
     method: 'PUT',
     body: JSON.stringify(body)
   })
@@ -68,7 +72,7 @@ export async function saveSearchIndexSnapshot(params: {
   }
 
   if (!res.ok) {
-    return { ok: false, conflict: null }
+    throw new Error(`Could not save search index snapshot: ${res.status}`)
   }
 
   const data = await res.json()
@@ -78,8 +82,13 @@ export async function saveSearchIndexSnapshot(params: {
   }
 }
 
-export async function deleteSearchIndexSnapshot(): Promise<void> {
-  await apiFetch('/api/v1/search-index', {
+export async function deleteSearchIndexSnapshot(
+  httpClient: VesperHttpClient = getDefaultHttpClient()
+): Promise<void> {
+  const res = await httpClient.apiFetch('/api/v1/search-index', {
     method: 'DELETE'
   })
+  if (!res.ok) {
+    throw new Error(`Could not delete search index snapshot: ${res.status}`)
+  }
 }

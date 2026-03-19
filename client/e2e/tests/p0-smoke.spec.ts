@@ -30,10 +30,10 @@
  *   R-ASSERT-5   First run gates pre-merge CI
  */
 
-import { test, expect, type Browser, type Page, type BrowserContext } from '@playwright/test'
-import { readRunState, saveRecoveryKey } from '../harness/state'
+import { test, expect } from '@playwright/test'
+import { saveRecoveryKey } from '../harness/state'
 import { ConsoleMonitor } from '../harness/console-monitor'
-import { signup, createUserContext, login, approveWithRecoveryKey, type UserContext } from '../helpers/auth'
+import { signup, createUserContext, type UserContext } from '../helpers/auth'
 import { createDm, selectDm, sendDmMessage } from '../helpers/dm'
 import {
   createServer,
@@ -52,7 +52,6 @@ import {
   assertConvergence,
   assertThreeWayConvergence,
   assertNoDecryptionFailures,
-  assertMessageVisible,
 } from '../helpers/assertions'
 import { recordSnapshot, writeSnapshots } from '../helpers/snapshots'
 import { waitForMessage, waitForServerInSidebar, waitForChannel } from '../helpers/wait'

@@ -252,31 +252,32 @@ defmodule Vesper.EncryptionTest do
       assert claimed.status == "claimed"
 
       assert {:ok, event} =
-               Encryption.store_mls_event(%{
-                 group_id: channel.id,
-                 channel_id: channel.id,
-                 event_type: "mls_remove",
-                 payload: %{
+               Encryption.store_mls_remove_event(
+                 %{
+                   group_id: channel.id,
+                   channel_id: channel.id,
+                   event_type: "mls_remove",
+                   payload: %{
+                     removed_user_id: target.id,
+                     removed_device_id: "target-a",
+                     commit_data: "commit-data",
+                     eviction_id: eviction.id
+                   },
+                   sender_id: sponsor.id,
+                   sender_device_id: "sponsor-a"
+                 },
+                 %{
+                   eviction_id: eviction.id,
+                   scope_kind: "channel",
+                   scope_id: channel.id,
                    removed_user_id: target.id,
                    removed_device_id: "target-a",
-                   commit_data: "commit-data",
-                   eviction_id: eviction.id
-                 },
-                 sender_id: sponsor.id,
-                 sender_device_id: "sponsor-a"
-               })
-
-      assert {:ok, completed} =
-               Encryption.complete_pending_crypto_eviction(
-                 eviction.id,
-                 "channel",
-                 channel.id,
-                 target.id,
-                 "target-a",
-                 event.id,
-                 sponsor.id,
-                 "sponsor-a"
+                   sponsor_user_id: sponsor.id,
+                   sponsor_device_id: "sponsor-a"
+                 }
                )
+
+      [completed] = Encryption.list_pending_crypto_evictions("channel", channel.id)
 
       assert completed.status == "committed"
       assert completed.commit_event_id == event.id
@@ -286,6 +287,83 @@ defmodule Vesper.EncryptionTest do
       assert Encryption.get_pending_history_requests(channel.id) == []
       assert Encryption.get_pending_history_bundles(target.id, channel.id, "target-a") == []
       assert Encryption.get_pending_resync_requests(channel.id) == []
+    end
+
+    test "rolls back the remove event when eviction completion fails" do
+      sponsor = insert_user()
+      target = insert_user()
+      server = insert_server(sponsor)
+      channel = insert_channel(server, %{id: Ecto.UUID.generate()})
+
+      assert {:ok, _device} =
+               Accounts.ensure_device(
+                 target,
+                 %{client_id: "target-a", name: "Target A"},
+                 "trusted"
+               )
+
+      assert {:ok, _device} =
+               Accounts.ensure_device(
+                 sponsor,
+                 %{client_id: "sponsor-a", name: "Sponsor A"},
+                 "trusted"
+               )
+
+      assert :ok =
+               Encryption.queue_scope_crypto_evictions([
+                 %{
+                   scope_kind: "channel",
+                   scope_id: channel.id,
+                   group_id: channel.id,
+                   server_id: server.id,
+                   target_user_id: target.id,
+                   target_device_id: "target-a",
+                   reason: "kicked"
+                 }
+               ])
+
+      [eviction] = Encryption.list_pending_crypto_evictions("channel", channel.id)
+
+      assert {:ok, _claimed} =
+               Encryption.claim_pending_crypto_eviction(
+                 eviction.id,
+                 "channel",
+                 channel.id,
+                 sponsor.id,
+                 "sponsor-a"
+               )
+
+      assert {:error, :target_device_mismatch} =
+               Encryption.store_mls_remove_event(
+                 %{
+                   group_id: channel.id,
+                   channel_id: channel.id,
+                   event_type: "mls_remove",
+                   payload: %{
+                     removed_user_id: target.id,
+                     removed_device_id: "target-b",
+                     commit_data: "commit-data",
+                     eviction_id: eviction.id
+                   },
+                   sender_id: sponsor.id,
+                   sender_device_id: "sponsor-a"
+                 },
+                 %{
+                   eviction_id: eviction.id,
+                   scope_kind: "channel",
+                   scope_id: channel.id,
+                   removed_user_id: target.id,
+                   removed_device_id: "target-b",
+                   sponsor_user_id: sponsor.id,
+                   sponsor_device_id: "sponsor-a"
+                 }
+               )
+
+      assert [] == Encryption.list_mls_events_after(channel.id)
+
+      [pending] = Encryption.list_pending_crypto_evictions("channel", channel.id)
+      assert pending.status == "claimed"
+      assert pending.commit_event_id == nil
     end
   end
 end

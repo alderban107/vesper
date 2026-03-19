@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { ArrowLeft, ArrowRight, KeyRound, Loader2, Lock, ShieldCheck, Smartphone } from 'lucide-react'
 import AuthShell from '../components/auth/AuthShell'
+import ServerConnectionCard from '../components/auth/ServerConnectionCard'
 import { useAuthStore } from '../stores/authStore'
 import { useSettingsStore } from '../stores/settingsStore'
 
@@ -101,11 +102,7 @@ export default function RecoveryPage({ onBack }: Props): React.JSX.Element {
       {step === 'mnemonic' ? (
         <form onSubmit={handleVerifyMnemonic} className="vesper-auth-form">
           {error && <div className="vesper-auth-error">{error}</div>}
-          {!serverUrl.trim() && (
-            <div className="vesper-auth-error">
-              Set a backend server URL before trying account recovery.
-            </div>
-          )}
+          <ServerConnectionCard />
 
           <label className="vesper-auth-field">
             <span className="vesper-auth-label">Recovery key</span>
@@ -118,6 +115,7 @@ export default function RecoveryPage({ onBack }: Props): React.JSX.Element {
                 rows={5}
                 className="vesper-auth-textarea input-focus"
                 autoFocus
+                spellCheck={false}
               />
             </div>
           </label>
@@ -165,6 +163,7 @@ export default function RecoveryPage({ onBack }: Props): React.JSX.Element {
                 className="vesper-auth-input input-focus"
                 placeholder="Create a new password"
                 autoFocus
+                autoComplete="new-password"
               />
             </div>
           </label>
@@ -179,6 +178,7 @@ export default function RecoveryPage({ onBack }: Props): React.JSX.Element {
                 onChange={(event) => setConfirmPassword(event.target.value)}
                 className="vesper-auth-input input-focus"
                 placeholder="Repeat your new password"
+                autoComplete="new-password"
               />
             </div>
           </label>

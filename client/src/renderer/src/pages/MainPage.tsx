@@ -6,8 +6,6 @@ import MessageList from '../components/chat/MessageList'
 import MessageInput from '../components/chat/MessageInput'
 import MessageItem from '../components/chat/MessageItem'
 import MessageFeed from '../components/chat/message/MessageFeed'
-import DmMessageList from '../components/dm/DmMessageList'
-import DmMessageInput from '../components/dm/DmMessageInput'
 import { useServerStore } from '../stores/serverStore'
 import { useDmStore } from '../stores/dmStore'
 import { useUIStore } from '../stores/uiStore'
@@ -16,7 +14,7 @@ import { useAuthStore } from '../stores/authStore'
 import { usePresenceStore } from '../stores/presenceStore'
 import { parseMessageContent, useMessageStore, type Message } from '../stores/messageStore'
 import { useSyncStore } from '../stores/syncStore'
-import { onSocketOpen } from '@vesper/sdk/transport'
+import { getRendererClient } from '../sdk/client'
 
 const CreateServerModal = lazy(() => import('../components/server/CreateServerModal'))
 const JoinServerModal = lazy(() => import('../components/server/JoinServerModal'))
@@ -87,6 +85,41 @@ function DeferredChrome({
   return <Suspense fallback={null}>{children}</Suspense>
 }
 
+function WorkspaceStatusStrip({
+  connected,
+  syncing,
+  lastError,
+  mobile
+}: {
+  connected: boolean
+  syncing: boolean
+  lastError: string | null
+  mobile?: boolean
+}): React.JSX.Element | null {
+  if (connected && !syncing) {
+    return null
+  }
+
+  const tone = connected ? 'border-sky-400/20 bg-sky-500/10 text-sky-100' : 'border-amber-400/20 bg-amber-500/10 text-amber-100'
+  const dotTone = connected ? 'bg-sky-300' : 'bg-amber-300'
+  const title = connected ? 'Syncing latest activity' : 'Reconnecting to server'
+  const description = connected
+    ? 'Refreshing servers, DMs, unread state, and recent scope changes.'
+    : lastError || 'Trying to restore the live socket so messages and presence stay current.'
+
+  return (
+    <div className={`px-3 ${mobile ? 'pt-2' : 'pt-3'}`}>
+      <div className={`mx-auto flex w-full max-w-[72rem] items-start gap-3 rounded-2xl border px-4 py-3 ${tone}`}>
+        <div className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${dotTone}`} />
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold text-text-primary">{title}</div>
+          <div className="mt-1 text-xs leading-5 text-current">{description}</div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function MainPage(): React.JSX.Element {
   const isMobile = useIsMobileLayout()
   const activeChannelId = useServerStore((s) => s.activeChannelId)
@@ -116,9 +149,12 @@ export default function MainPage(): React.JSX.Element {
   const voiceRoomType = useVoiceStore((s) => s.roomType)
   const servers = useServerStore((s) => s.servers)
   const currentUser = useAuthStore((s) => s.user)
+  const currentDevice = useAuthStore((s) => s.currentDevice)
+  const canUseE2EE = useAuthStore((s) => s.canUseE2EE)
   const joinPresence = usePresenceStore((s) => s.joinPresence)
   const joinAllServerPresence = usePresenceStore((s) => s.joinAllServerPresence)
   const syncNow = useSyncStore((s) => s.syncNow)
+  const syncing = useSyncStore((s) => s.syncing)
   const syncRecentScopes = useMessageStore((s) => s.syncRecentScopes)
   const activeThreadParentId = useMessageStore((s) => s.activeThreadParentId)
   const activeThreadParent = useMessageStore((s) => s.activeThreadParent)
@@ -142,11 +178,35 @@ export default function MainPage(): React.JSX.Element {
   })
   const [threadReply, setThreadReply] = useState('')
   const sawInitialSocketOpenRef = useRef(false)
+  const [connectionState, setConnectionState] = useState(() => {
+    const clientState = getRendererClient().getState()
+
+    return {
+      connected: clientState.connected,
+      lastError: null as string | null
+    }
+  })
+  const needsEncryptedUnlock =
+    currentDevice?.trust_state === 'trusted' &&
+    !canUseE2EE
 
   useEffect(() => {
-    void syncNow(true)
+    const client = getRendererClient()
+    const clientState = client.getState()
+    sawInitialSocketOpenRef.current = clientState.connected
+    setConnectionState({
+      connected: clientState.connected,
+      lastError: null
+    })
 
-    return onSocketOpen(() => {
+    void syncNow(useSyncStore.getState().token === null)
+
+    const unsubscribeConnected = client.on('connected', () => {
+      setConnectionState({
+        connected: true,
+        lastError: null
+      })
+
       if (!sawInitialSocketOpenRef.current) {
         sawInitialSocketOpenRef.current = true
         return
@@ -158,6 +218,26 @@ export default function MainPage(): React.JSX.Element {
         await syncRecentScopes(previousSyncToken)
       })()
     })
+
+    const unsubscribeLost = client.on('connection.lost', () => {
+      setConnectionState((current) => ({
+        ...current,
+        connected: false
+      }))
+    })
+
+    const unsubscribeError = client.on('connection.error', (error) => {
+      setConnectionState({
+        connected: false,
+        lastError: error.message
+      })
+    })
+
+    return () => {
+      unsubscribeConnected()
+      unsubscribeLost()
+      unsubscribeError()
+    }
   }, [syncNow, syncRecentScopes])
 
   useEffect(() => {
@@ -356,6 +436,12 @@ export default function MainPage(): React.JSX.Element {
         ) : (
           <div className="vesper-mobile-chat-shell">
             <Header mobile />
+            <WorkspaceStatusStrip
+              connected={connectionState.connected}
+              syncing={syncing && !needsEncryptedUnlock}
+              lastError={connectionState.lastError}
+              mobile
+            />
 
             <div className="vesper-mobile-chat-body">
               {isChannelView ? (
@@ -366,15 +452,15 @@ export default function MainPage(): React.JSX.Element {
                     </DeferredChrome>
                   ) : (
                     <>
-                      <MessageList />
-                      <MessageInput />
+                      <MessageList scope={{ kind: 'channel', id: activeChannelId! }} />
+                      <MessageInput scope={{ kind: 'channel', id: activeChannelId! }} />
                     </>
                   )}
                 </>
               ) : isDmView ? (
                 <>
-                  <DmMessageList />
-                  <DmMessageInput />
+                  <MessageList scope={{ kind: 'dm', id: selectedConversationId! }} />
+                  <MessageInput scope={{ kind: 'dm', id: selectedConversationId! }} />
                 </>
               ) : (
                 <div className="vesper-mobile-empty-state">
@@ -413,6 +499,11 @@ export default function MainPage(): React.JSX.Element {
 
       <div className="vesper-desktop-shell flex-1 flex flex-col min-w-0">
         <Header />
+        <WorkspaceStatusStrip
+          connected={connectionState.connected}
+          syncing={syncing && !needsEncryptedUnlock}
+          lastError={connectionState.lastError}
+        />
 
         <div className="vesper-desktop-body flex-1 flex min-h-0">
           <div className="vesper-main-chat-column flex-1 flex flex-col min-w-0">
@@ -424,15 +515,15 @@ export default function MainPage(): React.JSX.Element {
                   </DeferredChrome>
                 ) : (
                   <>
-                    <MessageList />
-                    <MessageInput />
+                    <MessageList scope={{ kind: 'channel', id: activeChannelId! }} />
+                    <MessageInput scope={{ kind: 'channel', id: activeChannelId! }} />
                   </>
                 )}
               </>
             ) : isDmView ? (
               <>
-                <DmMessageList />
-                <DmMessageInput />
+                <MessageList scope={{ kind: 'dm', id: selectedConversationId! }} />
+                <MessageInput scope={{ kind: 'dm', id: selectedConversationId! }} />
               </>
             ) : (
               <div className="flex-1 flex flex-col items-center justify-center text-text-faint gap-3">

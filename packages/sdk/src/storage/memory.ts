@@ -140,6 +140,7 @@ export class MemoryStorage implements CryptoDbApi {
 
   async deleteGroupState(groupId: string): Promise<void> {
     this.groupStates.delete(groupId)
+    this.groupSyncCursors.delete(groupId)
   }
 
   async getGroupSyncCursor(groupId: string): Promise<number> {
@@ -239,6 +240,17 @@ export class MemoryStorage implements CryptoDbApi {
     this.cachedDecryptions.set(messageId, plaintext)
   }
 
+  async deleteCachedMessage(messageId: string): Promise<void> {
+    const existing = this.cachedMessages.get(messageId)
+    if (existing) {
+      this.unindexCachedMessage(existing)
+      this.cachedMessages.delete(messageId)
+    }
+
+    this.cachedDecryptions.delete(messageId)
+    this.searchIndex.delete(messageId)
+  }
+
   async getCachedMessages(channelId: string): Promise<
     Array<{
       id: string
@@ -291,7 +303,11 @@ export class MemoryStorage implements CryptoDbApi {
 
       this.unindexCachedMessage(record)
       this.cachedMessages.delete(messageId)
+      this.cachedDecryptions.delete(messageId)
+      this.searchIndex.delete(messageId)
     }
+
+    this.cachedMessageIdsByScope.delete(channelId)
   }
 
   async getSentMessagePlaintext(ciphertextB64: string): Promise<string | null> {

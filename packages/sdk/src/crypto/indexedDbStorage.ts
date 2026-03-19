@@ -422,6 +422,13 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
       await req(store.put(existing))
     },
 
+    async deleteCachedMessage(messageId: string) {
+      const db = await getDb()
+      const transaction = db.transaction(STORES.messageCache, 'readwrite')
+      transaction.objectStore(STORES.messageCache).delete(messageId)
+      await txComplete(transaction)
+    },
+
     async getCachedMessages(scopeId: string) {
       const db = await getDb()
       const store = tx(db, STORES.messageCache, 'readonly')

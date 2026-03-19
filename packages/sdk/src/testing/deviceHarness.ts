@@ -1,5 +1,3 @@
-import { AsyncLocalStorage } from 'node:async_hooks'
-
 import {
   createConversation,
   createServer,
@@ -22,10 +20,9 @@ import {
   type VesperServer
 } from '../api/chat.js'
 import {
+  VesperHttpClient,
   VesperSocketClient,
-  configureHttpClient,
   createMemorySessionStore,
-  disconnectSocket,
   type SessionStore
 } from '../transport/index.js'
 import {
@@ -54,8 +51,6 @@ export interface TestingDeviceHarnessOptions {
   storage?: CryptoStorageAdapter
 }
 
-let sdkContextQueue: Promise<void> = Promise.resolve()
-const sdkOperationContext = new AsyncLocalStorage<symbol>()
 const silentLogger = {
   error: console.error.bind(console),
   log: () => {}
@@ -69,100 +64,57 @@ function createDeviceIdentity(label: string, options: TestingDeviceHarnessOption
   }
 }
 
-async function withSdkContext<T>(
-  ownerToken: symbol,
-  sessionStore: SessionStore,
-  storage: CryptoStorageAdapter,
-  operation: () => Promise<T>
-): Promise<T> {
-  if (sdkOperationContext.getStore() === ownerToken) {
-    return await operation()
-  }
-
-  let releaseQueue: (() => void) | undefined
-  const priorQueue = sdkContextQueue
-  sdkContextQueue = new Promise<void>((resolve) => {
-    releaseQueue = resolve
-  })
-
-  await priorQueue
-
-  configureHttpClient({
-    fetchImpl: globalThis.fetch.bind(globalThis),
-    sessionStore
-  })
-  configureCryptoStorage(storage)
-
-  try {
-    return await sdkOperationContext.run(ownerToken, operation)
-  } finally {
-    releaseQueue?.()
-  }
-}
-
 export class TestingDeviceHarness {
   readonly apiUrl: string
   readonly auth: VesperAuthClient
   readonly deviceIdentity: TestingDeviceIdentity
+  readonly httpClient: VesperHttpClient
   readonly sessionStore: SessionStore
   readonly socket: VesperSocketClient
   readonly storage: CryptoStorageAdapter
 
   session: VesperAuthSession | null = null
-
-  private readonly ownerToken = Symbol('sdk-testing-device')
-
   constructor(apiUrl: string, label: string, options: TestingDeviceHarnessOptions = {}) {
     this.apiUrl = apiUrl
     this.deviceIdentity = createDeviceIdentity(label, options)
     this.sessionStore = options.sessionStore ?? createMemorySessionStore(apiUrl)
     this.storage = options.storage ?? new MemoryStorage()
-
-    this.auth = new VesperAuthClient({
-      getDeviceIdentity: () => this.deviceIdentity
+    configureCryptoStorage(this.storage)
+    this.httpClient = new VesperHttpClient({
+      fetchImpl: globalThis.fetch.bind(globalThis),
+      sessionStore: this.sessionStore
     })
+
     this.socket = new VesperSocketClient({
-      getAccessToken: () => this.sessionStore.getAccessToken(),
-      getServerUrl: () => this.sessionStore.getServerUrl(),
+      getAccessToken: () => this.httpClient.getAccessToken(),
+      getServerUrl: () => this.httpClient.getServerUrl(),
       logger: silentLogger
+    })
+    this.auth = new VesperAuthClient({
+      getDeviceIdentity: () => this.deviceIdentity,
+      httpClient: this.httpClient,
+      socketClient: this.socket
     })
   }
 
   async run<T>(operation: () => Promise<T>): Promise<T> {
-    return await withSdkContext(
-      this.ownerToken,
-      this.sessionStore,
-      this.storage,
-      operation
-    )
+    return await operation()
   }
 
   async register(username: string, password: string): Promise<VesperAuthSession> {
-    const session = await this.run(async () => {
-      const nextSession = await this.auth.register(username, password)
-      disconnectSocket()
-      return nextSession
-    })
+    const session = await this.run(async () => await this.auth.register(username, password))
     this.session = session
     return session
   }
 
   async login(username: string, password: string): Promise<VesperAuthSession> {
-    const session = await this.run(async () => {
-      const nextSession = await this.auth.login(username, password)
-      disconnectSocket()
-      return nextSession
-    })
+    const session = await this.run(async () => await this.auth.login(username, password))
     this.session = session
     return session
   }
 
   async restoreSession(): Promise<VesperAuthSession | null> {
-    const session = await this.run(async () => {
-      const nextSession = await this.auth.checkAuth()
-      disconnectSocket()
-      return nextSession
-    })
+    const session = await this.run(async () => await this.auth.checkAuth())
     this.session = session
     return session
   }
@@ -170,7 +122,6 @@ export class TestingDeviceHarness {
   async logout(): Promise<void> {
     await this.run(async () => {
       await this.auth.logout()
-      disconnectSocket()
     })
     this.socket.disconnect()
     this.session = null
@@ -211,13 +162,11 @@ export class TestingDeviceHarness {
   async unlockTrustedDevice(password: string): Promise<VesperAuthSession> {
     const session = this.requireSession()
     const unlocked = await this.run(async () => {
-      const nextSession = await this.auth.unlockTrustedDevice(
+      return await this.auth.unlockTrustedDevice(
         session.user,
         session.currentDevice,
         password
       )
-      disconnectSocket()
-      return nextSession
     })
 
     this.session = {
@@ -238,45 +187,45 @@ export class TestingDeviceHarness {
   }
 
   async getCurrentUser(): Promise<VesperUser> {
-    return await this.run(() => getCurrentUser())
+    return await this.run(() => getCurrentUser(this.httpClient))
   }
 
   async listServers(): Promise<VesperServer[]> {
-    return await this.run(() => listServers())
+    return await this.run(() => listServers(this.httpClient))
   }
 
   async listConversations(): Promise<VesperConversation[]> {
-    return await this.run(() => listConversations())
+    return await this.run(() => listConversations(this.httpClient))
   }
 
   async createServer(name: string): Promise<VesperServer> {
-    return await this.run(() => createServer(name))
+    return await this.run(() => createServer(name, this.httpClient))
   }
 
   async createServerChannel(
     serverId: string,
     input: CreateServerChannelInput
   ): Promise<VesperChannel> {
-    return await this.run(() => createServerChannel(serverId, input))
+    return await this.run(() => createServerChannel(serverId, input, this.httpClient))
   }
 
   async getServerInviteCode(serverId: string): Promise<string> {
-    return await this.run(() => getServerInviteCode(serverId))
+    return await this.run(() => getServerInviteCode(serverId, this.httpClient))
   }
 
   async joinServerByInvite(inviteCode: string): Promise<VesperServer> {
-    return await this.run(() => joinServerByInvite(inviteCode))
+    return await this.run(() => joinServerByInvite(inviteCode, this.httpClient))
   }
 
   async leaveServer(serverId: string): Promise<void> {
-    await this.run(() => leaveServer(serverId))
+    await this.run(() => leaveServer(serverId, this.httpClient))
   }
 
   async createConversation(
     participantIds: string[],
     name?: string
   ): Promise<VesperConversation> {
-    return await this.run(() => createConversation(participantIds, name))
+    return await this.run(() => createConversation(participantIds, name, this.httpClient))
   }
 
   async fetchChannelMessages(
@@ -289,7 +238,7 @@ export class TestingDeviceHarness {
       lean?: boolean
     } = {}
   ): Promise<VesperMessage[]> {
-    return await this.run(() => fetchChannelMessages(channelId, options))
+    return await this.run(() => fetchChannelMessages(channelId, options, this.httpClient))
   }
 
   async fetchConversationMessages(
@@ -302,11 +251,11 @@ export class TestingDeviceHarness {
       lean?: boolean
     } = {}
   ): Promise<VesperMessage[]> {
-    return await this.run(() => fetchConversationMessages(conversationId, options))
+    return await this.run(() => fetchConversationMessages(conversationId, options, this.httpClient))
   }
 
   async fetchWorkspaceSync(since?: string | null) {
-    return await this.run(() => fetchWorkspaceSync(since))
+    return await this.run(() => fetchWorkspaceSync(since, this.httpClient))
   }
 
   async fetchScopesSync(input: {
@@ -319,7 +268,7 @@ export class TestingDeviceHarness {
     limit?: number
     since?: string | null
   }): Promise<VesperScopeSyncResponse> {
-    return await this.run(() => fetchScopesSync(input))
+    return await this.run(() => fetchScopesSync(input, this.httpClient))
   }
 
   async joinTopicWithAck(

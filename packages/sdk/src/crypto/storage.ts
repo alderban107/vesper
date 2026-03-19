@@ -258,6 +258,10 @@ export async function saveCachedMessageDecryption(
   await db().setCachedMessageDecryption(messageId, plaintext)
 }
 
+export async function removeCachedMessage(messageId: string): Promise<void> {
+  await db().deleteCachedMessage(messageId)
+}
+
 export async function loadSentMessagePlaintext(ciphertextB64: string): Promise<string | null> {
   return db().getSentMessagePlaintext(ciphertextB64)
 }

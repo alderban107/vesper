@@ -49,18 +49,33 @@ export interface VesperSocketClientOptions {
   logger?: Pick<Console, 'error' | 'log'>
 }
 
+type PhoenixSocketLike = Socket & {
+  onClose?: (listener: (event: unknown) => void) => unknown
+  onError?: (listener: (error: unknown) => void) => unknown
+}
+
+type PhoenixChannelLike = Channel & {
+  isJoined?: () => boolean
+  isClosed?: () => boolean
+  isLeaving?: () => boolean
+}
+
 export class VesperSocketClient {
   private readonly SocketCtor: typeof Socket
   private readonly logger: Pick<Console, 'error' | 'log'>
   private readonly resolveAccessToken: () => string | null
   private readonly resolveServerUrl: () => string
   private socket: Socket | null = null
+  private socketUrl: string | null = null
+  private socketToken: string | null = null
   private readonly channels = new Map<string, Channel>()
   private readonly channelListeners = new Map<
     string,
     Set<(event: string, payload: unknown) => void>
   >()
   private readonly openListeners = new Set<() => void>()
+  private readonly closeListeners = new Set<(event: unknown) => void>()
+  private readonly errorListeners = new Set<(error: unknown) => void>()
 
   constructor(options: VesperSocketClientOptions = {}) {
     this.SocketCtor = options.SocketCtor ?? Socket
@@ -70,23 +85,48 @@ export class VesperSocketClient {
   }
 
   connect(): Socket {
-    if (this.socket) {
-      if (!this.socket.isConnected()) {
-        this.socket.connect()
-      }
-      return this.socket
-    }
-
     const serverUrl = this.resolveServerUrl()
     const wsUrl = serverUrl.replace(/^http/, 'ws') + '/socket'
+    const accessToken = this.resolveAccessToken()
+
+    if (this.socket) {
+      const sameTransport =
+        this.socketUrl === wsUrl &&
+        this.socketToken === accessToken
+
+      if (!sameTransport) {
+        this.disconnect()
+      } else {
+        if (!this.socket.isConnected()) {
+          this.socket.connect()
+        }
+        return this.socket
+      }
+    }
 
     this.socket = new this.SocketCtor(wsUrl, {
       params: () => ({ token: this.resolveAccessToken() })
     })
+    this.socketUrl = wsUrl
+    this.socketToken = accessToken
 
     this.socket.onOpen(() => {
+      this.socketToken = this.resolveAccessToken()
+
       for (const listener of this.openListeners) {
         listener()
+      }
+    })
+
+    ;(this.socket as PhoenixSocketLike).onClose?.((event: unknown) => {
+      for (const listener of this.closeListeners) {
+        listener(event)
+      }
+    })
+
+    ;(this.socket as PhoenixSocketLike).onError?.((error: unknown) => {
+      for (const listener of this.errorListeners) {
+        listener(error)
       }
     })
 
@@ -100,6 +140,8 @@ export class VesperSocketClient {
     this.channelListeners.clear()
     this.socket?.disconnect()
     this.socket = null
+    this.socketUrl = null
+    this.socketToken = null
   }
 
   private registerChannel(
@@ -118,7 +160,17 @@ export class VesperSocketClient {
 
     const existing = this.channels.get(topic)
     if (existing) {
-      return awaitJoin ? Promise.resolve(existing) : existing
+      if (awaitJoin && !this.isChannelJoined(existing)) {
+        existing.leave()
+        this.channels.delete(topic)
+      } else if (!awaitJoin && !this.isChannelClosed(existing) && !this.isChannelLeaving(existing)) {
+        return existing
+      } else if (!awaitJoin) {
+        existing.leave()
+        this.channels.delete(topic)
+      } else {
+        return Promise.resolve(existing)
+      }
     }
 
     const channel = this.socket.channel(topic, {})
@@ -215,8 +267,14 @@ export class VesperSocketClient {
 
   pushToChannel(topic: string, event: string, payload: object): void {
     const channel = this.channels.get(topic)
-    if (channel) {
+    if (!channel) {
+      return
+    }
+
+    try {
       channel.push(event, payload)
+    } catch (error) {
+      this.logger.error(`Failed to push ${event} to ${topic}:`, error)
     }
   }
 
@@ -230,13 +288,17 @@ export class VesperSocketClient {
       return false
     }
 
-    return await new Promise<boolean>((resolve) => {
-      channel
-        .push(event, payload)
-        .receive('ok', () => resolve(true))
-        .receive('error', () => resolve(false))
-        .receive('timeout', () => resolve(false))
-    })
+    try {
+      return await new Promise<boolean>((resolve) => {
+        channel
+          .push(event, payload)
+          .receive('ok', () => resolve(true))
+          .receive('error', () => resolve(false))
+          .receive('timeout', () => resolve(false))
+      })
+    } catch {
+      return false
+    }
   }
 
   getChannel(topic: string): Channel | undefined {
@@ -250,15 +312,48 @@ export class VesperSocketClient {
     }
   }
 
+  onSocketClose(listener: (event: unknown) => void): () => void {
+    this.closeListeners.add(listener)
+    return () => {
+      this.closeListeners.delete(listener)
+    }
+  }
+
+  onSocketError(listener: (error: unknown) => void): () => void {
+    this.errorListeners.add(listener)
+    return () => {
+      this.errorListeners.delete(listener)
+    }
+  }
+
   joinVoiceChannel(
     topic: string,
     onMessage: (event: string, payload: unknown) => void
   ): Channel {
     return this.registerChannel(topic, onMessage, false, VOICE_EVENTS) as Channel
   }
+
+  private isChannelJoined(channel: Channel): boolean {
+    const candidate = channel as PhoenixChannelLike
+    return typeof candidate.isJoined === 'function' ? candidate.isJoined() : true
+  }
+
+  private isChannelClosed(channel: Channel): boolean {
+    const candidate = channel as PhoenixChannelLike
+    return typeof candidate.isClosed === 'function' ? candidate.isClosed() : false
+  }
+
+  private isChannelLeaving(channel: Channel): boolean {
+    const candidate = channel as PhoenixChannelLike
+    return typeof candidate.isLeaving === 'function' ? candidate.isLeaving() : false
+  }
 }
 
 const defaultSocketClient = new VesperSocketClient()
+
+export function getDefaultSocketClient(): VesperSocketClient {
+  return defaultSocketClient
+}
 
 export function connectSocket(): Socket {
   return defaultSocketClient.connect()
@@ -311,6 +406,14 @@ export function getChannel(topic: string): Channel | undefined {
 
 export function onSocketOpen(listener: () => void): () => void {
   return defaultSocketClient.onSocketOpen(listener)
+}
+
+export function onSocketClose(listener: (event: unknown) => void): () => void {
+  return defaultSocketClient.onSocketClose(listener)
+}
+
+export function onSocketError(listener: (error: unknown) => void): () => void {
+  return defaultSocketClient.onSocketError(listener)
 }
 
 export function joinVoiceChannel(

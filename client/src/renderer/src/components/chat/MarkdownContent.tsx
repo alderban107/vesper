@@ -10,7 +10,7 @@ import { useAuthStore } from '../../stores/authStore'
 import { usePresenceStore } from '../../stores/presenceStore'
 import { findCustomEmoji, parseCustomEmojiToken, type CustomEmoji } from '../../utils/emoji'
 import ProfilePopout from '../profile/ProfilePopout'
-import { extractMarkdownCodeBlock } from './markdownCodeBlock'
+import { extractMarkdownCodeBlock } from './MarkdownCodeBlock'
 import MermaidBlock from './MermaidBlock'
 import EmojiGlyph from './message/EmojiGlyph'
 

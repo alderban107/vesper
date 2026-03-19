@@ -1,12 +1,6 @@
 import { create } from 'zustand'
-import {
-  ackPendingResyncRequest,
-  ackPendingWelcome,
-  fetchPendingResyncRequests
-} from '@vesper/sdk/api'
 import { getLocalDeviceIdentity } from '@vesper/sdk/auth'
-import { getVoiceRtcConfig } from '@vesper/sdk/voice'
-import { connectSocket, joinVoiceChannel, leaveChannel, pushToChannel } from '@vesper/sdk/transport'
+import { getStoredValue, setStoredValue, removeStoredValue, setStoredJson } from '../utils/localStorage'
 import {
   WebRTCManager,
   type VoiceMediaSlot,
@@ -15,7 +9,7 @@ import {
 import { AudioManager } from '../voice/audio'
 import { VoiceEncryption } from '../voice/encryption'
 import { useAuthStore } from './authStore'
-import { getRendererEncryptedChat } from '../sdk/client'
+import { getRendererClient, getRendererEncryptedChat } from '../sdk/client'
 
 const INPUT_DEVICE_KEY = 'voice:inputDeviceId'
 const OUTPUT_DEVICE_KEY = 'voice:outputDeviceId'
@@ -31,10 +25,15 @@ const REMOTE_VOICE_VOLUMES_KEY = 'voice:remoteVoiceVolumes'
 const REMOTE_STREAM_VOLUMES_KEY = 'voice:remoteStreamVolumes'
 const SHARE_AUDIO_PREFERRED_KEY = 'voice:shareAudioPreferred'
 const MLS_JOIN_REQUEST_COOLDOWN_MS = 2000
-const MLS_RESYNC_REQUEST_COOLDOWN_MS = 5000
+const MLS_RESYNC_REQUEST_COOLDOWN_MS = 3_000
 const recentVoiceJoinRequests = new Map<string, number>()
 const recentVoiceResyncRequests = new Map<string, number>()
 const inFlightVoiceRecoveries = new Map<string, Promise<void>>()
+
+/** Fire-and-forget: swallows errors for best-effort background operations. */
+function fireAndForget(promise: Promise<unknown>): void {
+  void promise.catch(() => {})
+}
 
 function maybeRequestVoiceMlsJoin(topic: string): void {
   const now = Date.now()
@@ -44,7 +43,7 @@ function maybeRequestVoiceMlsJoin(topic: string): void {
   }
 
   recentVoiceJoinRequests.set(topic, now)
-  pushToChannel(topic, 'mls_request_join', {
+  pushTopicEvent(topic, 'mls_request_join', {
     device_id: getLocalDeviceIdentity().id
   })
 }
@@ -72,7 +71,7 @@ function maybeRequestVoiceMlsResync(topic: string, reason: string): void {
   }
 
   recentVoiceResyncRequests.set(topic, now)
-  pushToChannel(topic, 'mls_resync_request', {
+  pushTopicEvent(topic, 'mls_resync_request', {
     device_id: getLocalDeviceIdentity().id,
     request_id: crypto.randomUUID(),
     last_known_epoch: null,
@@ -109,18 +108,18 @@ async function processVoiceMlsResyncRequest(
   }
 
   if (result.removeCommitBytes) {
-    pushToChannel(topic, 'mls_remove', {
+    pushTopicEvent(topic, 'mls_remove', {
       removed_user_id: requesterId,
       commit_data: result.removeCommitBytes
     })
   }
 
-  pushToChannel(topic, 'mls_commit', {
+  pushTopicEvent(topic, 'mls_commit', {
     commit_data: result.commitBytes
   })
 
   if (result.welcomeBytes) {
-    pushToChannel(topic, 'mls_welcome', {
+    pushTopicEvent(topic, 'mls_welcome', {
       recipient_id: requesterId,
       recipient_device_id: requesterDeviceId,
       welcome_data: result.welcomeBytes,
@@ -129,14 +128,14 @@ async function processVoiceMlsResyncRequest(
   }
 
   if (request.id) {
-    await ackPendingResyncRequest(request.id)
+    await getRendererClient().ackPendingResyncRequest(request.id)
   }
 
   return true
 }
 
 async function processPendingVoiceMlsResyncRequests(topic: string): Promise<void> {
-  const requests = await fetchPendingResyncRequests(topic)
+  const requests = await getRendererClient().fetchPendingResyncRequests(topic)
   for (const request of requests) {
     await processVoiceMlsResyncRequest(topic, request)
   }
@@ -174,7 +173,7 @@ async function ensureVoiceGroupReady(
   if (creatorId === userId) {
     await encryptedChat.createScopeState(topic)
     if (encryptedChat.hasGroup(topic)) {
-      pushToChannel(topic, 'mls_request_join_all', {})
+      pushTopicEvent(topic, 'mls_request_join_all', {})
       return
     }
   }
@@ -225,16 +224,16 @@ async function recoverVoiceMlsState(
 }
 
 function readString(key: string): string | null {
-  return localStorage.getItem(key)
+  return getStoredValue(key)
 }
 
 function readBoolean(key: string, fallback: boolean): boolean {
-  const value = localStorage.getItem(key)
+  const value = getStoredValue(key)
   return value === null ? fallback : value === 'true'
 }
 
 function readNumber(key: string, fallback: number): number {
-  const value = localStorage.getItem(key)
+  const value = getStoredValue(key)
   if (value === null) {
     return fallback
   }
@@ -245,7 +244,7 @@ function readNumber(key: string, fallback: number): number {
 
 function readVolumeMap(key: string): Record<string, number> {
   try {
-    const raw = localStorage.getItem(key)
+    const raw = getStoredValue(key)
     const parsed = raw ? JSON.parse(raw) : {}
     return parsed && typeof parsed === 'object' ? parsed as Record<string, number> : {}
   } catch {
@@ -364,6 +363,11 @@ let webrtcManager: WebRTCManager | null = null
 let audioManager: AudioManager | null = null
 let voiceEncryption: VoiceEncryption | null = null
 let statsPollInterval: ReturnType<typeof setInterval> | null = null
+let disposeVoiceTopic: (() => void) | null = null
+
+function pushTopicEvent(topic: string, event: string, payload: object): void {
+  getRendererClient().pushTopicEvent(topic, event, payload)
+}
 
 const DEFAULT_CAMERA_PROFILE: VideoPublishProfile = {
   width: 1280,
@@ -425,10 +429,12 @@ function toPrimaryVideoStreamMap(
 function cleanup(get: () => VoiceState): void {
   const { roomId, roomType } = get()
 
+  disposeVoiceTopic?.()
+  disposeVoiceTopic = null
+
   if (roomId) {
     const topic = roomType === 'dm' ? `voice:dm:${roomId}` : `voice:channel:${roomId}`
-    leaveChannel(topic)
-    getRendererEncryptedChat().resetScope(topic).catch(() => {})
+    fireAndForget(getRendererEncryptedChat().resetScope(topic))
   }
 
   webrtcManager?.destroy()
@@ -590,7 +596,7 @@ function pushVoiceMediaState(
   }
 
   const topic = roomType === 'dm' ? `voice:dm:${roomId}` : `voice:channel:${roomId}`
-  pushToChannel(topic, 'media_state', { slot, active })
+  pushTopicEvent(topic, 'media_state', { slot, active })
 }
 
 function startStatsPolling(
@@ -708,7 +714,6 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       ...buildResetConnectionStats()
     })
 
-    connectSocket()
     await initVoice(channelId, 'channel', set, get)
   },
 
@@ -740,12 +745,11 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       ...buildResetConnectionStats()
     })
 
-    connectSocket()
     await initVoice(conversationId, 'dm', set, get)
 
     // After joining, send call_ring
     const topic = `voice:dm:${conversationId}`
-    pushToChannel(topic, 'call_ring', {})
+    pushTopicEvent(topic, 'call_ring', {})
     set({ state: 'ringing' })
   },
 
@@ -774,17 +778,16 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       ...buildResetConnectionStats()
     })
 
-    connectSocket()
     await initVoice(conversationId, 'dm', set, get)
 
     const topic = `voice:dm:${conversationId}`
-    pushToChannel(topic, 'call_accept', {})
+    pushTopicEvent(topic, 'call_accept', {})
   },
 
   rejectCall: () => {
     const incoming = get().incomingCall
     if (incoming) {
-      pushToChannel(`dm:${incoming.conversationId}`, 'call_reject', {})
+      void getRendererClient().pushScopeEvent('dm', incoming.conversationId, 'call_reject', {})
       set({ incomingCall: null })
     }
   },
@@ -820,7 +823,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     const { roomId, roomType } = get()
     if (roomId) {
       const topic = roomType === 'dm' ? `voice:dm:${roomId}` : `voice:channel:${roomId}`
-      pushToChannel(topic, 'mute', { muted })
+      pushTopicEvent(topic, 'mute', { muted })
     }
   },
 
@@ -836,7 +839,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       const { roomId, roomType } = get()
       if (roomId) {
         const topic = roomType === 'dm' ? `voice:dm:${roomId}` : `voice:channel:${roomId}`
-        pushToChannel(topic, 'mute', { muted: true })
+        pushTopicEvent(topic, 'mute', { muted: true })
       }
     }
   },
@@ -1011,9 +1014,9 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
 
   setInputDevice: (deviceId) => {
     if (deviceId) {
-      localStorage.setItem(INPUT_DEVICE_KEY, deviceId)
+      setStoredValue(INPUT_DEVICE_KEY, deviceId)
     } else {
-      localStorage.removeItem(INPUT_DEVICE_KEY)
+      removeStoredValue(INPUT_DEVICE_KEY)
     }
     set({ inputDeviceId: deviceId })
     void refreshLiveAudioInput(get())
@@ -1021,62 +1024,62 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
 
   setOutputDevice: (deviceId) => {
     if (deviceId) {
-      localStorage.setItem(OUTPUT_DEVICE_KEY, deviceId)
+      setStoredValue(OUTPUT_DEVICE_KEY, deviceId)
     } else {
-      localStorage.removeItem(OUTPUT_DEVICE_KEY)
+      removeStoredValue(OUTPUT_DEVICE_KEY)
     }
     set({ outputDeviceId: deviceId })
     audioManager?.setOutputDevice(deviceId)
   },
 
   setEchoCancellation: (enabled) => {
-    localStorage.setItem(ECHO_CANCELLATION_KEY, String(enabled))
+    setStoredValue(ECHO_CANCELLATION_KEY, String(enabled))
     set({ echoCancellation: enabled })
     void refreshLiveAudioInput(get())
   },
 
   setNoiseSuppression: (enabled) => {
-    localStorage.setItem(NOISE_SUPPRESSION_KEY, String(enabled))
+    setStoredValue(NOISE_SUPPRESSION_KEY, String(enabled))
     set({ noiseSuppression: enabled })
     void refreshLiveAudioInput(get())
   },
 
   setAutoGainControl: (enabled) => {
-    localStorage.setItem(AUTO_GAIN_CONTROL_KEY, String(enabled))
+    setStoredValue(AUTO_GAIN_CONTROL_KEY, String(enabled))
     set({ autoGainControl: enabled })
     void refreshLiveAudioInput(get())
   },
 
   setInputVolume: (volume) => {
     const nextVolume = Math.max(0, Math.min(200, volume))
-    localStorage.setItem(INPUT_VOLUME_KEY, String(nextVolume))
+    setStoredValue(INPUT_VOLUME_KEY, String(nextVolume))
     set({ inputVolume: nextVolume })
     webrtcManager?.setInputVolume(nextVolume)
   },
 
   setOutputVolume: (volume) => {
     const nextVolume = Math.max(0, Math.min(200, volume))
-    localStorage.setItem(OUTPUT_VOLUME_KEY, String(nextVolume))
+    setStoredValue(OUTPUT_VOLUME_KEY, String(nextVolume))
     set({ outputVolume: nextVolume })
     audioManager?.setOutputVolume(nextVolume)
   },
 
   setInputSensitivity: (value) => {
     const nextValue = Math.max(0, Math.min(100, value))
-    localStorage.setItem(INPUT_SENSITIVITY_KEY, String(nextValue))
+    setStoredValue(INPUT_SENSITIVITY_KEY, String(nextValue))
     set({ inputSensitivity: nextValue })
     audioManager?.setSpeakingSensitivity(nextValue)
   },
 
   setNoiseGateEnabled: (enabled) => {
-    localStorage.setItem(NOISE_GATE_ENABLED_KEY, String(enabled))
+    setStoredValue(NOISE_GATE_ENABLED_KEY, String(enabled))
     set({ noiseGateEnabled: enabled })
     webrtcManager?.setNoiseGateEnabled(enabled)
   },
 
   setNoiseGateThresholdDb: (value) => {
     const nextValue = clampNoiseGateThresholdDb(value)
-    localStorage.setItem(NOISE_GATE_THRESHOLD_DB_KEY, String(nextValue))
+    setStoredValue(NOISE_GATE_THRESHOLD_DB_KEY, String(nextValue))
     set({ noiseGateThresholdDb: nextValue })
     webrtcManager?.setNoiseGateThresholdDb(nextValue)
   },
@@ -1085,7 +1088,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     const nextVolume = Math.max(0, Math.min(200, volume))
     set((state) => {
       const remoteVolumes = { ...state.remoteVolumes, [userId]: nextVolume }
-      localStorage.setItem(REMOTE_VOICE_VOLUMES_KEY, JSON.stringify(remoteVolumes))
+      setStoredJson(REMOTE_VOICE_VOLUMES_KEY, remoteVolumes)
       audioManager?.setSourceVolume(sourceKey(userId, 'voice_audio'), nextVolume)
 
       return { remoteVolumes }
@@ -1096,7 +1099,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     const nextVolume = Math.max(0, Math.min(200, volume))
     set((state) => {
       const remoteStreamVolumes = { ...state.remoteStreamVolumes, [userId]: nextVolume }
-      localStorage.setItem(REMOTE_STREAM_VOLUMES_KEY, JSON.stringify(remoteStreamVolumes))
+      setStoredJson(REMOTE_STREAM_VOLUMES_KEY, remoteStreamVolumes)
       audioManager?.setSourceVolume(sourceKey(userId, 'share_audio'), nextVolume)
 
       return { remoteStreamVolumes }
@@ -1104,7 +1107,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   },
 
   setShareAudioPreferred: (enabled) => {
-    localStorage.setItem(SHARE_AUDIO_PREFERRED_KEY, String(enabled))
+    setStoredValue(SHARE_AUDIO_PREFERRED_KEY, String(enabled))
     set({ shareAudioPreferred: enabled })
   }
 }))
@@ -1123,7 +1126,7 @@ async function initVoice(
   audioManager.setSpeakingSensitivity(get().inputSensitivity)
 
   const topic = roomType === 'dm' ? `voice:dm:${roomId}` : `voice:channel:${roomId}`
-  const rtcConfig = await getVoiceRtcConfig(true)
+  const rtcConfig = await getRendererClient().fetchVoiceRtcConfig(true)
 
   webrtcManager.init(rtcConfig.iceServers, rtcConfig.iceTransportPolicy, {
     onTrack: (event) => {
@@ -1278,7 +1281,7 @@ async function initVoice(
       }
     },
     onIceCandidate: (candidate) => {
-      pushToChannel(topic, 'ice_candidate', {
+      pushTopicEvent(topic, 'ice_candidate', {
         candidate: {
           candidate: candidate.candidate,
           sdpMid: candidate.sdpMid,
@@ -1297,7 +1300,8 @@ async function initVoice(
     }
   })
 
-  joinVoiceChannel(topic, async (event, payload) => {
+  disposeVoiceTopic?.()
+  disposeVoiceTopic = getRendererClient().subscribeVoiceTopic(topic, async (event, payload) => {
     const data = payload as Record<string, unknown>
 
     if (event === 'offer') {
@@ -1321,7 +1325,7 @@ async function initVoice(
         } catch {
           const currentState = get()
           if (currentState.inputDeviceId) {
-            localStorage.removeItem(INPUT_DEVICE_KEY)
+            removeStoredValue(INPUT_DEVICE_KEY)
             set({ inputDeviceId: null })
             if (webrtcManager!.getLocalStream()) {
               await webrtcManager!.updateAudioInput(
@@ -1352,7 +1356,7 @@ async function initVoice(
         }
 
         const answerSdp = await webrtcManager!.finalizeAnswer()
-        pushToChannel(topic, 'answer', { sdp: answerSdp })
+        pushTopicEvent(topic, 'answer', { sdp: answerSdp })
 
         if (Object.keys(nextTrackMap).length > 0) {
           const knownTrackIds = get().trackIdsByMid
@@ -1457,7 +1461,7 @@ async function initVoice(
         sdpMid: candidate.sdpMid as string | null,
         sdpMLineIndex: candidate.sdpMLineIndex as number | null,
         usernameFragment: candidate.usernameFragment as string | null
-      }).catch(() => {})
+      }).catch(() => {}) // Best-effort ICE candidate relay
     } else if (event === 'voice_state_update') {
       const previousParticipants = get().participants
       const previousByUserId = new Map(previousParticipants.map((participant) => [participant.user_id, participant]))
@@ -1539,7 +1543,7 @@ async function initVoice(
       }
     } else if (event === 'mls_request_join_all') {
       if (!getRendererEncryptedChat().hasGroup(topic)) {
-        void recoverVoiceMlsState(topic, 'missing_state', preferredCreatorId).catch(() => {})
+        fireAndForget(recoverVoiceMlsState(topic, 'missing_state', preferredCreatorId))
       }
     } else if (event === 'mls_request_join') {
       handleVoiceMlsJoinRequest(roomId, data, topic)
@@ -1562,7 +1566,7 @@ async function initVoice(
       if (senderId !== userId || senderDeviceId !== localDeviceId) {
         await getRendererEncryptedChat().applyScopeCommit(topic, data.commit_data as string)
         if (!(await applyVoiceKeyIfAvailable(topic))) {
-          void recoverVoiceMlsState(topic, 'voice_key_missing', preferredCreatorId).catch(() => {})
+          fireAndForget(recoverVoiceMlsState(topic, 'voice_key_missing', preferredCreatorId))
         }
       }
     } else if (event === 'mls_welcome') {
@@ -1582,10 +1586,10 @@ async function initVoice(
         )
         if (processed) {
           if (welcomeId) {
-            await ackPendingWelcome(welcomeId).catch(() => {})
+            await getRendererClient().ackPendingWelcome(welcomeId).catch(() => {})
           }
           if (!(await applyVoiceKeyIfAvailable(topic))) {
-            void recoverVoiceMlsState(topic, 'voice_key_missing', preferredCreatorId).catch(() => {})
+            fireAndForget(recoverVoiceMlsState(topic, 'voice_key_missing', preferredCreatorId))
           }
         }
       }
@@ -1599,11 +1603,11 @@ async function initVoice(
       const isLocalSender = senderId === userId && senderDeviceId === localDeviceId
       if (removedId === userId && !isLocalSender) {
         await getRendererEncryptedChat().resetScope(topic)
-        void recoverVoiceMlsState(topic, 'removed_from_group', preferredCreatorId).catch(() => {})
+        fireAndForget(recoverVoiceMlsState(topic, 'removed_from_group', preferredCreatorId))
       } else if (!isLocalSender && data.commit_data) {
         await getRendererEncryptedChat().applyScopeCommit(topic, data.commit_data as string)
         if (!(await applyVoiceKeyIfAvailable(topic))) {
-          void recoverVoiceMlsState(topic, 'voice_key_missing', preferredCreatorId).catch(() => {})
+          fireAndForget(recoverVoiceMlsState(topic, 'voice_key_missing', preferredCreatorId))
         }
       }
     } else if (event === 'join_error' || event === 'error') {
@@ -1665,12 +1669,12 @@ async function handleVoiceMlsJoinRequest(
 
   if (!result) return
 
-  pushToChannel(topic, 'mls_commit', {
+  pushTopicEvent(topic, 'mls_commit', {
     commit_data: result.commitBytes
   })
 
   if (result.welcomeBytes) {
-    pushToChannel(topic, 'mls_welcome', {
+    pushTopicEvent(topic, 'mls_welcome', {
       recipient_id: userId,
       recipient_device_id: deviceId,
       welcome_data: result.welcomeBytes,

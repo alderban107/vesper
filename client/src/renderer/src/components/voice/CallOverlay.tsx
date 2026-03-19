@@ -286,7 +286,7 @@ export default function CallOverlay({
     })
     .slice(0, 4)
 
-  const localVideoEntries = [
+  const localVideoEntries = ([
     localShareStream
       ? {
           id: 'local:share_video',
@@ -315,7 +315,7 @@ export default function CallOverlay({
           testId: 'local-video'
         }
       : null
-  ].filter((entry): entry is OverlayEntry => entry !== null)
+  ] as (OverlayEntry | null)[]).filter((entry): entry is OverlayEntry => entry !== null)
 
   const overlayMediaEntries = [...remoteVideoEntries, ...localVideoEntries].slice(0, 4)
 

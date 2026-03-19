@@ -7,34 +7,36 @@ import {
   uploadKeyPackages
 } from '../api/crypto.js'
 import {
-  apiFetch,
-  apiUpload,
-  clearTokens,
-  getAccessToken,
-  getRefreshToken,
-  setTokens
+  getDefaultHttpClient,
+  type SessionStore,
+  VesperHttpClient
 } from '../api/client.js'
-import { connectSocket, disconnectSocket } from '../api/socket.js'
+import { getDefaultSocketClient, VesperSocketClient } from '../api/socket.js'
 import { clearSearchIndexSyncCredentials } from '../crypto/searchIndexSync.js'
 import {
   createEncryptedKeyBundle,
   createRecoveryData,
   decryptEncryptedKeyBundle,
   decryptWithRecoveryKey,
+  recoveryKeyToBytes,
+  serializePrivatePackage
+} from '../crypto/index.js'
+import {
+  type CryptoStorageAdapter,
+  configureCryptoStorage,
   initStorage,
   loadIdentity,
   loadKeyPackages,
-  recoveryKeyToBytes,
   saveIdentity,
-  saveKeyPackages,
-  serializePrivatePackage
-} from '../crypto/index.js'
+  saveKeyPackages
+} from '../crypto/storage.js'
 import {
   buildClientCredentialIdentity,
   createKeyPackageBatch,
   encodeKeyPackageBytes,
   initCipherSuite
 } from '../crypto/mls.js'
+import type { VesperTransport } from '../transport/context.js'
 
 export interface VesperUser {
   id: string
@@ -91,6 +93,12 @@ export interface DeviceListState {
 
 export interface VesperAuthClientOptions {
   getDeviceIdentity?: () => LocalDeviceIdentity
+  fetchImpl?: typeof fetch
+  sessionStore?: SessionStore
+  httpClient?: VesperHttpClient
+  socketClient?: VesperSocketClient
+  transport?: Pick<VesperTransport, 'httpClient' | 'socketClient'>
+  storage?: CryptoStorageAdapter | ((userId: string) => CryptoStorageAdapter)
 }
 
 const KEY_PACKAGE_TARGET = 20
@@ -98,10 +106,34 @@ const KEY_PACKAGE_THRESHOLD = 5
 
 export class VesperAuthClient {
   private readonly resolveDeviceIdentity: () => LocalDeviceIdentity
+  private readonly httpClient: VesperHttpClient
+  private readonly socketClient: VesperSocketClient
   private keyPackageReplenishPromise: Promise<void> | null = null
 
   constructor(options: VesperAuthClientOptions = {}) {
+    if (options.storage) {
+      configureCryptoStorage(options.storage)
+    }
+
     this.resolveDeviceIdentity = options.getDeviceIdentity ?? getLocalDeviceIdentity
+    this.httpClient =
+      options.transport?.httpClient ??
+      options.httpClient ??
+      (options.sessionStore || options.fetchImpl
+        ? new VesperHttpClient({
+            fetchImpl: options.fetchImpl,
+            sessionStore: options.sessionStore
+          })
+        : getDefaultHttpClient())
+    this.socketClient =
+      options.transport?.socketClient ??
+      options.socketClient ??
+      (options.sessionStore || options.fetchImpl
+        ? new VesperSocketClient({
+            getAccessToken: () => this.httpClient.getAccessToken(),
+            getServerUrl: () => this.httpClient.getServerUrl()
+          })
+        : getDefaultSocketClient())
   }
 
   async register(username: string, password: string): Promise<VesperAuthSession> {
@@ -113,7 +145,7 @@ export class VesperAuthClient {
     const encryptedBundle = await createEncryptedKeyBundle(signaturePrivateKey, password)
     const recoveryData = await createRecoveryData(signaturePrivateKey)
 
-    const response = await apiFetch('/api/v1/auth/register', {
+    const response = await this.httpClient.apiFetch('/api/v1/auth/register', {
       method: 'POST',
       body: JSON.stringify(
         this.buildSessionBody({
@@ -135,8 +167,7 @@ export class VesperAuthClient {
       throw new Error(parseError(data, 'Registration failed'))
     }
 
-    setTokens(data.access_token as string, data.refresh_token as string)
-    connectSocket()
+    this.httpClient.setTokens(data.access_token as string, data.refresh_token as string)
     initStorage(data.user.id)
 
     await saveIdentity(
@@ -166,7 +197,7 @@ export class VesperAuthClient {
     )
 
     const publicPackageBytes = batchPairs.map((pair) => encodeKeyPackageBytes(pair.publicPackage))
-    await uploadKeyPackages(publicPackageBytes, this.resolveDeviceIdentity().id)
+    await uploadKeyPackages(publicPackageBytes, this.resolveDeviceIdentity().id, this.httpClient)
 
     void this.registerCurrentDeviceNotificationCapability()
 
@@ -180,7 +211,7 @@ export class VesperAuthClient {
   }
 
   async login(username: string, password: string): Promise<VesperAuthSession> {
-    const response = await apiFetch('/api/v1/auth/login', {
+    const response = await this.httpClient.apiFetch('/api/v1/auth/login', {
       method: 'POST',
       body: JSON.stringify(this.buildSessionBody({ username, password }))
     })
@@ -190,8 +221,7 @@ export class VesperAuthClient {
       throw new Error(parseError(data, 'Login failed'))
     }
 
-    setTokens(data.access_token as string, data.refresh_token as string)
-    connectSocket()
+    this.httpClient.setTokens(data.access_token as string, data.refresh_token as string)
     initStorage(data.user.id)
 
     let canUseE2EE = false
@@ -223,19 +253,18 @@ export class VesperAuthClient {
   }
 
   async checkAuth(): Promise<VesperAuthSession | null> {
-    const token = getAccessToken()
+    const token = this.httpClient.getAccessToken()
     if (!token) {
       return null
     }
 
-    const response = await apiFetch('/api/v1/auth/me')
+    const response = await this.httpClient.apiFetch('/api/v1/auth/me')
     if (!response.ok) {
-      clearTokens()
+      this.httpClient.clearTokens()
       return null
     }
 
     const data = (await response.json()) as AuthResponsePayload
-    connectSocket()
     initStorage(data.user.id)
 
     let canUseE2EE = false
@@ -260,19 +289,19 @@ export class VesperAuthClient {
 
   async logout(): Promise<void> {
     try {
-      await apiFetch('/api/v1/auth/logout', { method: 'POST' })
+      await this.httpClient.apiFetch('/api/v1/auth/logout', { method: 'POST' })
     } catch {
       // Ignore logout transport failures.
     }
 
-    disconnectSocket()
-    clearTokens()
+    this.socketClient.disconnect()
+    this.httpClient.clearTokens()
     clearSearchIndexSyncCredentials()
   }
 
   async verifyRecoveryKey(mnemonic: string): Promise<void> {
     const recoveryKeyHash = await hashRecoveryMnemonic(mnemonic)
-    const response = await apiFetch('/api/v1/auth/recover', {
+    const response = await this.httpClient.apiFetch('/api/v1/auth/recover', {
       method: 'POST',
       body: JSON.stringify({ recovery_key_hash: recoveryKeyHash })
     })
@@ -291,7 +320,7 @@ export class VesperAuthClient {
     currentDevice: VesperAuthDevice | null
     user: VesperUser | null
   }): Promise<DeviceListState> {
-    const response = await apiFetch('/api/v1/auth/devices')
+    const response = await this.httpClient.apiFetch('/api/v1/auth/devices')
     if (!response.ok) {
       return {
         devices: params.devices,
@@ -327,7 +356,7 @@ export class VesperAuthClient {
   }
 
   async approveDevice(deviceId: string): Promise<void> {
-    const response = await apiFetch(`/api/v1/auth/devices/${deviceId}/approve`, {
+    const response = await this.httpClient.apiFetch(`/api/v1/auth/devices/${deviceId}/approve`, {
       method: 'POST'
     })
 
@@ -338,7 +367,7 @@ export class VesperAuthClient {
   }
 
   async revokeDevice(deviceId: string): Promise<void> {
-    const response = await apiFetch(`/api/v1/auth/devices/${deviceId}/revoke`, {
+    const response = await this.httpClient.apiFetch(`/api/v1/auth/devices/${deviceId}/revoke`, {
       method: 'POST'
     })
 
@@ -351,7 +380,7 @@ export class VesperAuthClient {
   async approveCurrentDeviceWithRecovery(mnemonic: string): Promise<VesperAuthSession> {
     const recoveryKeyHash = await hashRecoveryMnemonic(mnemonic)
 
-    const recoverResponse = await apiFetch('/api/v1/auth/recover', {
+    const recoverResponse = await this.httpClient.apiFetch('/api/v1/auth/recover', {
       method: 'POST',
       body: JSON.stringify({ recovery_key_hash: recoveryKeyHash })
     })
@@ -361,7 +390,7 @@ export class VesperAuthClient {
       throw new Error(parseError(recoverData, 'Recovery key was not accepted'))
     }
 
-    const approveResponse = await apiFetch('/api/v1/auth/devices/approve-with-recovery', {
+    const approveResponse = await this.httpClient.apiFetch('/api/v1/auth/devices/approve-with-recovery', {
       method: 'POST',
       body: JSON.stringify({ recovery_key_hash: recoveryKeyHash })
     })
@@ -371,29 +400,21 @@ export class VesperAuthClient {
       throw new Error(parseError(approveData, 'Could not approve this device'))
     }
 
-    let refreshedTokensApplied = false
     if (approveData.access_token && approveData.refresh_token) {
-      setTokens(approveData.access_token, approveData.refresh_token)
-      refreshedTokensApplied = true
+      this.httpClient.setTokens(approveData.access_token, approveData.refresh_token)
     } else {
-      const refreshToken = getRefreshToken()
+      const refreshToken = this.httpClient.getRefreshToken()
       if (refreshToken) {
-        const refreshResponse = await apiFetch('/api/v1/auth/refresh', {
+        const refreshResponse = await this.httpClient.apiFetch('/api/v1/auth/refresh', {
           method: 'POST',
           body: JSON.stringify({ refresh_token: refreshToken })
         })
         const refreshData = (await refreshResponse.json()) as AuthResponsePayload
 
         if (refreshResponse.ok && refreshData.access_token && refreshData.refresh_token) {
-          setTokens(refreshData.access_token, refreshData.refresh_token)
-          refreshedTokensApplied = true
+          this.httpClient.setTokens(refreshData.access_token, refreshData.refresh_token)
         }
       }
-    }
-
-    if (refreshedTokensApplied) {
-      disconnectSocket()
-      connectSocket()
     }
 
     const session = await this.requireCurrentSession(
@@ -421,7 +442,7 @@ export class VesperAuthClient {
       throw new Error('This device is not approved yet.')
     }
 
-    const response = await apiFetch('/api/v1/auth/me')
+    const response = await this.httpClient.apiFetch('/api/v1/auth/me')
     const data = (await response.json()) as Record<string, unknown> & AuthResponsePayload
 
     if (!response.ok) {
@@ -451,7 +472,7 @@ export class VesperAuthClient {
 
   async recoverAccount(mnemonic: string, newPassword: string): Promise<VesperAuthSession> {
     const recoveryKeyHash = await hashRecoveryMnemonic(mnemonic)
-    const response = await apiFetch('/api/v1/auth/recover', {
+    const response = await this.httpClient.apiFetch('/api/v1/auth/recover', {
       method: 'POST',
       body: JSON.stringify({ recovery_key_hash: recoveryKeyHash })
     })
@@ -466,7 +487,7 @@ export class VesperAuthClient {
     const newBundle = await createEncryptedKeyBundle(privateKeys, newPassword)
     const device = this.resolveDeviceIdentity()
 
-    const resetResponse = await apiFetch('/api/v1/auth/recover/reset', {
+    const resetResponse = await this.httpClient.apiFetch('/api/v1/auth/recover/reset', {
       method: 'POST',
       body: JSON.stringify({
         recovery_key_hash: recoveryKeyHash,
@@ -485,8 +506,7 @@ export class VesperAuthClient {
       throw new Error(parseError(resetData, 'Failed to reset password'))
     }
 
-    setTokens(resetData.access_token as string, resetData.refresh_token as string)
-    connectSocket()
+    this.httpClient.setTokens(resetData.access_token as string, resetData.refresh_token as string)
     initStorage(resetData.user.id)
 
     await saveIdentity(
@@ -520,7 +540,7 @@ export class VesperAuthClient {
     banner_url?: string
     status?: string
   }): Promise<VesperUser> {
-    const response = await apiFetch('/api/v1/auth/profile', {
+    const response = await this.httpClient.apiFetch('/api/v1/auth/profile', {
       method: 'PUT',
       body: JSON.stringify(attrs)
     })
@@ -536,7 +556,7 @@ export class VesperAuthClient {
     const formData = new FormData()
     formData.append('file', file)
 
-    const response = await apiUpload('/api/v1/auth/avatar', formData)
+    const response = await this.httpClient.apiUpload('/api/v1/auth/avatar', formData)
     if (!response.ok) {
       throw new Error('Could not upload avatar')
     }
@@ -549,7 +569,7 @@ export class VesperAuthClient {
     const formData = new FormData()
     formData.append('file', file)
 
-    const response = await apiUpload('/api/v1/auth/banner', formData)
+    const response = await this.httpClient.apiUpload('/api/v1/auth/banner', formData)
     if (!response.ok) {
       throw new Error('Could not upload banner')
     }
@@ -571,10 +591,10 @@ export class VesperAuthClient {
       try {
         const localPackages = await loadKeyPackages()
         if (localPackages.length === 0) {
-          await purgeMyKeyPackages(this.resolveDeviceIdentity().id)
+          await purgeMyKeyPackages(this.resolveDeviceIdentity().id, this.httpClient)
         }
 
-        const count = await getMyKeyPackageCount(this.resolveDeviceIdentity().id)
+        const count = await getMyKeyPackageCount(this.resolveDeviceIdentity().id, this.httpClient)
         if (count >= KEY_PACKAGE_THRESHOLD) {
           return
         }
@@ -602,7 +622,7 @@ export class VesperAuthClient {
         )
 
         const publicPackageBytes = pairs.map((pair) => encodeKeyPackageBytes(pair.publicPackage))
-        await uploadKeyPackages(publicPackageBytes, this.resolveDeviceIdentity().id)
+        await uploadKeyPackages(publicPackageBytes, this.resolveDeviceIdentity().id, this.httpClient)
       } finally {
         this.keyPackageReplenishPromise = null
       }
@@ -652,7 +672,7 @@ export class VesperAuthClient {
 
   private async registerCurrentDeviceNotificationCapability(): Promise<void> {
     try {
-      await apiFetch('/api/v1/auth/devices/current/notifications', {
+      await this.httpClient.apiFetch('/api/v1/auth/devices/current/notifications', {
         method: 'PUT',
         body: JSON.stringify({
           push_platform:
@@ -673,6 +693,12 @@ export class VesperAuthClient {
 
     return sessionResponse
   }
+}
+
+export function createVesperAuthClient(
+  options: VesperAuthClientOptions = {}
+): VesperAuthClient {
+  return new VesperAuthClient(options)
 }
 
 function parseError(data: Record<string, unknown>, fallback: string): string {
@@ -706,7 +732,9 @@ function shouldGenerateFreshDeviceIdentity(
   return Boolean(currentDevice?.approval_method)
 }
 
-async function hasUnlockedLocalIdentity(userId: string): Promise<boolean> {
+async function hasUnlockedLocalIdentity(
+  userId: string
+): Promise<boolean> {
   const identity = await loadIdentity(userId).catch(() => null)
   return Boolean(identity?.signaturePrivateKey)
 }

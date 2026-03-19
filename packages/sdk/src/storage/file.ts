@@ -129,12 +129,21 @@ export class FileCryptoStorage implements CryptoDbApi {
       return null
     }
 
+    const public_identity_key = base64ToArrayBuffer(record.public_identity_key)
+    const public_key_exchange = base64ToArrayBuffer(record.public_key_exchange)
+    const encrypted_private_keys = base64ToArrayBuffer(record.encrypted_private_keys)
+    const nonce = base64ToArrayBuffer(record.nonce)
+    const salt = base64ToArrayBuffer(record.salt)
+    if (!public_identity_key || !public_key_exchange || !encrypted_private_keys || !nonce || !salt) {
+      return null
+    }
+
     return {
-      public_identity_key: base64ToArrayBuffer(record.public_identity_key) as ArrayBuffer,
-      public_key_exchange: base64ToArrayBuffer(record.public_key_exchange) as ArrayBuffer,
-      encrypted_private_keys: base64ToArrayBuffer(record.encrypted_private_keys) as ArrayBuffer,
-      nonce: base64ToArrayBuffer(record.nonce) as ArrayBuffer,
-      salt: base64ToArrayBuffer(record.salt) as ArrayBuffer,
+      public_identity_key,
+      public_key_exchange,
+      encrypted_private_keys,
+      nonce,
+      salt,
       signature_private_key: base64ToArrayBuffer(record.signature_private_key)
     }
   }
@@ -170,10 +179,12 @@ export class FileCryptoStorage implements CryptoDbApi {
       return null
     }
 
-    return {
-      state: base64ToArrayBuffer(record.state) as ArrayBuffer,
-      epoch: record.epoch
+    const state = base64ToArrayBuffer(record.state)
+    if (!state) {
+      return null
     }
+
+    return { state, epoch: record.epoch }
   }
 
   async setGroupState(groupId: string, state: Uint8Array, epoch: number): Promise<void> {
@@ -186,6 +197,7 @@ export class FileCryptoStorage implements CryptoDbApi {
 
   async deleteGroupState(groupId: string): Promise<void> {
     delete this.state.groupStates[groupId]
+    delete this.state.groupSyncCursors[groupId]
     this.persist()
   }
 
@@ -206,12 +218,14 @@ export class FileCryptoStorage implements CryptoDbApi {
       key_package_private: ArrayBuffer
     }>
   > {
-    return this.state.keyPackages.map((record) => ({
-      id: record.id,
-      key_package_ref: record.key_package_ref,
-      key_package_public: base64ToArrayBuffer(record.key_package_public) as ArrayBuffer,
-      key_package_private: base64ToArrayBuffer(record.key_package_private) as ArrayBuffer
-    }))
+    return this.state.keyPackages.flatMap((record) => {
+      const key_package_public = base64ToArrayBuffer(record.key_package_public)
+      const key_package_private = base64ToArrayBuffer(record.key_package_private)
+      if (!key_package_public || !key_package_private) {
+        return []
+      }
+      return [{ id: record.id, key_package_ref: record.key_package_ref, key_package_public, key_package_private }]
+    })
   }
 
   async getLocalKeyPackageByRef(keyPackageRef: string): Promise<{
@@ -225,12 +239,13 @@ export class FileCryptoStorage implements CryptoDbApi {
       return null
     }
 
-    return {
-      id: record.id,
-      key_package_ref: record.key_package_ref,
-      key_package_public: base64ToArrayBuffer(record.key_package_public) as ArrayBuffer,
-      key_package_private: base64ToArrayBuffer(record.key_package_private) as ArrayBuffer
+    const key_package_public = base64ToArrayBuffer(record.key_package_public)
+    const key_package_private = base64ToArrayBuffer(record.key_package_private)
+    if (!key_package_public || !key_package_private) {
+      return null
     }
+
+    return { id: record.id, key_package_ref: record.key_package_ref, key_package_public, key_package_private }
   }
 
   async setLocalKeyPackages(
@@ -286,6 +301,13 @@ export class FileCryptoStorage implements CryptoDbApi {
     this.persist()
   }
 
+  async deleteCachedMessage(messageId: string): Promise<void> {
+    delete this.state.cachedMessages[messageId]
+    delete this.state.cachedDecryptions[messageId]
+    delete this.state.searchIndex[messageId]
+    this.persist()
+  }
+
   async getCachedMessages(scopeId: string): Promise<Array<{
     id: string
     room_seq: number | null
@@ -312,6 +334,8 @@ export class FileCryptoStorage implements CryptoDbApi {
     for (const [messageId, message] of Object.entries(this.state.cachedMessages)) {
       if (message.channel_id === scopeId || message.conversation_id === scopeId) {
         delete this.state.cachedMessages[messageId]
+        delete this.state.cachedDecryptions[messageId]
+        delete this.state.searchIndex[messageId]
       }
     }
     this.persist()

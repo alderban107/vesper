@@ -1,4 +1,4 @@
-import { apiFetch } from '@vesper/sdk/transport'
+import { getRendererClient } from '../sdk/client'
 
 const ATTACHMENT_FETCH_RETRY_DELAYS_MS = [0, 180, 500, 1200] as const
 
@@ -23,17 +23,14 @@ export async function fetchAttachmentBytes(attachmentId: string): Promise<ArrayB
     await waitForRetry(attempt)
 
     try {
-      const response = await apiFetch(`/api/v1/attachments/${attachmentId}`)
-      if (response.ok) {
-        return await response.arrayBuffer()
-      }
-
-      lastError = new Error(`attachment fetch failed with status ${response.status}`)
-      if (!shouldRetryAttachmentFetch(response.status, attempt)) {
-        throw lastError
-      }
+      return await getRendererClient().fetchAttachmentBytes(attachmentId)
     } catch (error) {
       lastError = error instanceof Error ? error : new Error('attachment fetch failed')
+      const statusMatch = /status (\d+)/.exec(lastError.message)
+      const status = statusMatch ? Number.parseInt(statusMatch[1] ?? '', 10) : NaN
+      if (Number.isFinite(status) && shouldRetryAttachmentFetch(status, attempt)) {
+        continue
+      }
       if (attempt === ATTACHMENT_FETCH_RETRY_DELAYS_MS.length - 1) {
         throw lastError
       }

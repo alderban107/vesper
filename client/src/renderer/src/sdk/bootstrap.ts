@@ -1,28 +1,14 @@
-import {
-  SESSION_NOTICE_EVENT,
-  configureHttpClient,
-  type SessionNotice,
-  type SessionStore
-} from '@vesper/sdk/transport'
+import { SESSION_NOTICE_EVENT, type SessionNotice, type SessionStore } from '@vesper/sdk/api'
 import { useSettingsStore } from '../stores/settingsStore'
+import { getStoredValue, setStoredValue, removeStoredValue } from '../utils/localStorage'
 
 const SESSION_NOTICE_KEY = 'vesperSessionNotice'
-
-function getStoredValue(key: string): string | null {
-  return localStorage.getItem(key)
-}
-
-function setStoredValue(key: string, value: string): void {
-  localStorage.setItem(key, value)
-}
-
-function removeStoredValue(key: string): void {
-  localStorage.removeItem(key)
-}
 
 function emitSessionNotice(): void {
   window.dispatchEvent(new CustomEvent(SESSION_NOTICE_EVENT))
 }
+
+export { SESSION_NOTICE_EVENT, type SessionNotice }
 
 export const rendererSessionStore: SessionStore = {
   getServerUrl(): string {
@@ -86,15 +72,3 @@ export const rendererSessionStore: SessionStore = {
   emitSessionNotice
 }
 
-let initialized = false
-
-export function bootstrapSdkClient(): void {
-  if (initialized) {
-    return
-  }
-
-  configureHttpClient({
-    sessionStore: rendererSessionStore
-  })
-  initialized = true
-}

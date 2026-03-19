@@ -5,14 +5,12 @@ import { Buffer } from 'buffer'
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { Agentation } from 'agentation'
-import { bootstrapSdkClient } from './sdk/bootstrap'
 import { initWebNotifications } from './utils/webNotifications'
 import App from './App'
 import 'katex/dist/katex.min.css'
 import './index.css'
 
 initWebNotifications()
-bootstrapSdkClient()
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

@@ -1,6 +1,6 @@
 import { encryptFile, type FilePayload } from '@vesper/sdk/crypto'
-import { apiUpload } from '@vesper/sdk/transport'
 import { extractAudioMetadata } from './audioMetadata'
+import { getRendererClient } from '../sdk/client'
 import { extractVideoThumbnail } from './videoThumbnail'
 
 interface UploadedEncryptedAttachment {
@@ -24,16 +24,19 @@ async function uploadEncryptedBytes(
   formData.append('file', blob, filename)
   formData.append('encrypted', 'true')
 
-  const response = await apiUpload('/api/v1/attachments', formData)
-  if (!response.ok) {
-    return null
-  }
+  try {
+    const payload = await getRendererClient().uploadAttachment(formData)
+    if (!payload.attachment?.id) {
+      return null
+    }
 
-  const payload = await response.json()
-  return {
-    id: payload.attachment.id,
-    iv: encrypted.iv,
-    key: encrypted.key
+    return {
+      id: payload.attachment.id,
+      iv: encrypted.iv,
+      key: encrypted.key
+    }
+  } catch {
+    return null
   }
 }
 

@@ -43,6 +43,24 @@ export interface SdkServerStack {
   runId: string
 }
 
+async function waitForProcessExit(process: ChildProcess, timeoutMs = 5_000): Promise<void> {
+  if (process.exitCode != null || process.signalCode != null) {
+    return
+  }
+
+  await new Promise<void>((resolve) => {
+    const timeout = setTimeout(() => {
+      process.kill('SIGKILL')
+      resolve()
+    }, timeoutMs)
+
+    process.once('exit', () => {
+      clearTimeout(timeout)
+      resolve()
+    })
+  })
+}
+
 export async function bootServerStack(): Promise<SdkServerStack> {
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
   const partition = `_sdk_${runId}`
@@ -91,12 +109,14 @@ export async function bootServerStack(): Promise<SdkServerStack> {
   }
 }
 
-export function teardownServerStack(stack: SdkServerStack): void {
+export async function teardownServerStack(stack: SdkServerStack): Promise<void> {
   if (!stack.process.killed) {
     stack.process.kill('SIGTERM')
   }
 
-  void withStackLifecycleLock(async () => {
+  await waitForProcessExit(stack.process)
+
+  await withStackLifecycleLock(async () => {
     try {
       execSync('mix ecto.drop --quiet', {
         cwd: SERVER_DIR,

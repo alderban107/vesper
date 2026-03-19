@@ -35,7 +35,7 @@ defmodule VesperWeb.ScopeSummary do
     }
   end
 
-  def broadcast_channel_update(channel_id, message, user_ids) when is_list(user_ids) do
+  def broadcast_channel_update(channel_id, message, user_ids) do
     payload = %{
       kind: "channel",
       scope_id: channel_id,
@@ -46,7 +46,7 @@ defmodule VesperWeb.ScopeSummary do
     broadcast_to_users(user_ids, payload)
   end
 
-  def broadcast_dm_update(conversation_id, message, user_ids) when is_list(user_ids) do
+  def broadcast_dm_update(conversation_id, message, user_ids) do
     payload = %{
       kind: "dm",
       scope_id: conversation_id,

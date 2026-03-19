@@ -1,17 +1,10 @@
 import { Suspense, lazy, useState, useEffect } from 'react'
 import { Pin, PinOff, X } from 'lucide-react'
-import { apiFetch } from '@vesper/sdk/transport'
 import { useMessageStore } from '../../stores/messageStore'
-import type { Message } from '../../stores/messageStore'
+import { getRendererClient } from '../../sdk/client'
+import type { VesperChannelPin } from '@vesper/sdk/api'
 
 const MarkdownContent = lazy(() => import('./MarkdownContent'))
-
-interface PinnedEntry {
-  id: string
-  message: Message
-  pinned_by_id: string
-  inserted_at: string
-}
 
 interface Props {
   channelId: string
@@ -20,17 +13,13 @@ interface Props {
 }
 
 export default function PinsPanel({ channelId, topic, onClose }: Props): React.JSX.Element {
-  const [pins, setPins] = useState<PinnedEntry[]>([])
+  const [pins, setPins] = useState<VesperChannelPin[]>([])
   const [loading, setLoading] = useState(true)
   const unpinMessage = useMessageStore((s) => s.unpinMessage)
 
   const fetchPins = async (): Promise<void> => {
     try {
-      const res = await apiFetch(`/api/v1/channels/${channelId}/pins`)
-      if (res.ok) {
-        const data = await res.json()
-        setPins(data.pins)
-      }
+      setPins(await getRendererClient().listChannelPins(channelId))
     } catch {
       // ignore
     } finally {

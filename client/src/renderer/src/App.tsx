@@ -3,10 +3,9 @@ import { AlertTriangle, Star } from 'lucide-react'
 import { useAuthStore } from './stores/authStore'
 import {
   SESSION_NOTICE_EVENT,
-  clearSessionNotice,
-  getSessionNotice,
+  rendererSessionStore,
   type SessionNotice
-} from '@vesper/sdk/transport'
+} from './sdk/bootstrap'
 const LoginPage = lazy(() => import('./pages/LoginPage'))
 const RegisterPage = lazy(() => import('./pages/RegisterPage'))
 const RecoveryPage = lazy(() => import('./pages/RecoveryPage'))
@@ -100,7 +99,7 @@ function App(): React.JSX.Element {
   const { isAuthenticated, isLoading, checkAuth, recoveryMnemonic, clearRecoveryMnemonic } =
     useAuthStore()
   const [page, setPage] = useState<'login' | 'register' | 'recovery'>('login')
-  const [sessionNotice, setSessionNotice] = useState<SessionNotice | null>(() => getSessionNotice())
+  const [sessionNotice, setSessionNotice] = useState<SessionNotice | null>(() => rendererSessionStore.getSessionNotice())
 
   useEffect(() => {
     checkAuth()
@@ -108,7 +107,7 @@ function App(): React.JSX.Element {
 
   useEffect(() => {
     const syncSessionNotice = (): void => {
-      setSessionNotice(getSessionNotice())
+      setSessionNotice(rendererSessionStore.getSessionNotice())
     }
 
     window.addEventListener(SESSION_NOTICE_EVENT, syncSessionNotice)
@@ -121,7 +120,7 @@ function App(): React.JSX.Element {
   }, [])
 
   const handleDismissSessionNotice = (): void => {
-    clearSessionNotice()
+    rendererSessionStore.clearSessionNotice()
     setSessionNotice(null)
     setPage('login')
   }

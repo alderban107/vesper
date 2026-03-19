@@ -16,6 +16,7 @@ import {
   type Channel,
   type ChannelPermissionOverride,
   type PermissionOverrideUpsertInput,
+  type ServerRole,
   useServerStore
 } from '../../stores/serverStore'
 import { useAuthStore } from '../../stores/authStore'

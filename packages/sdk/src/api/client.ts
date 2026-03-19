@@ -11,9 +11,6 @@ const DEFAULT_SERVER_URL = (() => {
 const SESSION_NOTICE_KEY = 'vesperSessionNotice'
 const SESSION_NOTICE_EVENT = 'vesper:session-notice'
 
-let refreshRequest: Promise<string | null> | null = null
-let fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis)
-
 export interface SessionStore {
   getServerUrl(): string
   getAccessToken(): string | null
@@ -158,10 +155,6 @@ class MemorySessionStore implements SessionStore {
 
 let sessionStore: SessionStore = new BrowserSessionStore()
 
-function getServerUrl(): string {
-  return sessionStore.getServerUrl()
-}
-
 function isNetworkError(error: unknown): error is Error {
   return (
     error instanceof Error &&
@@ -189,60 +182,15 @@ function normalizeFetchError(error: unknown, url: string): Error {
 
 async function performFetch(url: string, options: RequestInit): Promise<Response> {
   try {
-    return await fetchImpl(url, options)
+    return await globalThis.fetch(url, options)
   } catch (error) {
     throw normalizeFetchError(error, url)
   }
 }
 
-function getAccessToken(): string | null {
-  return sessionStore.getAccessToken()
-}
-
-function getRefreshToken(): string | null {
-  return sessionStore.getRefreshToken()
-}
-
-function setTokens(access: string, refresh: string): void {
-  sessionStore.setTokens(access, refresh)
-}
-
-function clearTokens(): void {
-  sessionStore.clearTokens()
-}
-
 export interface SessionNotice {
   title: string
   message: string
-}
-
-function emitSessionNotice(): void {
-  sessionStore.emitSessionNotice()
-}
-
-function setSessionNotice(notice: SessionNotice): void {
-  sessionStore.setSessionNotice(notice)
-}
-
-function clearSessionNotice(): void {
-  sessionStore.clearSessionNotice()
-}
-
-function getSessionNotice(): SessionNotice | null {
-  return sessionStore.getSessionNotice()
-}
-
-export function configureHttpClient(config: {
-  fetchImpl?: typeof fetch
-  sessionStore?: SessionStore
-}): void {
-  if (config.fetchImpl) {
-    fetchImpl = config.fetchImpl
-  }
-
-  if (config.sessionStore) {
-    sessionStore = config.sessionStore
-  }
 }
 
 export function createMemorySessionStore(serverUrl: string): SessionStore {
@@ -253,110 +201,240 @@ export function createBrowserSessionStore(defaultServerUrl?: string | null): Ses
   return new BrowserSessionStore(defaultServerUrl)
 }
 
-async function refreshAccessToken(): Promise<string | null> {
-  if (refreshRequest) {
-    return refreshRequest
+export class VesperHttpClient {
+  private refreshRequest: Promise<string | null> | null = null
+  private fetchImpl: typeof fetch
+  private sessionStore: SessionStore
+
+  constructor(config: {
+    fetchImpl?: typeof fetch
+    sessionStore?: SessionStore
+  } = {}) {
+    this.fetchImpl = config.fetchImpl ?? globalThis.fetch.bind(globalThis)
+    this.sessionStore = config.sessionStore ?? sessionStore
   }
 
-  const refreshToken = getRefreshToken()
-  if (!refreshToken) return null
-
-  refreshRequest = (async () => {
-    try {
-      const url = `${getServerUrl()}/api/v1/auth/refresh`
-      const res = await performFetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refresh_token: refreshToken })
-      })
-
-      if (!res.ok) {
-        clearTokens()
-        setSessionNotice({
-          title: 'Sign in again on this device',
-          message:
-            'This session can no longer be renewed. If this device was signed in before device-based sessions shipped, one fresh login is required.'
-        })
-        return null
-      }
-
-      const data = await res.json()
-      setTokens(data.access_token, data.refresh_token)
-      clearSessionNotice()
-      return data.access_token
-    } catch {
-      clearTokens()
-      return null
-    } finally {
-      refreshRequest = null
+  configure(config: {
+    fetchImpl?: typeof fetch
+    sessionStore?: SessionStore
+  }): void {
+    if (config.fetchImpl) {
+      this.fetchImpl = config.fetchImpl
     }
-  })()
 
-  return refreshRequest
+    if (config.sessionStore) {
+      this.sessionStore = config.sessionStore
+    }
+  }
+
+  getSessionStore(): SessionStore {
+    return this.sessionStore
+  }
+
+  getServerUrl(): string {
+    return this.sessionStore.getServerUrl()
+  }
+
+  getAccessToken(): string | null {
+    return this.sessionStore.getAccessToken()
+  }
+
+  getRefreshToken(): string | null {
+    return this.sessionStore.getRefreshToken()
+  }
+
+  setTokens(access: string, refresh: string): void {
+    this.sessionStore.setTokens(access, refresh)
+  }
+
+  clearTokens(): void {
+    this.sessionStore.clearTokens()
+  }
+
+  emitSessionNotice(): void {
+    this.sessionStore.emitSessionNotice()
+  }
+
+  setSessionNotice(notice: SessionNotice): void {
+    this.sessionStore.setSessionNotice(notice)
+  }
+
+  clearSessionNotice(): void {
+    this.sessionStore.clearSessionNotice()
+  }
+
+  getSessionNotice(): SessionNotice | null {
+    return this.sessionStore.getSessionNotice()
+  }
+
+  async apiFetch(path: string, options: RequestInit = {}): Promise<Response> {
+    const url = `${this.getServerUrl()}${path}`
+    const token = this.getAccessToken()
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...(options.headers as Record<string, string>)
+    }
+
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`
+    }
+
+    let response = await this.performFetch(url, { ...options, headers })
+
+    if (response.status === 401 && token) {
+      const newToken = await this.refreshAccessToken()
+      if (newToken) {
+        headers['Authorization'] = `Bearer ${newToken}`
+        response = await this.performFetch(url, { ...options, headers })
+      }
+    }
+
+    return response
+  }
+
+  async apiUpload(path: string, formData: FormData): Promise<Response> {
+    const url = `${this.getServerUrl()}${path}`
+    const token = this.getAccessToken()
+    const headers: Record<string, string> = {}
+
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`
+    }
+
+    let response = await this.performFetch(url, { method: 'POST', headers, body: formData })
+
+    if (response.status === 401 && token) {
+      const newToken = await this.refreshAccessToken()
+      if (newToken) {
+        headers['Authorization'] = `Bearer ${newToken}`
+        response = await this.performFetch(url, { method: 'POST', headers, body: formData })
+      }
+    }
+
+    return response
+  }
+
+  private async performFetch(url: string, options: RequestInit): Promise<Response> {
+    try {
+      return await this.fetchImpl(url, options)
+    } catch (error) {
+      throw normalizeFetchError(error, url)
+    }
+  }
+
+  private async refreshAccessToken(): Promise<string | null> {
+    if (this.refreshRequest) {
+      return this.refreshRequest
+    }
+
+    const refreshToken = this.getRefreshToken()
+    if (!refreshToken) {
+      return null
+    }
+
+    this.refreshRequest = (async () => {
+      try {
+        const response = await this.performFetch(`${this.getServerUrl()}/api/v1/auth/refresh`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: refreshToken })
+        })
+
+        if (!response.ok) {
+          this.clearTokens()
+          this.setSessionNotice({
+            title: 'Sign in again on this device',
+            message:
+              'This session can no longer be renewed. If this device was signed in before device-based sessions shipped, one fresh login is required.'
+          })
+          return null
+        }
+
+        const data = await response.json()
+        this.setTokens(data.access_token, data.refresh_token)
+        this.clearSessionNotice()
+        return data.access_token
+      } catch {
+        this.clearTokens()
+        return null
+      } finally {
+        this.refreshRequest = null
+      }
+    })()
+
+    return this.refreshRequest
+  }
+}
+
+const defaultHttpClient = new VesperHttpClient()
+
+export function getDefaultHttpClient(): VesperHttpClient {
+  return defaultHttpClient
+}
+
+export function configureHttpClient(config: {
+  fetchImpl?: typeof fetch
+  sessionStore?: SessionStore
+}): void {
+  defaultHttpClient.configure(config)
+
+  if (config.sessionStore) {
+    sessionStore = config.sessionStore
+  }
+}
+
+export function getServerUrl(): string {
+  return defaultHttpClient.getServerUrl()
+}
+
+export function getAccessToken(): string | null {
+  return defaultHttpClient.getAccessToken()
+}
+
+export function getRefreshToken(): string | null {
+  return defaultHttpClient.getRefreshToken()
+}
+
+export function setTokens(access: string, refresh: string): void {
+  defaultHttpClient.setTokens(access, refresh)
+}
+
+export function clearTokens(): void {
+  defaultHttpClient.clearTokens()
+}
+
+function emitSessionNotice(): void {
+  defaultHttpClient.emitSessionNotice()
+}
+
+function setSessionNotice(notice: SessionNotice): void {
+  defaultHttpClient.setSessionNotice(notice)
+}
+
+function clearSessionNotice(): void {
+  defaultHttpClient.clearSessionNotice()
+}
+
+function getSessionNotice(): SessionNotice | null {
+  return defaultHttpClient.getSessionNotice()
 }
 
 export async function apiFetch(
   path: string,
   options: RequestInit = {}
 ): Promise<Response> {
-  const url = `${getServerUrl()}${path}`
-  let token = getAccessToken()
-
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...(options.headers as Record<string, string>)
-  }
-
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`
-  }
-
-  let res = await performFetch(url, { ...options, headers })
-
-  // If 401, try refreshing the token
-  if (res.status === 401 && token) {
-    const newToken = await refreshAccessToken()
-    if (newToken) {
-      headers['Authorization'] = `Bearer ${newToken}`
-      res = await performFetch(url, { ...options, headers })
-    }
-  }
-
-  return res
+  return await defaultHttpClient.apiFetch(path, options)
 }
 
 export async function apiUpload(
   path: string,
   formData: FormData
 ): Promise<Response> {
-  const url = `${getServerUrl()}${path}`
-  let token = getAccessToken()
-
-  const headers: Record<string, string> = {}
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`
-  }
-
-  let res = await performFetch(url, { method: 'POST', headers, body: formData })
-
-  if (res.status === 401 && token) {
-    const newToken = await refreshAccessToken()
-    if (newToken) {
-      headers['Authorization'] = `Bearer ${newToken}`
-      res = await performFetch(url, { method: 'POST', headers, body: formData })
-  }
-  }
-
-  return res
+  return await defaultHttpClient.apiUpload(path, formData)
 }
 
 export {
   SESSION_NOTICE_EVENT,
   clearSessionNotice,
-  getServerUrl,
-  getAccessToken,
-  getRefreshToken,
-  getSessionNotice,
-  setTokens,
-  clearTokens
+  getSessionNotice
 }

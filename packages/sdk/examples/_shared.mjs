@@ -241,6 +241,7 @@ class FileCryptoStorage {
 
   async deleteGroupState(groupId) {
     delete this.state.groupStates[groupId]
+    delete this.state.groupSyncCursors[groupId]
     this.persist()
   }
 
@@ -311,6 +312,8 @@ class FileCryptoStorage {
     for (const [messageId, message] of Object.entries(this.state.cachedMessages)) {
       if (message.channel_id === channelId || message.conversation_id === channelId) {
         delete this.state.cachedMessages[messageId]
+        delete this.state.cachedDecryptions[messageId]
+        delete this.state.searchIndex[messageId]
       }
     }
     this.persist()

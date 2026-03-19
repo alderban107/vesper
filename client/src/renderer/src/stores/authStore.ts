@@ -5,6 +5,7 @@ import {
   type VesperUser as User
 } from '@vesper/sdk/client'
 import { useServerStore } from './serverStore'
+import { fireAndForget } from '../utils/async'
 import { resetAllStores } from './resetStores'
 import { getRendererClient, getRendererEncryptedChat, resetRendererClient } from '../sdk/client'
 
@@ -191,8 +192,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       const session = await getRendererClient().register(username, password)
       applyAuthenticatedState(set, session)
-      void getRendererClient().start(false).catch(() => {})
-      void get().fetchDevices().catch(() => {})
+      fireAndForget(getRendererClient().start(false))
+      fireAndForget(get().fetchDevices())
 
       return true
     } catch (error) {
@@ -209,13 +210,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       const session = await getRendererClient().login(username, password)
       applyAuthenticatedState(set, session, { recoveryMnemonic: null })
-      void getRendererClient().start(false).catch(() => {})
+      fireAndForget(getRendererClient().start(false))
       if (session.canUseE2EE) {
-        void get().replenishKeyPackages().catch(() => {})
-        void refreshActiveEncryptedViews().catch(() => {})
+        fireAndForget(get().replenishKeyPackages())
+        fireAndForget(refreshActiveEncryptedViews())
       }
 
-      void get().fetchDevices().catch(() => {})
+      fireAndForget(get().fetchDevices())
       return true
     } catch (error) {
       set({
@@ -260,14 +261,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       const session = await getRendererClient().recoverAccount(mnemonic, newPassword)
       applyAuthenticatedState(set, session, { recoveryMnemonic: null })
-      void getRendererClient().start(false).catch(() => {})
+      fireAndForget(getRendererClient().start(false))
 
       if (session.canUseE2EE) {
-        void get().replenishKeyPackages().catch(() => {})
-        void refreshActiveEncryptedViews().catch(() => {})
+        fireAndForget(get().replenishKeyPackages())
+        fireAndForget(refreshActiveEncryptedViews())
       }
 
-      void get().fetchDevices().catch(() => {})
+      fireAndForget(get().fetchDevices())
       return true
     } catch (error) {
       set({
@@ -286,13 +287,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
 
       applyAuthenticatedState(set, session, { isLoading: false, recoveryMnemonic: null })
-      void getRendererClient().start(false).catch(() => {})
+      fireAndForget(getRendererClient().start(false))
       if (session.canUseE2EE) {
-        void get().replenishKeyPackages().catch(() => {})
-        void refreshActiveEncryptedViews().catch(() => {})
+        fireAndForget(get().replenishKeyPackages())
+        fireAndForget(refreshActiveEncryptedViews())
       }
 
-      void get().fetchDevices().catch(() => {})
+      fireAndForget(get().fetchDevices())
     } catch {
       set({ isLoading: false, canUseE2EE: false })
     }
@@ -358,7 +359,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         throw new Error('Device approval did not produce a session')
       }
       applyAuthenticatedState(set, session, { recoveryMnemonic: null })
-      void getRendererClient().start(false).catch(() => {})
+      fireAndForget(getRendererClient().start(false))
       await get().fetchDevices()
       await get().replenishKeyPackages()
       await refreshActiveEncryptedViews()
@@ -384,7 +385,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         throw new Error('Trusted device unlock did not produce a session')
       }
       applyAuthenticatedState(set, session, { recoveryMnemonic: null })
-      void getRendererClient().start(false).catch(() => {})
+      fireAndForget(getRendererClient().start(false))
       await get().replenishKeyPackages()
       await refreshActiveEncryptedViews()
       return true

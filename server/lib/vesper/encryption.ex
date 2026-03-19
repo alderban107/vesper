@@ -452,6 +452,32 @@ defmodule Vesper.Encryption do
   Store a replayable MLS control-plane event for an encrypted scope.
   """
   def store_mls_event(attrs) do
+    insert_mls_event(attrs)
+  end
+
+  @doc """
+  Store a replayable MLS remove event and atomically complete any linked crypto eviction.
+  """
+  def store_mls_remove_event(attrs, crypto_eviction \\ nil) do
+    Repo.transaction(fn ->
+      with {:ok, event} <- insert_mls_event(attrs),
+           :ok <- maybe_complete_pending_crypto_eviction(crypto_eviction, event.id) do
+        event
+      else
+        {:error, %Ecto.Changeset{} = changeset} ->
+          Repo.rollback(changeset)
+
+        {:error, reason} ->
+          Repo.rollback(reason)
+      end
+    end)
+    |> case do
+      {:ok, event} -> {:ok, event}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp insert_mls_event(attrs) do
     %MlsEvent{}
     |> MlsEvent.changeset(attrs)
     |> Repo.insert()
@@ -653,54 +679,100 @@ defmodule Vesper.Encryption do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
     Repo.transaction(fn ->
-      case lock_crypto_eviction(id, scope_kind, scope_id) do
-        nil ->
-          Repo.rollback(:not_found)
-
-        %PendingCryptoEviction{} = eviction ->
-          cond do
-            eviction.target_user_id != removed_user_id ->
-              Repo.rollback(:target_mismatch)
-
-            not is_nil(eviction.target_device_id) and
-                eviction.target_device_id != removed_device_id ->
-              Repo.rollback(:target_device_mismatch)
-
-            eviction.status not in ["pending", "requested", "claimed"] ->
-              Repo.rollback(:not_claimable)
-
-            eviction.status == "claimed" and
-                (eviction.sponsor_user_id != sponsor_user_id or
-                   eviction.sponsor_device_id != sponsor_device_id) ->
-              Repo.rollback(:sponsor_mismatch)
-
-            true ->
-              {:ok, committed} =
-                eviction
-                |> PendingCryptoEviction.changeset(%{
-                  status: "committed",
-                  sponsor_user_id: sponsor_user_id,
-                  sponsor_device_id: sponsor_device_id,
-                  commit_event_id: commit_event_id,
-                  committed_at: now,
-                  applied_at: nil,
-                  last_error: nil
-                })
-                |> Repo.update()
-
-              purge_pending_crypto_artifacts(
-                committed.group_id,
-                committed.target_user_id,
-                committed.target_device_id
-              )
-
-              committed
-          end
+      case complete_pending_crypto_eviction_transaction(
+             id,
+             scope_kind,
+             scope_id,
+             removed_user_id,
+             removed_device_id,
+             commit_event_id,
+             sponsor_user_id,
+             sponsor_device_id,
+             now
+           ) do
+        {:ok, eviction} -> eviction
+        {:error, reason} -> Repo.rollback(reason)
       end
     end)
     |> case do
       {:ok, eviction} -> {:ok, eviction}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp maybe_complete_pending_crypto_eviction(nil, _commit_event_id), do: :ok
+
+  defp maybe_complete_pending_crypto_eviction(crypto_eviction, commit_event_id) do
+    case complete_pending_crypto_eviction_transaction(
+           crypto_eviction.eviction_id,
+           crypto_eviction.scope_kind,
+           crypto_eviction.scope_id,
+           crypto_eviction.removed_user_id,
+           crypto_eviction.removed_device_id,
+           commit_event_id,
+           crypto_eviction.sponsor_user_id,
+           crypto_eviction.sponsor_device_id,
+           DateTime.utc_now() |> DateTime.truncate(:second)
+         ) do
+      {:ok, _eviction} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp complete_pending_crypto_eviction_transaction(
+         id,
+         scope_kind,
+         scope_id,
+         removed_user_id,
+         removed_device_id,
+         commit_event_id,
+         sponsor_user_id,
+         sponsor_device_id,
+         now
+       ) do
+    case lock_crypto_eviction(id, scope_kind, scope_id) do
+      nil ->
+        {:error, :not_found}
+
+      %PendingCryptoEviction{} = eviction ->
+        cond do
+          eviction.target_user_id != removed_user_id ->
+            {:error, :target_mismatch}
+
+          not is_nil(eviction.target_device_id) and
+              eviction.target_device_id != removed_device_id ->
+            {:error, :target_device_mismatch}
+
+          eviction.status not in ["pending", "requested", "claimed"] ->
+            {:error, :not_claimable}
+
+          eviction.status == "claimed" and
+              (eviction.sponsor_user_id != sponsor_user_id or
+                 eviction.sponsor_device_id != sponsor_device_id) ->
+            {:error, :sponsor_mismatch}
+
+          true ->
+            {:ok, committed} =
+              eviction
+              |> PendingCryptoEviction.changeset(%{
+                status: "committed",
+                sponsor_user_id: sponsor_user_id,
+                sponsor_device_id: sponsor_device_id,
+                commit_event_id: commit_event_id,
+                committed_at: now,
+                applied_at: nil,
+                last_error: nil
+              })
+              |> Repo.update()
+
+            purge_pending_crypto_artifacts(
+              committed.group_id,
+              committed.target_user_id,
+              committed.target_device_id
+            )
+
+            {:ok, committed}
+        end
     end
   end
 

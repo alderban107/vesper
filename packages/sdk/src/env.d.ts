@@ -60,6 +60,7 @@ interface CryptoDbApi {
   }): Promise<void>
   getCachedMessageDecryption(messageId: string): Promise<string | null>
   setCachedMessageDecryption(messageId: string, plaintext: string): Promise<void>
+  deleteCachedMessage(messageId: string): Promise<void>
   getCachedMessages(channelId: string): Promise<
     Array<{
       id: string

@@ -3,9 +3,12 @@ import test from 'node:test'
 
 import { getMyKeyPackageCount } from '../dist/api/index.js'
 import { VesperAuthClient } from '../dist/auth/index.js'
-import { MemoryStorage, configureCryptoStorage } from '../dist/storage/index.js'
+import { MemoryStorage } from '../dist/storage/index.js'
 import { bootServerStack, teardownServerStack } from '../dist/testing/index.js'
-import { configureHttpClient, createMemorySessionStore } from '../dist/transport/index.js'
+import {
+  createMemorySessionStore,
+  createVesperTransport
+} from '../dist/transport/index.js'
 
 function createHarness(apiUrl, label) {
   const device = {
@@ -13,31 +16,42 @@ function createHarness(apiUrl, label) {
     name: `SDK ${label}`,
     platform: 'node'
   }
+  const sessionStore = createMemorySessionStore(apiUrl)
+  const storage = new MemoryStorage()
+  const transport = createVesperTransport({
+    baseUrl: apiUrl,
+    fetchImpl: fetch,
+    sessionStore,
+    socketOptions: {
+      logger: {
+        error: () => {},
+        log: () => {}
+      }
+    }
+  })
 
   return {
     auth: new VesperAuthClient({
-      getDeviceIdentity: () => device
+      getDeviceIdentity: () => device,
+      storage,
+      transport
     }),
     device,
-    sessionStore: createMemorySessionStore(apiUrl),
-    storage: new MemoryStorage()
+    httpClient: transport.httpClient,
+    sessionStore,
+    socketClient: transport.socketClient,
+    storage
   }
 }
 
 async function runWithHarness(harness, operation) {
-  configureHttpClient({
-    fetchImpl: fetch,
-    sessionStore: harness.sessionStore
-  })
-  configureCryptoStorage(harness.storage)
-
   return await operation(harness.auth)
 }
 
 test('sdk auth client registers, restores session, and uploads key packages', { concurrency: false }, async (t) => {
   const stack = await bootServerStack()
-  t.after(() => {
-    teardownServerStack(stack)
+  t.after(async () => {
+    await teardownServerStack(stack)
   })
 
   const harness = createHarness(stack.apiUrl, 'primary')
@@ -50,7 +64,7 @@ test('sdk auth client registers, restores session, and uploads key packages', { 
   assert.match(registered.recoveryMnemonic ?? '', /\S+\s+\S+/)
 
   const packageCount = await runWithHarness(harness, () =>
-    getMyKeyPackageCount(harness.device.id)
+    getMyKeyPackageCount(harness.device.id, harness.httpClient)
   )
   assert.equal(packageCount, 20)
 
@@ -67,8 +81,8 @@ test('sdk auth client registers, restores session, and uploads key packages', { 
 
 test('sdk auth client verifies recovery keys and resets credentials on a new device', { concurrency: false }, async (t) => {
   const stack = await bootServerStack()
-  t.after(() => {
-    teardownServerStack(stack)
+  t.after(async () => {
+    await teardownServerStack(stack)
   })
 
   const primaryHarness = createHarness(stack.apiUrl, 'primary-recovery')
@@ -109,8 +123,8 @@ test('sdk auth client verifies recovery keys and resets credentials on a new dev
 
 test('sdk auth client supports multi-device approval and trusted-device unlock', { concurrency: false }, async (t) => {
   const stack = await bootServerStack()
-  t.after(() => {
-    teardownServerStack(stack)
+  t.after(async () => {
+    await teardownServerStack(stack)
   })
 
   const primaryHarness = createHarness(stack.apiUrl, 'primary-device')

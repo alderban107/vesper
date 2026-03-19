@@ -47,37 +47,19 @@ import {
   saveSentMessagePlaintext
 } from '../storage/index.js'
 import type { VesperMessage } from '../api/chat.js'
+import type {
+  EncryptedScope,
+  ProcessedScopeMessage,
+  ScopeSyncResult
+} from '../client/encryptedChat.js'
 import { TestingDeviceHarness } from './deviceHarness.js'
+
+export type { EncryptedScope, ProcessedScopeMessage, ScopeSyncResult }
 
 const JOIN_WAIT_MS = 2_500
 const EVICTION_REQUEST_COOLDOWN_MS = 3_000
 const MAX_MESSAGES_PER_SCOPE = 200
 const DECRYPTION_PLACEHOLDER = '[Encrypted message unavailable]'
-
-export interface EncryptedScope {
-  kind: 'channel' | 'dm'
-  id: string
-}
-
-export interface ProcessedScopeMessage {
-  id: string
-  scopeId: string
-  channelId: string | null
-  conversationId: string | null
-  senderId: string | null
-  senderUsername: string | null
-  parentMessageId: string | null
-  insertedAt: string
-  content: string
-  encrypted: boolean
-  decryptionFailed: boolean
-  raw: VesperMessage
-}
-
-export interface ScopeSyncResult {
-  durationMs: number
-  messages: ProcessedScopeMessage[]
-}
 
 export interface ScopeCheckpoint {
   epoch: number
@@ -319,7 +301,9 @@ export class SdkChatHarness extends EventEmitter {
 
     return {
       durationMs: performance.now() - startedAt,
-      messages
+      messages,
+      events: [],
+      hasMore: false
     }
   }
 
@@ -366,7 +350,9 @@ export class SdkChatHarness extends EventEmitter {
 
     return {
       durationMs: performance.now() - startedAt,
-      messages
+      messages,
+      events: [],
+      hasMore: false
     }
   }
 
@@ -729,7 +715,13 @@ export class SdkChatHarness extends EventEmitter {
       }
     }
 
-    const welcomes = await fetchPendingWelcomes(scopeId)
+    let welcomes: Awaited<ReturnType<typeof fetchPendingWelcomes>> = []
+    try {
+      welcomes = await fetchPendingWelcomes(scopeId)
+    } catch {
+      // Server unreachable or error; treat as no pending welcomes.
+    }
+
     for (const welcome of welcomes) {
       const processed = await this.handleWelcome(
         scopeId,
@@ -750,7 +742,12 @@ export class SdkChatHarness extends EventEmitter {
   async replayDurableEvents(scope: EncryptedScope): Promise<void> {
     const session = this.device.requireSession()
     const cursor = await loadGroupSyncCursor(scope.id)
-    const events = await fetchMlsEvents(scope.id, cursor)
+    let events: Awaited<ReturnType<typeof fetchMlsEvents>> = []
+    try {
+      events = await fetchMlsEvents(scope.id, cursor)
+    } catch {
+      return
+    }
     let latestSeq = cursor
 
     for (const event of events) {
@@ -843,7 +840,7 @@ export class SdkChatHarness extends EventEmitter {
           senderUsername: rawMessage.sender?.username ?? null,
           parentMessageId: rawMessage.parent_message_id ?? null,
           ciphertext: ciphertext ? Buffer.from(ciphertext, 'base64') : null,
-          decryptedContent: decryptionFailed ? null : content,
+          decryptedContent: decryptionFailed ? null : decryptedPlaintext,
           mlsEpoch: rawMessage.mls_epoch ?? null,
           insertedAt: rawMessage.inserted_at
         })
@@ -868,6 +865,7 @@ export class SdkChatHarness extends EventEmitter {
       parentMessageId: rawMessage.parent_message_id ?? null,
       insertedAt: rawMessage.inserted_at,
       content,
+      plaintext: decryptedPlaintext ?? null,
       encrypted,
       decryptionFailed,
       raw: rawMessage
@@ -949,7 +947,12 @@ export class SdkChatHarness extends EventEmitter {
     }
 
     await initCipherSuite()
-    const keyPackageBytes = await fetchKeyPackage(userId, deviceId ?? undefined)
+    let keyPackageBytes: Uint8Array | null
+    try {
+      keyPackageBytes = await fetchKeyPackage(userId, deviceId ?? undefined)
+    } catch {
+      return null
+    }
     if (!keyPackageBytes) {
       return null
     }
@@ -1328,7 +1331,9 @@ export class SdkChatHarness extends EventEmitter {
       .map((message) => {
         const ciphertext = message.ciphertext ? Buffer.from(message.ciphertext).toString('base64') : undefined
         const content =
-          message.decryptedContent ??
+          (message.decryptedContent != null
+            ? coerceDisplayText(message.decryptedContent)
+            : null) ??
           (ciphertext ? DECRYPTION_PLACEHOLDER : '')
 
         return {
@@ -1341,6 +1346,7 @@ export class SdkChatHarness extends EventEmitter {
           parentMessageId: message.parentMessageId,
           insertedAt: message.insertedAt,
           content,
+          plaintext: message.decryptedContent ?? null,
           encrypted: Boolean(ciphertext),
           decryptionFailed: ciphertext ? message.decryptedContent == null : false,
           raw: {
@@ -1485,7 +1491,7 @@ export class SdkChatHarness extends EventEmitter {
           senderUsername: rawMessage.sender?.username ?? null,
           parentMessageId: rawMessage.parent_message_id ?? null,
           ciphertext: ciphertext ? Buffer.from(ciphertext, 'base64') : null,
-          decryptedContent: decryptionFailed ? null : content,
+          decryptedContent: decryptionFailed ? null : decryptedPlaintext,
           mlsEpoch: rawMessage.mls_epoch ?? null,
           insertedAt: rawMessage.inserted_at
         })
@@ -1510,6 +1516,7 @@ export class SdkChatHarness extends EventEmitter {
         parentMessageId: rawMessage.parent_message_id ?? null,
         insertedAt: rawMessage.inserted_at,
         content,
+        plaintext: decryptedPlaintext ?? null,
         encrypted,
         decryptionFailed,
         raw: rawMessage

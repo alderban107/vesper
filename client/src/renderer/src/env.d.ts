@@ -35,10 +35,17 @@ interface CryptoDbApi {
   getLocalKeyPackages(): Promise<
     Array<{
       id: number
+      key_package_ref: string | null
       key_package_public: ArrayBuffer
       key_package_private: ArrayBuffer
     }>
   >
+  getLocalKeyPackageByRef(keyPackageRef: string): Promise<{
+    id: number
+    key_package_ref: string | null
+    key_package_public: ArrayBuffer
+    key_package_private: ArrayBuffer
+  } | null>
   setLocalKeyPackages(
     packages: Array<{ publicData: Uint8Array; privateData: Uint8Array }>
   ): Promise<void>
@@ -48,6 +55,7 @@ interface CryptoDbApi {
   // Message cache (stores ciphertext, not plaintext)
   cacheMessage(msg: {
     id: string
+    room_seq: number | null
     channel_id: string | null
     conversation_id: string | null
     server_id: string | null
@@ -61,9 +69,11 @@ interface CryptoDbApi {
   }): Promise<void>
   getCachedMessageDecryption(messageId: string): Promise<string | null>
   setCachedMessageDecryption(messageId: string, plaintext: string): Promise<void>
+  deleteCachedMessage(messageId: string): Promise<void>
   getCachedMessages(channelId: string): Promise<
     Array<{
       id: string
+      room_seq: number | null
       channel_id: string | null
       conversation_id: string | null
       server_id: string | null

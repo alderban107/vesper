@@ -1,4 +1,4 @@
-import { apiFetch } from './client.js'
+import { getDefaultHttpClient, type VesperHttpClient } from './client.js'
 import type { VesperUser } from '../auth/session.js'
 
 export interface VesperMemberPreview {
@@ -91,6 +91,102 @@ export interface VesperMessage {
   client_nonce?: string | null
 }
 
+export interface VesperServerRole {
+  id: string
+  server_id: string
+  name: string
+  color: string | null
+  permissions: number
+  position: number
+}
+
+export interface VesperServerMember {
+  id: string
+  user_id: string
+  role: string
+  nickname: string | null
+  user: {
+    id: string
+    username: string
+    display_name: string | null
+    avatar_url: string | null
+    status: string
+  }
+}
+
+export interface VesperServerBan {
+  id: string
+  server_id: string
+  user_id: string
+  reason: string | null
+  inserted_at: string
+  banned_by_id: string | null
+  user?: {
+    id: string
+    username: string
+    display_name: string | null
+    avatar_url: string | null
+  } | null
+  banned_by?: {
+    id: string
+    username: string
+    display_name: string | null
+  } | null
+}
+
+export interface VesperAuditLogEntry {
+  id: string
+  server_id?: string
+  action: string
+  inserted_at: string
+  actor_id: string | null
+  target_user_id: string | null
+  target_id: string | null
+  metadata?: Record<string, unknown> | null
+  actor?: {
+    id: string
+    username: string
+    display_name: string | null
+  } | null
+  target_user?: {
+    id: string
+    username: string
+    display_name: string | null
+  } | null
+}
+
+export interface VesperServerInvite {
+  id: string
+  code: string
+  role_id: string | null
+  max_uses: number | null
+  uses: number
+  expires_at: string | null
+  creator: { id: string; username: string; display_name: string | null } | null
+  inserted_at: string
+}
+
+export interface VesperCustomEmoji {
+  id: string
+  name: string
+  url: string
+  animated?: boolean
+  server_id?: string
+}
+
+export interface VesperChannelPin {
+  id: string
+  message: VesperMessage
+  pinned_by_id: string
+  inserted_at: string
+}
+
+export interface VesperAttachmentUpload {
+  attachment?: {
+    id?: string
+  }
+}
+
 export interface VesperChannelActivityPatch {
   channel_id: string
   message_id: string | null
@@ -133,8 +229,9 @@ export interface VesperScopeSyncScopeResponse {
   messages: VesperMessage[]
   events: Array<{
     id?: number | null
-    seq?: number | null
+    room_seq?: number | null
     event_type: string
+    message_id?: string | null
     inserted_at: string
     payload?: Record<string, unknown> | null
   }>
@@ -154,8 +251,10 @@ export interface CreateServerChannelInput {
   disappearing_ttl?: number | null
 }
 
-export async function getCurrentUser(): Promise<VesperUser> {
-  const response = await apiFetch('/api/v1/auth/me')
+export async function getCurrentUser(
+  httpClient: VesperHttpClient = getDefaultHttpClient()
+): Promise<VesperUser> {
+  const response = await httpClient.apiFetch('/api/v1/auth/me')
   if (!response.ok) {
     throw new Error(`Could not load current user: ${response.status}`)
   }
@@ -168,8 +267,10 @@ export async function getCurrentUser(): Promise<VesperUser> {
   return data.user
 }
 
-export async function listServers(): Promise<VesperServer[]> {
-  const response = await apiFetch('/api/v1/servers')
+export async function listServers(
+  httpClient: VesperHttpClient = getDefaultHttpClient()
+): Promise<VesperServer[]> {
+  const response = await httpClient.apiFetch('/api/v1/servers')
   if (!response.ok) {
     throw new Error(`Could not load servers: ${response.status}`)
   }
@@ -178,8 +279,10 @@ export async function listServers(): Promise<VesperServer[]> {
   return data.servers ?? []
 }
 
-export async function listConversations(): Promise<VesperConversation[]> {
-  const response = await apiFetch('/api/v1/conversations')
+export async function listConversations(
+  httpClient: VesperHttpClient = getDefaultHttpClient()
+): Promise<VesperConversation[]> {
+  const response = await httpClient.apiFetch('/api/v1/conversations')
   if (!response.ok) {
     throw new Error(`Could not load conversations: ${response.status}`)
   }
@@ -189,10 +292,11 @@ export async function listConversations(): Promise<VesperConversation[]> {
 }
 
 export async function fetchWorkspaceSync(
-  since?: string | null
+  since?: string | null,
+  httpClient: VesperHttpClient = getDefaultHttpClient()
 ): Promise<VesperWorkspaceSyncResponse> {
   const query = since ? `?since=${encodeURIComponent(since)}` : ''
-  const response = await apiFetch(`/api/v1/sync${query}`)
+  const response = await httpClient.apiFetch(`/api/v1/sync${query}`)
   if (!response.ok) {
     throw new Error(`Could not load workspace sync: ${response.status}`)
   }
@@ -232,8 +336,8 @@ export async function fetchScopesSync(input: {
   scopes: VesperScopeSyncScopeRequest[]
   limit?: number
   since?: string | null
-}): Promise<VesperScopeSyncResponse> {
-  const response = await apiFetch('/api/v1/sync/scopes', {
+}, httpClient: VesperHttpClient = getDefaultHttpClient()): Promise<VesperScopeSyncResponse> {
+  const response = await httpClient.apiFetch('/api/v1/sync/scopes', {
     method: 'POST',
     body: JSON.stringify({
       scopes: input.scopes,
@@ -254,8 +358,11 @@ export async function fetchScopesSync(input: {
   }
 }
 
-export async function searchUsers(username: string): Promise<VesperUser[]> {
-  const response = await apiFetch(
+export async function searchUsers(
+  username: string,
+  httpClient: VesperHttpClient = getDefaultHttpClient()
+): Promise<VesperUser[]> {
+  const response = await httpClient.apiFetch(
     `/api/v1/users/search?username=${encodeURIComponent(username)}`
   )
   if (!response.ok) {
@@ -268,7 +375,8 @@ export async function searchUsers(username: string): Promise<VesperUser[]> {
 
 export async function createConversation(
   participantIds: string[],
-  name?: string
+  name?: string,
+  httpClient: VesperHttpClient = getDefaultHttpClient()
 ): Promise<VesperConversation> {
   const body: {
     participant_ids: string[]
@@ -279,7 +387,7 @@ export async function createConversation(
     body.name = name
   }
 
-  const response = await apiFetch('/api/v1/conversations', {
+  const response = await httpClient.apiFetch('/api/v1/conversations', {
     method: 'POST',
     body: JSON.stringify(body)
   })
@@ -296,8 +404,11 @@ export async function createConversation(
   return data.conversation
 }
 
-export async function createServer(name: string): Promise<VesperServer> {
-  const response = await apiFetch('/api/v1/servers', {
+export async function createServer(
+  name: string,
+  httpClient: VesperHttpClient = getDefaultHttpClient()
+): Promise<VesperServer> {
+  const response = await httpClient.apiFetch('/api/v1/servers', {
     method: 'POST',
     body: JSON.stringify({ name })
   })
@@ -316,9 +427,10 @@ export async function createServer(name: string): Promise<VesperServer> {
 
 export async function createServerChannel(
   serverId: string,
-  input: CreateServerChannelInput
+  input: CreateServerChannelInput,
+  httpClient: VesperHttpClient = getDefaultHttpClient()
 ): Promise<VesperChannel> {
-  const response = await apiFetch(`/api/v1/servers/${serverId}/channels`, {
+  const response = await httpClient.apiFetch(`/api/v1/servers/${serverId}/channels`, {
     method: 'POST',
     body: JSON.stringify({
       type: 'text',
@@ -347,8 +459,11 @@ export async function createServerChannel(
   return data.channel
 }
 
-export async function getServerInviteCode(serverId: string): Promise<string> {
-  const response = await apiFetch(`/api/v1/servers/${serverId}/invite-code`)
+export async function getServerInviteCode(
+  serverId: string,
+  httpClient: VesperHttpClient = getDefaultHttpClient()
+): Promise<string> {
+  const response = await httpClient.apiFetch(`/api/v1/servers/${serverId}/invite-code`)
   if (!response.ok) {
     throw new Error(`Could not load invite code: ${response.status}`)
   }
@@ -361,8 +476,11 @@ export async function getServerInviteCode(serverId: string): Promise<string> {
   return data.invite_code
 }
 
-export async function joinServerByInvite(inviteCode: string): Promise<VesperServer> {
-  const response = await apiFetch('/api/v1/servers/join', {
+export async function joinServerByInvite(
+  inviteCode: string,
+  httpClient: VesperHttpClient = getDefaultHttpClient()
+): Promise<VesperServer> {
+  const response = await httpClient.apiFetch('/api/v1/servers/join', {
     method: 'POST',
     body: JSON.stringify({ invite_code: inviteCode })
   })
@@ -379,8 +497,11 @@ export async function joinServerByInvite(inviteCode: string): Promise<VesperServ
   return data.server
 }
 
-export async function leaveServer(serverId: string): Promise<void> {
-  const response = await apiFetch(`/api/v1/servers/${serverId}/leave`, {
+export async function leaveServer(
+  serverId: string,
+  httpClient: VesperHttpClient = getDefaultHttpClient()
+): Promise<void> {
+  const response = await httpClient.apiFetch(`/api/v1/servers/${serverId}/leave`, {
     method: 'DELETE'
   })
 
@@ -398,7 +519,8 @@ export async function fetchChannelMessages(
     after?: string
     afterSeq?: number
     lean?: boolean
-  } = {}
+  } = {},
+  httpClient: VesperHttpClient = getDefaultHttpClient()
 ): Promise<VesperMessage[]> {
   const params = new URLSearchParams()
   if (options.limit !== undefined) {
@@ -418,7 +540,7 @@ export async function fetchChannelMessages(
   }
 
   const query = params.size > 0 ? `?${params}` : ''
-  const response = await apiFetch(`/api/v1/channels/${channelId}/messages${query}`)
+  const response = await httpClient.apiFetch(`/api/v1/channels/${channelId}/messages${query}`)
   if (!response.ok) {
     throw new Error(`Could not load channel messages: ${response.status}`)
   }
@@ -435,7 +557,8 @@ export async function fetchConversationMessages(
     after?: string
     afterSeq?: number
     lean?: boolean
-  } = {}
+  } = {},
+  httpClient: VesperHttpClient = getDefaultHttpClient()
 ): Promise<VesperMessage[]> {
   const params = new URLSearchParams()
   if (options.limit !== undefined) {
@@ -455,7 +578,7 @@ export async function fetchConversationMessages(
   }
 
   const query = params.size > 0 ? `?${params}` : ''
-  const response = await apiFetch(
+  const response = await httpClient.apiFetch(
     `/api/v1/conversations/${conversationId}/messages${query}`
   )
   if (!response.ok) {

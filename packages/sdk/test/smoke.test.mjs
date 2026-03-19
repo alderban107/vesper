@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
+import { getCurrentUser } from '../dist/api/index.js'
 import { bootServerStack, teardownServerStack } from '../dist/testing/index.js'
 import {
-  VesperSocketClient,
-  apiFetch,
-  configureHttpClient,
-  createMemorySessionStore
+  createVesperTransport
 } from '../dist/transport/index.js'
 
 function createRegisterPayload(username, password, label = 'SDK Smoke') {
@@ -19,17 +17,21 @@ function createRegisterPayload(username, password, label = 'SDK Smoke') {
   }
 }
 
-function configureSdk(apiUrl) {
-  const sessionStore = createMemorySessionStore(apiUrl)
-  configureHttpClient({
+function createSdkTransport(apiUrl) {
+  return createVesperTransport({
+    baseUrl: apiUrl,
     fetchImpl: fetch,
-    sessionStore
+    socketOptions: {
+      logger: {
+        error: () => {},
+        log: () => {}
+      }
+    }
   })
-  return sessionStore
 }
 
-async function registerUser(sessionStore, username, password, label) {
-  const registerResponse = await apiFetch('/api/v1/auth/register', {
+async function registerUser(httpClient, sessionStore, username, password, label) {
+  const registerResponse = await httpClient.apiFetch('/api/v1/auth/register', {
     method: 'POST',
     body: JSON.stringify(createRegisterPayload(username, password, label))
   })
@@ -50,90 +52,80 @@ async function withServerStack(run) {
   try {
     await run(stack)
   } finally {
-    teardownServerStack(stack)
+    await teardownServerStack(stack)
   }
 }
 
 test('sdk auth and realtime smoke works against a live Vesper server', { concurrency: false }, async () => {
   await withServerStack(async (stack) => {
-    const sessionStore = configureSdk(stack.apiUrl)
+    const transport = createSdkTransport(stack.apiUrl)
     const username = `sdk_smoke_${Date.now()}`
     const password = 'vesper-sdk-smoke-password'
 
-    await registerUser(sessionStore, username, password, 'SDK Smoke')
+    await registerUser(transport.httpClient, transport.sessionStore, username, password, 'SDK Smoke')
 
-    const meResponse = await apiFetch('/api/v1/auth/me')
-    assert.equal(meResponse.status, 200)
-    const meBody = await meResponse.json()
-    assert.equal(meBody.user.username, username)
-
-    const socketClient = new VesperSocketClient({
-      getAccessToken: () => sessionStore.getAccessToken(),
-      getServerUrl: () => sessionStore.getServerUrl()
-    })
+    const currentUser = await getCurrentUser(transport.httpClient)
+    assert.equal(currentUser.username, username)
 
     const events = []
-    socketClient.connect()
+    transport.socketClient.connect()
 
-    await socketClient.joinChannelWithAck(`user:${meBody.user.id}`, (event, payload) => {
+    await transport.socketClient.joinChannelWithAck(`user:${currentUser.id}`, (event, payload) => {
       events.push({ event, payload })
     })
 
-    socketClient.pushToChannel(`user:${meBody.user.id}`, 'heartbeat', {})
-    assert.ok(socketClient.getChannel(`user:${meBody.user.id}`))
-    socketClient.disconnect()
+    transport.socketClient.pushToChannel(`user:${currentUser.id}`, 'heartbeat', {})
+    assert.ok(transport.socketClient.getChannel(`user:${currentUser.id}`))
+    transport.socketClient.disconnect()
     assert.ok(Array.isArray(events))
   })
 })
 
 test('sdk refreshes an expired access token and retries the request', { concurrency: false }, async () => {
   await withServerStack(async (stack) => {
-    const sessionStore = configureSdk(stack.apiUrl)
+    const transport = createSdkTransport(stack.apiUrl)
     const username = `sdk_refresh_${Date.now()}`
     const password = 'vesper-sdk-refresh-password'
 
-    await registerUser(sessionStore, username, password, 'SDK Refresh')
+    await registerUser(transport.httpClient, transport.sessionStore, username, password, 'SDK Refresh')
 
-    const originalRefreshToken = sessionStore.getRefreshToken()
+    const originalRefreshToken = transport.sessionStore.getRefreshToken()
     assert.ok(originalRefreshToken)
 
-    sessionStore.setTokens('expired-access-token', originalRefreshToken)
+    transport.sessionStore.setTokens('expired-access-token', originalRefreshToken)
 
-    const meResponse = await apiFetch('/api/v1/auth/me')
-    assert.equal(meResponse.status, 200)
-
-    const meBody = await meResponse.json()
-    assert.equal(meBody.user.username, username)
-    assert.notEqual(sessionStore.getAccessToken(), 'expired-access-token')
-    assert.ok(sessionStore.getAccessToken())
-    assert.equal(sessionStore.getSessionNotice(), null)
+    const currentUser = await getCurrentUser(transport.httpClient)
+    assert.equal(currentUser.username, username)
+    assert.notEqual(transport.sessionStore.getAccessToken(), 'expired-access-token')
+    assert.ok(transport.sessionStore.getAccessToken())
+    assert.equal(transport.sessionStore.getSessionNotice(), null)
   })
 })
 
 test('sdk clears tokens and sets a session notice when refresh fails', { concurrency: false }, async () => {
   await withServerStack(async (stack) => {
-    const sessionStore = configureSdk(stack.apiUrl)
+    const transport = createSdkTransport(stack.apiUrl)
     const username = `sdk_notice_${Date.now()}`
     const password = 'vesper-sdk-notice-password'
 
-    await registerUser(sessionStore, username, password, 'SDK Notice')
-    sessionStore.setTokens('expired-access-token', 'broken-refresh-token')
+    await registerUser(transport.httpClient, transport.sessionStore, username, password, 'SDK Notice')
+    transport.sessionStore.setTokens('expired-access-token', 'broken-refresh-token')
 
-    const meResponse = await apiFetch('/api/v1/auth/me')
+    const meResponse = await transport.httpClient.apiFetch('/api/v1/auth/me')
     assert.equal(meResponse.status, 401)
-    assert.equal(sessionStore.getAccessToken(), null)
-    assert.equal(sessionStore.getRefreshToken(), null)
+    assert.equal(transport.sessionStore.getAccessToken(), null)
+    assert.equal(transport.sessionStore.getRefreshToken(), null)
 
-    const notice = sessionStore.getSessionNotice()
+    const notice = transport.sessionStore.getSessionNotice()
     assert.ok(notice)
     assert.equal(notice.title, 'Sign in again on this device')
     assert.match(notice.message, /session can no longer be renewed/i)
   })
 })
 
-test('memory session stores require an explicit server URL', { concurrency: false }, () => {
+test('transport creation requires an explicit server URL outside the browser', { concurrency: false }, () => {
   assert.throws(
-    () => createMemorySessionStore(''),
-    /explicit server URL/i
+    () => createVesperTransport({}),
+    /baseUrl/i
   )
 })

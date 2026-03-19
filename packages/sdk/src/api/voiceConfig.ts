@@ -1,4 +1,4 @@
-import { apiFetch } from './client.js'
+import { getDefaultHttpClient, type VesperHttpClient } from './client.js'
 
 export interface VoiceRtcConfig {
   iceServers: RTCIceServer[]
@@ -10,8 +10,8 @@ const DEFAULT_VOICE_RTC_CONFIG: VoiceRtcConfig = {
   iceTransportPolicy: 'all'
 }
 
-let cachedVoiceRtcConfig: VoiceRtcConfig | null = null
-let voiceRtcConfigRequest: Promise<VoiceRtcConfig> | null = null
+const cachedVoiceRtcConfigs = new Map<string, VoiceRtcConfig>()
+const voiceRtcConfigRequests = new Map<string, Promise<VoiceRtcConfig>>()
 
 function normalizeIceTransportPolicy(value: unknown): RTCIceTransportPolicy {
   return value === 'relay' ? 'relay' : 'all'
@@ -65,33 +65,41 @@ function normalizeVoiceRtcConfig(payload: unknown): VoiceRtcConfig {
   }
 }
 
-export async function getVoiceRtcConfig(forceRefresh = false): Promise<VoiceRtcConfig> {
-  if (cachedVoiceRtcConfig && !forceRefresh) {
-    return cachedVoiceRtcConfig
+export async function getVoiceRtcConfig(
+  forceRefresh = false,
+  httpClient: VesperHttpClient = getDefaultHttpClient()
+): Promise<VoiceRtcConfig> {
+  const cacheKey = httpClient.getServerUrl()
+
+  if (cachedVoiceRtcConfigs.has(cacheKey) && !forceRefresh) {
+    return cachedVoiceRtcConfigs.get(cacheKey) ?? DEFAULT_VOICE_RTC_CONFIG
   }
 
-  if (voiceRtcConfigRequest && !forceRefresh) {
-    return voiceRtcConfigRequest
+  const pendingRequest = voiceRtcConfigRequests.get(cacheKey)
+  if (pendingRequest && !forceRefresh) {
+    return pendingRequest
   }
 
-  voiceRtcConfigRequest = (async () => {
+  const request = (async () => {
     try {
-      const response = await apiFetch('/api/v1/voice/config')
+      const response = await httpClient.apiFetch('/api/v1/voice/config')
       if (!response.ok) {
-        cachedVoiceRtcConfig = DEFAULT_VOICE_RTC_CONFIG
-        return cachedVoiceRtcConfig
+        cachedVoiceRtcConfigs.set(cacheKey, DEFAULT_VOICE_RTC_CONFIG)
+        return DEFAULT_VOICE_RTC_CONFIG
       }
 
       const payload = await response.json()
-      cachedVoiceRtcConfig = normalizeVoiceRtcConfig(payload)
-      return cachedVoiceRtcConfig
+      const normalized = normalizeVoiceRtcConfig(payload)
+      cachedVoiceRtcConfigs.set(cacheKey, normalized)
+      return normalized
     } catch {
-      cachedVoiceRtcConfig = DEFAULT_VOICE_RTC_CONFIG
-      return cachedVoiceRtcConfig
+      cachedVoiceRtcConfigs.set(cacheKey, DEFAULT_VOICE_RTC_CONFIG)
+      return DEFAULT_VOICE_RTC_CONFIG
     } finally {
-      voiceRtcConfigRequest = null
+      voiceRtcConfigRequests.delete(cacheKey)
     }
   })()
 
-  return voiceRtcConfigRequest
+  voiceRtcConfigRequests.set(cacheKey, request)
+  return request
 }
