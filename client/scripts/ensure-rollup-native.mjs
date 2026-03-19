@@ -5,7 +5,7 @@ const require = createRequire(import.meta.url)
 
 function missingNativePackage(error) {
   const message = error instanceof Error ? error.message : String(error)
-  const match = message.match(/Cannot find module (@rollup\/rollup-[^'"\s]+)/)
+  const match = message.match(/Cannot find module ['"]?(@rollup\/rollup-[a-z0-9-]+)/i)
   return match ? match[1] : null
 }
 
@@ -31,7 +31,14 @@ try {
   console.warn(`Installing missing Rollup native package: ${nativePackage}@${version}`)
   execFileSync(
     'npm',
-    ['install', '--no-save', '--no-package-lock', '--ignore-scripts', `${nativePackage}@${version}`],
+    [
+      'install',
+      '--workspaces=false',
+      '--no-save',
+      '--no-package-lock',
+      '--ignore-scripts',
+      `${nativePackage}@${version}`
+    ],
     {
       stdio: 'inherit'
     }
