@@ -252,8 +252,7 @@ test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable'
         latestSync.durationMs < latestSyncThreshold,
         `[PERF] latest-message sync took ${latestSync.durationMs.toFixed(2)}ms, threshold is ${latestSyncThreshold}ms. ` +
         'This is a performance gate, not a correctness failure — the sync completed but too slowly. ' +
-        `Local threshold: 20ms, CI multiplier: ${PERF_MULTIPLIER}x. ` +
-        'If this fails locally, investigate the hot-path. If only in CI, consider adjusting VESPER_PERF_MULTIPLIER.'
+        `Local threshold: 20ms, CI multiplier: ${PERF_MULTIPLIER}x.`
       )
 
       const backlogSync = await secondaryChat.syncScope(scope, { limit: 10 })
