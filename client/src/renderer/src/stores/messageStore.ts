@@ -1819,6 +1819,14 @@ async function bootstrapDmGroupIfLeader(
       continue
     }
 
+    if (result.removeCommitBytes) {
+      pushToChannel(topic, 'mls_remove', {
+        removed_user_id: participant.user_id,
+        removed_device_id: preferredDeviceId,
+        commit_data: result.removeCommitBytes
+      })
+    }
+
     pushToChannel(topic, 'mls_commit', {
       commit_data: result.commitBytes
     })
@@ -2198,25 +2206,13 @@ async function recoverEncryptedScope(
       return
     }
 
-    // Fork detection: we have a group but still can't decrypt messages after
-    // replaying all durable events and requesting resync. Check whether any
-    // failed messages share our current epoch — that means the sender encrypted
-    // with the same epoch number but different tree state (a fork). Reset the
-    // local group and rejoin from the canonical group held by whoever responds
-    // to the join request.
-    const localEpoch = encryptedChat.getGroupEpoch(scope.targetId)
-    const isFork =
-      encryptedChat.hasGroup(scope.targetId) &&
-      localEpoch !== null &&
-      (getState().messagesByChannel[scope.targetId] ?? []).some(
-        (m) =>
-          m.encrypted &&
-          m.decryptionFailed &&
-          typeof m.mls_epoch === 'number' &&
-          m.mls_epoch <= localEpoch
-      )
-
-    if (isFork) {
+    // Last-resort fork recovery: we have a local group but still can't decrypt
+    // messages after replaying all durable MLS events AND requesting a resync.
+    // The most likely cause is a group fork — both sides at the same epoch but
+    // with different ratchet tree states. Reset the local group entirely and
+    // rejoin from scratch so we pick up the canonical group from whoever
+    // responds to the join request.
+    if (encryptedChat.hasGroup(scope.targetId) && hasFailedMessagesInScope(scope, getState)) {
       await encryptedChat.resetScope(scope.targetId)
       await ensureEncryptedScopeMembership(scope).catch(() => {})
 
@@ -5493,6 +5489,13 @@ async function handleMlsJoinRequest(
       )
 
       if (result) {
+        if (result.removeCommitBytes) {
+          pushToChannel(topic, 'mls_remove', {
+            removed_user_id: userId,
+            ...(deviceId ? { removed_device_id: deviceId } : {}),
+            commit_data: result.removeCommitBytes
+          })
+        }
         pushToChannel(topic, 'mls_commit', { commit_data: result.commitBytes })
         if (result.welcomeBytes) {
           pushToChannel(topic, 'mls_welcome', {
