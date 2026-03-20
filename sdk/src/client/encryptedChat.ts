@@ -520,15 +520,7 @@ export class VesperEncryptedChat {
           messagePayload.client_nonce = options.clientNonce
         }
 
-        const pushed = await this.client.pushScopeEvent(
-          scope.kind,
-          scope.id,
-          'new_message',
-          messagePayload
-        )
-        if (!pushed) {
-          throw new Error(`Failed to send message to ${scopeTopic(scope)}`)
-        }
+        void this.client.pushScopeEvent(scope.kind, scope.id, 'new_message', messagePayload)
       } finally {
         release()
       }
