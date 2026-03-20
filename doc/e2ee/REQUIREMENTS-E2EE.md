@@ -455,7 +455,7 @@ any member should be able to create a new group. The subsequent member joins via
 normal join request + Welcome flow.
 
 This is already implemented in the SDK encrypted chat runtime
-(`packages/sdk/src/client/encryptedChat.ts`, `createGroup`). It works but has a race:
+(`sdk/src/client/encryptedChat.ts`, `createGroup`). It works but has a race:
 two members might both try to create the group simultaneously. The server needs to
 handle this by treating the first Commit as authoritative and rejecting the second.
 

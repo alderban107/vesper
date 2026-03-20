@@ -471,7 +471,7 @@ retention window rather than by actual message lifecycle.
 > `ensureGroupMembership()`.
 >
 > **What satisfies the partial implementation:** `ensureGroupMembership()` in
-> `packages/sdk/src/client/encryptedChat.ts` (3-tier check: memory → DB →
+> `sdk/src/client/encryptedChat.ts` (3-tier check: memory → DB →
 > pending welcomes),
 > `mls_pending_welcomes` server-side storage, `fetchPendingWelcomes()` API.
 
@@ -543,7 +543,7 @@ Discord, where new members can scroll back — but the privacy tradeoff is worth
 > Commit), server-side batching coordination, and lazy rotation for large channels.
 >
 > **What satisfies the partial implementation:** `withGroupLock()` wrapping all
-> state-mutating operations in `packages/sdk/src/client/encryptedChat.ts`, the retry
+> state-mutating operations in `sdk/src/client/encryptedChat.ts`, the retry
 > logic in `handleCommit()`.
 >
 > **Do not remove:** The group lock or the commit retry logic. Without these,
@@ -572,7 +572,7 @@ retry, but not yet by batching.
 > **Status: ⚠️ Partial**
 >
 > Any member can create the MLS group if none exists (`createGroup()` in
-> `packages/sdk/src/client/encryptedChat.ts`). The `groupSetupInProgress` flag
+> `sdk/src/client/encryptedChat.ts`). The `groupSetupInProgress` flag
 > prevents double-creation within a single client.
 >
 > **What's missing:** Server-side first-wins coordination. If two members simultaneously
@@ -827,7 +827,7 @@ to see. Inviting a bot must explicitly communicate that it gains decryption acce
 > pipeline doesn't automatically re-derive the key on epoch change.
 >
 > **What satisfies the partial implementation:** `deriveVoiceKey()` plus the SDK
-> runtime voice helpers in `packages/sdk/src/client/encryptedChat.ts`.
+> runtime voice helpers in `sdk/src/client/encryptedChat.ts`.
 
 ### R-VOICE-2: Voice and text channels should use separate MLS groups
 

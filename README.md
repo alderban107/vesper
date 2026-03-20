@@ -134,6 +134,8 @@ The client connects to a Vesper server URL. In development, this defaults to `lo
 
 ## Project Structure
 
+The root `package.json` defines an npm workspaces monorepo linking `client/` and `sdk/`.
+
 ```
 server/                  Elixir/Phoenix backend (API + WebSocket)
   lib/vesper/              domain logic (accounts, chat, encryption)
@@ -161,6 +163,13 @@ client/                  Electron + React frontend
     harness/                 test orchestration helpers
     REQUIREMENTS.md          full test plan
 
+sdk/                     TypeScript SDK for the Vesper API
+  src/                     client library source
+  test/                    SDK tests
+  examples/                usage examples
+  scripts/                 build/dev scripts
+  README.md                SDK overview and usage
+
 .github/workflows/
   test-server.yml          server CI — mix test + PostgreSQL 17
   test-client.yml          client CI — typecheck + production build
@@ -176,6 +185,23 @@ doc/
     REQUIREMENTS-E2EE.md        requirements & design analysis
     REQUIREMENTS-E2EE-AUDIT.md  implementation status audit
     E2EE-IMPLEMENTATION.md      developer guide
+  sdk/                   SDK documentation
+    README.md              documentation index
+    quickstart.md          getting started guide
+    authentication.md      auth flow reference
+    messaging.md           sending/receiving messages
+    encryption.md          E2EE integration
+    events.md              real-time event handling
+    storage.md             file upload/download
+    bots.md                bot development guide
+    api-reference.md       full API reference
+
+scripts/                 repo-wide developer tooling (see scripts/README.md)
+  setup-git-hooks.sh       install pre-commit and pre-push hooks
+  pre-commit-checks.sh     formatting + lint checks
+  pre-push-checks.sh       full typecheck + test gate
+  load-repo-env.mjs        shared env loader for Node tooling
+  load-test-env.sh         test environment bootstrap
 
 docker-compose.yml       full stack (PostgreSQL, Phoenix, web client, coturn)
 turnserver.conf          coturn configuration for voice relay

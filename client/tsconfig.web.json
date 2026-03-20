@@ -14,16 +14,16 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/renderer/src/*"],
-      "@vesper/sdk": ["../packages/sdk/src/index.ts"],
-      "@vesper/sdk/api": ["../packages/sdk/src/api/index.ts"],
-      "@vesper/sdk/auth": ["../packages/sdk/src/auth/index.ts"],
-      "@vesper/sdk/crypto": ["../packages/sdk/src/crypto/index.ts"],
-      "@vesper/sdk/storage": ["../packages/sdk/src/storage/index.ts"],
-      "@vesper/sdk/testing": ["../packages/sdk/src/testing/index.ts"],
-      "@vesper/sdk/transport": ["../packages/sdk/src/transport/index.ts"],
-      "@vesper/sdk/types": ["../packages/sdk/src/types/index.ts"],
-      "@vesper/sdk/voice": ["../packages/sdk/src/voice/index.ts"]
+      "@vesper/sdk": ["../sdk/src/index.ts"],
+      "@vesper/sdk/api": ["../sdk/src/api/index.ts"],
+      "@vesper/sdk/auth": ["../sdk/src/auth/index.ts"],
+      "@vesper/sdk/crypto": ["../sdk/src/crypto/index.ts"],
+      "@vesper/sdk/storage": ["../sdk/src/storage/index.ts"],
+      "@vesper/sdk/testing": ["../sdk/src/testing/index.ts"],
+      "@vesper/sdk/transport": ["../sdk/src/transport/index.ts"],
+      "@vesper/sdk/types": ["../sdk/src/types/index.ts"],
+      "@vesper/sdk/voice": ["../sdk/src/voice/index.ts"]
     }
   },
-  "include": ["src/renderer/**/*", "../packages/sdk/src/env.d.ts"]
+  "include": ["src/renderer/**/*", "../sdk/src/env.d.ts"]
 }

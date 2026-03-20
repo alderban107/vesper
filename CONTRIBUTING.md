@@ -91,7 +91,7 @@ cd client
 npm run test:sdk:e2e
 ```
 
-This runs the Node-based live SDK suite in `packages/sdk/test/`. It boots
+This runs the Node-based live SDK suite in `sdk/test/`. It boots
 Phoenix automatically and uses the same local Postgres helper and root `.env`
 settings as the Playwright harness.
 

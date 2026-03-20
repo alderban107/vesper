@@ -349,7 +349,7 @@ If you're adding a feature that involves encrypted content (e.g., encrypted typi
 
 1. Define the payload type in `payload.ts` or create a new type.
 2. Encrypt using the SDK encrypted chat runtime (`sendPayload()` / `sendText()` in
-   `packages/sdk/src/client/encryptedChat.ts`).
+   `sdk/src/client/encryptedChat.ts`).
 3. Send the ciphertext + epoch via WebSocket.
 4. On the server, relay the ciphertext opaquely — don't parse it.
 5. On receive, decrypt via the SDK encrypted chat runtime.

@@ -4,8 +4,8 @@ This is the current engineering target for SDK-first sync, multi-device recovery
 
 ## What is already in place
 
-- SDK-first device and chat harnesses live in `packages/sdk/src/testing`.
-- The SDK integration stack can run against a dedicated local Postgres instance on port `55432` through the scripts in `packages/sdk/scripts`.
+- SDK-first device and chat harnesses live in `sdk/src/testing`.
+- The SDK integration stack can run against a dedicated local Postgres instance on port `55432` through the scripts in `sdk/scripts`.
 - Channel and DM unread hot paths now track `last_read_seq` and use `room_seq` comparisons in [`server/lib/vesper/chat.ex`](/Users/pp/code/vesper/server/lib/vesper/chat.ex).
 - The SDK chaos suite covers:
   - same-user offline catch-up

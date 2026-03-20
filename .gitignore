@@ -18,8 +18,8 @@ client/dist-web/
 client/coverage/
 client/test-results/
 client/playwright-report/
-packages/sdk/artifacts/
-packages/sdk/dist/
+sdk/artifacts/
+sdk/dist/
 
 # Project docs (private)
 CLAUDE.md
@@ -39,12 +39,27 @@ uploads/
 .DS_Store
 Thumbs.db
 
-# IDE
+# IDE / editor
 .idea/
 .vscode/
 *.swp
 *~
+
+# AI agent configs
+.codex/
+.cursor/
+.gemini/
+.zed/
+.mcp.json
+opencode.json
+
+# Build artifacts
+*.tsbuildinfo
+
+# Test artifacts
+client/e2e/artifacts/
 media-test-files/
 
-# Desloppify
+# Agent tool artefacts
 .desloppify/
+scorecard.png
