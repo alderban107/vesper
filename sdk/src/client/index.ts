@@ -1372,6 +1372,25 @@ export class VesperClient {
     return resolved
   }
 
+  async uploadServerIcon(serverId: string, formData: FormData): Promise<VesperServer> {
+    const data = await this.uploadJson<{ server?: VesperServer }>(
+      `/api/v1/servers/${serverId}/icon`,
+      formData,
+      'Could not upload server icon'
+    )
+
+    if (!data.server) {
+      throw new Error('Could not upload server icon: missing server payload')
+    }
+
+    this.setState({
+      servers: replaceServerInServers(this.state.servers, data.server)
+    })
+    this.emitter.emit('servers.updated', [...this.state.servers])
+
+    return data.server
+  }
+
   async renameServerEmoji(serverId: string, emojiId: string, name: string): Promise<VesperCustomEmoji> {
     const data = await this.fetchJson<{ emoji?: VesperCustomEmoji }>(
       `/api/v1/servers/${serverId}/emojis/${emojiId}`,

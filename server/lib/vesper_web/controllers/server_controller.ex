@@ -1,7 +1,17 @@
 defmodule VesperWeb.ServerController do
   use VesperWeb, :controller
   alias Vesper.Servers
+  alias Vesper.Chat.FileStorage
   import VesperWeb.ControllerHelpers, only: [format_errors: 1]
+
+  @max_icon_size 5 * 1024 * 1024
+  @allowed_icon_types ~w(image/jpeg image/png image/gif image/webp)
+  @icon_ext_map %{
+    "image/jpeg" => "jpg",
+    "image/png" => "png",
+    "image/gif" => "gif",
+    "image/webp" => "webp"
+  }
 
   def index(conn, _params) do
     servers = Servers.list_user_servers(conn.assigns.current_user)
@@ -73,6 +83,83 @@ defmodule VesperWeb.ServerController do
       true ->
         Servers.delete_server(server)
         json(conn, %{ok: true})
+    end
+  end
+
+  def upload_icon(conn, %{"server_id" => server_id, "file" => upload}) do
+    user = conn.assigns.current_user
+    server = Servers.get_server(server_id)
+
+    file_size =
+      case File.stat(upload.path) do
+        {:ok, %{size: size}} -> size
+        _ -> 0
+      end
+
+    content_type = upload.content_type || "application/octet-stream"
+
+    cond do
+      is_nil(server) ->
+        conn |> put_status(:not_found) |> json(%{error: "not found"})
+
+      not Servers.user_can?(user.id, server_id, Vesper.Servers.Permissions.manage_server()) ->
+        conn |> put_status(:forbidden) |> json(%{error: "insufficient permissions"})
+
+      file_size > @max_icon_size ->
+        conn
+        |> put_status(:request_entity_too_large)
+        |> json(%{error: "icon too large (max 5MB)"})
+
+      content_type not in @allowed_icon_types ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "only JPEG, PNG, GIF, and WebP images are allowed"})
+
+      true ->
+        ext = Map.get(@icon_ext_map, content_type, "bin")
+        icon_dir = FileStorage.server_icon_dir()
+        File.mkdir_p!(icon_dir)
+
+        FileStorage.delete_existing_server_icon(server_id)
+
+        dest = Path.join(icon_dir, "#{server_id}.#{ext}")
+        File.cp!(upload.path, dest)
+
+        icon_url = "/api/v1/servers/#{server_id}/icon?v=#{System.os_time(:second)}"
+
+        case Servers.update_server(server, %{"icon_url" => icon_url}) do
+          {:ok, updated} ->
+            json(conn, %{
+              server:
+                server_json(updated |> Vesper.Repo.preload([:channels, [emojis: :creator]]))
+            })
+
+          {:error, _} ->
+            conn
+            |> put_status(:internal_server_error)
+            |> json(%{error: "could not update server icon"})
+        end
+    end
+  end
+
+  def upload_icon(conn, %{"server_id" => _server_id}) do
+    conn |> put_status(:bad_request) |> json(%{error: "file is required"})
+  end
+
+  def show_icon(conn, %{"server_id" => server_id}) do
+    icon_dir = FileStorage.server_icon_dir()
+
+    case find_icon(icon_dir, server_id) do
+      nil ->
+        conn |> put_status(:not_found) |> json(%{error: "no icon"})
+
+      path ->
+        content_type = icon_content_type(Path.extname(path))
+
+        conn
+        |> put_resp_content_type(content_type)
+        |> put_resp_header("cache-control", "public, max-age=86400")
+        |> send_file(200, path)
     end
   end
 
@@ -589,6 +676,20 @@ defmodule VesperWeb.ServerController do
   end
 
   defp emoji_creator_json(_), do: nil
+
+  defp find_icon(dir, server_id) do
+    ~w(.jpg .png .gif .webp)
+    |> Enum.find_value(fn ext ->
+      path = Path.join(dir, "#{server_id}#{ext}")
+      if File.exists?(path), do: path
+    end)
+  end
+
+  defp icon_content_type(".jpg"), do: "image/jpeg"
+  defp icon_content_type(".png"), do: "image/png"
+  defp icon_content_type(".gif"), do: "image/gif"
+  defp icon_content_type(".webp"), do: "image/webp"
+  defp icon_content_type(_), do: "application/octet-stream"
 
   defp parse_limit_param(nil, default), do: default
 

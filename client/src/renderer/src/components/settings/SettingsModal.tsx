@@ -7,6 +7,7 @@ import { useSettingsStore } from '../../stores/settingsStore'
 import { useVoiceStore } from '../../stores/voiceStore'
 import { useAuthStore } from '../../stores/authStore'
 import Avatar from '../ui/Avatar'
+import ImageCropModal from '../ui/ImageCropModal'
 import SettingsShell, { type SettingsSectionGroup } from './SettingsShell'
 import { getStoredValue, setStoredValue } from '../../utils/localStorage'
 
@@ -281,8 +282,8 @@ export default function SettingsModal(): React.JSX.Element {
   const avatarInputRef = useRef<HTMLInputElement>(null)
   const bannerInputRef = useRef<HTMLInputElement>(null)
   const [activeSection, setActiveSection] = useState<UserSettingsSection>('profile')
-  const [avatarUploading, setAvatarUploading] = useState(false)
-  const [bannerUploading, setBannerUploading] = useState(false)
+  const [avatarCropFile, setAvatarCropFile] = useState<File | null>(null)
+  const [bannerCropFile, setBannerCropFile] = useState<File | null>(null)
   const [url, setUrl] = useState(serverUrl)
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle')
   const [displayName, setDisplayName] = useState(user?.display_name || '')
@@ -455,53 +456,37 @@ export default function SettingsModal(): React.JSX.Element {
                   <button
                     type="button"
                     onClick={() => avatarInputRef.current?.click()}
-                    disabled={avatarUploading}
                     className="vesper-settings-secondary-button"
                   >
-                    {avatarUploading ? 'Uploading...' : 'Change Avatar'}
+                    Change Avatar
                   </button>
                   <input
                     ref={avatarInputRef}
                     type="file"
                     accept="image/jpeg,image/png,image/gif,image/webp"
                     className="hidden"
-                    onChange={async (event) => {
+                    onChange={(event) => {
                       const file = event.target.files?.[0]
-                      if (!file) {
-                        return
-                      }
-                      setAvatarUploading(true)
-                      await uploadAvatar(file)
-                      setAvatarUploading(false)
-                      if (avatarInputRef.current) {
-                        avatarInputRef.current.value = ''
-                      }
+                      if (file) setAvatarCropFile(file)
+                      event.target.value = ''
                     }}
                   />
                   <button
                     type="button"
                     onClick={() => bannerInputRef.current?.click()}
-                    disabled={bannerUploading}
                     className="vesper-settings-secondary-button"
                   >
-                    {bannerUploading ? 'Uploading...' : 'Change Banner'}
+                    Change Banner
                   </button>
                   <input
                     ref={bannerInputRef}
                     type="file"
                     accept="image/jpeg,image/png,image/gif,image/webp"
                     className="hidden"
-                    onChange={async (event) => {
+                    onChange={(event) => {
                       const file = event.target.files?.[0]
-                      if (!file) {
-                        return
-                      }
-                      setBannerUploading(true)
-                      await uploadBanner(file)
-                      setBannerUploading(false)
-                      if (bannerInputRef.current) {
-                        bannerInputRef.current.value = ''
-                      }
+                      if (file) setBannerCropFile(file)
+                      event.target.value = ''
                     }}
                   />
                 </div>
@@ -588,6 +573,37 @@ export default function SettingsModal(): React.JSX.Element {
               </div>
             </div>
           </div>
+          {avatarCropFile && (
+            <ImageCropModal
+              file={avatarCropFile}
+              title="Change Avatar"
+              cropShape="round"
+              aspect={1}
+              outputSize={{ width: 256, height: 256 }}
+              onSubmit={async (blob) => {
+                const croppedFile = new File([blob], 'avatar.png', { type: 'image/png' })
+                await uploadAvatar(croppedFile)
+                setAvatarCropFile(null)
+              }}
+              onClose={() => setAvatarCropFile(null)}
+            />
+          )}
+
+          {bannerCropFile && (
+            <ImageCropModal
+              file={bannerCropFile}
+              title="Change Banner"
+              cropShape="rect"
+              aspect={3}
+              outputSize={{ width: 960, height: 320 }}
+              onSubmit={async (blob) => {
+                const croppedFile = new File([blob], 'banner.png', { type: 'image/png' })
+                await uploadBanner(croppedFile)
+                setBannerCropFile(null)
+              }}
+              onClose={() => setBannerCropFile(null)}
+            />
+          )}
         </>
       )}
 

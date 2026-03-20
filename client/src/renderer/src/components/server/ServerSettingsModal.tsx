@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { AlertTriangle, Check, Copy, History, Link, Pencil, Settings, Shield, Smile, Trash2, Upload, UserX, Users, X } from 'lucide-react'
+import { AlertTriangle, Check, Copy, History, ImagePlus, Link, Pencil, Settings, Shield, Smile, Trash2, Upload, UserX, Users, X } from 'lucide-react'
 import { useServerStore, type AuditLogEntry, type Member, type ServerBan } from '../../stores/serverStore'
 import { useAuthStore } from '../../stores/authStore'
 import { useUIStore } from '../../stores/uiStore'
 import RoleManager from './RoleManager'
 import InviteManager from './InviteManager'
 import EmojiUploadModal from './EmojiUploadModal'
+import ImageCropModal from '../ui/ImageCropModal'
 import SettingsShell, { type SettingsSectionGroup } from '../settings/SettingsShell'
 
 const EMPTY_BANS: ServerBan[] = []
@@ -43,6 +44,7 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
   const unbanMember = useServerStore((s) => s.unbanMember)
   const fetchAuditLog = useServerStore((s) => s.fetchAuditLog)
   const deleteServer = useServerStore((s) => s.deleteServer)
+  const uploadServerIcon = useServerStore((s) => s.uploadServerIcon)
   const fetchServerEmojis = useServerStore((s) => s.fetchServerEmojis)
   const renameServerEmoji = useServerStore((s) => s.renameServerEmoji)
   const deleteServerEmoji = useServerStore((s) => s.deleteServerEmoji)
@@ -62,12 +64,14 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
   const [emojiFeedback, setEmojiFeedback] = useState<string | null>(null)
   const [emojiError, setEmojiError] = useState<string | null>(null)
   const [emojiUploadFile, setEmojiUploadFile] = useState<File | null>(null)
+  const [iconCropFile, setIconCropFile] = useState<File | null>(null)
   const [renamingEmojiId, setRenamingEmojiId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [banReason, setBanReason] = useState('')
   const [pendingBanUserId, setPendingBanUserId] = useState<string | null>(null)
   const [pendingUnbanUserId, setPendingUnbanUserId] = useState<string | null>(null)
   const [auditLoading, setAuditLoading] = useState(false)
+  const iconFileInputRef = useRef<HTMLInputElement>(null)
   const emojiFileInputRef = useRef<HTMLInputElement>(null)
 
   const sections: SettingsSectionGroup[] = [
@@ -229,8 +233,39 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
 
           <div className="vesper-settings-card">
             <div className="vesper-settings-server-hero">
-              <div className="vesper-settings-server-glyph">
-                {server.name.slice(0, 2).toUpperCase()}
+              <div className="relative group">
+                {server.icon_url ? (
+                  <img
+                    src={server.icon_url}
+                    alt={server.name}
+                    className="w-16 h-16 rounded-full object-cover"
+                  />
+                ) : (
+                  <div className="vesper-settings-server-glyph">
+                    {server.name.slice(0, 2).toUpperCase()}
+                  </div>
+                )}
+                {(isOwner || myMembership?.role === 'admin') && (
+                  <button
+                    type="button"
+                    onClick={() => iconFileInputRef.current?.click()}
+                    className="absolute inset-0 flex items-center justify-center bg-black/50 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+                    title="Change server icon"
+                  >
+                    <ImagePlus className="w-5 h-5 text-white" />
+                  </button>
+                )}
+                <input
+                  ref={iconFileInputRef}
+                  type="file"
+                  accept="image/jpeg,image/png,image/gif,image/webp"
+                  className="hidden"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0]
+                    if (file) setIconCropFile(file)
+                    event.target.value = ''
+                  }}
+                />
               </div>
               <div>
                 <div className="vesper-settings-profile-name">{server.name}</div>
@@ -281,6 +316,22 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
               </button>
             </div>
           </div>
+
+          {iconCropFile && (
+            <ImageCropModal
+              file={iconCropFile}
+              title="Server Icon"
+              cropShape="round"
+              aspect={1}
+              outputSize={{ width: 256, height: 256 }}
+              onSubmit={async (blob) => {
+                const croppedFile = new File([blob], 'icon.png', { type: 'image/png' })
+                await uploadServerIcon(activeServerId, croppedFile)
+                setIconCropFile(null)
+              }}
+              onClose={() => setIconCropFile(null)}
+            />
+          )}
         </>
       )}
 
