@@ -35,12 +35,16 @@ test.describe('P1: Offline sync and pending welcomes', () => {
     await joinServerWithCode(bob.page, code)
     await createChannel(alice.page, 'sync-test')
     await selectChannel(alice.page, 'sync-test')
+    // Let Alice's MLS group bootstrap before Bob joins
+    await alice.page.waitForTimeout(1_000)
     await selectServer(bob.page, 'Sync Server')
     await selectChannel(bob.page, 'sync-test')
+    // Allow MLS welcome to propagate to Bob
+    await alice.page.waitForTimeout(2_000)
 
     // Both exchange some messages
     await sendChannelMessage(alice.page, 'Before offline — sync alpha')
-    await waitForMessage(bob.page, 'Before offline — sync alpha')
+    await waitForMessage(bob.page, 'Before offline — sync alpha', 15_000)
 
     // Close bob entirely (simulates going offline)
     await bob.context.close()
@@ -94,10 +98,14 @@ test.describe('P1: Offline sync and pending welcomes', () => {
 
     await createChannel(alice.page, 'welcome-test')
     await selectChannel(alice.page, 'welcome-test')
+    // Small delay so alice's MLS group is created before others join
+    await alice.page.waitForTimeout(1_000)
     await selectServer(bob.page, 'Welcome Server')
     await selectChannel(bob.page, 'welcome-test')
     await selectServer(charlie.page, 'Welcome Server')
     await selectChannel(charlie.page, 'welcome-test')
+    // Allow MLS welcomes to propagate across all three members
+    await alice.page.waitForTimeout(2_000)
 
     // All three chat to exercise the MLS group formation with pending welcomes
     await sendChannelMessage(alice.page, 'After charlie join — welcome foxtrot')

@@ -41,6 +41,26 @@ export async function createUserContext(
   // Inject the API URL before any page loads (R-HARNESS-1)
   await page.addInitScript(`window.VESPER_API_URL = '${state.apiUrl}'`)
 
+  // WebSocket tracing for diagnostics
+  await page.addInitScript(() => {
+    ;(window as any).__wsLog = []
+    const OrigWS = window.WebSocket
+    ;(window as any).WebSocket = function (...args: any[]) {
+      const ws = new OrigWS(...args)
+      const url = String(args[0])
+      ;(window as any).__wsLog.push({ url, s: 'new', t: Date.now() })
+      ws.addEventListener('open', () => (window as any).__wsLog.push({ url, s: 'open', t: Date.now() }))
+      ws.addEventListener('close', (e: any) => (window as any).__wsLog.push({ url, s: 'close', code: e.code, t: Date.now() }))
+      ws.addEventListener('error', () => (window as any).__wsLog.push({ url, s: 'err', t: Date.now() }))
+      return ws
+    }
+    ;(window as any).WebSocket.prototype = OrigWS.prototype
+    Object.defineProperty((window as any).WebSocket, 'CONNECTING', { value: 0 })
+    Object.defineProperty((window as any).WebSocket, 'OPEN', { value: 1 })
+    Object.defineProperty((window as any).WebSocket, 'CLOSING', { value: 2 })
+    Object.defineProperty((window as any).WebSocket, 'CLOSED', { value: 3 })
+  })
+
   return { name, username, password, page, context, recoveryKey: null }
 }
 

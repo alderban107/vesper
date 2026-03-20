@@ -111,11 +111,22 @@ export async function waitForSocketConnected(page: Page, timeout = 15_000): Prom
     await page.waitForTimeout(300)
   }
 
-  // If still showing the banner after timeout, throw so tests fail fast
-  // with a clear message instead of timing out on the next assertion.
+  // If still showing the banner after timeout, throw with diagnostics
   const stillReconnecting = await reconnectBanner.isVisible().catch(() => false)
   if (stillReconnecting) {
-    throw new Error(`Socket still reconnecting after ${timeout}ms — page is not connected to the server`)
+    const diag = await page.evaluate(() => {
+      const w = window as Record<string, unknown>
+      return {
+        apiUrl: w.VESPER_API_URL,
+        hasAccessToken: !!localStorage.getItem('accessToken'),
+        wsLog: (w.__wsLog as unknown[])?.slice(-20) ?? 'no-log',
+      }
+    }).catch(() => ({ error: 'could not evaluate' }))
+
+    throw new Error(
+      `Socket still reconnecting after ${timeout}ms\n` +
+      `Diagnostics: ${JSON.stringify(diag, null, 2)}`
+    )
   }
 }
 

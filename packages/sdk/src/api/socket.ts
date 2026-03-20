@@ -105,13 +105,15 @@ export class VesperSocketClient {
       }
     }
 
-    this.socket = new this.SocketCtor(wsUrl, {
+    const socket = new this.SocketCtor(wsUrl, {
       params: () => ({ token: this.resolveAccessToken() })
     })
+    this.socket = socket
     this.socketUrl = wsUrl
     this.socketToken = accessToken
 
-    this.socket.onOpen(() => {
+    socket.onOpen(() => {
+      if (this.socket !== socket) return
       this.socketToken = this.resolveAccessToken()
 
       for (const listener of this.openListeners) {
@@ -119,20 +121,22 @@ export class VesperSocketClient {
       }
     })
 
-    ;(this.socket as PhoenixSocketLike).onClose?.((event: unknown) => {
+    ;(socket as PhoenixSocketLike).onClose?.((event: unknown) => {
+      if (this.socket !== socket) return
       for (const listener of this.closeListeners) {
         listener(event)
       }
     })
 
-    ;(this.socket as PhoenixSocketLike).onError?.((error: unknown) => {
+    ;(socket as PhoenixSocketLike).onError?.((error: unknown) => {
+      if (this.socket !== socket) return
       for (const listener of this.errorListeners) {
         listener(error)
       }
     })
 
-    this.socket.connect()
-    return this.socket
+    socket.connect()
+    return socket
   }
 
   disconnect(): void {

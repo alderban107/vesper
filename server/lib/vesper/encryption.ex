@@ -177,7 +177,13 @@ defmodule Vesper.Encryption do
       case Repo.insert(changeset,
              on_conflict:
                {:replace,
-                [:welcome_data, :sender_id, :recipient_key_package_ref, :channel_id, :conversation_id]},
+                [
+                  :welcome_data,
+                  :sender_id,
+                  :recipient_key_package_ref,
+                  :channel_id,
+                  :conversation_id
+                ]},
              conflict_target: conflict_target,
              returning: true
            ) do

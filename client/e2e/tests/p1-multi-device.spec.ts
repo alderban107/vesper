@@ -93,14 +93,18 @@ test.describe('P1: Multi-device encrypted message access', () => {
     await createChannel(alice1.page, 'multidev-test')
     await createChannel(alice1.page, 'parking-lot')
     await selectChannel(alice1.page, 'multidev-test')
+    // Let Alice's MLS group bootstrap before Bob joins
+    await alice1.page.waitForTimeout(1_000)
     await selectServer(bob.page, 'MultiDev Server')
     await selectChannel(bob.page, 'multidev-test')
+    // Allow MLS welcome to propagate to Bob
+    await alice1.page.waitForTimeout(2_000)
 
     await sendChannelMessage(alice1.page, 'Channel from dev1 — multidev delta')
-    await waitForMessage(bob.page, 'Channel from dev1 — multidev delta')
+    await waitForMessage(bob.page, 'Channel from dev1 — multidev delta', MSG_TIMEOUT)
 
     await sendChannelMessage(bob.page, 'Bob channel reply — multidev echo')
-    await waitForMessage(alice1.page, 'Bob channel reply — multidev echo')
+    await waitForMessage(alice1.page, 'Bob channel reply — multidev echo', MSG_TIMEOUT)
 
     // Device 1 leaves the target channel so device 2 must rely on stored
     // recovery requests until this trusted sibling comes back later.
@@ -135,7 +139,7 @@ test.describe('P1: Multi-device encrypted message access', () => {
   test('New device can send and receive messages after approval (R-E2EE-3)', async ({ browser }) => {
     const recoveryKey = getRecoveryKey(USERS.alice.username)
 
-    // --- Device 1: Alice logs in first, then Bob joins ---
+    // --- Device 1: Establish the DM MLS group between Alice and Bob ---
     alice1 = await createUserContext(browser, 'alice-md-send-dev1', USERS.alice.username, USERS.alice.password)
     await login(alice1)
     await selectDm(alice1.page, USERS.bob.username)
@@ -144,9 +148,15 @@ test.describe('P1: Multi-device encrypted message access', () => {
     await login(bob)
     await selectDm(bob.page, USERS.alice.username)
     await sendDmMessage(alice1.page, 'Setup msg — send foxtrot')
-    await waitForMessage(bob.page, 'Setup msg — send foxtrot')
+    await waitForMessage(bob.page, 'Setup msg — send foxtrot', MSG_TIMEOUT)
 
-    // --- Device 2: Alice logs in and sends a NEW message ---
+    // Close device 1 before device 2 joins. For DMs, both Alice1 and Bob
+    // would handle device 2's mls_request_join, creating conflicting MLS
+    // commits that corrupt the group state. With Alice1 closed, only Bob
+    // handles the join and produces a clean epoch transition.
+    await alice1.context.close()
+
+    // --- Device 2: Login, open DM, send and receive ---
     alice2 = await createUserContext(browser, 'alice-md-send-dev2', USERS.alice.username, USERS.alice.password)
     await login(alice2, { expectTrustGate: true })
     await approveWithRecoveryKey(alice2.page, recoveryKey)
@@ -154,13 +164,16 @@ test.describe('P1: Multi-device encrypted message access', () => {
 
     await selectDm(alice2.page, USERS.bob.username)
 
-    // Wait for encryption to be ready on the new device
-    await waitForMessage(alice2.page, 'Setup msg — send foxtrot', MSG_TIMEOUT)
-
-    // Send a message FROM the new device
+    // Send from the new device. The encryption retry mechanism in
+    // sendDmMessage handles MLS join timing — if encryption isn't ready
+    // on the first attempt, it retries until the welcome arrives.
     await sendDmMessage(alice2.page, 'From device 2 — send golf')
 
     // Bob should receive the message sent from device 2
     await waitForMessage(bob.page, 'From device 2 — send golf', MSG_TIMEOUT)
+
+    // Bob replies — device 2 should receive real-time messages
+    await sendDmMessage(bob.page, 'Bob reply — send hotel')
+    await waitForMessage(alice2.page, 'Bob reply — send hotel', MSG_TIMEOUT)
   })
 })

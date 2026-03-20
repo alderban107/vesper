@@ -756,6 +756,7 @@ export class VesperClient {
       })
     }
 
+    this.seenSocketOpen = false
     this.socketClient.connect()
     await this.connectUserFeed(session.user.id)
     await this.syncNow(forceFull)
