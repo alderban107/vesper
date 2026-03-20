@@ -2212,9 +2212,28 @@ async function recoverEncryptedScope(
     // with different ratchet tree states. Reset the local group entirely and
     // rejoin from scratch so we pick up the canonical group from whoever
     // responds to the join request.
-    if (encryptedChat.hasGroup(scope.targetId) && hasFailedMessagesInScope(scope, getState)) {
+    const shouldResetGroup =
+      encryptedChat.hasGroup(scope.targetId) && hasFailedMessagesInScope(scope, getState)
+
+    if (shouldResetGroup) {
       await encryptedChat.resetScope(scope.targetId)
+    }
+
+    if (shouldResetGroup || !encryptedChat.hasGroup(scope.targetId)) {
       await ensureEncryptedScopeMembership(scope).catch(() => {})
+
+      // If join/resync failed to re-establish the group, create a fresh one
+      // as a last resort. This breaks the deadlock when the other side can't
+      // process our join request (e.g. running old code, offline, or the
+      // first-member-in-tree restriction blocks them). Other members will
+      // rejoin via mls_request_join_all once they see the new group.
+      if (!encryptedChat.hasGroup(scope.targetId) && scope.kind === 'channel') {
+        await encryptedChat.createScopeGroup({ kind: 'channel', id: scope.targetId })
+        if (encryptedChat.hasGroup(scope.targetId)) {
+          const topic = `chat:channel:${scope.targetId}`
+          pushToChannel(topic, 'mls_request_join_all', {})
+        }
+      }
 
       if (encryptedChat.hasGroup(scope.targetId)) {
         await refreshEncryptedScope(scope, getState).catch(() => {})
