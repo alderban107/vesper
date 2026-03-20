@@ -65,6 +65,8 @@ import {
   CUSTOM_EMOJI,
 } from '../fixtures/test-data'
 
+const PERF_MULTIPLIER = Number(process.env.VESPER_PERF_MULTIPLIER) || 1
+
 let alice: UserContext
 let bob: UserContext
 let charlie: UserContext
@@ -141,8 +143,8 @@ test.describe('P0 Smoke — full continuous run', () => {
     // Wait for alice's messages to appear on bob's side
     // MLS bootstrap + history sync requires multiple round trips, so allow
     // extra time beyond the default 10s.
-    await waitForMessage(bob.page, DM_MESSAGES.aliceToBob1, 30_000)
-    await waitForMessage(bob.page, DM_MESSAGES.aliceToBob2, 30_000)
+    await waitForMessage(bob.page, DM_MESSAGES.aliceToBob1, 10_000 * PERF_MULTIPLIER)
+    await waitForMessage(bob.page, DM_MESSAGES.aliceToBob2, 10_000 * PERF_MULTIPLIER)
 
     // Bob replies
     await sendDmMessage(bob.page, DM_MESSAGES.bobToAlice1)
