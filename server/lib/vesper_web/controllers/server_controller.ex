@@ -130,8 +130,7 @@ defmodule VesperWeb.ServerController do
         case Servers.update_server(server, %{"icon_url" => icon_url}) do
           {:ok, updated} ->
             json(conn, %{
-              server:
-                server_json(updated |> Vesper.Repo.preload([:channels, [emojis: :creator]]))
+              server: server_json(updated |> Vesper.Repo.preload([:channels, [emojis: :creator]]))
             })
 
           {:error, _} ->
