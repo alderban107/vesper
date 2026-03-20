@@ -349,10 +349,10 @@ export default function MessageFeed({
         ref={virtuosoRef}
         key={feedIdentity}
         data={messages}
-        alignToBottom
+        alignToBottom={!isThreadView}
         firstItemIndex={firstItemIndex}
-        initialTopMostItemIndex={Math.max(firstItemIndex + messages.length - 1, firstItemIndex)}
-        followOutput={followOutput}
+        initialTopMostItemIndex={isThreadView ? firstItemIndex : Math.max(firstItemIndex + messages.length - 1, firstItemIndex)}
+        followOutput={isThreadView ? false : followOutput}
         atBottomThreshold={96}
         atBottomStateChange={(atBottom) => {
           isAtBottomRef.current = atBottom

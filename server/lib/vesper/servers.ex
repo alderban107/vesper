@@ -90,7 +90,7 @@ defmodule Vesper.Servers do
       |> MemberRole.changeset(%{membership_id: membership.id, role_id: admin_role.id})
       |> Repo.insert!()
 
-      Repo.preload(server, [:channels, :memberships, :emojis])
+      Repo.preload(server, [:channels, :memberships, [emojis: :creator]])
     end)
   end
 
@@ -99,7 +99,7 @@ defmodule Vesper.Servers do
       join: m in Membership,
       on: m.server_id == s.id,
       where: m.user_id == ^user.id,
-      preload: [:channels, :emojis]
+      preload: [:channels, [emojis: :creator]]
     )
     |> Repo.all()
   end
@@ -112,7 +112,7 @@ defmodule Vesper.Servers do
         join: m in Membership,
         on: m.server_id == s.id,
         where: m.user_id == ^user.id and s.id in ^server_ids,
-        preload: [:channels, :emojis]
+        preload: [:channels, [emojis: :creator]]
       )
       |> Repo.all()
     end
@@ -280,7 +280,7 @@ defmodule Vesper.Servers do
     else
       from(s in Server,
         where: s.id in ^changed_server_ids,
-        preload: [:channels, :emojis]
+        preload: [:channels, [emojis: :creator]]
       )
       |> Repo.all()
     end
@@ -362,13 +362,13 @@ defmodule Vesper.Servers do
   def get_server(id) do
     Server
     |> Repo.get(id)
-    |> Repo.preload([:channels, :emojis])
+    |> Repo.preload([:channels, [emojis: :creator]])
   end
 
   def get_server!(id) do
     Server
     |> Repo.get!(id)
-    |> Repo.preload([:channels, :emojis])
+    |> Repo.preload([:channels, [emojis: :creator]])
   end
 
   def update_server(%Server{} = server, attrs) do
@@ -416,7 +416,7 @@ defmodule Vesper.Servers do
                 :ok
             end
 
-            {:ok, server |> Repo.preload([:channels, :emojis])}
+            {:ok, server |> Repo.preload([:channels, [emojis: :creator]])}
           end
         end
     end
@@ -1439,19 +1439,36 @@ defmodule Vesper.Servers do
   def list_server_emojis(server_id) do
     from(e in Emoji,
       where: e.server_id == ^server_id,
-      order_by: [asc: e.name, asc: e.inserted_at]
+      order_by: [asc: e.name, asc: e.inserted_at],
+      preload: [:creator]
     )
     |> Repo.all()
   end
 
   def get_server_emoji(server_id, emoji_id) do
-    Repo.get_by(Emoji, id: emoji_id, server_id: server_id)
+    Emoji
+    |> Repo.get_by(id: emoji_id, server_id: server_id)
+    |> Repo.preload(:creator)
   end
 
   def create_server_emoji(attrs) do
     %Emoji{}
     |> Emoji.changeset(attrs)
     |> Repo.insert()
+    |> case do
+      {:ok, emoji} -> {:ok, Repo.preload(emoji, :creator)}
+      error -> error
+    end
+  end
+
+  def update_server_emoji(%Emoji{} = emoji, name) do
+    emoji
+    |> Emoji.rename_changeset(name)
+    |> Repo.update()
+    |> case do
+      {:ok, emoji} -> {:ok, Repo.preload(emoji, :creator)}
+      error -> error
+    end
   end
 
   def delete_server_emoji(%Emoji{} = emoji) do
@@ -1616,7 +1633,7 @@ defmodule Vesper.Servers do
                     :ok
                 end
 
-                {:ok, server |> Repo.preload([:channels, :emojis])}
+                {:ok, server |> Repo.preload([:channels, [emojis: :creator]])}
               end
             end
         end

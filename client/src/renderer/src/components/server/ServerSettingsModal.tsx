@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { AlertTriangle, Copy, History, Link, Settings, Shield, Smile, Trash2, Upload, UserX, Users } from 'lucide-react'
+import { AlertTriangle, Check, Copy, History, ImagePlus, Link, Pencil, Settings, Shield, Smile, Trash2, Upload, UserX, Users, X } from 'lucide-react'
 import { useServerStore, type AuditLogEntry, type Member, type ServerBan } from '../../stores/serverStore'
 import { useAuthStore } from '../../stores/authStore'
 import { useUIStore } from '../../stores/uiStore'
 import RoleManager from './RoleManager'
 import InviteManager from './InviteManager'
+import EmojiUploadModal from './EmojiUploadModal'
+import ImageCropModal from '../ui/ImageCropModal'
 import SettingsShell, { type SettingsSectionGroup } from '../settings/SettingsShell'
 
 const EMPTY_BANS: ServerBan[] = []
@@ -42,8 +44,9 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
   const unbanMember = useServerStore((s) => s.unbanMember)
   const fetchAuditLog = useServerStore((s) => s.fetchAuditLog)
   const deleteServer = useServerStore((s) => s.deleteServer)
+  const uploadServerIcon = useServerStore((s) => s.uploadServerIcon)
   const fetchServerEmojis = useServerStore((s) => s.fetchServerEmojis)
-  const uploadServerEmoji = useServerStore((s) => s.uploadServerEmoji)
+  const renameServerEmoji = useServerStore((s) => s.renameServerEmoji)
   const deleteServerEmoji = useServerStore((s) => s.deleteServerEmoji)
   const myId = useAuthStore((s) => s.user?.id)
 
@@ -57,14 +60,18 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
   const [serverName, setServerName] = useState(server?.name || '')
   const [saving, setSaving] = useState(false)
   const [deleteConfirm, setDeleteConfirm] = useState('')
-  const [emojiName, setEmojiName] = useState('')
   const [emojiActionPending, setEmojiActionPending] = useState(false)
   const [emojiFeedback, setEmojiFeedback] = useState<string | null>(null)
   const [emojiError, setEmojiError] = useState<string | null>(null)
+  const [emojiUploadFile, setEmojiUploadFile] = useState<File | null>(null)
+  const [iconCropFile, setIconCropFile] = useState<File | null>(null)
+  const [renamingEmojiId, setRenamingEmojiId] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState('')
   const [banReason, setBanReason] = useState('')
   const [pendingBanUserId, setPendingBanUserId] = useState<string | null>(null)
   const [pendingUnbanUserId, setPendingUnbanUserId] = useState<string | null>(null)
   const [auditLoading, setAuditLoading] = useState(false)
+  const iconFileInputRef = useRef<HTMLInputElement>(null)
   const emojiFileInputRef = useRef<HTMLInputElement>(null)
 
   const sections: SettingsSectionGroup[] = [
@@ -142,27 +149,12 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
     navigator.clipboard.writeText(value)
   }
 
-  const handleEmojiUpload = async (event: React.ChangeEvent<HTMLInputElement>): Promise<void> => {
+  const handleEmojiFileSelect = (event: React.ChangeEvent<HTMLInputElement>): void => {
     const file = event.target.files?.[0]
-    if (!file) {
-      return
+    if (file) {
+      setEmojiUploadFile(file)
     }
-
-    setEmojiActionPending(true)
-    setEmojiFeedback(null)
-    setEmojiError(null)
-
-    const result = await uploadServerEmoji(activeServerId, file, emojiName)
-    if (result) {
-      setEmojiName('')
-      setEmojiFeedback(`Uploaded :${result.name}:`)
-      void fetchServerEmojis(activeServerId)
-    } else {
-      setEmojiError('Could not upload emoji. Check file type, size, and permissions.')
-    }
-
     event.target.value = ''
-    setEmojiActionPending(false)
   }
 
   const handleEmojiDelete = async (emojiId: string, emojiNameValue: string): Promise<void> => {
@@ -173,11 +165,31 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
     const ok = await deleteServerEmoji(activeServerId, emojiId)
     if (ok) {
       setEmojiFeedback(`Deleted :${emojiNameValue}:`)
-      void fetchServerEmojis(activeServerId)
     } else {
       setEmojiError('Could not delete emoji. Check permissions and try again.')
     }
 
+    setEmojiActionPending(false)
+  }
+
+  const handleEmojiRename = async (emojiId: string): Promise<void> => {
+    if (!renameValue.trim() || !/^[a-zA-Z0-9_~-]{2,32}$/.test(renameValue)) {
+      setRenamingEmojiId(null)
+      return
+    }
+
+    setEmojiActionPending(true)
+    setEmojiFeedback(null)
+    setEmojiError(null)
+
+    const result = await renameServerEmoji(activeServerId, emojiId, renameValue.trim())
+    if (result) {
+      setEmojiFeedback(`Renamed to :${result.name}:`)
+    } else {
+      setEmojiError('Could not rename emoji.')
+    }
+
+    setRenamingEmojiId(null)
     setEmojiActionPending(false)
   }
 
@@ -221,8 +233,39 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
 
           <div className="vesper-settings-card">
             <div className="vesper-settings-server-hero">
-              <div className="vesper-settings-server-glyph">
-                {server.name.slice(0, 2).toUpperCase()}
+              <div className="relative group">
+                {server.icon_url ? (
+                  <img
+                    src={server.icon_url}
+                    alt={server.name}
+                    className="w-16 h-16 rounded-full object-cover"
+                  />
+                ) : (
+                  <div className="vesper-settings-server-glyph">
+                    {server.name.slice(0, 2).toUpperCase()}
+                  </div>
+                )}
+                {(isOwner || myMembership?.role === 'admin') && (
+                  <button
+                    type="button"
+                    onClick={() => iconFileInputRef.current?.click()}
+                    className="absolute inset-0 flex items-center justify-center bg-black/50 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+                    title="Change server icon"
+                  >
+                    <ImagePlus className="w-5 h-5 text-white" />
+                  </button>
+                )}
+                <input
+                  ref={iconFileInputRef}
+                  type="file"
+                  accept="image/jpeg,image/png,image/gif,image/webp"
+                  className="hidden"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0]
+                    if (file) setIconCropFile(file)
+                    event.target.value = ''
+                  }}
+                />
               </div>
               <div>
                 <div className="vesper-settings-profile-name">{server.name}</div>
@@ -273,6 +316,22 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
               </button>
             </div>
           </div>
+
+          {iconCropFile && (
+            <ImageCropModal
+              file={iconCropFile}
+              title="Server Icon"
+              cropShape="round"
+              aspect={1}
+              outputSize={{ width: 256, height: 256 }}
+              onSubmit={async (blob) => {
+                const croppedFile = new File([blob], 'icon.png', { type: 'image/png' })
+                await uploadServerIcon(activeServerId, croppedFile)
+                setIconCropFile(null)
+              }}
+              onClose={() => setIconCropFile(null)}
+            />
+          )}
         </>
       )}
 
@@ -360,27 +419,16 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
           </div>
 
           <div className="vesper-settings-card">
-            <div className="vesper-settings-field">
-              <span className="vesper-settings-label">Upload Emoji</span>
-              <div className="vesper-settings-inline-row">
-                <input
-                  data-testid="emoji-name-input"
-                  type="text"
-                  value={emojiName}
-                  onChange={(event) => setEmojiName(event.target.value)}
-                  placeholder="Optional emoji name"
-                  className="vesper-settings-input"
-                  disabled={!canManageEmojis || emojiActionPending}
-                />
+            {canManageEmojis && (
+              <div className="mb-4">
                 <button
                   data-testid="emoji-save"
                   type="button"
                   onClick={() => emojiFileInputRef.current?.click()}
-                  className="vesper-settings-secondary-button"
-                  disabled={!canManageEmojis || emojiActionPending}
+                  className="px-4 py-2 glow-accent hover:glow-accent-hover text-bg-base rounded-lg text-sm font-medium transition-all inline-flex items-center gap-2"
                 >
                   <Upload className="w-4 h-4" />
-                  Upload
+                  Upload Emoji
                 </button>
                 <input
                   data-testid="emoji-upload"
@@ -388,13 +436,10 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
                   type="file"
                   accept="image/png,image/jpeg,image/gif,image/webp"
                   className="hidden"
-                  onChange={(event) => {
-                    void handleEmojiUpload(event)
-                  }}
+                  onChange={handleEmojiFileSelect}
                 />
               </div>
-              <p className="vesper-settings-helper">PNG, JPEG, GIF, or WebP up to 1MB.</p>
-            </div>
+            )}
 
             {emojiFeedback && (
               <div className="vesper-settings-feedback vesper-settings-feedback-success">{emojiFeedback}</div>
@@ -403,41 +448,149 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
               <div className="vesper-settings-feedback vesper-settings-feedback-error">{emojiError}</div>
             )}
 
-            <div data-testid="custom-emoji-list" className="vesper-settings-emoji-list">
+            <div data-testid="custom-emoji-list">
               {server.emojis.length === 0 ? (
                 <div className="vesper-settings-note-pill">No custom emoji uploaded yet.</div>
               ) : (
-                server.emojis.map((emoji) => (
-                  <div key={emoji.id} className="vesper-settings-emoji-row">
-                    <img
-                      src={emoji.url}
-                      alt={`:${emoji.name}:`}
-                      className="vesper-settings-emoji-preview"
-                    />
-                    <div className="vesper-settings-emoji-copy">
-                      <div className="vesper-settings-member-name">:{emoji.name}:</div>
-                      <div className="vesper-settings-member-meta">
-                        {`<${emoji.animated ? 'a' : ''}:${emoji.name}:${emoji.id}>`}
+                <>
+                  <div className="text-sm text-text-faint mb-2">
+                    {server.emojis.length} emoji{server.emojis.length !== 1 ? 's' : ''}
+                  </div>
+
+                  {/* Table header */}
+                  <div className="grid grid-cols-[3rem_1fr_1fr_auto] gap-3 items-center px-3 py-2 text-xs text-text-faint uppercase tracking-wider border-b border-border">
+                    <span>Image</span>
+                    <span>Name</span>
+                    <span>Uploaded By</span>
+                    <span className="w-16" />
+                  </div>
+
+                  {/* Rows */}
+                  {server.emojis.map((emoji) => (
+                    <div
+                      key={emoji.id}
+                      className="group grid grid-cols-[3rem_1fr_1fr_auto] gap-3 items-center px-3 py-2.5 border-b border-border/50 hover:bg-bg-surface/50 transition-colors"
+                    >
+                      {/* Image */}
+                      <img
+                        src={emoji.url}
+                        alt={`:${emoji.name}:`}
+                        className="w-10 h-10 object-contain rounded"
+                      />
+
+                      {/* Name */}
+                      <div className="min-w-0">
+                        {renamingEmojiId === emoji.id ? (
+                          <form
+                            className="flex items-center gap-2"
+                            onSubmit={(e) => {
+                              e.preventDefault()
+                              void handleEmojiRename(emoji.id)
+                            }}
+                          >
+                            <input
+                              type="text"
+                              value={renameValue}
+                              onChange={(e) => setRenameValue(e.target.value)}
+                              className="rounded bg-bg-base/50 border border-border text-text-primary px-2 py-1 text-sm input-focus w-40"
+                              maxLength={32}
+                              autoFocus
+                              onBlur={() => { void handleEmojiRename(emoji.id) }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Escape') {
+                                  setRenamingEmojiId(null)
+                                }
+                              }}
+                            />
+                            <button
+                              type="submit"
+                              className="text-green-400 hover:text-green-300"
+                              title="Save"
+                            >
+                              <Check className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setRenamingEmojiId(null)}
+                              className="text-text-muted hover:text-text-primary"
+                              title="Cancel"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          </form>
+                        ) : (
+                          <span className="text-sm text-text-primary font-mono bg-bg-base/40 px-1.5 py-0.5 rounded">
+                            :{emoji.name}:
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Uploaded By */}
+                      <div className="flex items-center gap-2 min-w-0">
+                        {emoji.creator ? (
+                          <>
+                            {emoji.creator.avatar_url ? (
+                              <img
+                                src={emoji.creator.avatar_url}
+                                alt=""
+                                className="w-5 h-5 rounded-full shrink-0"
+                              />
+                            ) : (
+                              <div className="w-5 h-5 rounded-full bg-bg-surface shrink-0" />
+                            )}
+                            <span className="text-sm text-text-secondary truncate">
+                              {emoji.creator.display_name || emoji.creator.username}
+                            </span>
+                          </>
+                        ) : (
+                          <span className="text-sm text-text-faint">Unknown</span>
+                        )}
+                      </div>
+
+                      {/* Actions (visible on hover) */}
+                      <div className="flex items-center gap-1 w-16 justify-end opacity-0 group-hover:opacity-100 transition-opacity">
+                        {canManageEmojis && (
+                          <>
+                            <button
+                              type="button"
+                              className="p-1.5 rounded text-text-muted hover:text-text-primary hover:bg-bg-surface transition-colors"
+                              disabled={emojiActionPending}
+                              onClick={() => {
+                                setRenamingEmojiId(emoji.id)
+                                setRenameValue(emoji.name)
+                              }}
+                              title="Rename emoji"
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              className="p-1.5 rounded text-text-muted hover:text-red-400 hover:bg-red-400/10 transition-colors"
+                              disabled={emojiActionPending}
+                              onClick={() => {
+                                void handleEmojiDelete(emoji.id, emoji.name)
+                              }}
+                              title="Delete emoji"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </>
+                        )}
                       </div>
                     </div>
-                    {canManageEmojis && (
-                      <button
-                        type="button"
-                        className="vesper-settings-icon-button vesper-settings-icon-button-danger"
-                        disabled={emojiActionPending}
-                        onClick={() => {
-                          void handleEmojiDelete(emoji.id, emoji.name)
-                        }}
-                        title="Delete emoji"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    )}
-                  </div>
-                ))
+                  ))}
+                </>
               )}
             </div>
           </div>
+
+          {emojiUploadFile && server && (
+            <EmojiUploadModal
+              file={emojiUploadFile}
+              serverId={server.id}
+              onClose={() => setEmojiUploadFile(null)}
+            />
+          )}
         </>
       )}
 

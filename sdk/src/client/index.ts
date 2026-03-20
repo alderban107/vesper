@@ -33,6 +33,7 @@ import {
   type VesperConversationMessagePreview,
   type VesperConversationResetPatch,
   type VesperCustomEmoji,
+  type VesperEmojiCreator,
   type VesperMessage,
   type VesperScopeSyncScopeRequest,
   type VesperScopeSyncResponse,
@@ -181,6 +182,7 @@ const UNREAD_EVENT_DEDUPE_WINDOW_MS = 15_000
 const FIRE_AND_FORGET_SCOPE_EVENTS = new Set([
   'typing_start',
   'typing_stop',
+  'new_message',
   'mls_request_join',
   'mls_request_join_all',
   'mls_resync_request',
@@ -624,6 +626,13 @@ export class VesperClient {
     return `${baseUrl}${normalizedPath}`
   }
 
+  private resolveEmojiUrls(emojis: VesperCustomEmoji[]): VesperCustomEmoji[] {
+    return emojis.map((e) => ({
+      ...e,
+      url: e.url.startsWith('/') ? this.resolveUrl(e.url) : e.url
+    }))
+  }
+
   async runWithStorageContext<T>(operation: () => Promise<T>): Promise<T> {
     return await this.storageRuntime.run(
       this.authSession?.user.id ?? this.state.user?.id ?? null,
@@ -956,6 +965,12 @@ export class VesperClient {
 
   async listServers(): Promise<VesperServer[]> {
     const servers = await listServers(this.httpClient)
+    for (const server of servers) {
+      const raw = server as Record<string, unknown>
+      if (Array.isArray(raw.emojis)) {
+        raw.emojis = this.resolveEmojiUrls(raw.emojis as VesperCustomEmoji[])
+      }
+    }
     this.setState({
       servers: mergeServers(this.state.servers, servers)
     })
@@ -1339,7 +1354,7 @@ export class VesperClient {
       {},
       'Could not load server emojis'
     )
-    return data.emojis ?? []
+    return this.resolveEmojiUrls(data.emojis ?? [])
   }
 
   async uploadServerEmoji(serverId: string, formData: FormData): Promise<VesperCustomEmoji> {
@@ -1353,7 +1368,42 @@ export class VesperClient {
       throw new Error('Could not upload emoji: missing emoji payload')
     }
 
-    return data.emoji
+    const [resolved] = this.resolveEmojiUrls([data.emoji])
+    return resolved
+  }
+
+  async uploadServerIcon(serverId: string, formData: FormData): Promise<VesperServer> {
+    const data = await this.uploadJson<{ server?: VesperServer }>(
+      `/api/v1/servers/${serverId}/icon`,
+      formData,
+      'Could not upload server icon'
+    )
+
+    if (!data.server) {
+      throw new Error('Could not upload server icon: missing server payload')
+    }
+
+    this.setState({
+      servers: replaceServerInServers(this.state.servers, data.server)
+    })
+    this.emitter.emit('servers.updated', [...this.state.servers])
+
+    return data.server
+  }
+
+  async renameServerEmoji(serverId: string, emojiId: string, name: string): Promise<VesperCustomEmoji> {
+    const data = await this.fetchJson<{ emoji?: VesperCustomEmoji }>(
+      `/api/v1/servers/${serverId}/emojis/${emojiId}`,
+      { method: 'PATCH', body: JSON.stringify({ name }) },
+      'Could not rename emoji'
+    )
+
+    if (!data.emoji) {
+      throw new Error('Could not rename emoji: missing emoji payload')
+    }
+
+    const [resolved] = this.resolveEmojiUrls([data.emoji])
+    return resolved
   }
 
   async deleteServerEmoji(serverId: string, emojiId: string): Promise<void> {
@@ -2201,6 +2251,8 @@ export type {
   VesperAuthDevice,
   VesperAuthSession,
   VesperConversation,
+  VesperCustomEmoji,
+  VesperEmojiCreator,
   VesperMessage,
   VesperScopeSyncScopeRequest,
   VesperScopeSyncResponse,
