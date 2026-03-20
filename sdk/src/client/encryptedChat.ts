@@ -2140,7 +2140,7 @@ export class VesperEncryptedChat {
     }
   }
 
-  private getGroupEpoch(scopeId: string): number | null {
+  getGroupEpoch(scopeId: string): number | null {
     const state = this.groupStates.get(scopeId)
     if (!state) {
       return null

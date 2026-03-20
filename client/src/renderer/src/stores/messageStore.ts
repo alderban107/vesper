@@ -539,6 +539,7 @@ async function buildMessageFromSdkProcessed(
     reactions: await resolveReactionGroups(targetId, raw.reactions),
     encrypted: processed.encrypted,
     decryptionFailed: processed.decryptionFailed,
+    mls_epoch: (raw.mls_epoch as number | null | undefined) ?? null,
     edited_at: raw.edited_at ?? undefined,
     client_nonce: raw.client_nonce ?? undefined,
     delivery_state: 'sent'
@@ -1255,9 +1256,10 @@ async function processMlsResyncRequest(
     return false
   }
 
-  if (scopeFromTopic(targetId, topic).kind === 'channel' && !(await isLocalChannelOwner(targetId))) {
-    return false
-  }
+  // Any member who holds the group can process resync requests. The SDK-level
+  // handleResyncRequest already restricts this to the first member in the
+  // ratchet tree (the MLS group creator). Gating on server ownership here
+  // caused deadlocks when the server owner was offline or had a forked group.
 
   const isSameUserResync = localUser?.id === requesterId
   const requesterAlreadyJoined =
@@ -2196,6 +2198,42 @@ async function recoverEncryptedScope(
       return
     }
 
+    // Fork detection: we have a group but still can't decrypt messages after
+    // replaying all durable events and requesting resync. Check whether any
+    // failed messages share our current epoch — that means the sender encrypted
+    // with the same epoch number but different tree state (a fork). Reset the
+    // local group and rejoin from the canonical group held by whoever responds
+    // to the join request.
+    const localEpoch = encryptedChat.getGroupEpoch(scope.targetId)
+    const isFork =
+      encryptedChat.hasGroup(scope.targetId) &&
+      localEpoch !== null &&
+      (getState().messagesByChannel[scope.targetId] ?? []).some(
+        (m) =>
+          m.encrypted &&
+          m.decryptionFailed &&
+          typeof m.mls_epoch === 'number' &&
+          m.mls_epoch <= localEpoch
+      )
+
+    if (isFork) {
+      await encryptedChat.resetScope(scope.targetId)
+      await ensureEncryptedScopeMembership(scope).catch(() => {})
+
+      if (encryptedChat.hasGroup(scope.targetId)) {
+        await refreshEncryptedScope(scope, getState).catch(() => {})
+        await processPendingHistoryBundles(
+          scope.targetId,
+          scope.scopeId,
+          useMessageStore.setState
+        ).catch(() => {})
+
+        if (!hasFailedMessagesInScope(scope, getState)) {
+          return
+        }
+      }
+    }
+
     // Recovery exhausted — mark remaining failed messages as permanently unavailable
     // so the UI doesn't keep showing "syncing" forever
     markFailedMessagesUnavailable(scope, getState)
@@ -2414,6 +2452,7 @@ export interface Message {
   reactions?: ReactionGroup[]
   encrypted?: boolean
   decryptionFailed?: boolean
+  mls_epoch?: number | null
   edited_at?: string
   client_nonce?: string
   delivery_state?: 'sending' | 'sent' | 'failed'
@@ -5043,6 +5082,7 @@ async function processIncomingMessage(
       reactions: await resolveReactionGroups(targetId, msg.reactions as RawReaction[] | undefined),
       encrypted: true,
       decryptionFailed: !plaintext,
+      mls_epoch: mlsEpoch,
       edited_at: msg.edited_at ?? undefined,
       client_nonce: msg.client_nonce ?? undefined,
       delivery_state: 'sent'
@@ -5429,9 +5469,10 @@ async function handleMlsJoinRequest(
   const encryptedChat = getRendererEncryptedChat()
 
   if (!encryptedChat.hasGroup(targetId)) return
-  if (scopeFromTopic(targetId, topic).kind === 'channel' && !(await isLocalChannelOwner(targetId))) {
-    return
-  }
+  // Any member who holds the group can process join requests. The SDK-level
+  // handler restricts this to the first member in the ratchet tree. Gating on
+  // server ownership caused deadlocks during fork recovery when the owner had
+  // reset their group state.
   if (inFlightJoinRequests.has(joinRequestKey)) return
 
   const lastHandledAt = recentHandledJoinRequests.get(joinRequestKey) ?? 0
