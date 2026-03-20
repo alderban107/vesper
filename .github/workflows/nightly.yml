@@ -149,7 +149,7 @@ jobs:
 
       - uses: docker/build-push-action@v6
         with:
-          context: ./client
+          context: .
           file: ./client/Dockerfile.web
           push: true
           provenance: false

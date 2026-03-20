@@ -35,8 +35,8 @@ jobs:
             HEAD=${{ github.sha }}
           fi
 
-          # Any non-markdown files changed under client/?
-          if git diff --name-only "$BASE" "$HEAD" -- 'client/' | grep -qvE '\.md$'; then
+          # Any non-markdown files changed under client/ or sdk/?
+          if git diff --name-only "$BASE" "$HEAD" -- 'client/' 'sdk/' | grep -qvE '\.md$'; then
             echo "client=true" >> "$GITHUB_OUTPUT"
           else
             echo "client=false" >> "$GITHUB_OUTPUT"

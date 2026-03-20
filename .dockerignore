@@ -1,0 +1,8 @@
+.git
+server/
+client/node_modules/
+client/dist/
+client/dist-web/
+sdk/node_modules/
+sdk/dist/
+**/.env*
