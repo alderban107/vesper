@@ -5,7 +5,7 @@
 
 import type { Page, BrowserContext } from '@playwright/test'
 import { readRunState, getRecoveryKey } from '../harness/state'
-import { waitForAppShell, waitForDeviceTrustGate, waitForRecoveryModal, waitForRegisterPage } from './wait'
+import { waitForAppShell, waitForDeviceTrustGate, waitForRecoveryModal, waitForRegisterPage, waitForSocketConnected } from './wait'
 
 export interface UserContext {
   name: string
@@ -132,6 +132,7 @@ export async function login(
   }
 
   await waitForAppShell(page)
+  await waitForSocketConnected(page)
 }
 
 /**

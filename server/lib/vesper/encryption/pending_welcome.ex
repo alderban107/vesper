@@ -32,5 +32,11 @@ defmodule Vesper.Encryption.PendingWelcome do
       :conversation_id
     ])
     |> validate_required([:welcome_data, :group_id, :recipient_id, :sender_id])
+    |> unique_constraint([:recipient_id, :group_id],
+      name: :mls_pending_welcomes_scope_unique_index
+    )
+    |> unique_constraint([:recipient_id, :group_id, :recipient_client_id],
+      name: :mls_pending_welcomes_device_unique_index
+    )
   end
 end

@@ -87,30 +87,35 @@ export async function waitForDmConversation(page: Page, username: string): Promi
   })
 }
 
-export async function waitForSocketConnected(page: Page): Promise<void> {
+export async function waitForSocketConnected(page: Page, timeout = 15_000): Promise<void> {
   await waitForAppShell(page)
 
   const reconnectBanner = page.locator('text=Reconnecting to server')
-  const deadline = Date.now() + 15_000
+  const syncBanner = page.locator('text=Syncing latest activity')
+  const deadline = Date.now() + timeout
 
   while (Date.now() < deadline) {
-    let stable = true
+    const reconnecting = await reconnectBanner.isVisible().catch(() => false)
+    const syncing = await syncBanner.isVisible().catch(() => false)
 
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      const visible = await reconnectBanner.isVisible().catch(() => false)
-      if (visible) {
-        stable = false
-        break
+    if (!reconnecting && !syncing) {
+      // Confirm stability: check twice more with a short gap
+      await page.waitForTimeout(200)
+      const stillReconnecting = await reconnectBanner.isVisible().catch(() => false)
+      const stillSyncing = await syncBanner.isVisible().catch(() => false)
+      if (!stillReconnecting && !stillSyncing) {
+        return
       }
-
-      await page.waitForTimeout(250)
     }
 
-    if (stable) {
-      return
-    }
+    await page.waitForTimeout(300)
+  }
 
-    await page.waitForTimeout(500)
+  // If still showing the banner after timeout, throw so tests fail fast
+  // with a clear message instead of timing out on the next assertion.
+  const stillReconnecting = await reconnectBanner.isVisible().catch(() => false)
+  if (stillReconnecting) {
+    throw new Error(`Socket still reconnecting after ${timeout}ms — page is not connected to the server`)
   }
 }
 

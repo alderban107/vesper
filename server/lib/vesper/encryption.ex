@@ -144,38 +144,43 @@ defmodule Vesper.Encryption do
   Store a pending Welcome message for an offline user.
   """
   def store_pending_welcome(attrs) do
+    recipient_id = Map.get(attrs, :recipient_id) || Map.get(attrs, "recipient_id")
+    group_id = Map.get(attrs, :group_id) || Map.get(attrs, "group_id")
+
+    recipient_client_id =
+      Map.get(attrs, :recipient_client_id) || Map.get(attrs, "recipient_client_id")
+
+    has_client_id = is_binary(recipient_client_id) and byte_size(recipient_client_id) > 0
+
     Repo.transaction(fn ->
-      recipient_id = Map.get(attrs, :recipient_id) || Map.get(attrs, "recipient_id")
-      group_id = Map.get(attrs, :group_id) || Map.get(attrs, "group_id")
-
-      recipient_client_id =
-        Map.get(attrs, :recipient_client_id) || Map.get(attrs, "recipient_client_id")
-
-      if recipient_id && group_id do
-        query =
-          from(
-            pw in PendingWelcome,
-            where: pw.recipient_id == ^recipient_id and pw.group_id == ^group_id
-          )
-
-        query =
-          case recipient_client_id do
-            client_id when is_binary(client_id) and byte_size(client_id) > 0 ->
-              from(
-                pw in query,
-                where: pw.recipient_client_id == ^client_id or is_nil(pw.recipient_client_id)
-              )
-
-            _ ->
-              from(pw in query, where: is_nil(pw.recipient_client_id))
-          end
-
-        Repo.delete_all(query)
+      # When targeting a specific device, clean up any leftover generic (nil-device) welcome.
+      # The upsert below handles same-key races, but cross-key cleanup must be explicit.
+      if recipient_id && group_id && has_client_id do
+        from(pw in PendingWelcome,
+          where:
+            pw.recipient_id == ^recipient_id and pw.group_id == ^group_id and
+              is_nil(pw.recipient_client_id)
+        )
+        |> Repo.delete_all()
       end
 
       changeset = PendingWelcome.changeset(%PendingWelcome{}, attrs)
 
-      case Repo.insert(changeset) do
+      conflict_target =
+        if has_client_id do
+          {:unsafe_fragment,
+           "(recipient_id, group_id, recipient_client_id) WHERE recipient_client_id IS NOT NULL"}
+        else
+          {:unsafe_fragment, "(recipient_id, group_id) WHERE recipient_client_id IS NULL"}
+        end
+
+      case Repo.insert(changeset,
+             on_conflict:
+               {:replace,
+                [:welcome_data, :sender_id, :recipient_key_package_ref, :channel_id, :conversation_id]},
+             conflict_target: conflict_target,
+             returning: true
+           ) do
         {:ok, welcome} -> welcome
         {:error, changeset} -> Repo.rollback(changeset)
       end

@@ -59,9 +59,9 @@ test.describe('P1: Offline sync and pending welcomes', () => {
     await selectChannel(bob.page, 'sync-test')
 
     // Bob should see all messages that were sent while offline
-    await waitForMessage(bob.page, 'While bob offline 1 — sync bravo', 30_000)
-    await waitForMessage(bob.page, 'While bob offline 2 — sync charlie', 30_000)
-    await waitForMessage(bob.page, 'While bob offline 3 — sync delta', 30_000)
+    await waitForMessage(bob.page, 'While bob offline 1 — sync bravo', 15_000)
+    await waitForMessage(bob.page, 'While bob offline 2 — sync charlie', 5_000)
+    await waitForMessage(bob.page, 'While bob offline 3 — sync delta', 5_000)
 
     // No decryption failures
     await assertNoDecryptionFailures(bob.page)
@@ -102,7 +102,7 @@ test.describe('P1: Offline sync and pending welcomes', () => {
     // All three chat to exercise the MLS group formation with pending welcomes
     await sendChannelMessage(alice.page, 'After charlie join — welcome foxtrot')
     await waitForMessage(bob.page, 'After charlie join — welcome foxtrot')
-    await waitForMessage(charlie.page, 'After charlie join — welcome foxtrot', 30_000)
+    await waitForMessage(charlie.page, 'After charlie join — welcome foxtrot', 15_000)
 
     await sendChannelMessage(charlie.page, 'Charlie first msg — welcome golf')
     await waitForMessage(alice.page, 'Charlie first msg — welcome golf')
