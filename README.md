@@ -141,7 +141,7 @@ server/                  Elixir/Phoenix backend (API + WebSocket)
   lib/vesper/              domain logic (accounts, chat, encryption)
   lib/vesper_web/          controllers, channels, router
   config/test.exs          test DB config (supports TEST_DB_* env overrides)
-  priv/repo/migrations/   database migrations
+  priv/repo/migrations/    database migrations
   test/
     test_helper.exs        ExUnit bootstrap
     support/
@@ -163,12 +163,18 @@ client/                  Electron + React frontend
     harness/                 test orchestration helpers
     REQUIREMENTS.md          full test plan
 
-sdk/                     TypeScript SDK for the Vesper API
-  src/                     client library source
-  test/                    SDK tests
-  examples/                usage examples
-  scripts/                 build/dev scripts
-  README.md                SDK overview and usage
+sdk/                     TypeScript SDK (@vesper/sdk npm workspace)
+  src/                     SDK source (auth, crypto, client, transport, voice)
+  test/                    live integration tests (boots Phoenix)
+  examples/                example apps (CLI client, bots, OpenTUI)
+  scripts/                 local Postgres helper and chaos/load test runners
+
+scripts/                 repo-level tooling
+  setup-git-hooks.sh       configure git hooks from .githooks/
+  pre-commit-checks.sh     pre-commit gate (server precommit + client web check)
+  pre-push-checks.sh       pre-push gate (client web check)
+  load-test-env.sh         source repo .env and normalize test DB vars (shell)
+  load-repo-env.mjs        same as above for Node (used by SDK test harness)
 
 .github/workflows/
   test-server.yml          server CI — mix test + PostgreSQL 17
@@ -180,28 +186,12 @@ sdk/                     TypeScript SDK for the Vesper API
 .github/CI.md             CI/CD pipeline documentation
 
 doc/
-  DESIGN.md              architecture overview
-  e2ee/                  end-to-end encryption documentation
-    REQUIREMENTS-E2EE.md        requirements & design analysis
-    REQUIREMENTS-E2EE-AUDIT.md  implementation status audit
-    E2EE-IMPLEMENTATION.md      developer guide
-  sdk/                   SDK documentation
-    README.md              documentation index
-    quickstart.md          getting started guide
-    authentication.md      auth flow reference
-    messaging.md           sending/receiving messages
-    encryption.md          E2EE integration
-    events.md              real-time event handling
-    storage.md             file upload/download
-    bots.md                bot development guide
-    api-reference.md       full API reference
-
-scripts/                 repo-wide developer tooling (see scripts/README.md)
-  setup-git-hooks.sh       install pre-commit and pre-push hooks
-  pre-commit-checks.sh     formatting + lint checks
-  pre-push-checks.sh       full typecheck + test gate
-  load-repo-env.mjs        shared env loader for Node tooling
-  load-test-env.sh         test environment bootstrap
+  DESIGN.md                architecture overview
+  sdk/                     SDK developer guides (quickstart, auth, messaging, etc.)
+  e2ee/                    end-to-end encryption documentation
+    REQUIREMENTS-E2EE.md          requirements & design analysis
+    REQUIREMENTS-E2EE-AUDIT.md    implementation status audit
+    E2EE-IMPLEMENTATION.md        developer guide
 
 docker-compose.yml       full stack (PostgreSQL, Phoenix, web client, coturn)
 turnserver.conf          coturn configuration for voice relay

@@ -39,19 +39,18 @@ uploads/
 .DS_Store
 Thumbs.db
 
-# IDE / editor
+# IDE / editor / agent tooling
 .idea/
 .vscode/
-*.swp
-*~
-
-# AI agent configs
-.codex/
 .cursor/
+.codex/
 .gemini/
 .zed/
+.claude/
 .mcp.json
 opencode.json
+*.swp
+*~
 
 # Build artifacts
 *.tsbuildinfo
@@ -60,6 +59,6 @@ opencode.json
 client/e2e/artifacts/
 media-test-files/
 
-# Agent tool artefacts
+# Analysis artifacts
 .desloppify/
 scorecard.png

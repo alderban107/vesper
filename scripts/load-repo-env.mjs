@@ -7,7 +7,6 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const DEFAULT_ENV_FILE = path.join(REPO_ROOT, '.env')
 const START_TEST_POSTGRES_SCRIPT = path.join(
   REPO_ROOT,
-  'packages',
   'sdk',
   'scripts',
   'start-test-postgres.sh'

@@ -3,10 +3,10 @@ import fs from 'fs'
 import path from 'path'
 import net from 'net'
 import { fileURLToPath } from 'url'
-import { ensureLocalTestPostgres, loadRepoEnv } from '../../../../scripts/load-repo-env.mjs'
+import { ensureLocalTestPostgres, loadRepoEnv } from '../../../scripts/load-repo-env.mjs'
 
 const SDK_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
-const REPO_ROOT = path.resolve(SDK_ROOT, '..', '..')
+const REPO_ROOT = path.resolve(SDK_ROOT, '..')
 const SERVER_DIR = path.join(REPO_ROOT, 'server')
 let stackLifecycleQueue: Promise<void> = Promise.resolve()
 

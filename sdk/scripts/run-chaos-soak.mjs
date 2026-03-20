@@ -6,7 +6,7 @@ import path from 'node:path'
 import process from 'node:process'
 import { spawn } from 'node:child_process'
 import { monitorEventLoopDelay, performance } from 'node:perf_hooks'
-import { loadRepoEnv } from '../../../scripts/load-repo-env.mjs'
+import { loadRepoEnv } from '../../scripts/load-repo-env.mjs'
 
 import { bootServerStack, teardownServerStack } from '../dist/testing/index.js'
 

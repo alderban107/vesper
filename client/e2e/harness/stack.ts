@@ -14,7 +14,7 @@ import { type RunState, generateRunId, readRunState, writeRunState } from './sta
 const ROOT = path.resolve(__dirname, '..', '..', '..')
 const SERVER_DIR = path.join(ROOT, 'server')
 const CLIENT_DIR = path.join(ROOT, 'client')
-const SDK_TEST_DB_START_SCRIPT = path.join(ROOT, 'packages', 'sdk', 'scripts', 'start-test-postgres.sh')
+const SDK_TEST_DB_START_SCRIPT = path.join(ROOT, 'sdk', 'scripts', 'start-test-postgres.sh')
 
 let phoenixProcess: ChildProcess | null = null
 let viteProcess: ChildProcess | null = null
