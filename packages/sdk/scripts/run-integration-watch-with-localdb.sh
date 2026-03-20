@@ -9,6 +9,6 @@ REPO_ROOT="$(CDPATH='' cd -- "$PACKAGE_DIR/../.." && pwd)"
 
 "$SCRIPT_DIR/start-test-postgres.sh"
 
-cd "$REPO_ROOT"
-npm --prefix packages/sdk run build
-node packages/sdk/scripts/run-chaos-soak.mjs
+cd "$PACKAGE_DIR"
+npm run build
+node --test --test-concurrency=1 --watch test/**/*.test.mjs

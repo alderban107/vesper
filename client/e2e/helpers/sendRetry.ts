@@ -1,4 +1,5 @@
 import { expect, type Locator, type Page } from '@playwright/test'
+import { waitForSocketConnected } from './wait'
 
 const DEFAULT_TIMEOUT = 60_000
 const POLL_INTERVAL = 500
@@ -37,6 +38,10 @@ export async function sendMessageWithEncryptionRetry(
   let sent = false
 
   while (Date.now() < deadline) {
+    if (await page.locator('text=Reconnecting to server').isVisible().catch(() => false)) {
+      await waitForSocketConnected(page)
+    }
+
     if (!sent) {
       await inputLocator.fill(text)
       await inputLocator.press('Enter')
@@ -73,6 +78,13 @@ export async function sendMessageWithEncryptionRetry(
       await dismissEncryptionAlert(page)
       await inputLocator.fill('')
       await page.waitForTimeout(POLL_INTERVAL)
+      continue
+    }
+
+    if (await page.locator('text=Reconnecting to server').isVisible().catch(() => false)) {
+      sent = false
+      await waitForSocketConnected(page)
+      await page.waitForTimeout(POLL_INTERVAL)
     }
   }
 
@@ -88,19 +100,31 @@ export async function sendMessageWithEncryptionRetry(
 function pollForConfirmedMessage(feedLocator: Locator, text: string): Promise<void> {
   return expect
     .poll(
-      async () =>
-        feedLocator
-          .filter({ hasText: text })
-          .evaluateAll((elements) =>
-            elements.filter((el) => {
-              if (!(el instanceof HTMLElement)) return false
-              if (el.classList.contains('vesper-message-row-sending')) return false
-              if (el.classList.contains('vesper-message-row-failed')) return false
-              const style = window.getComputedStyle(el)
-              if (style.visibility === 'hidden' || style.display === 'none') return false
-              return el.getClientRects().length > 0
-            }).length
-          ),
+      async () => {
+        try {
+          return await feedLocator
+            .filter({ hasText: text })
+            .evaluateAll((elements) =>
+              elements.filter((el) => {
+                if (!(el instanceof HTMLElement)) return false
+                if (el.classList.contains('vesper-message-row-sending')) return false
+                if (el.classList.contains('vesper-message-row-failed')) return false
+                const style = window.getComputedStyle(el)
+                if (style.visibility === 'hidden' || style.display === 'none') return false
+                return el.getClientRects().length > 0
+              }).length
+            )
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          if (
+            message.includes('Execution context was destroyed') ||
+            message.includes('Target page, context or browser has been closed')
+          ) {
+            return 0
+          }
+          throw error
+        }
+      },
       { timeout: 10_000 }
     )
     .toBeGreaterThan(0)
@@ -113,17 +137,29 @@ function pollForConfirmedMessage(feedLocator: Locator, text: string): Promise<vo
 function pollForVisibleMessage(feedLocator: Locator, text: string): Promise<void> {
   return expect
     .poll(
-      async () =>
-        feedLocator
-          .filter({ hasText: text })
-          .evaluateAll((elements) =>
-            elements.filter((el) => {
-              if (!(el instanceof HTMLElement)) return false
-              const style = window.getComputedStyle(el)
-              if (style.visibility === 'hidden' || style.display === 'none') return false
-              return el.getClientRects().length > 0
-            }).length
-          ),
+      async () => {
+        try {
+          return await feedLocator
+            .filter({ hasText: text })
+            .evaluateAll((elements) =>
+              elements.filter((el) => {
+                if (!(el instanceof HTMLElement)) return false
+                const style = window.getComputedStyle(el)
+                if (style.visibility === 'hidden' || style.display === 'none') return false
+                return el.getClientRects().length > 0
+              }).length
+            )
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          if (
+            message.includes('Execution context was destroyed') ||
+            message.includes('Target page, context or browser has been closed')
+          ) {
+            return 0
+          }
+          throw error
+        }
+      },
       { timeout: 10_000 }
     )
     .toBeGreaterThan(0)

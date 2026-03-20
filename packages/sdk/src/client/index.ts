@@ -59,9 +59,9 @@ import {
 } from '../auth/session.js'
 import type { LocalDeviceIdentity } from '../auth/deviceIdentity.js'
 import {
-  configureCryptoStorage,
-  resetStorage,
-  type CryptoStorageAdapter
+  createCryptoStorageRuntime,
+  type CryptoStorageConfig,
+  type CryptoStorageRuntime
 } from '../crypto/storage.js'
 import { createVesperTransport } from '../transport/context.js'
 import { createEncryptedChat, type VesperEncryptedChat } from './encryptedChat.js'
@@ -126,7 +126,8 @@ export interface VesperClientOptions {
   baseUrl?: string
   fetchImpl?: typeof fetch
   sessionStore?: SessionStore
-  storage?: CryptoStorageAdapter | ((userId: string) => CryptoStorageAdapter)
+  storage?: CryptoStorageConfig
+  storageRuntime?: CryptoStorageRuntime
   heartbeatIntervalMs?: number
   auth?: VesperAuthClientOptions
 }
@@ -516,6 +517,7 @@ export class VesperClient {
   private readonly httpClient: VesperHttpClient
   private readonly socketClient: VesperSocketClient
   private readonly heartbeatIntervalMs: number
+  private readonly storageRuntime: CryptoStorageRuntime
   private readonly scopeWatchers = new Map<string, ScopeWatcher>()
   private readonly pendingScopeWatchers = new Map<string, Promise<ScopeWatcher>>()
   private readonly recentUnreadMessageKeys = new Map<string, number>()
@@ -532,9 +534,10 @@ export class VesperClient {
   private seenSocketOpen = false
 
   constructor(options: VesperClientOptions = {}) {
-    if (options.storage) {
-      configureCryptoStorage(options.storage)
-    }
+    const storageRuntime =
+      options.auth?.storageRuntime ??
+      options.storageRuntime ??
+      createCryptoStorageRuntime(options.auth?.storage ?? options.storage)
 
     const transport = createVesperTransport({
       baseUrl: options.baseUrl,
@@ -544,9 +547,11 @@ export class VesperClient {
 
     this.httpClient = transport.httpClient
     this.socketClient = transport.socketClient
+    this.storageRuntime = storageRuntime
     this.resolveDeviceIdentity = options.auth?.getDeviceIdentity ?? null
     this.auth = new VesperAuthClient({
       ...options.auth,
+      storageRuntime,
       transport: {
         httpClient: this.httpClient,
         socketClient: this.socketClient
@@ -581,6 +586,10 @@ export class VesperClient {
     return this.auth
   }
 
+  getStorageRuntime(): CryptoStorageRuntime {
+    return this.storageRuntime
+  }
+
   getServerUrl(): string {
     return this.httpClient.getServerUrl()
   }
@@ -597,6 +606,13 @@ export class VesperClient {
     const baseUrl = this.httpClient.getServerUrl().replace(/\/+$/, '')
     const normalizedPath = path.startsWith('/') ? path : `/${path}`
     return `${baseUrl}${normalizedPath}`
+  }
+
+  async runWithStorageContext<T>(operation: () => Promise<T>): Promise<T> {
+    return await this.storageRuntime.run(
+      this.authSession?.user.id ?? this.state.user?.id ?? null,
+      operation
+    )
   }
 
   async fetchJson<T>(path: string, options: RequestInit = {}, fallbackMessage?: string): Promise<T> {
@@ -702,22 +718,21 @@ export class VesperClient {
 
     if (!this.unsubscribeSocketOpen) {
       this.unsubscribeSocketOpen = this.socketClient.onSocketOpen(() => {
-        this.setState({ connected: true })
-        this.emitter.emit('connected', this.getState())
-
         if (!this.seenSocketOpen) {
           this.seenSocketOpen = true
+          this.setState({ connected: true })
+          this.emitter.emit('connected', this.getState())
           return
         }
 
-        void this.syncNow(false).catch((error) => {
+        void this.handleSocketReconnect().catch((error) => {
           this.emitError(error)
         })
       })
     }
 
     if (!this.unsubscribeSocketClose) {
-      this.unsubscribeSocketClose = this.socketClient.onSocketClose(() => {
+      this.unsubscribeSocketClose = this.socketClient.onSocketClose((event) => {
         if (!this.state.connected) {
           return
         }
@@ -784,7 +799,9 @@ export class VesperClient {
   async logout(): Promise<void> {
     this.stop()
     await this.auth.logout()
-    resetStorage()
+    await this.runWithStorageContext(async () => {
+      this.storageRuntime.reset()
+    })
     this.authSession = null
     this.replaceState(defaultState())
   }
@@ -1722,11 +1739,29 @@ export class VesperClient {
     return kind === 'channel' ? `chat:channel:${scopeId}` : `dm:${scopeId}`
   }
 
+  private async handleSocketReconnect(): Promise<void> {
+    const userId = this.authSession?.user.id ?? this.state.user?.id ?? null
+
+    if (userId) {
+      await this.connectUserFeed(userId)
+    }
+
+    await this.restoreScopeWatchers()
+    this.setState({ connected: true })
+    this.emitter.emit('connected', this.getState())
+    await this.syncNow(false)
+  }
+
   private async ensureScopeWatcher(kind: ScopeKind, scopeId: string): Promise<ScopeWatcher> {
     const watcherKey = this.getScopeWatcherKey(kind, scopeId)
     const existing = this.scopeWatchers.get(watcherKey)
-    if (existing) {
+    if (existing && this.socketClient.hasUsableChannel(existing.topic)) {
       return existing
+    }
+
+    if (existing) {
+      existing.disposeChannel()
+      this.scopeWatchers.delete(watcherKey)
     }
 
     const pending = this.pendingScopeWatchers.get(watcherKey)
@@ -1734,38 +1769,8 @@ export class VesperClient {
       return await pending
     }
 
-    const topic = this.getScopeTopic(kind, scopeId)
-    const listeners = new Set<Listener<VesperClientScopeEvent>>()
-
     const join = (async () => {
-      this.socketClient.connect()
-
-      const onMessage = (event: string, payload: unknown) => {
-        const nextEvent = {
-          topic,
-          event,
-          payload
-        }
-
-        for (const scopeListener of listeners) {
-          void Promise.resolve(scopeListener(nextEvent)).catch((error) => {
-            this.emitError(error)
-          })
-        }
-
-        this.emitter.emit('scope.event', nextEvent)
-      }
-
-      await this.socketClient.joinChannelWithAck(topic, onMessage)
-
-      const watcher: ScopeWatcher = {
-        topic,
-        listeners,
-        disposeChannel: () => {
-          this.socketClient.leaveChannelListener(topic, onMessage)
-        }
-      }
-
+      const watcher = await this.createScopeWatcher(kind, scopeId)
       this.scopeWatchers.set(watcherKey, watcher)
       return watcher
     })()
@@ -1776,6 +1781,70 @@ export class VesperClient {
       return await join
     } finally {
       this.pendingScopeWatchers.delete(watcherKey)
+    }
+  }
+
+  private async createScopeWatcher(
+    kind: ScopeKind,
+    scopeId: string,
+    existingListeners?: Set<Listener<VesperClientScopeEvent>>
+  ): Promise<ScopeWatcher> {
+    const topic = this.getScopeTopic(kind, scopeId)
+    const listeners = existingListeners ?? new Set<Listener<VesperClientScopeEvent>>()
+
+    this.socketClient.connect()
+
+    const onMessage = (event: string, payload: unknown) => {
+      const nextEvent = {
+        topic,
+        event,
+        payload
+      }
+
+      for (const scopeListener of listeners) {
+        void Promise.resolve(scopeListener(nextEvent)).catch((error) => {
+          this.emitError(error)
+        })
+      }
+
+      this.emitter.emit('scope.event', nextEvent)
+    }
+
+    await this.socketClient.joinChannelWithAck(topic, onMessage)
+
+    return {
+      topic,
+      listeners,
+      disposeChannel: () => {
+        this.socketClient.leaveChannelListener(topic, onMessage)
+      }
+    }
+  }
+
+  private async restoreScopeWatchers(): Promise<void> {
+    const watchers = [...this.scopeWatchers.entries()]
+
+    for (const [watcherKey, watcher] of watchers) {
+      if (this.socketClient.hasUsableChannel(watcher.topic)) {
+        continue
+      }
+
+      watcher.disposeChannel()
+      this.scopeWatchers.delete(watcherKey)
+
+      if (watcher.listeners.size === 0) {
+        continue
+      }
+
+      const separatorIndex = watcherKey.indexOf(':')
+      if (separatorIndex === -1) {
+        continue
+      }
+
+      const kind = watcherKey.slice(0, separatorIndex) as ScopeKind
+      const scopeId = watcherKey.slice(separatorIndex + 1)
+      const recreated = await this.createScopeWatcher(kind, scopeId, watcher.listeners)
+      this.scopeWatchers.set(watcherKey, recreated)
     }
   }
 
@@ -1798,7 +1867,7 @@ export class VesperClient {
 
   private async connectUserFeed(userId: string): Promise<void> {
     const topic = `user:${userId}`
-    if (this.userTopic === topic) {
+    if (this.userTopic === topic && this.socketClient.hasUsableChannel(topic)) {
       return
     }
 

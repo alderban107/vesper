@@ -1,6 +1,11 @@
 #!/bin/sh
 set -eu
 
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(CDPATH='' cd -- "$SCRIPT_DIR/../../.." && pwd)"
+
+. "$REPO_ROOT/scripts/load-test-env.sh" "$REPO_ROOT"
+
 CONTAINER_NAME="${VESPER_SDK_TEST_DB_CONTAINER:-vesper-sdk-test-postgres}"
 PORT="${VESPER_SDK_TEST_DB_PORT:-55432}"
 USER_NAME="${VESPER_SDK_TEST_DB_USER:-vesper_sdk}"

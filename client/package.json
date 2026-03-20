@@ -16,8 +16,11 @@
     "dev:web": "vite --config vite.web.config.ts",
     "build:web": "vite build --config vite.web.config.ts",
     "preview:web": "vite preview --config vite.web.config.ts",
-    "test:e2e": "npm run test:integration -w @vesper/sdk",
-    "test:e2e:watch": "npm run test:integration:watch -w @vesper/sdk"
+    "test:e2e": "npx playwright test -c e2e/playwright.config.ts",
+    "test:e2e:p0": "npx playwright test -c e2e/playwright.config.ts --project=p0-smoke",
+    "test:e2e:watch": "npx playwright test -c e2e/playwright.config.ts --ui",
+    "test:sdk:e2e": "npm run test:integration -w @vesper/sdk",
+    "test:sdk:e2e:watch": "npm run test:integration:watch -w @vesper/sdk"
   },
   "keywords": [
     "messaging",
@@ -34,6 +37,7 @@
   },
   "homepage": "https://github.com/alderban107/vesper",
   "devDependencies": {
+    "@playwright/test": "^1.58.2",
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
     "@types/better-sqlite3": "^7.6.13",

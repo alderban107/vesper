@@ -33,8 +33,9 @@ import {
 } from '../auth/index.js'
 import {
   MemoryStorage,
-  configureCryptoStorage,
-  type CryptoStorageAdapter
+  createCryptoStorageRuntime,
+  type CryptoStorageAdapter,
+  type CryptoStorageRuntime
 } from '../storage/index.js'
 
 export interface TestingDeviceIdentity {
@@ -49,12 +50,28 @@ export interface TestingDeviceHarnessOptions {
   devicePlatform?: string
   sessionStore?: SessionStore
   storage?: CryptoStorageAdapter
+  storageRuntime?: CryptoStorageRuntime
 }
 
 const silentLogger = {
   error: console.error.bind(console),
   log: () => {}
 }
+
+const FIRE_AND_FORGET_SCOPE_EVENTS = new Set([
+  'typing_start',
+  'typing_stop',
+  'mls_request_join',
+  'mls_request_join_all',
+  'mls_resync_request',
+  'mls_eviction_claim',
+  'mls_eviction_skip',
+  'mls_commit',
+  'mls_remove',
+  'mls_welcome',
+  'mls_history_request',
+  'mls_history_bundle'
+])
 
 function createDeviceIdentity(label: string, options: TestingDeviceHarnessOptions): TestingDeviceIdentity {
   return {
@@ -72,6 +89,7 @@ export class TestingDeviceHarness {
   readonly sessionStore: SessionStore
   readonly socket: VesperSocketClient
   readonly storage: CryptoStorageAdapter
+  readonly storageRuntime: CryptoStorageRuntime
 
   session: VesperAuthSession | null = null
   constructor(apiUrl: string, label: string, options: TestingDeviceHarnessOptions = {}) {
@@ -79,7 +97,7 @@ export class TestingDeviceHarness {
     this.deviceIdentity = createDeviceIdentity(label, options)
     this.sessionStore = options.sessionStore ?? createMemorySessionStore(apiUrl)
     this.storage = options.storage ?? new MemoryStorage()
-    configureCryptoStorage(this.storage)
+    this.storageRuntime = options.storageRuntime ?? createCryptoStorageRuntime(this.storage)
     this.httpClient = new VesperHttpClient({
       fetchImpl: globalThis.fetch.bind(globalThis),
       sessionStore: this.sessionStore
@@ -93,12 +111,13 @@ export class TestingDeviceHarness {
     this.auth = new VesperAuthClient({
       getDeviceIdentity: () => this.deviceIdentity,
       httpClient: this.httpClient,
-      socketClient: this.socket
+      socketClient: this.socket,
+      storageRuntime: this.storageRuntime
     })
   }
 
   async run<T>(operation: () => Promise<T>): Promise<T> {
-    return await operation()
+    return await this.storageRuntime.run(this.session?.user?.id ?? null, operation)
   }
 
   async register(username: string, password: string): Promise<VesperAuthSession> {
@@ -291,6 +310,11 @@ export class TestingDeviceHarness {
     const channel = this.socket.getChannel(topic)
     if (!channel) {
       return false
+    }
+
+    if (FIRE_AND_FORGET_SCOPE_EVENTS.has(event)) {
+      channel.push(event, payload)
+      return true
     }
 
     return await new Promise<boolean>((resolve) => {

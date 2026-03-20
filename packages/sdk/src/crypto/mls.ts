@@ -325,6 +325,33 @@ export function findMemberLeafIndex(
   return null
 }
 
+export function findExactMemberLeafIndex(
+  state: ClientState,
+  identity: string | undefined | null
+): number | null {
+  if (typeof identity !== 'string' || identity.length === 0) {
+    return null
+  }
+
+  for (let nodeIndex = 0; nodeIndex < state.ratchetTree.length; nodeIndex++) {
+    const node = state.ratchetTree[nodeIndex]
+    if (!node || node.nodeType !== 'leaf') {
+      continue
+    }
+
+    const credential = node.leaf.credential
+    if (credential.credentialType !== 'basic') {
+      continue
+    }
+
+    if (decodeCredentialIdentity(credential.identity) === identity) {
+      return nodeIndex / 2
+    }
+  }
+
+  return null
+}
+
 /**
  * Add a member to an existing MLS group.
  * Returns updated state, commit message, and welcome for the new member.

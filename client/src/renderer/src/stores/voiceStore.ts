@@ -98,6 +98,17 @@ async function processVoiceMlsResyncRequest(
     return false
   }
 
+  if (
+    requesterDeviceId != null &&
+    encryptedChat.hasMemberDevice(topic, requesterId, requesterDeviceId)
+  ) {
+    if (request.id) {
+      await getRendererClient().ackPendingResyncRequest(request.id)
+    }
+
+    return true
+  }
+
   const result = await encryptedChat.handleScopeResyncRequest(
     topic,
     requesterId,
@@ -110,6 +121,7 @@ async function processVoiceMlsResyncRequest(
   if (result.removeCommitBytes) {
     pushTopicEvent(topic, 'mls_remove', {
       removed_user_id: requesterId,
+      removed_device_id: requesterDeviceId ?? null,
       commit_data: result.removeCommitBytes
     })
   }

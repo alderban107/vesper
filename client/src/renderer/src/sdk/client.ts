@@ -4,6 +4,7 @@ import {
   type VesperEncryptedChat
 } from '@vesper/sdk/client'
 import { getLocalDeviceIdentity } from '@vesper/sdk/auth'
+import type { CryptoStorageRuntime } from '@vesper/sdk/storage'
 import { rendererSessionStore } from './bootstrap'
 
 let rendererClient: VesperClient | null = null
@@ -28,6 +29,10 @@ export function getRendererEncryptedChat(): VesperEncryptedChat {
   }
 
   return rendererEncryptedChat
+}
+
+export function getRendererStorageRuntime(): CryptoStorageRuntime {
+  return getRendererClient().getStorageRuntime()
 }
 
 export function resetRendererClient(): void {

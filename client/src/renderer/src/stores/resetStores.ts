@@ -14,7 +14,8 @@ import { useUnreadStore } from './unreadStore'
 import { usePresenceStore, cleanupPresenceTimers } from './presenceStore'
 import { useVoiceStore } from './voiceStore'
 import { useSyncStore } from './syncStore'
-import { clearDecryptionCache, resetStorage } from '@vesper/sdk/crypto'
+import { clearDecryptionCache } from '@vesper/sdk/crypto'
+import { getRendererStorageRuntime } from '../sdk/client'
 
 /**
  * Reset all application state to initial values.
@@ -39,7 +40,7 @@ export function resetAllStores(): void {
 
   // Reset the IndexedDB adapter singleton so the next login
   // opens a user-scoped database
-  resetStorage()
+  getRendererStorageRuntime().reset()
 
   // Reset all Zustand stores to initial state
   useMessageStore.setState({

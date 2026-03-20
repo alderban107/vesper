@@ -63,6 +63,15 @@ To point local Phoenix dev at a custom Postgres instance, set:
 The repo pre-commit hook now defaults its test database settings to the SDK local DB helper
 (`localhost:55432`, user/password `vesper_sdk`) unless `TEST_DB_*` is already set.
 
+For a shared local source setup, put these in the repo root `.env` so Phoenix
+dev, the SDK live tests, and the Playwright harness all point at the same local
+Postgres instance:
+
+`DEV_DB_HOST`, `DEV_DB_PORT`, `DEV_DB_USER`, `DEV_DB_PASS`, `DEV_DB_NAME`,
+`TEST_DB_HOST`, `TEST_DB_PORT`, `TEST_DB_USER`, `TEST_DB_PASS`,
+`VESPER_SDK_TEST_DB_HOST`, `VESPER_SDK_TEST_DB_PORT`,
+`VESPER_SDK_TEST_DB_USER`, and `VESPER_SDK_TEST_DB_PASS`.
+
 ## Downloading the Client
 
 ### Pre-built releases
@@ -90,6 +99,8 @@ npm run dev          # Electron dev with hot reload
 npm run dev:web      # web client dev server
 npm run check:web    # typecheck + production web build
 npm run build:web    # production web build (outputs dist-web/)
+npm run test:e2e:p0  # Playwright smoke run
+npm run test:sdk:e2e # SDK live suite
 npm run dist:linux   # build AppImage + deb
 ```
 
@@ -241,8 +252,13 @@ These are not needed for production deployments.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TEST_DB_HOST` | `localhost` | PostgreSQL host for test database |
+| `TEST_DB_PORT` | `5432` | PostgreSQL port for test database |
 | `TEST_DB_USER` | `postgres` | PostgreSQL user for test database |
 | `TEST_DB_PASS` | `postgres` | PostgreSQL password for test database |
+| `VESPER_SDK_TEST_DB_HOST` | `127.0.0.1` | Host used by the SDK local Postgres helper |
+| `VESPER_SDK_TEST_DB_PORT` | `55432` | Port used by the SDK local Postgres helper |
+| `VESPER_SDK_TEST_DB_USER` | `vesper_sdk` | User used by the SDK local Postgres helper |
+| `VESPER_SDK_TEST_DB_PASS` | `vesper_sdk` | Password used by the SDK local Postgres helper |
 | `VESPER_E2E` | — | Set to `1` to run the server in E2E test mode (real connection pool instead of Ecto sandbox) |
 | `MIX_TEST_PARTITION` | — | Appended to test database name for parallel test runs |
 | `ELECTRON_RENDERER_URL` | — | Dev server URL for Electron hot reload |

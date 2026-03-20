@@ -3,7 +3,7 @@
  * Prevents re-decryption of messages that have already been displayed.
  * Foundation for future lazy-decrypt-on-scroll pattern.
  */
-import { loadSentMessagePlaintext, saveSentMessagePlaintext } from './storage.js'
+import type { CryptoStorageRuntime } from './storage.js'
 
 const DEFAULT_MAX_SIZE = 500
 
@@ -77,9 +77,13 @@ export function clearDecryptionCache(): void {
 
 // --- Sent-message cache (ciphertext → plaintext) ---
 
-export async function cacheSentMessage(ciphertextB64: string, plaintext: string): Promise<void> {
+export async function cacheSentMessage(
+  storage: CryptoStorageRuntime,
+  ciphertextB64: string,
+  plaintext: string
+): Promise<void> {
   sentMessageCache.set(ciphertextB64, plaintext)
-  await saveSentMessagePlaintext(ciphertextB64, plaintext).catch(() => {})
+  await storage.saveSentMessagePlaintext(ciphertextB64, plaintext).catch(() => {})
 }
 
 export function getSentMessage(ciphertextB64: string): string | undefined {
@@ -87,6 +91,7 @@ export function getSentMessage(ciphertextB64: string): string | undefined {
 }
 
 export async function getStoredSentMessage(
+  storage: CryptoStorageRuntime,
   ciphertextB64: string
 ): Promise<string | undefined> {
   const cached = sentMessageCache.get(ciphertextB64)
@@ -94,7 +99,7 @@ export async function getStoredSentMessage(
     return cached
   }
 
-  const persisted = await loadSentMessagePlaintext(ciphertextB64)
+  const persisted = await storage.loadSentMessagePlaintext(ciphertextB64)
   if (persisted !== null) {
     sentMessageCache.set(ciphertextB64, persisted)
     return persisted

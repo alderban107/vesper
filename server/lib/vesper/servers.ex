@@ -1710,6 +1710,12 @@ defmodule Vesper.Servers do
       "server:members:#{server_id}",
       {event, server_id, user_id}
     )
+
+    VesperWeb.Endpoint.broadcast("presence:server:#{server_id}", "server_members_updated", %{
+      server_id: server_id,
+      event: event,
+      user_id: user_id
+    })
   end
 
   defp broadcast_membership_revoked(server_id, user_id, reason) do

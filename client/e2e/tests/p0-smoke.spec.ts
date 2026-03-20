@@ -221,7 +221,7 @@ test.describe('P0 Smoke — full continuous run', () => {
 
   // --- Step 11: Restart one DM client context (R-DM-2, R-HARNESS-5) ---
   test('Step 11: browser context restart preserves DM state', async () => {
-    test.setTimeout(30_000) // context restart is inherently slower
+    test.setTimeout(60_000) // context restart + IndexedDB restore is inherently slower
 
     const result = await restartBrowserContext(
       alice.page.context().browser()!,

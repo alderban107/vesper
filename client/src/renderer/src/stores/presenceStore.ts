@@ -658,6 +658,11 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
                 : srv
             )
           }))
+        } else if (event === 'server_members_updated') {
+          const activeServerId = useServerStore.getState().activeServerId
+          if (activeServerId === serverId) {
+            void useServerStore.getState().fetchMembers(serverId)
+          }
         } else if (
           event === 'channel_created' ||
           event === 'channel_updated' ||

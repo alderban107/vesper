@@ -75,3 +75,37 @@ const auth = createVesperAuthClient({
 await auth.login('alice', 'super-secret-password')
 const me = await getCurrentUser(transport.httpClient)
 ```
+
+## Local live tests
+
+The live SDK suite boots Phoenix itself and auto-starts the local Postgres
+helper container when Docker is available.
+
+Put your shared local test DB settings in the repo root `.env`:
+
+```bash
+DEV_DB_HOST=127.0.0.1
+DEV_DB_PORT=55432
+DEV_DB_USER=vesper_sdk
+DEV_DB_PASS=vesper_sdk
+DEV_DB_NAME=vesper_dev
+
+TEST_DB_HOST=127.0.0.1
+TEST_DB_PORT=55432
+TEST_DB_USER=vesper_sdk
+TEST_DB_PASS=vesper_sdk
+```
+
+Then run:
+
+```bash
+npm --workspace packages/sdk run test:integration
+```
+
+Useful helpers:
+
+```bash
+npm --workspace packages/sdk run test:db:start
+npm --workspace packages/sdk run test:db:stop
+npm --workspace packages/sdk run test:db:reset
+```

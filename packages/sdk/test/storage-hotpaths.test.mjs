@@ -3,39 +3,23 @@ import test from 'node:test'
 
 import {
   MemoryStorage,
-  cacheMessage,
-  clearCachedMessages,
-  configureCryptoStorage,
-  consumeKeyPackage,
-  deleteGroupState,
-  initStorage,
-  loadCachedMessages,
-  loadCachedMessageDecryption,
-  loadGroupSyncCursor,
-  loadKeyPackageByRef,
-  loadKeyPackages,
-  saveCachedMessageDecryption,
-  saveGroupState,
-  saveGroupSyncCursor,
-  resetStorage,
-  searchDecryptedMessages,
-  saveKeyPackages
+  createCryptoStorageRuntime
 } from '../dist/storage/index.js'
 
 function configureMemoryStorage() {
   const storage = new MemoryStorage()
-  configureCryptoStorage(storage)
-  initStorage(`storage-hotpaths-${Date.now()}-${Math.random()}`)
-  return storage
+  const runtime = createCryptoStorageRuntime(storage)
+  runtime.init(`storage-hotpaths-${Date.now()}-${Math.random()}`)
+  return { runtime, storage }
 }
 
 test('key package refs support direct lookup without scanning the whole set', async (t) => {
-  configureMemoryStorage()
+  const { runtime } = configureMemoryStorage()
   t.after(() => {
-    resetStorage()
+    runtime.reset()
   })
 
-  await saveKeyPackages([
+  await runtime.saveKeyPackages([
     {
       publicData: Uint8Array.from([1, 2, 3]),
       privateData: Uint8Array.from([4, 5, 6])
@@ -46,26 +30,26 @@ test('key package refs support direct lookup without scanning the whole set', as
     }
   ])
 
-  const packages = await loadKeyPackages()
+  const packages = await runtime.loadKeyPackages()
   assert.equal(packages.length, 2)
   assert.ok(packages[1].keyPackageRef)
 
-  const directMatch = await loadKeyPackageByRef(packages[1].keyPackageRef)
+  const directMatch = await runtime.loadKeyPackageByRef(packages[1].keyPackageRef)
   assert.equal(directMatch?.id, packages[1].id)
   assert.deepEqual([...directMatch.publicData], [7, 8, 9])
 
-  await consumeKeyPackage(packages[1].id)
-  const missing = await loadKeyPackageByRef(packages[1].keyPackageRef)
+  await runtime.consumeKeyPackage(packages[1].id)
+  const missing = await runtime.loadKeyPackageByRef(packages[1].keyPackageRef)
   assert.equal(missing, null)
 })
 
 test('cached messages stay scoped even when channel and dm ids collide', async (t) => {
-  const storage = configureMemoryStorage()
+  const { runtime, storage } = configureMemoryStorage()
   t.after(() => {
-    resetStorage()
+    runtime.reset()
   })
 
-  await cacheMessage({
+  await runtime.cacheMessage({
     id: 'channel-message',
     roomSeq: 2,
     channelId: 'scope-1',
@@ -79,9 +63,9 @@ test('cached messages stay scoped even when channel and dm ids collide', async (
     mlsEpoch: null,
     insertedAt: '2026-03-18T01:00:00.000Z'
   })
-  await saveCachedMessageDecryption('channel-message', 'channel body')
+  await runtime.saveCachedMessageDecryption('channel-message', 'channel body')
 
-  await cacheMessage({
+  await runtime.cacheMessage({
     id: 'dm-message',
     roomSeq: 1,
     channelId: null,
@@ -95,9 +79,9 @@ test('cached messages stay scoped even when channel and dm ids collide', async (
     mlsEpoch: null,
     insertedAt: '2026-03-18T00:59:00.000Z'
   })
-  await saveCachedMessageDecryption('dm-message', 'dm body')
+  await runtime.saveCachedMessageDecryption('dm-message', 'dm body')
 
-  await cacheMessage({
+  await runtime.cacheMessage({
     id: 'other-scope-message',
     roomSeq: 3,
     channelId: 'scope-2',
@@ -111,42 +95,42 @@ test('cached messages stay scoped even when channel and dm ids collide', async (
     mlsEpoch: null,
     insertedAt: '2026-03-18T01:01:00.000Z'
   })
-  await saveCachedMessageDecryption('other-scope-message', 'other body')
+  await runtime.saveCachedMessageDecryption('other-scope-message', 'other body')
   await storage.indexDecryptedMessage('channel-message', 'scope-1', 'channel body')
   await storage.indexDecryptedMessage('dm-message', 'scope-1', 'dm body')
   await storage.indexDecryptedMessage('other-scope-message', 'scope-2', 'other body')
 
-  const scopedMessages = await loadCachedMessages('scope-1')
+  const scopedMessages = await runtime.loadCachedMessages('scope-1')
   assert.deepEqual(
     scopedMessages.map((message) => message.id),
     ['dm-message', 'channel-message']
   )
 
-  await clearCachedMessages('scope-1')
-  const clearedMessages = await loadCachedMessages('scope-1')
+  await runtime.clearCachedMessages('scope-1')
+  const clearedMessages = await runtime.loadCachedMessages('scope-1')
   assert.deepEqual(clearedMessages, [])
-  assert.equal(await loadCachedMessageDecryption('channel-message'), null)
-  assert.equal(await loadCachedMessageDecryption('dm-message'), null)
+  assert.equal(await runtime.loadCachedMessageDecryption('channel-message'), null)
+  assert.equal(await runtime.loadCachedMessageDecryption('dm-message'), null)
   assert.deepEqual(
-    (await searchDecryptedMessages('body', 'scope-1')).map((entry) => entry.messageId),
+    (await runtime.searchDecryptedMessages('body', 'scope-1')).map((entry) => entry.messageId),
     []
   )
 
-  const untouchedMessages = await loadCachedMessages('scope-2')
+  const untouchedMessages = await runtime.loadCachedMessages('scope-2')
   assert.deepEqual(untouchedMessages.map((message) => message.id), ['other-scope-message'])
-  assert.equal(await loadCachedMessageDecryption('other-scope-message'), 'other body')
+  assert.equal(await runtime.loadCachedMessageDecryption('other-scope-message'), 'other body')
 })
 
 test('deleting group state also clears the stored sync cursor', async (t) => {
-  configureMemoryStorage()
+  const { runtime } = configureMemoryStorage()
   t.after(() => {
-    resetStorage()
+    runtime.reset()
   })
 
-  await saveGroupState('scope-1', Uint8Array.from([1, 2, 3]), 7)
-  await saveGroupSyncCursor('scope-1', 42)
-  assert.equal(await loadGroupSyncCursor('scope-1'), 42)
+  await runtime.saveGroupState('scope-1', Uint8Array.from([1, 2, 3]), 7)
+  await runtime.saveGroupSyncCursor('scope-1', 42)
+  assert.equal(await runtime.loadGroupSyncCursor('scope-1'), 42)
 
-  await deleteGroupState('scope-1')
-  assert.equal(await loadGroupSyncCursor('scope-1'), 0)
+  await runtime.deleteGroupState('scope-1')
+  assert.equal(await runtime.loadGroupSyncCursor('scope-1'), 0)
 })

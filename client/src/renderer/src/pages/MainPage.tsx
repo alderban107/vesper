@@ -199,7 +199,10 @@ export default function MainPage(): React.JSX.Element {
       lastError: null
     })
 
-    void syncNow(useSyncStore.getState().token === null)
+    const hasHydratedWorkspace =
+      useServerStore.getState().servers.length > 0 ||
+      useDmStore.getState().conversations.length > 0
+    void syncNow(useSyncStore.getState().token === null || !hasHydratedWorkspace)
 
     const unsubscribeConnected = client.on('connected', () => {
       setConnectionState({

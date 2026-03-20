@@ -1,5 +1,13 @@
 import { expect, type Page } from '@playwright/test'
 
+function normalizeVisibleText(value: string | null | undefined): string {
+  return (value ?? '')
+    .normalize('NFKC')
+    .replace(/[\u2012-\u2015\u2212]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 export async function waitForAppShell(page: Page): Promise<void> {
   await page.waitForSelector('[data-testid="main-page"]', { timeout: 10_000 })
 }
@@ -29,19 +37,45 @@ export async function waitForChannel(page: Page, channelName: string): Promise<v
 }
 
 export async function waitForMessage(page: Page, text: string, timeout = 10_000): Promise<void> {
-  const rows = page.getByTestId('message-row').filter({ hasText: text })
+  const normalizedTarget = normalizeVisibleText(text)
 
   await expect
     .poll(
-      async () =>
-        rows.evaluateAll((elements) =>
-          elements.filter((element) => {
-            if (!(element instanceof HTMLElement)) return false
-            const style = window.getComputedStyle(element)
-            if (style.visibility === 'hidden' || style.display === 'none') return false
-            return element.getClientRects().length > 0
-          }).length
-        ),
+      async () => {
+        try {
+          const rowMatches = await page.getByTestId('message-row').evaluateAll((elements) =>
+            elements.map((element) => ({
+              visible: (element as HTMLElement).offsetParent !== null,
+              text:
+                (element as HTMLElement).innerText ??
+                element.textContent ??
+                ''
+            }))
+          )
+
+          for (const row of rowMatches) {
+            const normalizedRowText = normalizeVisibleText(row.text)
+            if (row.visible && normalizedRowText.includes(normalizedTarget)) {
+              return 1
+            }
+          }
+
+          const bodyText = await page
+            .locator('body')
+            .evaluate((element) => (element as HTMLElement).innerText ?? element.textContent ?? '')
+            .catch(() => null)
+          return normalizeVisibleText(bodyText).includes(normalizedTarget) ? 1 : 0
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          if (
+            message.includes('Execution context was destroyed') ||
+            message.includes('Target page, context or browser has been closed')
+          ) {
+            return 0
+          }
+          throw error
+        }
+      },
       { timeout }
     )
     .toBeGreaterThan(0)
@@ -54,10 +88,30 @@ export async function waitForDmConversation(page: Page, username: string): Promi
 }
 
 export async function waitForSocketConnected(page: Page): Promise<void> {
-  // The app logs "Joined user:<id>" on socket connect -- wait for the shell
-  // plus a brief stabilization window.
   await waitForAppShell(page)
-  await page.waitForTimeout(1_000)
+
+  const reconnectBanner = page.locator('text=Reconnecting to server')
+  const deadline = Date.now() + 15_000
+
+  while (Date.now() < deadline) {
+    let stable = true
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const visible = await reconnectBanner.isVisible().catch(() => false)
+      if (visible) {
+        stable = false
+        break
+      }
+
+      await page.waitForTimeout(250)
+    }
+
+    if (stable) {
+      return
+    }
+
+    await page.waitForTimeout(500)
+  }
 }
 
 export async function waitForTypingIndicator(page: Page, username: string): Promise<void> {

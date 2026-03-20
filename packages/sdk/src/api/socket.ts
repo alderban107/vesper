@@ -20,6 +20,7 @@ const CHAT_EVENTS = [
   'mls_history_request_pending', 'mls_history_bundle_pending',
   'unread_update', 'dm_unread_update',
   'server_membership_revoked',
+  'server_members_updated',
   'device_approval_requested', 'device_updated',
   'emoji_created', 'emoji_deleted'
 ] as const
@@ -303,6 +304,15 @@ export class VesperSocketClient {
 
   getChannel(topic: string): Channel | undefined {
     return this.channels.get(topic)
+  }
+
+  hasUsableChannel(topic: string): boolean {
+    const channel = this.channels.get(topic)
+    if (!channel) {
+      return false
+    }
+
+    return !this.isChannelClosed(channel) && !this.isChannelLeaving(channel)
   }
 
   onSocketOpen(listener: () => void): () => void {

@@ -73,16 +73,22 @@ export async function createVoiceChannel(page: Page, name: string): Promise<void
 }
 
 export async function getInviteCode(page: Page): Promise<string> {
-  await page.click('[data-testid="sidebar"] button[title="Show invite code"]')
+  await page.click('.vesper-guild-header-button')
+  await page.waitForSelector('.vesper-guild-header-menu', { timeout: 5_000 })
+  await page.click('.vesper-guild-header-menu >> text=Copy Invite Code')
 
-  const codeEl = await page.waitForSelector(
-    '[data-testid="sidebar"] code',
-    { timeout: 10_000 }
-  )
-  const code = await codeEl.textContent()
-  if (!code) throw new Error('Could not get invite code')
+  const deadline = Date.now() + 10_000
+  while (Date.now() < deadline) {
+    const code = await page.evaluate(async () => await navigator.clipboard.readText())
+      .catch(() => '')
+    if (code.trim().length > 0) {
+      return code.trim()
+    }
 
-  return code.trim()
+    await page.waitForTimeout(200)
+  }
+
+  throw new Error('Could not get invite code')
 }
 
 export async function joinServerWithCode(page: Page, inviteCode: string): Promise<void> {
@@ -101,7 +107,20 @@ export async function selectServer(page: Page, serverName: string): Promise<void
 }
 
 export async function selectChannel(page: Page, channelName: string): Promise<void> {
-  await page.click(`.vesper-channel-row:has(.vesper-channel-row-label:text("${channelName}"))`)
+  const activeLabel = page.locator('.vesper-channel-row-active .vesper-channel-row-label')
+  const activeName =
+    (await activeLabel.count().catch(() => 0)) > 0
+      ? (await activeLabel.first().textContent().catch(() => null))?.trim()
+      : null
+
+  if (activeName !== channelName) {
+    await page.click(`.vesper-channel-row:has(.vesper-channel-row-label:text("${channelName}"))`)
+    await page.waitForSelector(
+      `.vesper-channel-row-active .vesper-channel-row-label:text("${channelName}")`,
+      { timeout: 10_000 }
+    )
+  }
+
   await page.waitForSelector('[data-testid="message-input"]', { timeout: 10_000 })
 }
 

@@ -1,6 +1,7 @@
 import { Plus } from 'lucide-react'
 import { useDmStore, type DmConversation } from '../../stores/dmStore'
 import { useAuthStore } from '../../stores/authStore'
+import { useMessageStore } from '../../stores/messageStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useUnreadStore } from '../../stores/unreadStore'
 import { usePresenceStore } from '../../stores/presenceStore'
@@ -10,6 +11,8 @@ export default function DmSidebar(): React.JSX.Element {
   const conversations = useDmStore((s) => s.conversations)
   const selectedId = useDmStore((s) => s.selectedConversationId)
   const selectConversation = useDmStore((s) => s.selectConversation)
+  const joinDmChat = useMessageStore((s) => s.joinDmChat)
+  const fetchDmMessages = useMessageStore((s) => s.fetchDmMessages)
   const openNewDmModal = useUIStore((s) => s.openNewDmModal)
   const closeMobileNav = useUIStore((s) => s.closeMobileNav)
   const currentUserId = useAuthStore((s) => s.user?.id)
@@ -31,7 +34,14 @@ export default function DmSidebar(): React.JSX.Element {
   }
 
   const handleConversationSelect = (conversationId: string): void => {
+    const isReselectingCurrent = conversationId === selectedId
     selectConversation(conversationId)
+
+    if (isReselectingCurrent) {
+      joinDmChat(conversationId)
+      void fetchDmMessages(conversationId)
+    }
+
     if (isMobileLayout) {
       closeMobileNav()
     }

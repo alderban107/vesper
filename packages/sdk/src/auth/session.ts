@@ -22,13 +22,9 @@ import {
   serializePrivatePackage
 } from '../crypto/index.js'
 import {
-  type CryptoStorageAdapter,
-  configureCryptoStorage,
-  initStorage,
-  loadIdentity,
-  loadKeyPackages,
-  saveIdentity,
-  saveKeyPackages
+  createCryptoStorageRuntime,
+  type CryptoStorageConfig,
+  type CryptoStorageRuntime
 } from '../crypto/storage.js'
 import {
   buildClientCredentialIdentity,
@@ -98,7 +94,8 @@ export interface VesperAuthClientOptions {
   httpClient?: VesperHttpClient
   socketClient?: VesperSocketClient
   transport?: Pick<VesperTransport, 'httpClient' | 'socketClient'>
-  storage?: CryptoStorageAdapter | ((userId: string) => CryptoStorageAdapter)
+  storage?: CryptoStorageConfig
+  storageRuntime?: CryptoStorageRuntime
 }
 
 const KEY_PACKAGE_TARGET = 20
@@ -108,13 +105,12 @@ export class VesperAuthClient {
   private readonly resolveDeviceIdentity: () => LocalDeviceIdentity
   private readonly httpClient: VesperHttpClient
   private readonly socketClient: VesperSocketClient
+  private readonly storage: CryptoStorageRuntime
+  private lastKnownUserId: string | null = null
   private keyPackageReplenishPromise: Promise<void> | null = null
 
   constructor(options: VesperAuthClientOptions = {}) {
-    if (options.storage) {
-      configureCryptoStorage(options.storage)
-    }
-
+    this.storage = options.storageRuntime ?? createCryptoStorageRuntime(options.storage)
     this.resolveDeviceIdentity = options.getDeviceIdentity ?? getLocalDeviceIdentity
     this.httpClient =
       options.transport?.httpClient ??
@@ -137,182 +133,184 @@ export class VesperAuthClient {
   }
 
   async register(username: string, password: string): Promise<VesperAuthSession> {
-    await initCipherSuite()
+    return await this.withStorageContext(null, async () => {
+      await initCipherSuite()
 
-    const keyPackages = await createKeyPackageBatch(username, 1)
-    const signaturePrivateKey = keyPackages[0].privatePackage.signaturePrivateKey
-    const signaturePublicKey = keyPackages[0].publicPackage.leafNode.signaturePublicKey
-    const encryptedBundle = await createEncryptedKeyBundle(signaturePrivateKey, password)
-    const recoveryData = await createRecoveryData(signaturePrivateKey)
+      const keyPackages = await createKeyPackageBatch(username, 1)
+      const signaturePrivateKey = keyPackages[0].privatePackage.signaturePrivateKey
+      const signaturePublicKey = keyPackages[0].publicPackage.leafNode.signaturePublicKey
+      const encryptedBundle = await createEncryptedKeyBundle(signaturePrivateKey, password)
+      const recoveryData = await createRecoveryData(signaturePrivateKey)
 
-    const response = await this.httpClient.apiFetch('/api/v1/auth/register', {
-      method: 'POST',
-      body: JSON.stringify(
-        this.buildSessionBody({
-          username,
-          password,
-          encrypted_key_bundle: uint8ToBase64(encryptedBundle.ciphertext),
-          key_bundle_salt: uint8ToBase64(encryptedBundle.salt),
-          key_bundle_nonce: uint8ToBase64(encryptedBundle.nonce),
-          public_identity_key: uint8ToBase64(signaturePublicKey),
-          public_key_exchange: uint8ToBase64(signaturePublicKey),
-          recovery_key_hash: recoveryData.hash,
-          encrypted_recovery_bundle: uint8ToBase64(recoveryData.encryptedBundle)
-        })
-      )
-    })
+      const response = await this.httpClient.apiFetch('/api/v1/auth/register', {
+        method: 'POST',
+        body: JSON.stringify(
+          this.buildSessionBody({
+            username,
+            password,
+            encrypted_key_bundle: uint8ToBase64(encryptedBundle.ciphertext),
+            key_bundle_salt: uint8ToBase64(encryptedBundle.salt),
+            key_bundle_nonce: uint8ToBase64(encryptedBundle.nonce),
+            public_identity_key: uint8ToBase64(signaturePublicKey),
+            public_key_exchange: uint8ToBase64(signaturePublicKey),
+            recovery_key_hash: recoveryData.hash,
+            encrypted_recovery_bundle: uint8ToBase64(recoveryData.encryptedBundle)
+          })
+        )
+      })
 
-    const data = (await response.json()) as Record<string, unknown> & AuthResponsePayload
-    if (!response.ok) {
-      throw new Error(parseError(data, 'Registration failed'))
-    }
-
-    this.httpClient.setTokens(data.access_token as string, data.refresh_token as string)
-    initStorage(data.user.id)
-
-    await saveIdentity(
-      data.user.id,
-      signaturePublicKey,
-      signaturePublicKey,
-      encryptedBundle.ciphertext,
-      encryptedBundle.nonce,
-      encryptedBundle.salt,
-      signaturePrivateKey
-    )
-
-    const batchPairs = await createKeyPackageBatch(
-      this.getCurrentMlsCredentialIdentity(data.user.id),
-      KEY_PACKAGE_TARGET,
-      {
-        signKey: signaturePrivateKey,
-        publicKey: signaturePublicKey
+      const data = (await response.json()) as Record<string, unknown> & AuthResponsePayload
+      if (!response.ok) {
+        throw new Error(parseError(data, 'Registration failed'))
       }
-    )
 
-    await saveKeyPackages(
-      batchPairs.map((pair) => ({
-        publicData: encodeKeyPackageBytes(pair.publicPackage),
-        privateData: serializePrivatePackage(pair.privatePackage)
-      }))
-    )
+      this.httpClient.setTokens(data.access_token as string, data.refresh_token as string)
+      this.storage.init(data.user.id)
+      this.lastKnownUserId = data.user.id
 
-    const publicPackageBytes = batchPairs.map((pair) => encodeKeyPackageBytes(pair.publicPackage))
-    await uploadKeyPackages(publicPackageBytes, this.resolveDeviceIdentity().id, this.httpClient)
+      await this.storage.saveIdentity(
+        data.user.id,
+        signaturePublicKey,
+        signaturePublicKey,
+        encryptedBundle.ciphertext,
+        encryptedBundle.nonce,
+        encryptedBundle.salt,
+        signaturePrivateKey
+      )
 
-    void this.registerCurrentDeviceNotificationCapability()
+      const batchPairs = await createKeyPackageBatch(
+        this.getCurrentMlsCredentialIdentity(data.user.id),
+        KEY_PACKAGE_TARGET,
+        {
+          signKey: signaturePrivateKey,
+          publicKey: signaturePublicKey
+        }
+      )
 
-    return {
-      user: data.user,
-      currentDevice: data.current_device ?? null,
-      devices: data.current_device ? [data.current_device] : [],
-      canUseE2EE: true,
-      recoveryMnemonic: recoveryData.mnemonic
-    }
+      await this.storage.saveKeyPackages(
+        batchPairs.map((pair) => ({
+          publicData: encodeKeyPackageBytes(pair.publicPackage),
+          privateData: serializePrivatePackage(pair.privatePackage)
+        }))
+      )
+
+      const publicPackageBytes = batchPairs.map((pair) => encodeKeyPackageBytes(pair.publicPackage))
+      await uploadKeyPackages(publicPackageBytes, this.resolveDeviceIdentity().id, this.httpClient)
+
+      void this.registerCurrentDeviceNotificationCapability()
+
+      return {
+        user: data.user,
+        currentDevice: data.current_device ?? null,
+        devices: data.current_device ? [data.current_device] : [],
+        canUseE2EE: true,
+        recoveryMnemonic: recoveryData.mnemonic
+      }
+    })
   }
 
   async login(username: string, password: string): Promise<VesperAuthSession> {
-    const response = await this.httpClient.apiFetch('/api/v1/auth/login', {
-      method: 'POST',
-      body: JSON.stringify(this.buildSessionBody({ username, password }))
+    return await this.withStorageContext(null, async () => {
+      const response = await this.httpClient.apiFetch('/api/v1/auth/login', {
+        method: 'POST',
+        body: JSON.stringify(this.buildSessionBody({ username, password }))
+      })
+
+      const data = (await response.json()) as Record<string, unknown> & AuthResponsePayload
+      if (!response.ok) {
+        throw new Error(parseError(data, 'Login failed'))
+      }
+
+      this.httpClient.setTokens(data.access_token as string, data.refresh_token as string)
+      this.storage.init(data.user.id)
+      this.lastKnownUserId = data.user.id
+
+      let canUseE2EE = false
+      if (data.current_device?.trust_state === 'trusted') {
+        canUseE2EE = await hasUnlockedLocalIdentity(this.storage, data.user.id)
+      }
+
+      void this.registerCurrentDeviceNotificationCapability()
+
+      return {
+        user: data.user,
+        currentDevice: data.current_device ?? null,
+        devices: data.current_device ? [data.current_device] : [],
+        canUseE2EE,
+        recoveryMnemonic: null
+      }
     })
-
-    const data = (await response.json()) as Record<string, unknown> & AuthResponsePayload
-    if (!response.ok) {
-      throw new Error(parseError(data, 'Login failed'))
-    }
-
-    this.httpClient.setTokens(data.access_token as string, data.refresh_token as string)
-    initStorage(data.user.id)
-
-    let canUseE2EE = false
-    if (data.current_device?.trust_state === 'trusted') {
-      canUseE2EE = await hasUnlockedLocalIdentity(data.user.id)
-
-      if (!canUseE2EE && shouldGenerateFreshDeviceIdentity(data.current_device)) {
-        canUseE2EE = await this.createFreshLocalDeviceIdentity(data.user.id).catch(() => false)
-      }
-
-      if (!canUseE2EE && data.encrypted_key_bundle) {
-        canUseE2EE = await hydrateTrustedCryptoFromPasswordResponse(
-          data.user.id,
-          data,
-          password
-        ).catch(() => false)
-      }
-    }
-
-    void this.registerCurrentDeviceNotificationCapability()
-
-    return {
-      user: data.user,
-      currentDevice: data.current_device ?? null,
-      devices: data.current_device ? [data.current_device] : [],
-      canUseE2EE,
-      recoveryMnemonic: null
-    }
   }
 
   async checkAuth(): Promise<VesperAuthSession | null> {
-    const token = this.httpClient.getAccessToken()
-    if (!token) {
-      return null
-    }
+    return await this.withStorageContext(this.resolveKnownUserId(), async () => {
+      const token = this.httpClient.getAccessToken()
+      if (!token) {
+        return null
+      }
 
-    const response = await this.httpClient.apiFetch('/api/v1/auth/me')
-    if (!response.ok) {
-      this.httpClient.clearTokens()
-      return null
-    }
+      const response = await this.httpClient.apiFetch('/api/v1/auth/me')
+      if (!response.ok) {
+        this.httpClient.clearTokens()
+        return null
+      }
 
-    const data = (await response.json()) as AuthResponsePayload
-    initStorage(data.user.id)
+      const data = (await response.json()) as AuthResponsePayload
+      this.storage.init(data.user.id)
+      this.lastKnownUserId = data.user.id
 
-    let canUseE2EE = false
-    if (
-      data.current_device?.trust_state === 'trusted' &&
-      (await hasUnlockedLocalIdentity(data.user.id))
-    ) {
-      void initCipherSuite().catch(() => {})
-      canUseE2EE = true
-    }
+      let canUseE2EE = false
+      if (
+        data.current_device?.trust_state === 'trusted' &&
+        (await hasUnlockedLocalIdentity(this.storage, data.user.id))
+      ) {
+        void initCipherSuite().catch(() => {})
+        canUseE2EE = true
+      }
 
-    void this.registerCurrentDeviceNotificationCapability()
+      void this.registerCurrentDeviceNotificationCapability()
 
-    return {
-      user: data.user,
-      currentDevice: data.current_device ?? null,
-      devices: data.current_device ? [data.current_device] : [],
-      canUseE2EE,
-      recoveryMnemonic: null
-    }
+      return {
+        user: data.user,
+        currentDevice: data.current_device ?? null,
+        devices: data.current_device ? [data.current_device] : [],
+        canUseE2EE,
+        recoveryMnemonic: null
+      }
+    })
   }
 
   async logout(): Promise<void> {
-    try {
-      await this.httpClient.apiFetch('/api/v1/auth/logout', { method: 'POST' })
-    } catch {
-      // Ignore logout transport failures.
-    }
+    await this.withStorageContext(this.resolveKnownUserId(), async () => {
+      try {
+        await this.httpClient.apiFetch('/api/v1/auth/logout', { method: 'POST' })
+      } catch {
+        // Ignore logout transport failures.
+      }
 
-    this.socketClient.disconnect()
-    this.httpClient.clearTokens()
-    clearSearchIndexSyncCredentials()
+      this.socketClient.disconnect()
+      this.httpClient.clearTokens()
+      this.lastKnownUserId = null
+      clearSearchIndexSyncCredentials()
+    })
   }
 
   async verifyRecoveryKey(mnemonic: string): Promise<void> {
-    const recoveryKeyHash = await hashRecoveryMnemonic(mnemonic)
-    const response = await this.httpClient.apiFetch('/api/v1/auth/recover', {
-      method: 'POST',
-      body: JSON.stringify({ recovery_key_hash: recoveryKeyHash })
+    await this.withStorageContext(null, async () => {
+      const recoveryKeyHash = await hashRecoveryMnemonic(mnemonic)
+      const response = await this.httpClient.apiFetch('/api/v1/auth/recover', {
+        method: 'POST',
+        body: JSON.stringify({ recovery_key_hash: recoveryKeyHash })
+      })
+
+      const data = (await response.json()) as Record<string, unknown>
+      if (!response.ok || typeof data.encrypted_recovery_bundle !== 'string') {
+        throw new Error(parseError(data, 'Invalid recovery key'))
+      }
+
+      const encryptedBundle = base64ToUint8(data.encrypted_recovery_bundle)
+      await decryptWithRecoveryKey(mnemonic, encryptedBundle)
     })
-
-    const data = (await response.json()) as Record<string, unknown>
-    if (!response.ok || typeof data.encrypted_recovery_bundle !== 'string') {
-      throw new Error(parseError(data, 'Invalid recovery key'))
-    }
-
-    const encryptedBundle = base64ToUint8(data.encrypted_recovery_bundle)
-    await decryptWithRecoveryKey(mnemonic, encryptedBundle)
   }
 
   async fetchDevices(params: {
@@ -320,117 +318,127 @@ export class VesperAuthClient {
     currentDevice: VesperAuthDevice | null
     user: VesperUser | null
   }): Promise<DeviceListState> {
-    const response = await this.httpClient.apiFetch('/api/v1/auth/devices')
-    if (!response.ok) {
-      return {
-        devices: params.devices,
-        currentDevice: params.currentDevice,
-        canUseE2EE:
-          params.user && params.currentDevice?.trust_state === 'trusted'
-            ? await hasUnlockedLocalIdentity(params.user.id)
-            : false
+    return await this.withStorageContext(params.user?.id ?? null, async () => {
+      const response = await this.httpClient.apiFetch('/api/v1/auth/devices')
+      if (!response.ok) {
+        return {
+          devices: params.devices,
+          currentDevice: params.currentDevice,
+          canUseE2EE:
+            params.user && params.currentDevice?.trust_state === 'trusted'
+              ? await hasUnlockedLocalIdentity(this.storage, params.user.id)
+              : false
+        }
       }
-    }
 
-    const data = (await response.json()) as {
-      devices?: VesperAuthDevice[]
-      current_device?: VesperAuthDevice | null
-    }
-    const devices = data.devices ?? params.devices
-    const currentDevice = resolveCurrentDevice(
-      devices,
-      data.current_device,
-      params.currentDevice,
-      this.resolveDeviceIdentity
-    )
-    const canUseE2EE =
-      params.user && currentDevice?.trust_state === 'trusted'
-        ? await hasUnlockedLocalIdentity(params.user.id)
-        : false
+      const data = (await response.json()) as {
+        devices?: VesperAuthDevice[]
+        current_device?: VesperAuthDevice | null
+      }
+      const devices = data.devices ?? params.devices
+      const currentDevice = resolveCurrentDevice(
+        devices,
+        data.current_device,
+        params.currentDevice,
+        this.resolveDeviceIdentity
+      )
+      this.lastKnownUserId = params.user?.id ?? this.lastKnownUserId
+      const canUseE2EE =
+        params.user && currentDevice?.trust_state === 'trusted'
+          ? await hasUnlockedLocalIdentity(this.storage, params.user.id)
+          : false
 
-    return {
-      devices,
-      currentDevice,
-      canUseE2EE
-    }
+      return {
+        devices,
+        currentDevice,
+        canUseE2EE
+      }
+    })
   }
 
   async approveDevice(deviceId: string): Promise<void> {
-    const response = await this.httpClient.apiFetch(`/api/v1/auth/devices/${deviceId}/approve`, {
-      method: 'POST'
-    })
+    await this.withStorageContext(this.resolveKnownUserId(), async () => {
+      const response = await this.httpClient.apiFetch(`/api/v1/auth/devices/${deviceId}/approve`, {
+        method: 'POST'
+      })
 
-    if (!response.ok) {
-      const data = (await response.json().catch(() => ({}))) as Record<string, unknown>
-      throw new Error(parseError(data, 'Could not approve this device'))
-    }
+      if (!response.ok) {
+        const data = (await response.json().catch(() => ({}))) as Record<string, unknown>
+        throw new Error(parseError(data, 'Could not approve this device'))
+      }
+    })
   }
 
   async revokeDevice(deviceId: string): Promise<void> {
-    const response = await this.httpClient.apiFetch(`/api/v1/auth/devices/${deviceId}/revoke`, {
-      method: 'POST'
-    })
+    await this.withStorageContext(this.resolveKnownUserId(), async () => {
+      const response = await this.httpClient.apiFetch(`/api/v1/auth/devices/${deviceId}/revoke`, {
+        method: 'POST'
+      })
 
-    if (!response.ok) {
-      const data = (await response.json().catch(() => ({}))) as Record<string, unknown>
-      throw new Error(parseError(data, 'Could not remove this device'))
-    }
+      if (!response.ok) {
+        const data = (await response.json().catch(() => ({}))) as Record<string, unknown>
+        throw new Error(parseError(data, 'Could not remove this device'))
+      }
+    })
   }
 
   async approveCurrentDeviceWithRecovery(mnemonic: string): Promise<VesperAuthSession> {
-    const recoveryKeyHash = await hashRecoveryMnemonic(mnemonic)
+    return await this.withStorageContext(this.resolveKnownUserId(), async () => {
+      const recoveryKeyHash = await hashRecoveryMnemonic(mnemonic)
 
-    const recoverResponse = await this.httpClient.apiFetch('/api/v1/auth/recover', {
-      method: 'POST',
-      body: JSON.stringify({ recovery_key_hash: recoveryKeyHash })
-    })
-    const recoverData = (await recoverResponse.json()) as Record<string, unknown>
+      const recoverResponse = await this.httpClient.apiFetch('/api/v1/auth/recover', {
+        method: 'POST',
+        body: JSON.stringify({ recovery_key_hash: recoveryKeyHash })
+      })
+      const recoverData = (await recoverResponse.json()) as Record<string, unknown>
 
-    if (!recoverResponse.ok || typeof recoverData.encrypted_recovery_bundle !== 'string') {
-      throw new Error(parseError(recoverData, 'Recovery key was not accepted'))
-    }
+      if (!recoverResponse.ok || typeof recoverData.encrypted_recovery_bundle !== 'string') {
+        throw new Error(parseError(recoverData, 'Recovery key was not accepted'))
+      }
 
-    const approveResponse = await this.httpClient.apiFetch('/api/v1/auth/devices/approve-with-recovery', {
-      method: 'POST',
-      body: JSON.stringify({ recovery_key_hash: recoveryKeyHash })
-    })
-    const approveData = (await approveResponse.json()) as Record<string, unknown> & AuthResponsePayload
+      const approveResponse = await this.httpClient.apiFetch('/api/v1/auth/devices/approve-with-recovery', {
+        method: 'POST',
+        body: JSON.stringify({ recovery_key_hash: recoveryKeyHash })
+      })
+      const approveData = (await approveResponse.json()) as Record<string, unknown> & AuthResponsePayload
 
-    if (!approveResponse.ok) {
-      throw new Error(parseError(approveData, 'Could not approve this device'))
-    }
+      if (!approveResponse.ok) {
+        throw new Error(parseError(approveData, 'Could not approve this device'))
+      }
 
-    if (approveData.access_token && approveData.refresh_token) {
-      this.httpClient.setTokens(approveData.access_token, approveData.refresh_token)
-    } else {
-      const refreshToken = this.httpClient.getRefreshToken()
-      if (refreshToken) {
-        const refreshResponse = await this.httpClient.apiFetch('/api/v1/auth/refresh', {
-          method: 'POST',
-          body: JSON.stringify({ refresh_token: refreshToken })
-        })
-        const refreshData = (await refreshResponse.json()) as AuthResponsePayload
+      if (approveData.access_token && approveData.refresh_token) {
+        this.httpClient.setTokens(approveData.access_token, approveData.refresh_token)
+      } else {
+        const refreshToken = this.httpClient.getRefreshToken()
+        if (refreshToken) {
+          const refreshResponse = await this.httpClient.apiFetch('/api/v1/auth/refresh', {
+            method: 'POST',
+            body: JSON.stringify({ refresh_token: refreshToken })
+          })
+          const refreshData = (await refreshResponse.json()) as AuthResponsePayload
 
-        if (refreshResponse.ok && refreshData.access_token && refreshData.refresh_token) {
-          this.httpClient.setTokens(refreshData.access_token, refreshData.refresh_token)
+          if (refreshResponse.ok && refreshData.access_token && refreshData.refresh_token) {
+            this.httpClient.setTokens(refreshData.access_token, refreshData.refresh_token)
+          }
         }
       }
-    }
 
-    const session = await this.requireCurrentSession(
-      'This device was approved, but Vesper could not finish setup.'
-    )
+      const session = await this.requireCurrentSession(
+        'This device was approved, but Vesper could not finish setup.'
+      )
+      this.lastKnownUserId = session.user.id
 
-    const restored = await this.createFreshLocalDeviceIdentity(session.user.id)
-    if (!restored) {
-      throw new Error('This device was approved, but encrypted chat setup could not be completed.')
-    }
+      const restored = await this.createFreshLocalDeviceIdentity(session.user.id)
+      if (!restored) {
+        throw new Error('This device was approved, but encrypted chat setup could not be completed.')
+      }
 
-    return {
-      ...session,
-      currentDevice: approveData.current_device ?? session.currentDevice,
-      canUseE2EE: true
-    }
+      return {
+        ...session,
+        currentDevice: approveData.current_device ?? session.currentDevice,
+        canUseE2EE: true
+      }
+    })
   }
 
   async unlockTrustedDevice(
@@ -438,100 +446,107 @@ export class VesperAuthClient {
     currentDevice: VesperAuthDevice | null,
     password: string
   ): Promise<VesperAuthSession> {
-    if (currentDevice?.trust_state !== 'trusted') {
-      throw new Error('This device is not approved yet.')
-    }
+    return await this.withStorageContext(user.id, async () => {
+      if (currentDevice?.trust_state !== 'trusted') {
+        throw new Error('This device is not approved yet.')
+      }
 
-    const response = await this.httpClient.apiFetch('/api/v1/auth/me')
-    const data = (await response.json()) as Record<string, unknown> & AuthResponsePayload
+      const response = await this.httpClient.apiFetch('/api/v1/auth/me')
+      const data = (await response.json()) as Record<string, unknown> & AuthResponsePayload
 
-    if (!response.ok) {
-      throw new Error(parseError(data, 'Could not load device setup'))
-    }
+      if (!response.ok) {
+        throw new Error(parseError(data, 'Could not load device setup'))
+      }
 
-    const restored =
-      (await hasUnlockedLocalIdentity(user.id)) ||
-      (shouldGenerateFreshDeviceIdentity(data.current_device) &&
-        (await this.createFreshLocalDeviceIdentity(user.id))) ||
-      (await hydrateTrustedCryptoFromPasswordResponse(user.id, data, password))
+      const restored =
+        (await hasUnlockedLocalIdentity(this.storage, user.id)) ||
+        (shouldGenerateFreshDeviceIdentity(data.current_device) &&
+          (await this.createFreshLocalDeviceIdentity(user.id))) ||
+        (await hydrateTrustedCryptoFromPasswordResponse(this.storage, user.id, data, password))
 
-    if (!restored) {
-      throw new Error(
-        'This device is approved, but it still needs your password to unlock encrypted chats.'
-      )
-    }
+      if (!restored) {
+        throw new Error(
+          'This device is approved, but it still needs your password to unlock encrypted chats.'
+        )
+      }
 
-    return {
-      user,
-      currentDevice: data.current_device ?? currentDevice,
-      devices: data.current_device ? [data.current_device] : currentDevice ? [currentDevice] : [],
-      canUseE2EE: true,
-      recoveryMnemonic: null
-    }
+      this.lastKnownUserId = user.id
+
+      return {
+        user,
+        currentDevice: data.current_device ?? currentDevice,
+        devices: data.current_device ? [data.current_device] : currentDevice ? [currentDevice] : [],
+        canUseE2EE: true,
+        recoveryMnemonic: null
+      }
+    })
   }
 
   async recoverAccount(mnemonic: string, newPassword: string): Promise<VesperAuthSession> {
-    const recoveryKeyHash = await hashRecoveryMnemonic(mnemonic)
-    const response = await this.httpClient.apiFetch('/api/v1/auth/recover', {
-      method: 'POST',
-      body: JSON.stringify({ recovery_key_hash: recoveryKeyHash })
-    })
-
-    const data = (await response.json()) as Record<string, unknown>
-    if (!response.ok || typeof data.encrypted_recovery_bundle !== 'string') {
-      throw new Error(parseError(data, 'Invalid recovery key'))
-    }
-
-    const encryptedBundle = base64ToUint8(data.encrypted_recovery_bundle)
-    const privateKeys = await decryptWithRecoveryKey(mnemonic, encryptedBundle)
-    const newBundle = await createEncryptedKeyBundle(privateKeys, newPassword)
-    const device = this.resolveDeviceIdentity()
-
-    const resetResponse = await this.httpClient.apiFetch('/api/v1/auth/recover/reset', {
-      method: 'POST',
-      body: JSON.stringify({
-        recovery_key_hash: recoveryKeyHash,
-        new_password: newPassword,
-        device_id: device.id,
-        device_name: device.name,
-        device_platform: device.platform,
-        encrypted_key_bundle: uint8ToBase64(newBundle.ciphertext),
-        key_bundle_nonce: uint8ToBase64(newBundle.nonce),
-        key_bundle_salt: uint8ToBase64(newBundle.salt)
+    return await this.withStorageContext(null, async () => {
+      const recoveryKeyHash = await hashRecoveryMnemonic(mnemonic)
+      const response = await this.httpClient.apiFetch('/api/v1/auth/recover', {
+        method: 'POST',
+        body: JSON.stringify({ recovery_key_hash: recoveryKeyHash })
       })
+
+      const data = (await response.json()) as Record<string, unknown>
+      if (!response.ok || typeof data.encrypted_recovery_bundle !== 'string') {
+        throw new Error(parseError(data, 'Invalid recovery key'))
+      }
+
+      const encryptedBundle = base64ToUint8(data.encrypted_recovery_bundle)
+      const privateKeys = await decryptWithRecoveryKey(mnemonic, encryptedBundle)
+      const newBundle = await createEncryptedKeyBundle(privateKeys, newPassword)
+      const device = this.resolveDeviceIdentity()
+
+      const resetResponse = await this.httpClient.apiFetch('/api/v1/auth/recover/reset', {
+        method: 'POST',
+        body: JSON.stringify({
+          recovery_key_hash: recoveryKeyHash,
+          new_password: newPassword,
+          device_id: device.id,
+          device_name: device.name,
+          device_platform: device.platform,
+          encrypted_key_bundle: uint8ToBase64(newBundle.ciphertext),
+          key_bundle_nonce: uint8ToBase64(newBundle.nonce),
+          key_bundle_salt: uint8ToBase64(newBundle.salt)
+        })
+      })
+
+      const resetData = (await resetResponse.json()) as Record<string, unknown> & AuthResponsePayload
+      if (!resetResponse.ok) {
+        throw new Error(parseError(resetData, 'Failed to reset password'))
+      }
+
+      this.httpClient.setTokens(resetData.access_token as string, resetData.refresh_token as string)
+      this.storage.init(resetData.user.id)
+      this.lastKnownUserId = resetData.user.id
+
+      await this.storage.saveIdentity(
+        resetData.user.id,
+        resetData.public_identity_key
+          ? base64ToUint8(resetData.public_identity_key)
+          : new Uint8Array(0),
+        resetData.public_key_exchange
+          ? base64ToUint8(resetData.public_key_exchange)
+          : new Uint8Array(0),
+        newBundle.ciphertext,
+        newBundle.nonce,
+        newBundle.salt,
+        privateKeys
+      )
+
+      void this.registerCurrentDeviceNotificationCapability()
+
+      return {
+        user: resetData.user,
+        currentDevice: resetData.current_device ?? null,
+        devices: resetData.current_device ? [resetData.current_device] : [],
+        canUseE2EE: true,
+        recoveryMnemonic: null
+      }
     })
-
-    const resetData = (await resetResponse.json()) as Record<string, unknown> & AuthResponsePayload
-    if (!resetResponse.ok) {
-      throw new Error(parseError(resetData, 'Failed to reset password'))
-    }
-
-    this.httpClient.setTokens(resetData.access_token as string, resetData.refresh_token as string)
-    initStorage(resetData.user.id)
-
-    await saveIdentity(
-      resetData.user.id,
-      resetData.public_identity_key
-        ? base64ToUint8(resetData.public_identity_key)
-        : new Uint8Array(0),
-      resetData.public_key_exchange
-        ? base64ToUint8(resetData.public_key_exchange)
-        : new Uint8Array(0),
-      newBundle.ciphertext,
-      newBundle.nonce,
-      newBundle.salt,
-      privateKeys
-    )
-
-    void this.registerCurrentDeviceNotificationCapability()
-
-    return {
-      user: resetData.user,
-      currentDevice: resetData.current_device ?? null,
-      devices: resetData.current_device ? [resetData.current_device] : [],
-      canUseE2EE: true,
-      recoveryMnemonic: null
-    }
   }
 
   async updateProfile(attrs: {
@@ -583,50 +598,48 @@ export class VesperAuthClient {
       return this.keyPackageReplenishPromise
     }
 
-    this.keyPackageReplenishPromise = (async () => {
+    this.keyPackageReplenishPromise = this.withStorageContext(user?.id ?? null, async () => {
       if (!user || !canUseE2EE) {
         return
       }
 
-      try {
-        const localPackages = await loadKeyPackages()
-        if (localPackages.length === 0) {
-          await purgeMyKeyPackages(this.resolveDeviceIdentity().id, this.httpClient)
-        }
-
-        const count = await getMyKeyPackageCount(this.resolveDeviceIdentity().id, this.httpClient)
-        if (count >= KEY_PACKAGE_THRESHOLD) {
-          return
-        }
-
-        await initCipherSuite()
-        const identity = await loadIdentity(user.id)
-        if (!identity?.signaturePrivateKey) {
-          return
-        }
-
-        const pairs = await createKeyPackageBatch(
-          this.getCurrentMlsCredentialIdentity(user.id),
-          KEY_PACKAGE_TARGET - count,
-          {
-            signKey: identity.signaturePrivateKey,
-            publicKey: identity.publicIdentityKey
-          }
-        )
-
-        await saveKeyPackages(
-          pairs.map((pair) => ({
-            publicData: encodeKeyPackageBytes(pair.publicPackage),
-            privateData: serializePrivatePackage(pair.privatePackage)
-          }))
-        )
-
-        const publicPackageBytes = pairs.map((pair) => encodeKeyPackageBytes(pair.publicPackage))
-        await uploadKeyPackages(publicPackageBytes, this.resolveDeviceIdentity().id, this.httpClient)
-      } finally {
-        this.keyPackageReplenishPromise = null
+      const localPackages = await this.storage.loadKeyPackages()
+      if (localPackages.length === 0) {
+        await purgeMyKeyPackages(this.resolveDeviceIdentity().id, this.httpClient)
       }
-    })()
+
+      const count = await getMyKeyPackageCount(this.resolveDeviceIdentity().id, this.httpClient)
+      if (count >= KEY_PACKAGE_THRESHOLD) {
+        return
+      }
+
+      await initCipherSuite()
+      const identity = await this.storage.loadIdentity(user.id)
+      if (!identity?.signaturePrivateKey) {
+        return
+      }
+
+      const pairs = await createKeyPackageBatch(
+        this.getCurrentMlsCredentialIdentity(user.id),
+        KEY_PACKAGE_TARGET - count,
+        {
+          signKey: identity.signaturePrivateKey,
+          publicKey: identity.publicIdentityKey
+        }
+      )
+
+      await this.storage.saveKeyPackages(
+        pairs.map((pair) => ({
+          publicData: encodeKeyPackageBytes(pair.publicPackage),
+          privateData: serializePrivatePackage(pair.privatePackage)
+        }))
+      )
+
+      const publicPackageBytes = pairs.map((pair) => encodeKeyPackageBytes(pair.publicPackage))
+      await uploadKeyPackages(publicPackageBytes, this.resolveDeviceIdentity().id, this.httpClient)
+    }).finally(() => {
+      this.keyPackageReplenishPromise = null
+    })
 
     return this.keyPackageReplenishPromise
   }
@@ -646,6 +659,17 @@ export class VesperAuthClient {
     return buildClientCredentialIdentity(userId, this.resolveDeviceIdentity().id)
   }
 
+  private resolveKnownUserId(): string | null {
+    return this.lastKnownUserId
+  }
+
+  private async withStorageContext<T>(
+    userId: string | null | undefined,
+    operation: () => Promise<T>
+  ): Promise<T> {
+    return await this.storage.run(userId, operation)
+  }
+
   private async createFreshLocalDeviceIdentity(userId: string): Promise<boolean> {
     await initCipherSuite()
 
@@ -657,7 +681,7 @@ export class VesperAuthClient {
       return false
     }
 
-    await saveIdentity(
+    await this.storage.saveIdentity(
       userId,
       signaturePublicKey,
       signaturePublicKey,
@@ -729,17 +753,22 @@ function resolveCurrentDevice(
 function shouldGenerateFreshDeviceIdentity(
   currentDevice: VesperAuthDevice | null | undefined
 ): boolean {
-  return Boolean(currentDevice?.approval_method)
+  return (
+    currentDevice?.approval_method === 'trusted_device' ||
+    currentDevice?.approval_method === 'recovery_key'
+  )
 }
 
 async function hasUnlockedLocalIdentity(
+  storage: CryptoStorageRuntime,
   userId: string
 ): Promise<boolean> {
-  const identity = await loadIdentity(userId).catch(() => null)
+  const identity = await storage.loadIdentity(userId).catch(() => null)
   return Boolean(identity?.signaturePrivateKey)
 }
 
 async function hydrateTrustedCryptoFromPasswordResponse(
+  storage: CryptoStorageRuntime,
   userId: string,
   data: AuthResponsePayload,
   password: string
@@ -764,7 +793,7 @@ async function hydrateTrustedCryptoFromPasswordResponse(
     ? base64ToUint8(data.public_key_exchange)
     : bundle.ciphertext
 
-  await saveIdentity(
+  await storage.saveIdentity(
     userId,
     publicIdentityKey,
     publicKeyExchange,

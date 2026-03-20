@@ -484,6 +484,7 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
       encryptionError={encryptionError}
       fileInputRef={fileInputRef}
       members={members}
+      mentionDrafts={mentionDrafts}
       onAutocompleteHover={setSelectedAutocompleteIndex}
       onAutocompleteSelect={(item) => {
         const index = autocompleteItems.findIndex((entry) => entry.id === item.id)

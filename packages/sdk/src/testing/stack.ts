@@ -3,18 +3,21 @@ import fs from 'fs'
 import path from 'path'
 import net from 'net'
 import { fileURLToPath } from 'url'
+import { ensureLocalTestPostgres, loadRepoEnv } from '../../../../scripts/load-repo-env.mjs'
 
 const SDK_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const REPO_ROOT = path.resolve(SDK_ROOT, '..', '..')
 const SERVER_DIR = path.join(REPO_ROOT, 'server')
 let stackLifecycleQueue: Promise<void> = Promise.resolve()
 
+loadRepoEnv()
+
 function resolveTestDbEnv(): Record<string, string> {
   return {
-    TEST_DB_USER: process.env.TEST_DB_USER ?? process.env.VESPER_SDK_TEST_DB_USER ?? 'vesper_sdk',
-    TEST_DB_PASS: process.env.TEST_DB_PASS ?? process.env.VESPER_SDK_TEST_DB_PASS ?? 'vesper_sdk',
-    TEST_DB_HOST: process.env.TEST_DB_HOST ?? process.env.VESPER_SDK_TEST_DB_HOST ?? '127.0.0.1',
-    TEST_DB_PORT: process.env.TEST_DB_PORT ?? process.env.VESPER_SDK_TEST_DB_PORT ?? '55432'
+    TEST_DB_USER: process.env.TEST_DB_USER ?? 'vesper_sdk',
+    TEST_DB_PASS: process.env.TEST_DB_PASS ?? 'vesper_sdk',
+    TEST_DB_HOST: process.env.TEST_DB_HOST ?? '127.0.0.1',
+    TEST_DB_PORT: process.env.TEST_DB_PORT ?? '55432'
   }
 }
 
@@ -62,6 +65,8 @@ async function waitForProcessExit(process: ChildProcess, timeoutMs = 5_000): Pro
 }
 
 export async function bootServerStack(): Promise<SdkServerStack> {
+  ensureLocalTestPostgres()
+
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
   const partition = `_sdk_${runId}`
   const apiPort = await getFreePort()

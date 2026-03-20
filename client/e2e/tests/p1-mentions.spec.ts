@@ -51,24 +51,28 @@ test.describe('P1: Mentions', () => {
   test('Member mention autocomplete inserts correct syntax (R-MSG-4)', async () => {
     const input = alice.page.locator('[data-testid="message-input"]')
     const preview = alice.page.locator('[data-testid="composer-rich-preview"]')
+    const autocomplete = alice.page.locator('[data-testid="composer-autocomplete"]')
+    const toggleMembers = alice.page.locator('[data-testid="toggle-members"]')
+    const memberList = alice.page.locator('[data-testid="member-list"]')
     await input.fill('')
     const suffix = 'mention-sync-rmsg4'
 
+    if (await toggleMembers.isVisible().catch(() => false)) {
+      await toggleMembers.click()
+    }
+
+    await expect(memberList).toBeVisible()
+    await expect(
+      memberList.getByTestId('member-name').filter({ hasText: USERS.bob.username })
+    ).toBeVisible()
+
     // Type @ to trigger autocomplete
     await input.type('@bob')
-    await alice.page.waitForTimeout(1_000)
+    await expect(autocomplete).toBeVisible()
 
-    // Autocomplete dropdown should appear with bob's username
-    const autocomplete = alice.page.locator('[data-testid="mention-autocomplete"], .vesper-mention-dropdown')
-    const isVisible = await autocomplete.isVisible().catch(() => false)
-
-    if (isVisible) {
-      // Select the first matching option
-      const bobOption = autocomplete.locator(`text=${USERS.bob.username}`)
-      if (await bobOption.isVisible()) {
-        await bobOption.click()
-      }
-    }
+    const bobOption = autocomplete.getByRole('option', { name: USERS.bob.username })
+    await expect(bobOption).toBeVisible()
+    await bobOption.click()
 
     await expect(preview).toContainText('@bob')
 

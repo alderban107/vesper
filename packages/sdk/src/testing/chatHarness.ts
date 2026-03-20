@@ -30,21 +30,7 @@ import {
   serializeGroupState
 } from '../crypto/index.js'
 import {
-  cacheMessage,
-  loadCachedMessages,
-  consumeKeyPackage,
-  deleteGroupState,
-  indexDecryptedMessage,
-  loadCachedMessageDecryption,
-  loadGroupState,
-  loadGroupSyncCursor,
-  loadKeyPackageByRef,
-  loadKeyPackages,
-  loadSentMessagePlaintext,
-  saveCachedMessageDecryption,
-  saveGroupState,
-  saveGroupSyncCursor,
-  saveSentMessagePlaintext
+  type CryptoStorageRuntime
 } from '../storage/index.js'
 import type { VesperMessage } from '../api/chat.js'
 import type {
@@ -116,6 +102,7 @@ function coerceDisplayText(plaintext: string): string {
 
 export class SdkChatHarness extends EventEmitter {
   readonly device: TestingDeviceHarness
+  private readonly storage: CryptoStorageRuntime
 
   private readonly groupStates = new Map<string, GroupState>()
   private readonly groupStateSnapshots = new Map<
@@ -137,6 +124,11 @@ export class SdkChatHarness extends EventEmitter {
   constructor(device: TestingDeviceHarness) {
     super()
     this.device = device
+    this.storage = device.storageRuntime
+  }
+
+  private async withDeviceContext<T>(operation: () => Promise<T>): Promise<T> {
+    return await this.device.run(operation)
   }
 
   async watchScope(scope: EncryptedScope): Promise<void> {
@@ -182,11 +174,13 @@ export class SdkChatHarness extends EventEmitter {
     }
 
     await this.device.run(async () => {
+      await this.syncLatestMessageState(scope)
+
       const encrypted = await this.encryptForScope(
         scope.id,
         encodePayload({ v: 1, type: 'text', text })
       )
-      await saveSentMessagePlaintext(encrypted.ciphertext, text)
+      await this.storage.saveSentMessagePlaintext(encrypted.ciphertext, text)
 
       const pushed = await this.device.pushToTopicWithAck(scopeTopic(scope), 'new_message', {
         ciphertext: encrypted.ciphertext,
@@ -256,7 +250,7 @@ export class SdkChatHarness extends EventEmitter {
 
       this.groupStates.delete(scopeId)
       this.groupStateSnapshots.delete(scopeId)
-      await deleteGroupState(scopeId)
+      await this.storage.deleteGroupState(scopeId)
     })
   }
 
@@ -268,33 +262,63 @@ export class SdkChatHarness extends EventEmitter {
   ): Promise<ScopeSyncResult> {
     const startedAt = performance.now()
     const limit = options.limit ?? 50
-    const messages = await this.device.run(async () => {
+    const messages = await this.withDeviceContext(async () => {
       const canUseHotPath = limit === 1 && this.hasGroup(scope.id)
-
-      if (!canUseHotPath) {
-        await this.ensureGroupMembership(scope.id)
-        await this.replayDurableEvents(scope)
-      }
-
-      const rawMessages = await this.fetchScopeMessages(scope, {
-        limit,
-        lean: canUseHotPath || limit > 1
-      })
-      let processed = await this.processScopeMessages(scope, rawMessages, {
-        persist: !canUseHotPath,
-        mutateState: !canUseHotPath
-      })
-
-      if (this.shouldReplayForScope(scope.id, rawMessages, processed, canUseHotPath)) {
-        await this.ensureGroupMembership(scope.id)
-        await this.replayDurableEvents(scope)
-        processed = await this.processScopeMessages(scope, rawMessages, {
+      if (canUseHotPath) {
+        const rawMessages = await this.fetchScopeMessages(scope, {
+          limit,
+          lean: true
+        })
+        let processed = await this.processScopeMessages(scope, rawMessages, {
           persist: false,
           mutateState: false
         })
+
+        if (this.shouldReplayForScope(scope.id, rawMessages, processed, true)) {
+          await this.ensureGroupMembership(scope.id)
+          await this.replayDurableEvents(scope)
+          processed = await this.processScopeMessages(scope, rawMessages, {
+            persist: false,
+            mutateState: false
+          })
+        }
+
+        const sorted = sortMessages(processed).slice(-MAX_MESSAGES_PER_SCOPE)
+        this.scopeMessages.set(scope.id, sorted)
+        return sorted
       }
 
-      const sorted = sortMessages(processed).slice(-MAX_MESSAGES_PER_SCOPE)
+      await this.ensureGroupMembership(scope.id)
+      await this.replayDurableEvents(scope)
+
+      const cached = await this.loadProcessedCachedMessages(scope.id)
+      const existing = this.mergeScopeMessages(
+        cached,
+        this.scopeMessages.get(scope.id) ?? []
+      )
+      const resumeAfterSeq = this.resumeAfterRoomSeq(existing)
+      const pageSize = Math.max(limit, 80)
+      const rawMessages =
+        cached.length === 0
+          ? await this.fetchScopeMessages(scope, {
+              limit: pageSize,
+              lean: true
+            })
+          : resumeAfterSeq !== null
+          ? await this.fetchIncrementalScopeMessages(scope, pageSize, 1, resumeAfterSeq)
+          : await this.fetchScopeMessages(scope, {
+              limit: pageSize,
+              lean: true
+            })
+      const processed =
+        rawMessages.length > 0
+          ? await this.processScopeMessages(scope, rawMessages, {
+              persist: true,
+              mutateState: true
+            })
+          : []
+
+      const sorted = this.mergeScopeMessages(existing, processed).slice(-MAX_MESSAGES_PER_SCOPE)
       this.scopeMessages.set(scope.id, sorted)
       return sorted
     })
@@ -398,246 +422,255 @@ export class SdkChatHarness extends EventEmitter {
     event: string,
     payload: Record<string, unknown> | null
   ): Promise<void> {
-    if (event === 'new_message') {
-      const message = await this.processIncomingMessage(scope, payload as unknown as VesperMessage)
-      this.upsertScopeMessage(scope.id, message)
-      this.emit('message', { scope, message })
-      return
-    }
-
-    if (event === 'mls_request_join_all' && scope.kind === 'channel' && !this.hasGroup(scope.id)) {
-      await this.requestMlsJoin(scope)
-      return
-    }
-
-    if (event === 'mls_request_join') {
-      await this.handleJoinRequestEvent(scope, payload)
-      return
-    }
-
-    if (event === 'mls_commit') {
-      const senderId = typeof payload?.sender_id === 'string' ? payload.sender_id : null
-      const senderDeviceId =
-        typeof payload?.sender_device_id === 'string' ? payload.sender_device_id : null
-
-      if (
-        senderId !== this.device.session?.user.id ||
-        senderDeviceId !== this.device.deviceIdentity.id
-      ) {
-        await this.handleCommit(scope.id, this.getString(payload, 'commit_data'))
-      }
-      return
-    }
-
-    if (event === 'mls_remove') {
-      const senderId = this.getString(payload, 'sender_id')
-      const senderDeviceId = this.getString(payload, 'sender_device_id')
-      const removedUserId = this.getString(payload, 'removed_user_id')
-      const removedDeviceId = this.getString(payload, 'removed_device_id')
-      const localUserId = this.device.session?.user.id
-      const localDeviceId = this.device.deviceIdentity.id
-      const isLocalSender = senderId === localUserId && senderDeviceId === localDeviceId
-      const isLocalTarget =
-        removedUserId === localUserId &&
-        (removedDeviceId == null || removedDeviceId === localDeviceId)
-
-      if (isLocalTarget && !isLocalSender) {
-        this.groupStates.delete(scope.id)
-        this.groupStateSnapshots.delete(scope.id)
+    await this.withDeviceContext(async () => {
+      if (event === 'new_message') {
+        const message = await this.processIncomingMessage(scope, payload as unknown as VesperMessage)
+        this.upsertScopeMessage(scope.id, message)
+        this.emit('message', { scope, message })
         return
       }
 
-      if (!isLocalSender) {
-        await this.handleCommit(scope.id, this.getString(payload, 'commit_data'))
+      if (event === 'mls_request_join_all' && scope.kind === 'channel' && !this.hasGroup(scope.id)) {
+        await this.requestMlsJoin(scope)
+        return
       }
-      return
-    }
 
-    if (event === 'mls_eviction_request') {
-      await this.handleEvictionRequestEvent(scope, payload)
-      return
-    }
+      if (event === 'mls_request_join') {
+        await this.handleJoinRequestEvent(scope, payload)
+        return
+      }
 
-    if (event === 'mls_welcome') {
-      const recipientId = this.getString(payload, 'recipient_id')
-      const recipientDeviceId = this.getString(payload, 'recipient_device_id')
-      if (
-        recipientId === this.device.session?.user.id &&
-        (!recipientDeviceId || recipientDeviceId === this.device.deviceIdentity.id)
-      ) {
-        const processed = await this.handleWelcome(
-          scope.id,
-          this.getString(payload, 'welcome_data'),
-          this.getString(payload, 'key_package_ref')
-        )
+      if (event === 'mls_commit') {
+        const senderId = typeof payload?.sender_id === 'string' ? payload.sender_id : null
+        const senderDeviceId =
+          typeof payload?.sender_device_id === 'string' ? payload.sender_device_id : null
 
-        if (processed) {
-          const welcomeId = this.getString(payload, 'id')
-          if (welcomeId) {
-            await ackPendingWelcome(welcomeId).catch(() => {})
+        if (
+          senderId !== this.device.session?.user.id ||
+          senderDeviceId !== this.device.deviceIdentity.id
+        ) {
+          await this.handleCommit(scope.id, this.getString(payload, 'commit_data'))
+        }
+        return
+      }
+
+      if (event === 'mls_remove') {
+        const senderId = this.getString(payload, 'sender_id')
+        const senderDeviceId = this.getString(payload, 'sender_device_id')
+        const removedUserId = this.getString(payload, 'removed_user_id')
+        const removedDeviceId = this.getString(payload, 'removed_device_id')
+        const localUserId = this.device.session?.user.id
+        const localDeviceId = this.device.deviceIdentity.id
+        const isLocalSender = senderId === localUserId && senderDeviceId === localDeviceId
+        const isLocalTarget =
+          removedUserId === localUserId &&
+          (removedDeviceId == null || removedDeviceId === localDeviceId)
+
+        if (isLocalTarget && !isLocalSender) {
+          this.groupStates.delete(scope.id)
+          this.groupStateSnapshots.delete(scope.id)
+          return
+        }
+
+        if (!isLocalSender) {
+          await this.handleCommit(scope.id, this.getString(payload, 'commit_data'))
+        }
+        return
+      }
+
+      if (event === 'mls_eviction_request') {
+        await this.handleEvictionRequestEvent(scope, payload)
+        return
+      }
+
+      if (event === 'mls_welcome') {
+        const recipientId = this.getString(payload, 'recipient_id')
+        const recipientDeviceId = this.getString(payload, 'recipient_device_id')
+        if (
+          recipientId === this.device.session?.user.id &&
+          (!recipientDeviceId || recipientDeviceId === this.device.deviceIdentity.id)
+        ) {
+          const processed = await this.handleWelcome(
+            scope.id,
+            this.getString(payload, 'welcome_data'),
+            this.getString(payload, 'key_package_ref')
+          )
+
+          if (processed) {
+            const welcomeId = this.getString(payload, 'id')
+            if (welcomeId) {
+              await ackPendingWelcome(welcomeId, this.device.httpClient).catch(() => {})
+            }
           }
         }
       }
-    }
+    })
   }
 
   async handleEvictionRequestEvent(
     scope: EncryptedScope,
     payload: Record<string, unknown> | null
   ): Promise<void> {
-    const evictionId =
-      this.getString(payload, 'eviction_id') ??
-      this.getString(payload, 'request_id') ??
-      this.getString(payload, 'id')
-    const targetUserId =
-      this.getString(payload, 'target_user_id') ??
-      this.getString(payload, 'removed_user_id') ??
-      this.getString(payload, 'user_id')
-    const targetDeviceId =
-      this.getString(payload, 'target_device_id') ??
-      this.getString(payload, 'removed_device_id') ??
-      this.getString(payload, 'device_id')
+    await this.withDeviceContext(async () => {
+      const evictionId =
+        this.getString(payload, 'eviction_id') ??
+        this.getString(payload, 'request_id') ??
+        this.getString(payload, 'id')
+      const targetUserId =
+        this.getString(payload, 'target_user_id') ??
+        this.getString(payload, 'removed_user_id') ??
+        this.getString(payload, 'user_id')
+      const targetDeviceId =
+        this.getString(payload, 'target_device_id') ??
+        this.getString(payload, 'removed_device_id') ??
+        this.getString(payload, 'device_id')
 
-    if (!evictionId || !targetUserId) {
-      return
-    }
+      if (!evictionId || !targetUserId) {
+        return
+      }
 
-    const session = this.device.session
-    const localDeviceId = this.device.deviceIdentity.id
-    const isLocalTarget =
-      session?.user.id === targetUserId &&
-      (targetDeviceId == null || targetDeviceId === localDeviceId)
-    if (isLocalTarget) {
-      return
-    }
+      const session = this.device.session
+      const localDeviceId = this.device.deviceIdentity.id
+      const isLocalTarget =
+        session?.user.id === targetUserId &&
+        (targetDeviceId == null || targetDeviceId === localDeviceId)
+      if (isLocalTarget) {
+        return
+      }
 
-    const existing = this.pendingEvictionRequests.get(evictionId)
-    if (existing) {
-      await existing
-      return
-    }
+      const existing = this.pendingEvictionRequests.get(evictionId)
+      if (existing) {
+        await existing
+        return
+      }
 
-    const recentAt = this.recentEvictionClaims.get(evictionId) ?? 0
-    if (Date.now() - recentAt < EVICTION_REQUEST_COOLDOWN_MS) {
-      return
-    }
+      const recentAt = this.recentEvictionClaims.get(evictionId) ?? 0
+      if (Date.now() - recentAt < EVICTION_REQUEST_COOLDOWN_MS) {
+        return
+      }
 
-    const prev = this.evictionLocks.get(scope.id) ?? Promise.resolve()
-    const current = prev
-      .then(async () => {
-        if (!this.hasGroup(scope.id)) {
-          return
-        }
-
-        const currentSession = this.device.session
-        if (!currentSession) {
-          return
-        }
-
-        const state = this.groupStates.get(scope.id)
-        if (!state) {
-          return
-        }
-
-        if (!groupHasMember(state, currentSession.user.id, currentSession.user.username)) {
-          return
-        }
-
-        const claimed = await this.device.pushToTopicWithAck(scopeTopic(scope), 'mls_eviction_claim', {
-          id: evictionId
-        })
-        if (!claimed) {
-          return
-        }
-
-        const leafIndex =
-          targetDeviceId != null
-            ? (() => {
-                const targetIdentity = buildClientCredentialIdentity(targetUserId, targetDeviceId)
-                return getGroupLeafIdentities(state).includes(targetIdentity)
-                  ? findMemberLeafIndex(state, targetIdentity)
-                  : null
-              })()
-            : findMemberLeafIndex(state, targetUserId)
-
-        if (leafIndex == null) {
-          const skipped = await this.device.pushToTopicWithAck(scopeTopic(scope), 'mls_eviction_skip', {
-            id: evictionId,
-            target_user_id: targetUserId,
-            ...(targetDeviceId ? { target_device_id: targetDeviceId } : {}),
-            reason: 'leaf_missing'
-          })
-
-          if (skipped) {
-            this.recentEvictionClaims.set(evictionId, Date.now())
+      const prev = this.evictionLocks.get(scope.id) ?? Promise.resolve()
+      const current = prev
+        .then(async () => {
+          if (!this.hasGroup(scope.id)) {
+            return
           }
 
-          return
-        }
+          const currentSession = this.device.session
+          if (!currentSession) {
+            return
+          }
 
-        const removed = await removeMemberFromGroup(state, leafIndex)
-        await this.setGroupState(scope.id, removed.newState)
+          const state = this.groupStates.get(scope.id)
+          if (!state) {
+            return
+          }
 
-        const pushed = await this.device.pushToTopicWithAck(scopeTopic(scope), 'mls_remove', {
-          removed_user_id: targetUserId,
-          ...(targetDeviceId ? { removed_device_id: targetDeviceId } : {}),
-          commit_data: uint8ToBase64(removed.commitBytes),
-          eviction_id: evictionId
+          if (!groupHasMember(state, currentSession.user.id, currentSession.user.username)) {
+            return
+          }
+
+          const claimed = await this.device.pushToTopicWithAck(scopeTopic(scope), 'mls_eviction_claim', {
+            id: evictionId
+          })
+          if (!claimed) {
+            return
+          }
+
+          const leafIndex =
+            targetDeviceId != null
+              ? (() => {
+                  const targetIdentity = buildClientCredentialIdentity(targetUserId, targetDeviceId)
+                  return getGroupLeafIdentities(state).includes(targetIdentity)
+                    ? findMemberLeafIndex(state, targetIdentity)
+                    : null
+                })()
+              : findMemberLeafIndex(state, targetUserId)
+
+          if (leafIndex == null) {
+            const skipped = await this.device.pushToTopicWithAck(scopeTopic(scope), 'mls_eviction_skip', {
+              id: evictionId,
+              target_user_id: targetUserId,
+              ...(targetDeviceId ? { target_device_id: targetDeviceId } : {}),
+              reason: 'leaf_missing'
+            })
+
+            if (skipped) {
+              this.recentEvictionClaims.set(evictionId, Date.now())
+            }
+
+            return
+          }
+
+          const removed = await removeMemberFromGroup(
+            this.cloneGroupState(state),
+            leafIndex
+          )
+          await this.setGroupState(scope.id, removed.newState)
+
+          const pushed = await this.device.pushToTopicWithAck(scopeTopic(scope), 'mls_remove', {
+            removed_user_id: targetUserId,
+            ...(targetDeviceId ? { removed_device_id: targetDeviceId } : {}),
+            commit_data: uint8ToBase64(removed.commitBytes),
+            eviction_id: evictionId
+          })
+
+          if (pushed) {
+            this.recentEvictionClaims.set(evictionId, Date.now())
+          }
+        })
+        .finally(() => {
+          this.pendingEvictionRequests.delete(evictionId)
+          this.evictionLocks.delete(scope.id)
         })
 
-        if (pushed) {
-          this.recentEvictionClaims.set(evictionId, Date.now())
-        }
-      })
-      .finally(() => {
-        this.pendingEvictionRequests.delete(evictionId)
-        this.evictionLocks.delete(scope.id)
-      })
-
-    this.pendingEvictionRequests.set(evictionId, current)
-    this.evictionLocks.set(scope.id, current)
-    await current
+      this.pendingEvictionRequests.set(evictionId, current)
+      this.evictionLocks.set(scope.id, current)
+      await current
+    })
   }
 
   async handleJoinRequestEvent(
     scope: EncryptedScope,
     payload: Record<string, unknown> | null
   ): Promise<void> {
-    if (!this.hasGroup(scope.id)) {
-      return
-    }
+    await this.withDeviceContext(async () => {
+      if (!this.hasGroup(scope.id)) {
+        return
+      }
 
-    const requesterId = this.getString(payload, 'user_id')
-    const requesterDeviceId = this.getString(payload, 'device_id')
+      const requesterId = this.getString(payload, 'user_id')
+      const requesterDeviceId = this.getString(payload, 'device_id')
 
-    if (!requesterId) {
-      return
-    }
+      if (!requesterId) {
+        return
+      }
 
-    if (
-      requesterId === this.device.session?.user.id &&
-      requesterDeviceId === this.device.deviceIdentity.id
-    ) {
-      return
-    }
+      if (
+        requesterId === this.device.session?.user.id &&
+        requesterDeviceId === this.device.deviceIdentity.id
+      ) {
+        return
+      }
 
-    const response = await this.handleJoinRequest(scope.id, requesterId, requesterDeviceId)
-    if (!response) {
-      return
-    }
+      const response = await this.handleJoinRequest(scope.id, requesterId, requesterDeviceId)
+      if (!response) {
+        return
+      }
 
-    await this.device.pushToTopicWithAck(scopeTopic(scope), 'mls_commit', {
-      commit_data: response.commitBytes
-    })
-
-    if (response.welcomeBytes) {
-      await this.device.pushToTopicWithAck(scopeTopic(scope), 'mls_welcome', {
-        recipient_id: requesterId,
-        recipient_device_id: requesterDeviceId,
-        welcome_data: response.welcomeBytes,
-        key_package_ref: response.keyPackageRef
+      await this.device.pushToTopicWithAck(scopeTopic(scope), 'mls_commit', {
+        commit_data: response.commitBytes
       })
-    }
+
+      if (response.welcomeBytes) {
+        await this.device.pushToTopicWithAck(scopeTopic(scope), 'mls_welcome', {
+          recipient_id: requesterId,
+          recipient_device_id: requesterDeviceId,
+          welcome_data: response.welcomeBytes,
+          key_package_ref: response.keyPackageRef
+        })
+      }
+    })
   }
 
   async ensureChannelGroupReady(channelId: string, allowCreate = false): Promise<boolean> {
@@ -697,7 +730,7 @@ export class SdkChatHarness extends EventEmitter {
       return true
     }
 
-    const persisted = await loadGroupState(scopeId)
+    const persisted = await this.storage.loadGroupState(scopeId)
     if (persisted) {
       try {
         const state = deserializeGroupState(new Uint8Array(persisted.state))
@@ -717,7 +750,7 @@ export class SdkChatHarness extends EventEmitter {
 
     let welcomes: Awaited<ReturnType<typeof fetchPendingWelcomes>> = []
     try {
-      welcomes = await fetchPendingWelcomes(scopeId)
+      welcomes = await fetchPendingWelcomes(scopeId, this.device.httpClient)
     } catch {
       // Server unreachable or error; treat as no pending welcomes.
     }
@@ -730,7 +763,7 @@ export class SdkChatHarness extends EventEmitter {
       )
 
       if (processed) {
-        await ackPendingWelcome(welcome.id).catch(() => {})
+        await ackPendingWelcome(welcome.id, this.device.httpClient).catch(() => {})
         this.notifyMembershipWaiters(scopeId, true)
         return true
       }
@@ -741,10 +774,10 @@ export class SdkChatHarness extends EventEmitter {
 
   async replayDurableEvents(scope: EncryptedScope): Promise<void> {
     const session = this.device.requireSession()
-    const cursor = await loadGroupSyncCursor(scope.id)
+    const cursor = await this.storage.loadGroupSyncCursor(scope.id)
     let events: Awaited<ReturnType<typeof fetchMlsEvents>> = []
     try {
-      events = await fetchMlsEvents(scope.id, cursor)
+      events = await fetchMlsEvents(scope.id, cursor, 200, this.device.httpClient)
     } catch {
       return
     }
@@ -782,7 +815,7 @@ export class SdkChatHarness extends EventEmitter {
     }
 
     if (latestSeq > cursor) {
-      await saveGroupSyncCursor(scope.id, latestSeq)
+      await this.storage.saveGroupSyncCursor(scope.id, latestSeq)
     }
   }
 
@@ -805,8 +838,8 @@ export class SdkChatHarness extends EventEmitter {
       encrypted = true
 
       const [sentPlaintext, cachedMessagePlaintext] = await Promise.all([
-        loadSentMessagePlaintext(ciphertext),
-        loadCachedMessageDecryption(rawMessage.id)
+        this.storage.loadSentMessagePlaintext(ciphertext),
+        this.storage.loadCachedMessageDecryption(rawMessage.id)
       ])
       const cachedPlaintext = sentPlaintext ?? cachedMessagePlaintext
       const plaintext =
@@ -825,12 +858,14 @@ export class SdkChatHarness extends EventEmitter {
     const persistenceWork = []
 
     if (decryptedPlaintext) {
-      persistenceWork.push(saveCachedMessageDecryption(rawMessage.id, decryptedPlaintext))
+      persistenceWork.push(
+        this.storage.saveCachedMessageDecryption(rawMessage.id, decryptedPlaintext)
+      )
     }
 
     if (persist) {
       persistenceWork.push(
-        cacheMessage({
+        this.storage.cacheMessage({
           id: rawMessage.id,
           roomSeq: rawMessage.room_seq ?? null,
           channelId: rawMessage.channel_id ?? null,
@@ -847,7 +882,7 @@ export class SdkChatHarness extends EventEmitter {
       )
 
       if (!decryptionFailed && content) {
-        persistenceWork.push(indexDecryptedMessage(rawMessage.id, scopeId, content))
+        persistenceWork.push(this.storage.indexDecryptedMessage(rawMessage.id, scopeId, content))
       }
     }
 
@@ -910,13 +945,13 @@ export class SdkChatHarness extends EventEmitter {
     await this.device.replenishKeyPackages()
 
     const session = this.device.requireSession()
-    const localPackages = await loadKeyPackages()
+    const localPackages = await this.storage.loadKeyPackages()
     let publicPackage = null
     let privatePackage = null
 
     if (localPackages.length > 0) {
       const localPackage = localPackages[0]
-      await consumeKeyPackage(localPackage.id)
+      await this.storage.consumeKeyPackage(localPackage.id)
       publicPackage = decodeKeyPackageBytes(new Uint8Array(localPackage.publicData))
       privatePackage = deserializePrivatePackage(new Uint8Array(localPackage.privateData))
     } else {
@@ -949,7 +984,11 @@ export class SdkChatHarness extends EventEmitter {
     await initCipherSuite()
     let keyPackageBytes: Uint8Array | null
     try {
-      keyPackageBytes = await fetchKeyPackage(userId, deviceId ?? undefined)
+      keyPackageBytes = await fetchKeyPackage(
+        userId,
+        deviceId ?? undefined,
+        this.device.httpClient
+      )
     } catch {
       return null
     }
@@ -977,7 +1016,10 @@ export class SdkChatHarness extends EventEmitter {
       return null
     }
 
-    const result = await addMemberToGroup(state, memberKeyPackage)
+    const result = await addMemberToGroup(
+      this.cloneGroupState(state),
+      memberKeyPackage
+    )
     await this.setGroupState(scopeId, result.newState)
 
     return {
@@ -1014,7 +1056,7 @@ export class SdkChatHarness extends EventEmitter {
         )
 
         await this.setGroupState(scopeId, state)
-        await consumeKeyPackage(localPackage.id)
+        await this.storage.consumeKeyPackage(localPackage.id)
         await this.processPendingCommits(scopeId)
         await this.device.replenishKeyPackages()
         return true
@@ -1042,7 +1084,7 @@ export class SdkChatHarness extends EventEmitter {
     try {
       await initCipherSuite()
       const nextState = await processCommitMessage(
-        currentState,
+        this.cloneGroupState(currentState),
         Buffer.from(commitData, 'base64')
       )
       await this.setGroupState(scopeId, nextState)
@@ -1078,7 +1120,7 @@ export class SdkChatHarness extends EventEmitter {
       throw new Error(`No local MLS state for ${scopeId}`)
     }
 
-    const encrypted = await encryptMessage(state, plaintext)
+    const encrypted = await encryptMessage(this.cloneGroupState(state), plaintext)
     await this.setGroupState(scopeId, encrypted.newState)
 
     return {
@@ -1093,7 +1135,10 @@ export class SdkChatHarness extends EventEmitter {
       return null
     }
 
-    const decrypted = await decryptMessage(state, Buffer.from(ciphertext, 'base64'))
+    const decrypted = await decryptMessage(
+      this.cloneGroupState(state),
+      Buffer.from(ciphertext, 'base64')
+    )
     if (!decrypted) {
       return null
     }
@@ -1244,6 +1289,31 @@ export class SdkChatHarness extends EventEmitter {
     return sortRawMessages([...dedupedMessages.values()])
   }
 
+  private async syncLatestMessageState(scope: EncryptedScope): Promise<void> {
+    const latestRaw = (
+      await this.fetchScopeMessages(scope, {
+        limit: 1,
+        lean: true
+      })
+    ).at(-1)
+    if (!latestRaw) {
+      return
+    }
+
+    const latestKnownId = this.scopeMessages.get(scope.id)?.at(-1)?.id ?? null
+    if (latestKnownId === latestRaw.id) {
+      return
+    }
+
+    const [processed] = await this.processScopeMessages(scope, [latestRaw], {
+      persist: false,
+      mutateState: true
+    })
+    if (processed) {
+      this.upsertScopeMessage(scope.id, processed)
+    }
+  }
+
   private async setGroupState(scopeId: string, state: GroupState): Promise<void> {
     const serializedState = serializeGroupState(state)
     const epoch = Number(state.groupContext.epoch)
@@ -1252,12 +1322,16 @@ export class SdkChatHarness extends EventEmitter {
       state: serializedState,
       epoch
     })
-    await saveGroupState(
+    await this.storage.saveGroupState(
       scopeId,
       serializedState,
       epoch
     )
     this.notifyMembershipWaiters(scopeId, true)
+  }
+
+  private cloneGroupState(state: GroupState): GroupState {
+    return deserializeGroupState(serializeGroupState(state))
   }
 
   private snapshotGroupState(scopeId: string): { state: Uint8Array; epoch: number } | null {
@@ -1297,7 +1371,7 @@ export class SdkChatHarness extends EventEmitter {
       state: new Uint8Array(snapshot.state),
       epoch: snapshot.epoch
     })
-    await saveGroupState(scopeId, snapshot.state, snapshot.epoch)
+    await this.storage.saveGroupState(scopeId, snapshot.state, snapshot.epoch)
   }
 
   private async processPreviewMessages(
@@ -1325,7 +1399,7 @@ export class SdkChatHarness extends EventEmitter {
   }
 
   private async loadProcessedCachedMessages(scopeId: string): Promise<ProcessedScopeMessage[]> {
-    const cached = await loadCachedMessages(scopeId)
+    const cached = await this.storage.loadCachedMessages(scopeId)
 
     return cached
       .map((message) => {
@@ -1454,8 +1528,8 @@ export class SdkChatHarness extends EventEmitter {
       encrypted = true
 
       const [sentPlaintext, cachedMessagePlaintext] = await Promise.all([
-        loadSentMessagePlaintext(ciphertext),
-        loadCachedMessageDecryption(rawMessage.id)
+        this.storage.loadSentMessagePlaintext(ciphertext),
+        this.storage.loadCachedMessageDecryption(rawMessage.id)
       ])
       const cachedPlaintext = sentPlaintext ?? cachedMessagePlaintext
 
@@ -1476,12 +1550,12 @@ export class SdkChatHarness extends EventEmitter {
     }
 
     if (persist && decryptedPlaintext) {
-      await saveCachedMessageDecryption(rawMessage.id, decryptedPlaintext)
+      await this.storage.saveCachedMessageDecryption(rawMessage.id, decryptedPlaintext)
     }
 
     if (persist) {
       const persistenceWork = [
-        cacheMessage({
+        this.storage.cacheMessage({
           id: rawMessage.id,
           roomSeq: rawMessage.room_seq ?? null,
           channelId: rawMessage.channel_id ?? null,
@@ -1498,7 +1572,7 @@ export class SdkChatHarness extends EventEmitter {
       ]
 
       if (!decryptionFailed && content) {
-        persistenceWork.push(indexDecryptedMessage(rawMessage.id, scopeId, content))
+        persistenceWork.push(this.storage.indexDecryptedMessage(rawMessage.id, scopeId, content))
       }
 
       await Promise.all(persistenceWork)
@@ -1602,8 +1676,8 @@ export class SdkChatHarness extends EventEmitter {
     }>
   > {
     const directMatch =
-      keyPackageRef != null ? await loadKeyPackageByRef(keyPackageRef) : null
-    const localPackages = await loadKeyPackages()
+      keyPackageRef != null ? await this.storage.loadKeyPackageByRef(keyPackageRef) : null
+    const localPackages = await this.storage.loadKeyPackages()
 
     if (!keyPackageRef || localPackages.length === 0) {
       return localPackages

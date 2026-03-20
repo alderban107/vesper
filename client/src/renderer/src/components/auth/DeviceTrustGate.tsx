@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { CheckCircle2, KeyRound, Laptop2, ShieldAlert } from 'lucide-react'
 import { useAuthStore } from '../../stores/authStore'
-import { useVoiceStore } from '../../stores/voiceStore'
+import { useDmStore } from '../../stores/dmStore'
+import { useServerStore } from '../../stores/serverStore'
 import { getRendererClient } from '../../sdk/client'
 
 export default function DeviceTrustGate(): React.JSX.Element | null {
@@ -14,12 +15,13 @@ export default function DeviceTrustGate(): React.JSX.Element | null {
   const approveCurrentDeviceWithRecovery = useAuthStore((state) => state.approveCurrentDeviceWithRecovery)
   const unlockTrustedDevice = useAuthStore((state) => state.unlockTrustedDevice)
   const error = useAuthStore((state) => state.error)
-  const voiceState = useVoiceStore((state) => state.state)
-  const incomingCall = useVoiceStore((state) => state.incomingCall)
+  const activeChannelId = useServerStore((state) => state.activeChannelId)
+  const selectedConversationId = useDmStore((state) => state.selectedConversationId)
 
   const [recoveryKey, setRecoveryKey] = useState('')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
+  const [isReviewCardExpanded, setIsReviewCardExpanded] = useState(false)
 
   const pendingDevices = useMemo(
     () => devices.filter((device) => device.trust_state === 'pending'),
@@ -63,9 +65,12 @@ export default function DeviceTrustGate(): React.JSX.Element | null {
 
   const isPending = currentDevice.trust_state !== 'trusted'
   const needsUnlock = currentDevice.trust_state === 'trusted' && !canUseE2EE
-  const showPendingReviewCard = !isPending && !needsUnlock && pendingDevices.length > 0
-  const shouldAvoidBottomRight = voiceState !== 'idle' || incomingCall !== null
-
+  const hasActiveWorkspace = Boolean(activeChannelId || selectedConversationId)
+  const showPendingReviewCard =
+    !isPending &&
+    !needsUnlock &&
+    pendingDevices.length > 0 &&
+    !hasActiveWorkspace
   if (!isPending && !needsUnlock && !showPendingReviewCard) {
     return null
   }
@@ -96,44 +101,60 @@ export default function DeviceTrustGate(): React.JSX.Element | null {
 
   if (showPendingReviewCard) {
     return (
-      <div
-        className={`fixed right-5 z-[110] w-[360px] glass-card rounded-2xl border border-border/60 bg-bg-base/85 p-5 shadow-2xl ${
-          shouldAvoidBottomRight ? 'top-5' : 'bottom-5'
-        }`}
-      >
-        <div className="flex items-center gap-2 text-text-primary font-medium mb-3">
-          <ShieldAlert className="w-4 h-4" />
-          Review device requests
-        </div>
-        <p className="mb-3 text-xs leading-5 text-text-muted">
-          Approve new devices here so they can switch straight into encrypted chat instead of hanging in setup.
-        </p>
-        <div className="space-y-3">
-          {pendingDevices.map((device) => (
-            <div key={device.id} className="rounded-xl border border-border/50 bg-bg-base/50 px-4 py-3">
-              <div className="text-sm font-medium text-text-primary">{device.name}</div>
-              <div className="text-xs text-text-faint mt-1">
-                {device.platform || 'Unknown platform'} · Waiting for approval
-              </div>
-              <div className="mt-3 flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => void approveDevice(device.id)}
-                  className="text-xs px-3 py-1.5 rounded-lg border border-border text-text-secondary hover:text-text-primary hover:border-border-strong transition-colors"
-                >
-                  Approve
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void revokeDevice(device.id)}
-                  className="text-xs px-3 py-1.5 rounded-lg border border-border text-text-secondary hover:text-text-primary hover:border-border-strong transition-colors"
-                >
-                  Remove
-                </button>
-              </div>
+      <div className="fixed right-5 top-5 z-[110] flex flex-col items-end gap-3">
+        <button
+          type="button"
+          onClick={() => setIsReviewCardExpanded((expanded) => !expanded)}
+          className="glass-card flex items-center gap-3 rounded-2xl border border-border/60 bg-bg-base/85 px-4 py-3 text-left shadow-xl"
+        >
+          <ShieldAlert className="w-4 h-4 text-text-primary" />
+          <div className="min-w-0">
+            <div className="text-sm font-medium text-text-primary">
+              {pendingDevices.length} device request{pendingDevices.length === 1 ? '' : 's'}
             </div>
-          ))}
-        </div>
+            <div className="text-xs text-text-faint">
+              {isReviewCardExpanded ? 'Hide review panel' : 'Review pending devices'}
+            </div>
+          </div>
+        </button>
+
+        {isReviewCardExpanded && (
+          <div className="w-[360px] glass-card rounded-2xl border border-border/60 bg-bg-base/85 p-5 shadow-2xl">
+            <div className="flex items-center gap-2 text-text-primary font-medium mb-3">
+              <ShieldAlert className="w-4 h-4" />
+              Review device requests
+            </div>
+            <p className="mb-3 text-xs leading-5 text-text-muted">
+              Approve new devices here so they can switch straight into encrypted chat instead of hanging in setup.
+            </p>
+            <div className="space-y-3">
+              {pendingDevices.map((device) => (
+                <div key={device.id} className="rounded-xl border border-border/50 bg-bg-base/50 px-4 py-3">
+                  <div className="text-sm font-medium text-text-primary">{device.name}</div>
+                  <div className="text-xs text-text-faint mt-1">
+                    {device.platform || 'Unknown platform'} · Waiting for approval
+                  </div>
+                  <div className="mt-3 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void approveDevice(device.id)}
+                      className="text-xs px-3 py-1.5 rounded-lg border border-border text-text-secondary hover:text-text-primary hover:border-border-strong transition-colors"
+                    >
+                      Approve
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void revokeDevice(device.id)}
+                      className="text-xs px-3 py-1.5 rounded-lg border border-border text-text-secondary hover:text-text-primary hover:border-border-strong transition-colors"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     )
   }

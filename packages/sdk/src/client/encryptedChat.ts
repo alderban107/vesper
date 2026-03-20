@@ -23,6 +23,7 @@ import {
   deriveVoiceKey,
   encodePayload,
   encryptMessage,
+  findExactMemberLeafIndex,
   findMemberLeafIndex,
   getDisplayText,
   getGroupLeafIdentities,
@@ -35,24 +36,9 @@ import {
   serializeGroupState
 } from '../crypto/index.js'
 import {
-  cacheMessage,
-  consumeKeyPackage,
-  deleteGroupState,
-  indexDecryptedMessage,
-  loadCachedMessageDecryption,
-  loadCachedMessages,
-  loadGroupState,
-  loadGroupSyncCursor,
-  loadKeyPackageByRef,
-  loadKeyPackages,
-  loadSentMessagePlaintext,
-  removeCachedMessage,
-  removeFromFtsIndex,
-  saveCachedMessageDecryption,
-  saveGroupState,
-  saveGroupSyncCursor,
-  saveSentMessagePlaintext
+  type CryptoStorageRuntime
 } from '../crypto/storage.js'
+import { cacheSentMessage } from '../crypto/decryptionCache.js'
 import type { MessagePayload } from '../crypto/payload.js'
 import type { VesperClient } from './index.js'
 
@@ -188,6 +174,7 @@ function normalizePayload(payload: unknown): Record<string, unknown> | null {
 
 export class VesperEncryptedChat {
   private readonly client: VesperClient
+  private readonly storage: CryptoStorageRuntime
   private readonly groupStates = new Map<string, GroupState>()
   private readonly joinedTopics = new Set<string>()
   private readonly scopeDisposers = new Map<string, () => void>()
@@ -197,14 +184,20 @@ export class VesperEncryptedChat {
   private readonly pendingJoinRequests = new Map<string, Promise<void>>()
   private readonly pendingEvictionRequests = new Map<string, Promise<void>>()
   private readonly recentEvictionClaims = new Map<string, number>()
+  private readonly recentJoinDeviceIds = new Map<string, string>()
   private readonly evictionLocks = new Map<string, Promise<void>>()
   private readonly scopeMessages = new Map<string, ProcessedScopeMessage[]>()
   private readonly membershipWaiters = new Map<string, Set<(ready: boolean) => void>>()
   private readonly welcomeAppliedAtByScope = new Map<string, number>()
+  private restoreConnectionsPromise: Promise<void> | null = null
 
   constructor(client: VesperClient) {
     this.client = client
+    this.storage = client.getStorageRuntime()
 
+    this.client.on('connected', () => {
+      void this.restoreConnections()
+    })
     this.client.on('disconnected', () => {
       this.clearConnections()
     })
@@ -215,6 +208,84 @@ export class VesperEncryptedChat {
     })
   }
 
+  private parseScopeTopic(topic: string): EncryptedScope | null {
+    if (topic.startsWith('chat:channel:')) {
+      return {
+        kind: 'channel',
+        id: topic.slice('chat:channel:'.length)
+      }
+    }
+
+    if (topic.startsWith('dm:')) {
+      return {
+        kind: 'dm',
+        id: topic.slice('dm:'.length)
+      }
+    }
+
+    return null
+  }
+
+  private async restoreConnections(): Promise<void> {
+    const existing = this.restoreConnectionsPromise
+    if (existing) {
+      await existing
+      return
+    }
+
+    const run = this.withStorageContext(async () => {
+      const topics = new Set<string>([
+        ...this.scopeWatchRefs.keys(),
+        ...this.scopeListeners.keys()
+      ])
+
+      for (const topic of topics) {
+        if (this.joinedTopics.has(topic)) {
+          continue
+        }
+
+        const scope = this.parseScopeTopic(topic)
+        if (!scope) {
+          continue
+        }
+
+        try {
+          const dispose = await this.client.watchScope(scope.kind, scope.id, async ({ event, payload }) => {
+            const nextEvent = await this.withStorageContext(async () => {
+              return await this.handleScopeEvent(scope, event, normalizePayload(payload))
+            })
+            if (nextEvent) {
+              await this.notifyScopeListeners(
+                nextEvent.scope,
+                nextEvent.event,
+                nextEvent.payload,
+                nextEvent.message
+              )
+            }
+          })
+
+          this.scopeDisposers.set(topic, dispose)
+          this.joinedTopics.add(topic)
+
+          if (this.hasGroup(scope.id)) {
+            await this.replayDurableEvents(scope.id)
+          }
+        } catch {
+          // Let the next reconnect retry restoring this scope.
+        }
+      }
+    }).finally(() => {
+      this.restoreConnectionsPromise = null
+    })
+
+    this.restoreConnectionsPromise = run
+    await run
+  }
+
+  private async withStorageContext<T>(operation: () => Promise<T>): Promise<T> {
+    return await this.client.runWithStorageContext(operation)
+  }
+
   reset(): void {
     this.clearConnections()
     this.groupStates.clear()
@@ -222,6 +293,7 @@ export class VesperEncryptedChat {
     this.pendingJoinRequests.clear()
     this.pendingEvictionRequests.clear()
     this.recentEvictionClaims.clear()
+    this.recentJoinDeviceIds.clear()
     this.evictionLocks.clear()
     this.scopeMessages.clear()
     this.welcomeAppliedAtByScope.clear()
@@ -240,54 +312,58 @@ export class VesperEncryptedChat {
     scope: EncryptedScope,
     listener?: ScopeListener
   ): Promise<() => void> {
-    const topic = scopeTopic(scope)
-    this.scopeWatchRefs.set(topic, (this.scopeWatchRefs.get(topic) ?? 0) + 1)
+    return await this.withStorageContext(async () => {
+      const topic = scopeTopic(scope)
+      this.scopeWatchRefs.set(topic, (this.scopeWatchRefs.get(topic) ?? 0) + 1)
 
-    if (listener) {
-      const listeners = this.scopeListeners.get(topic) ?? new Set<ScopeListener>()
-      listeners.add(listener)
-      this.scopeListeners.set(topic, listeners)
-    }
-
-    if (!this.joinedTopics.has(topic)) {
-      const dispose = await this.client.watchScope(scope.kind, scope.id, async ({ event, payload }) => {
-        const nextEvent = await this.processScopeEvent(scope, event, normalizePayload(payload))
-        if (nextEvent) {
-          await this.notifyScopeListeners(
-            nextEvent.scope,
-            nextEvent.event,
-            nextEvent.payload,
-            nextEvent.message
-          )
-        }
-      })
-
-      this.scopeDisposers.set(topic, dispose)
-      this.joinedTopics.add(topic)
-    }
-
-    return () => {
       if (listener) {
-        const listeners = this.scopeListeners.get(topic)
-        if (listeners) {
-          listeners.delete(listener)
-          if (listeners.size === 0) {
-            this.scopeListeners.delete(topic)
+        const listeners = this.scopeListeners.get(topic) ?? new Set<ScopeListener>()
+        listeners.add(listener)
+        this.scopeListeners.set(topic, listeners)
+      }
+
+      if (!this.joinedTopics.has(topic)) {
+        const dispose = await this.client.watchScope(scope.kind, scope.id, async ({ event, payload }) => {
+          const nextEvent = await this.withStorageContext(async () => {
+            return await this.handleScopeEvent(scope, event, normalizePayload(payload))
+          })
+          if (nextEvent) {
+            await this.notifyScopeListeners(
+              nextEvent.scope,
+              nextEvent.event,
+              nextEvent.payload,
+              nextEvent.message
+            )
+          }
+        })
+
+        this.scopeDisposers.set(topic, dispose)
+        this.joinedTopics.add(topic)
+      }
+
+      return () => {
+        if (listener) {
+          const listeners = this.scopeListeners.get(topic)
+          if (listeners) {
+            listeners.delete(listener)
+            if (listeners.size === 0) {
+              this.scopeListeners.delete(topic)
+            }
           }
         }
-      }
 
-      const remainingRefs = (this.scopeWatchRefs.get(topic) ?? 1) - 1
-      if (remainingRefs > 0) {
-        this.scopeWatchRefs.set(topic, remainingRefs)
-        return
-      }
+        const remainingRefs = (this.scopeWatchRefs.get(topic) ?? 1) - 1
+        if (remainingRefs > 0) {
+          this.scopeWatchRefs.set(topic, remainingRefs)
+          return
+        }
 
-      this.scopeWatchRefs.delete(topic)
-      this.scopeDisposers.get(topic)?.()
-      this.scopeDisposers.delete(topic)
-      this.joinedTopics.delete(topic)
-    }
+        this.scopeWatchRefs.delete(topic)
+        this.scopeDisposers.get(topic)?.()
+        this.scopeDisposers.delete(topic)
+        this.joinedTopics.delete(topic)
+      }
+    })
   }
 
   async processScopeEvent(
@@ -295,7 +371,9 @@ export class VesperEncryptedChat {
     event: string,
     payload: Record<string, unknown> | null
   ): Promise<EncryptedScopeWatchEvent | null> {
-    return await this.handleScopeEvent(scope, event, payload)
+    return await this.withStorageContext(async () => {
+      return await this.handleScopeEvent(scope, event, payload)
+    })
   }
 
   getMessages(scopeId: string): ProcessedScopeMessage[] {
@@ -315,6 +393,21 @@ export class VesperEncryptedChat {
     return getGroupLeafIdentities(state).length
   }
 
+  hasMemberDevice(scopeId: string, userId: string, deviceId: string | null): boolean {
+    if (!deviceId) {
+      return false
+    }
+
+    const state = this.groupStates.get(scopeId)
+    if (!state) {
+      return false
+    }
+
+    return (
+      findExactMemberLeafIndex(state, buildClientCredentialIdentity(userId, deviceId)) !== null
+    )
+  }
+
   consumeWelcomeApplied(scopeId: string): boolean {
     const appliedAt = this.welcomeAppliedAtByScope.get(scopeId)
     if (appliedAt == null) {
@@ -331,39 +424,43 @@ export class VesperEncryptedChat {
       limit?: number
     } = {}
   ): Promise<ScopeSyncResult> {
-    const startedAt = performance.now()
-    const limit = options.limit ?? 50
+    return await this.withStorageContext(async () => {
+      const startedAt = performance.now()
+      const limit = options.limit ?? 50
 
-    await this.ensureGroupMembership(scope.id)
-    await this.replayDurableEvents(scope.id)
+      await this.ensureGroupMembership(scope.id)
+      await this.replayDurableEvents(scope.id)
 
-    const cached = await this.loadProcessedCachedMessages(scope.id)
-    const existing = this.scopeMessages.get(scope.id) ?? cached
-    const afterSeq = highestRoomSeq(existing)
-    const delta =
-      afterSeq == null
-        ? {
-            messages: await this.fetchScopeMessages(scope, limit),
-            events: [] as ScopeSyncEvent[],
-            hasMore: false
-          }
-        : await this.fetchIncrementalScopeDelta(scope, limit, afterSeq)
-    const applied = await this.applyScopeSyncDelta(scope, existing, delta.messages, delta.events)
+      const cached = await this.loadProcessedCachedMessages(scope.id)
+      const existing = this.scopeMessages.get(scope.id) ?? cached
+      const afterSeq = highestRoomSeq(existing)
+      const delta =
+        afterSeq == null
+          ? {
+              messages: await this.fetchScopeMessages(scope, limit),
+              events: [] as ScopeSyncEvent[],
+              hasMore: false
+            }
+          : await this.fetchIncrementalScopeDelta(scope, limit, afterSeq)
+      const applied = await this.applyScopeSyncDelta(scope, existing, delta.messages, delta.events)
 
-    return {
-      durationMs: performance.now() - startedAt,
-      messages: applied.messages,
-      events: applied.events,
-      hasMore: delta.hasMore
-    }
+      return {
+        durationMs: performance.now() - startedAt,
+        messages: applied.messages,
+        events: applied.events,
+        hasMore: delta.hasMore
+      }
+    })
   }
 
   async ensureScopeReady(scope: EncryptedScope, allowCreate = false): Promise<boolean> {
-    if (scope.kind === 'channel') {
-      return await this.ensureChannelGroupReady(scope.id, allowCreate)
-    }
+    return await this.withStorageContext(async () => {
+      if (scope.kind === 'channel') {
+        return await this.ensureChannelGroupReady(scope.id, allowCreate)
+      }
 
-    return await this.ensureDmGroupReady(scope.id, allowCreate)
+      return await this.ensureDmGroupReady(scope.id, allowCreate)
+    })
   }
 
   async sendText(
@@ -379,63 +476,67 @@ export class VesperEncryptedChat {
     payload: MessagePayload,
     options: SendPayloadOptions = {}
   ): Promise<void> {
-    const release = await this.watchScope(scope)
+    await this.withStorageContext(async () => {
+      const release = await this.watchScope(scope)
 
-    try {
-      const ready = await this.ensureScopeReady(scope, true)
-      if (!ready) {
-        throw new Error(`${scope.kind} group is still syncing`)
+      try {
+        const ready = await this.ensureScopeReady(scope, true)
+        if (!ready) {
+          throw new Error(`${scope.kind} group is still syncing`)
+        }
+
+        const plaintext = encodePayload(payload)
+        const encrypted = await this.encryptForScope(scope.id, plaintext)
+        await cacheSentMessage(this.storage, encrypted.ciphertext, plaintext)
+
+        const messagePayload: Record<string, unknown> = {
+          ciphertext: encrypted.ciphertext,
+          mls_epoch: encrypted.epoch
+        }
+
+        if (options.parentMessageId) {
+          messagePayload.parent_message_id = options.parentMessageId
+        }
+
+        if (options.mentionedUserIds && options.mentionedUserIds.length > 0) {
+          messagePayload.mentioned_user_ids = [...new Set(options.mentionedUserIds)]
+        }
+
+        if (options.attachmentIds && options.attachmentIds.length > 0) {
+          messagePayload.attachment_ids = [...new Set(options.attachmentIds)]
+        }
+
+        if (options.clientNonce) {
+          messagePayload.client_nonce = options.clientNonce
+        }
+
+        const pushed = await this.client.pushScopeEvent(
+          scope.kind,
+          scope.id,
+          'new_message',
+          messagePayload
+        )
+        if (!pushed) {
+          throw new Error(`Failed to send message to ${scopeTopic(scope)}`)
+        }
+      } finally {
+        release()
       }
-
-      const plaintext = encodePayload(payload)
-      const encrypted = await this.encryptForScope(scope.id, plaintext)
-      await saveSentMessagePlaintext(encrypted.ciphertext, plaintext)
-
-      const messagePayload: Record<string, unknown> = {
-        ciphertext: encrypted.ciphertext,
-        mls_epoch: encrypted.epoch
-      }
-
-      if (options.parentMessageId) {
-        messagePayload.parent_message_id = options.parentMessageId
-      }
-
-      if (options.mentionedUserIds && options.mentionedUserIds.length > 0) {
-        messagePayload.mentioned_user_ids = [...new Set(options.mentionedUserIds)]
-      }
-
-      if (options.attachmentIds && options.attachmentIds.length > 0) {
-        messagePayload.attachment_ids = [...new Set(options.attachmentIds)]
-      }
-
-      if (options.clientNonce) {
-        messagePayload.client_nonce = options.clientNonce
-      }
-
-      const pushed = await this.client.pushScopeEvent(
-        scope.kind,
-        scope.id,
-        'new_message',
-        messagePayload
-      )
-      if (!pushed) {
-        throw new Error(`Failed to send message to ${scopeTopic(scope)}`)
-      }
-    } finally {
-      release()
-    }
+    })
   }
 
   async encryptOpaque(
     scope: EncryptedScope,
     plaintext: string
   ): Promise<{ ciphertext: string; epoch: number }> {
-    const ready = await this.ensureGroupMembership(scope.id)
-    if (!ready) {
-      throw new Error(`${scope.kind} group is still syncing`)
-    }
+    return await this.withStorageContext(async () => {
+      const ready = await this.ensureGroupMembership(scope.id)
+      if (!ready) {
+        throw new Error(`${scope.kind} group is still syncing`)
+      }
 
-    return await this.encryptForScope(scope.id, plaintext)
+      return await this.encryptForScope(scope.id, plaintext)
+    })
   }
 
   async decryptOpaque(
@@ -443,45 +544,59 @@ export class VesperEncryptedChat {
     ciphertext: string,
     messageEpoch: number | null = null
   ): Promise<string | null> {
-    return await this.decryptForScopeWithRecovery(scope, ciphertext, messageEpoch)
+    return await this.withStorageContext(async () => {
+      return await this.decryptForScopeWithRecovery(scope, ciphertext, messageEpoch)
+    })
   }
 
   async decryptOpaqueBatch(
     scope: EncryptedScope,
     items: Array<{ ciphertext: string; messageEpoch?: number | null }>
   ): Promise<Array<string | null>> {
-    const decrypted: Array<string | null> = []
+    return await this.withStorageContext(async () => {
+      const decrypted: Array<string | null> = []
 
-    for (const item of items) {
-      decrypted.push(
-        await this.decryptForScopeWithRecovery(scope, item.ciphertext, item.messageEpoch ?? null)
-      )
-    }
+      for (const item of items) {
+        decrypted.push(
+          await this.decryptForScopeWithRecovery(scope, item.ciphertext, item.messageEpoch ?? null)
+        )
+      }
 
-    return decrypted
+      return decrypted
+    })
   }
 
   async ensureMembership(scope: EncryptedScope): Promise<boolean> {
-    return await this.ensureGroupMembership(scope.id)
+    return await this.withStorageContext(async () => {
+      return await this.ensureGroupMembership(scope.id)
+    })
   }
 
   async ensureScopeState(scopeId: string): Promise<boolean> {
-    return await this.ensureGroupMembership(scopeId)
+    return await this.withStorageContext(async () => {
+      return await this.ensureGroupMembership(scopeId)
+    })
   }
 
   async replayScopeEvents(scopeId: string): Promise<void> {
-    await this.replayDurableEvents(scopeId)
+    await this.withStorageContext(async () => {
+      await this.replayDurableEvents(scopeId)
+    })
   }
 
   async requestJoin(scope: EncryptedScope): Promise<void> {
-    await this.requestMlsJoin(scope)
+    await this.withStorageContext(async () => {
+      await this.requestMlsJoin(scope)
+    })
   }
 
   async requestJoinAll(scope: EncryptedScope): Promise<void> {
-    const pushed = await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_request_join_all', {})
-    if (!pushed) {
-      throw new Error(`Failed to request join-all for ${scopeTopic(scope)}`)
-    }
+    await this.withStorageContext(async () => {
+      const pushed = await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_request_join_all', {})
+      if (!pushed) {
+        throw new Error(`Failed to request join-all for ${scopeTopic(scope)}`)
+      }
+    })
   }
 
   async requestResync(
@@ -492,40 +607,52 @@ export class VesperEncryptedChat {
       username?: string | null
     } = {}
   ): Promise<void> {
-    const pushed = await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_resync_request', {
-      device_id: this.client.deviceIdentity?.id,
-      request_id: crypto.randomUUID(),
-      last_known_epoch: options.lastKnownEpoch ?? null,
-      reason: options.reason ?? null,
-      username: options.username ?? null
+    await this.withStorageContext(async () => {
+      await this.client.replenishKeyPackages()
+
+      const pushed = await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_resync_request', {
+        device_id: this.client.deviceIdentity?.id,
+        request_id: crypto.randomUUID(),
+        last_known_epoch: options.lastKnownEpoch ?? null,
+        reason: options.reason ?? null,
+        username: options.username ?? null
+      })
+      if (!pushed) {
+        throw new Error(`Failed to request resync for ${scopeTopic(scope)}`)
+      }
     })
-    if (!pushed) {
-      throw new Error(`Failed to request resync for ${scopeTopic(scope)}`)
-    }
   }
 
   async createScopeGroup(scope: EncryptedScope): Promise<boolean> {
-    await this.createGroup(scope.id)
-    return this.hasGroup(scope.id)
+    return await this.withStorageContext(async () => {
+      await this.createGroup(scope.id)
+      return this.hasGroup(scope.id)
+    })
   }
 
   async createScopeState(scopeId: string): Promise<boolean> {
-    await this.createGroup(scopeId)
-    return this.hasGroup(scopeId)
+    return await this.withStorageContext(async () => {
+      await this.createGroup(scopeId)
+      return this.hasGroup(scopeId)
+    })
   }
 
   async resetScope(scopeId: string): Promise<void> {
-    this.groupStates.delete(scopeId)
-    this.pendingCommits.delete(scopeId)
-    this.scopeMessages.delete(scopeId)
-    this.welcomeAppliedAtByScope.delete(scopeId)
-    this.notifyMembershipWaiters(scopeId, false)
-    this.membershipWaiters.delete(scopeId)
-    await deleteGroupState(scopeId)
+    await this.withStorageContext(async () => {
+      this.groupStates.delete(scopeId)
+      this.pendingCommits.delete(scopeId)
+      this.scopeMessages.delete(scopeId)
+      this.welcomeAppliedAtByScope.delete(scopeId)
+      this.notifyMembershipWaiters(scopeId, false)
+      this.membershipWaiters.delete(scopeId)
+      await this.storage.deleteGroupState(scopeId)
+    })
   }
 
   async applyScopeCommit(scopeId: string, commitData: string | null): Promise<boolean> {
-    return await this.handleCommit(scopeId, commitData)
+    return await this.withStorageContext(async () => {
+      return await this.handleCommit(scopeId, commitData)
+    })
   }
 
   async applyScopeWelcome(
@@ -533,7 +660,9 @@ export class VesperEncryptedChat {
     welcomeData: string | null,
     keyPackageRef: string | null = null
   ): Promise<boolean> {
-    return await this.handleWelcome(scopeId, welcomeData, keyPackageRef)
+    return await this.withStorageContext(async () => {
+      return await this.handleWelcome(scopeId, welcomeData, keyPackageRef)
+    })
   }
 
   async handleScopeJoinRequest(
@@ -545,7 +674,9 @@ export class VesperEncryptedChat {
     welcomeBytes: string | null
     keyPackageRef: string
   } | null> {
-    return await this.handleJoinRequest(scopeId, userId, deviceId)
+    return await this.withStorageContext(async () => {
+      return await this.handleJoinRequest(scopeId, userId, deviceId)
+    })
   }
 
   async handleScopeResyncRequest(
@@ -558,17 +689,21 @@ export class VesperEncryptedChat {
     welcomeBytes: string | null
     keyPackageRef: string
   } | null> {
-    return await this.handleResyncRequest(scopeId, userId, deviceId)
+    return await this.withStorageContext(async () => {
+      return await this.handleResyncRequest(scopeId, userId, deviceId)
+    })
   }
 
   async deriveScopeVoiceKey(scopeId: string): Promise<Uint8Array | null> {
-    const state = this.groupStates.get(scopeId)
-    if (!state) {
-      return null
-    }
+    return await this.withStorageContext(async () => {
+      const state = this.groupStates.get(scopeId)
+      if (!state) {
+        return null
+      }
 
-    await initCipherSuite()
-    return await deriveVoiceKey(state)
+      await initCipherSuite()
+      return await deriveVoiceKey(state)
+    })
   }
 
   async handleExternalJoinRequest(
@@ -580,7 +715,9 @@ export class VesperEncryptedChat {
     welcomeBytes: string | null
     keyPackageRef: string
   } | null> {
-    return await this.handleJoinRequest(scope.id, userId, deviceId)
+    return await this.withStorageContext(async () => {
+      return await this.handleJoinRequest(scope.id, userId, deviceId)
+    })
   }
 
   async handleExternalResyncRequest(
@@ -593,53 +730,65 @@ export class VesperEncryptedChat {
     welcomeBytes: string | null
     keyPackageRef: string
   } | null> {
-    return await this.handleResyncRequest(scope.id, userId, deviceId)
+    return await this.withStorageContext(async () => {
+      return await this.handleResyncRequest(scope.id, userId, deviceId)
+    })
   }
 
   async handleExternalEvictionRequest(
     scope: EncryptedScope,
     payload: Record<string, unknown> | null
   ): Promise<boolean> {
-    return await this.handleEvictionRequestEvent(scope, payload)
+    return await this.withStorageContext(async () => {
+      return await this.handleEvictionRequestEvent(scope, payload)
+    })
   }
 
   async editText(scope: EncryptedScope, messageId: string, text: string): Promise<void> {
-    const ready = await this.ensureScopeReady(scope)
-    if (!ready) {
-      throw new Error(`${scope.kind} group is still syncing`)
-    }
+    await this.withStorageContext(async () => {
+      const ready = await this.ensureScopeReady(scope)
+      if (!ready) {
+        throw new Error(`${scope.kind} group is still syncing`)
+      }
 
-    const encrypted = await this.encryptForScope(
-      scope.id,
-      encodePayload({ v: 1, type: 'text', text })
-    )
-    await saveSentMessagePlaintext(encrypted.ciphertext, text)
+      const encrypted = await this.encryptForScope(
+        scope.id,
+        encodePayload({ v: 1, type: 'text', text })
+      )
+      await cacheSentMessage(this.storage, encrypted.ciphertext, text)
 
-    const pushed = await this.client.pushScopeEvent(scope.kind, scope.id, 'edit_message', {
-      message_id: messageId,
-      ciphertext: encrypted.ciphertext,
-      mls_epoch: encrypted.epoch
+      const pushed = await this.client.pushScopeEvent(scope.kind, scope.id, 'edit_message', {
+        message_id: messageId,
+        ciphertext: encrypted.ciphertext,
+        mls_epoch: encrypted.epoch
+      })
+      if (!pushed) {
+        throw new Error(`Failed to edit message in ${scopeTopic(scope)}`)
+      }
     })
-    if (!pushed) {
-      throw new Error(`Failed to edit message in ${scopeTopic(scope)}`)
-    }
   }
 
   async deleteMessage(scope: EncryptedScope, messageId: string): Promise<void> {
-    const pushed = await this.client.pushScopeEvent(scope.kind, scope.id, 'delete_message', {
-      message_id: messageId
+    await this.withStorageContext(async () => {
+      const pushed = await this.client.pushScopeEvent(scope.kind, scope.id, 'delete_message', {
+        message_id: messageId
+      })
+      if (!pushed) {
+        throw new Error(`Failed to delete message in ${scopeTopic(scope)}`)
+      }
     })
-    if (!pushed) {
-      throw new Error(`Failed to delete message in ${scopeTopic(scope)}`)
-    }
   }
 
   async addReaction(scope: EncryptedScope, messageId: string, emoji: string): Promise<void> {
-    await this.pushReaction(scope, 'add_reaction', messageId, emoji)
+    await this.withStorageContext(async () => {
+      await this.pushReaction(scope, 'add_reaction', messageId, emoji)
+    })
   }
 
   async removeReaction(scope: EncryptedScope, messageId: string, emoji: string): Promise<void> {
-    await this.pushReaction(scope, 'remove_reaction', messageId, emoji)
+    await this.withStorageContext(async () => {
+      await this.pushReaction(scope, 'remove_reaction', messageId, emoji)
+    })
   }
 
   async sendTyping(scope: EncryptedScope, active: boolean): Promise<void> {
@@ -893,7 +1042,7 @@ export class VesperEncryptedChat {
           return
         }
 
-        const removed = await removeMemberFromGroup(state, leafIndex)
+        const removed = await removeMemberFromGroup(this.cloneGroupState(state), leafIndex)
         await this.setGroupState(scope.id, removed.newState)
 
         const pushed = await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_remove', {
@@ -936,7 +1085,13 @@ export class VesperEncryptedChat {
       return
     }
 
+    this.rememberJoinDeviceId(scope, requesterId, requesterDeviceId)
+
     if (requesterId === localUserId && requesterDeviceId === localDeviceId) {
+      return
+    }
+
+    if (scope.kind === 'channel' && !(await this.isChannelOwner(scope.id, localUserId))) {
       return
     }
 
@@ -961,13 +1116,15 @@ export class VesperEncryptedChat {
 
   private async ensureChannelGroupReady(channelId: string, allowCreate = false): Promise<boolean> {
     if (await this.ensureGroupMembership(channelId)) {
-      return true
+      await this.replayDurableEvents(channelId)
+      return this.hasGroup(channelId)
     }
 
     const scope: EncryptedScope = { kind: 'channel', id: channelId }
     await this.requestMlsJoin(scope)
     if (await this.awaitGroupMembership(channelId, JOIN_WAIT_MS)) {
-      return true
+      await this.replayDurableEvents(channelId)
+      return this.hasGroup(channelId)
     }
 
     if (!allowCreate) {
@@ -975,6 +1132,12 @@ export class VesperEncryptedChat {
     }
 
     if (await this.channelHasExistingActivity(channelId)) {
+      return false
+    }
+
+    const localUserId = this.client.getAuthSession()?.user.id ?? this.client.getState().user?.id
+    const ownerUserId = await this.resolveChannelOwnerId(channelId)
+    if (!localUserId || ownerUserId == null || localUserId !== ownerUserId) {
       return false
     }
 
@@ -989,17 +1152,20 @@ export class VesperEncryptedChat {
 
   private async ensureDmGroupReady(conversationId: string, allowForce = false): Promise<boolean> {
     if (await this.ensureGroupMembership(conversationId)) {
-      return true
+      await this.replayDurableEvents(conversationId)
+      return this.hasGroup(conversationId)
     }
 
     if (await this.bootstrapDmGroupIfLeader(conversationId)) {
-      return true
+      await this.replayDurableEvents(conversationId)
+      return this.hasGroup(conversationId)
     }
 
     const scope: EncryptedScope = { kind: 'dm', id: conversationId }
     await this.requestMlsJoin(scope)
     if (await this.awaitGroupMembership(conversationId, JOIN_WAIT_MS)) {
-      return true
+      await this.replayDurableEvents(conversationId)
+      return this.hasGroup(conversationId)
     }
 
     if (!allowForce) {
@@ -1016,7 +1182,7 @@ export class VesperEncryptedChat {
       return true
     }
 
-    const persisted = await loadGroupState(scopeId)
+    const persisted = await this.storage.loadGroupState(scopeId)
     if (persisted) {
       try {
         const state = deserializeGroupState(new Uint8Array(persisted.state))
@@ -1061,7 +1227,7 @@ export class VesperEncryptedChat {
       return
     }
 
-    const cursor = await loadGroupSyncCursor(scopeId)
+    const cursor = await this.storage.loadGroupSyncCursor(scopeId)
     let events: Awaited<ReturnType<typeof fetchMlsEvents>> = []
     try {
       events = await fetchMlsEvents(scopeId, cursor, 200, this.client.getHttpClient())
@@ -1101,13 +1267,16 @@ export class VesperEncryptedChat {
     }
 
     if (latestSeq > cursor) {
-      await saveGroupSyncCursor(scopeId, latestSeq)
+      await this.storage.saveGroupSyncCursor(scopeId, latestSeq)
     }
   }
 
   private async processIncomingMessage(
     scope: EncryptedScope,
-    rawMessage: VesperMessage
+    rawMessage: VesperMessage,
+    options: {
+      allowCachedMessageDecryption?: boolean
+    } = {}
   ): Promise<ProcessedScopeMessage> {
     const scopeId = scope.id
     const ciphertext = typeof rawMessage.ciphertext === 'string' ? rawMessage.ciphertext : null
@@ -1115,13 +1284,16 @@ export class VesperEncryptedChat {
     let encrypted = false
     let decryptionFailed = false
     let plaintext: string | null = typeof rawMessage.content === 'string' ? rawMessage.content : null
+    const allowCachedMessageDecryption = options.allowCachedMessageDecryption ?? true
 
     if (ciphertext) {
       encrypted = true
 
       const [sentPlaintext, cachedMessagePlaintext] = await Promise.all([
-        loadSentMessagePlaintext(ciphertext),
-        loadCachedMessageDecryption(rawMessage.id)
+        this.storage.loadSentMessagePlaintext(ciphertext),
+        allowCachedMessageDecryption
+          ? this.storage.loadCachedMessageDecryption(rawMessage.id)
+          : Promise.resolve(null)
       ])
       const cachedPlaintext = sentPlaintext ?? cachedMessagePlaintext
       const decrypted =
@@ -1140,11 +1312,11 @@ export class VesperEncryptedChat {
     const persistenceWork: Promise<unknown>[] = []
 
     if (plaintext && ciphertext) {
-      persistenceWork.push(saveCachedMessageDecryption(rawMessage.id, plaintext))
+      persistenceWork.push(this.storage.saveCachedMessageDecryption(rawMessage.id, plaintext))
     }
 
     persistenceWork.push(
-      cacheMessage({
+      this.storage.cacheMessage({
         id: rawMessage.id,
         roomSeq: rawMessage.room_seq ?? null,
         channelId: rawMessage.channel_id ?? null,
@@ -1161,7 +1333,7 @@ export class VesperEncryptedChat {
     )
 
     if (!decryptionFailed && content) {
-      persistenceWork.push(indexDecryptedMessage(rawMessage.id, scopeId, content))
+      persistenceWork.push(this.storage.indexDecryptedMessage(rawMessage.id, scopeId, content))
     }
 
     await Promise.all(persistenceWork)
@@ -1222,13 +1394,13 @@ export class VesperEncryptedChat {
 
     const session = this.requireSession()
     const localDeviceId = this.requireDeviceId()
-    const localPackages = await loadKeyPackages()
+    const localPackages = await this.storage.loadKeyPackages()
     let publicPackage: Awaited<ReturnType<typeof createKeyPackageBatch>>[number]['publicPackage']
     let privatePackage: Awaited<ReturnType<typeof createKeyPackageBatch>>[number]['privatePackage']
 
     if (localPackages.length > 0) {
       const localPackage = localPackages[0]
-      await consumeKeyPackage(localPackage.id)
+      await this.storage.consumeKeyPackage(localPackage.id)
       publicPackage = decodeKeyPackageBytes(new Uint8Array(localPackage.publicData))
       privatePackage = deserializePrivatePackage(new Uint8Array(localPackage.privateData))
     } else {
@@ -1289,7 +1461,7 @@ export class VesperEncryptedChat {
       return null
     }
 
-    const result = await addMemberToGroup(state, memberKeyPackage)
+    const result = await addMemberToGroup(this.cloneGroupState(state), memberKeyPackage)
     await this.setGroupState(scopeId, result.newState)
 
     return {
@@ -1326,7 +1498,7 @@ export class VesperEncryptedChat {
 
         await this.setGroupState(scopeId, state)
         this.welcomeAppliedAtByScope.set(scopeId, Date.now())
-        await consumeKeyPackage(localPackage.id)
+        await this.storage.consumeKeyPackage(localPackage.id)
         await this.processPendingCommits(scopeId)
         await this.client.replenishKeyPackages()
         return true
@@ -1353,7 +1525,10 @@ export class VesperEncryptedChat {
 
     try {
       await initCipherSuite()
-      const nextState = await processCommitMessage(currentState, Buffer.from(commitData, 'base64'))
+      const nextState = await processCommitMessage(
+        this.cloneGroupState(currentState),
+        Buffer.from(commitData, 'base64')
+      )
       await this.setGroupState(scopeId, nextState)
       this.notifyMembershipWaiters(scopeId, true)
       return true
@@ -1410,13 +1585,10 @@ export class VesperEncryptedChat {
           ? new TextDecoder().decode(requestedCredential.identity)
           : null
 
-      let workingState = state
+      let workingState = this.cloneGroupState(state)
       let removeCommitBytes: string | null = null
 
-      const existingLeafIndex =
-        requestedIdentity && groupHasMember(workingState, requestedIdentity)
-          ? findMemberLeafIndex(workingState, requestedIdentity)
-          : null
+      const existingLeafIndex = findExactMemberLeafIndex(workingState, requestedIdentity)
 
       if (existingLeafIndex !== null) {
         const removed = await removeMemberFromGroup(workingState, existingLeafIndex)
@@ -1424,7 +1596,10 @@ export class VesperEncryptedChat {
         removeCommitBytes = uint8ToBase64(removed.commitBytes)
       }
 
-      if (requestedIdentity && groupHasMember(workingState, requestedIdentity)) {
+      if (
+        requestedIdentity &&
+        findExactMemberLeafIndex(workingState, requestedIdentity) !== null
+      ) {
         return null
       }
 
@@ -1467,7 +1642,7 @@ export class VesperEncryptedChat {
       throw new Error(`No local MLS state for ${scopeId}`)
     }
 
-    const encrypted = await encryptMessage(state, plaintext)
+    const encrypted = await encryptMessage(this.cloneGroupState(state), plaintext)
     await this.setGroupState(scopeId, encrypted.newState)
 
     return {
@@ -1482,7 +1657,10 @@ export class VesperEncryptedChat {
       return null
     }
 
-    const decrypted = await decryptMessage(state, Buffer.from(ciphertext, 'base64'))
+    const decrypted = await decryptMessage(
+      this.cloneGroupState(state),
+      Buffer.from(ciphertext, 'base64')
+    )
     if (!decrypted) {
       return null
     }
@@ -1666,12 +1844,16 @@ export class VesperEncryptedChat {
     const serializedState = serializeGroupState(state)
     const epoch = Number(state.groupContext.epoch)
     this.groupStates.set(scopeId, state)
-    await saveGroupState(scopeId, serializedState, epoch)
+    await this.storage.saveGroupState(scopeId, serializedState, epoch)
     this.notifyMembershipWaiters(scopeId, true)
   }
 
+  private cloneGroupState(state: GroupState): GroupState {
+    return deserializeGroupState(serializeGroupState(state))
+  }
+
   private async loadProcessedCachedMessages(scopeId: string): Promise<ProcessedScopeMessage[]> {
-    const cached = await loadCachedMessages(scopeId)
+    const cached = await this.storage.loadCachedMessages(scopeId)
 
     return cached
       .map((message) => {
@@ -1774,6 +1956,51 @@ export class VesperEncryptedChat {
     return false
   }
 
+  private findChannelOwnerId(channelId: string): string | null {
+    for (const server of this.client.getState().servers) {
+      if (server.channels.some((channel) => channel.id === channelId)) {
+        return server.owner_id ?? null
+      }
+    }
+
+    return null
+  }
+
+  private async resolveChannelOwnerId(channelId: string): Promise<string | null> {
+    const ownerUserId = this.findChannelOwnerId(channelId)
+    if (ownerUserId) {
+      return ownerUserId
+    }
+
+    await this.client.syncNow(false).catch(() => {})
+    return this.findChannelOwnerId(channelId)
+  }
+
+  private async isChannelOwner(channelId: string, userId: string | null | undefined): Promise<boolean> {
+    if (!userId) {
+      return false
+    }
+
+    const ownerUserId = await this.resolveChannelOwnerId(channelId)
+    return ownerUserId != null && ownerUserId === userId
+  }
+
+  private rememberJoinDeviceId(
+    scope: EncryptedScope,
+    userId: string,
+    deviceId: string | null
+  ): void {
+    if (!deviceId) {
+      return
+    }
+
+    this.recentJoinDeviceIds.set(`${scopeTopic(scope)}:${userId}`, deviceId)
+  }
+
+  private getPreferredJoinDeviceId(scope: EncryptedScope, userId: string): string | null {
+    return this.recentJoinDeviceIds.get(`${scopeTopic(scope)}:${userId}`) ?? null
+  }
+
   private async bootstrapDmGroupIfLeader(conversationId: string): Promise<boolean> {
     const session = this.client.getAuthSession()
     let conversation =
@@ -1808,7 +2035,16 @@ export class VesperEncryptedChat {
         continue
       }
 
-      const response = await this.handleJoinRequest(conversationId, participant.user_id, null)
+      const preferredDeviceId = this.getPreferredJoinDeviceId(scope, participant.user_id)
+      if (!preferredDeviceId) {
+        continue
+      }
+
+      const response = await this.handleJoinRequest(
+        conversationId,
+        participant.user_id,
+        preferredDeviceId
+      )
       if (!response) {
         continue
       }
@@ -1820,6 +2056,7 @@ export class VesperEncryptedChat {
       if (response.welcomeBytes) {
         await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_welcome', {
           recipient_id: participant.user_id,
+          recipient_device_id: preferredDeviceId,
           welcome_data: response.welcomeBytes,
           key_package_ref: response.keyPackageRef
         })
@@ -1840,8 +2077,8 @@ export class VesperEncryptedChat {
     }>
   > {
     const directMatch =
-      keyPackageRef != null ? await loadKeyPackageByRef(keyPackageRef) : null
-    const localPackages = await loadKeyPackages()
+      keyPackageRef != null ? await this.storage.loadKeyPackageByRef(keyPackageRef) : null
+    const localPackages = await this.storage.loadKeyPackages()
 
     if (!keyPackageRef || localPackages.length === 0) {
       return localPackages
@@ -2018,7 +2255,7 @@ export class VesperEncryptedChat {
       return null
     }
 
-    const sentPlaintext = await loadSentMessagePlaintext(ciphertext)
+    const sentPlaintext = await this.storage.loadSentMessagePlaintext(ciphertext)
     if (sentPlaintext) {
       return sentPlaintext
     }
@@ -2120,7 +2357,9 @@ export class VesperEncryptedChat {
       delete raw.ciphertext
     }
 
-    const nextMessage = await this.processIncomingMessage(scope, raw)
+    const nextMessage = await this.processIncomingMessage(scope, raw, {
+      allowCachedMessageDecryption: !(ciphertext && existing.raw.ciphertext !== ciphertext)
+    })
     this.upsertScopeMessage(scope.id, nextMessage)
     return nextMessage
   }
@@ -2139,8 +2378,8 @@ export class VesperEncryptedChat {
       scope.id,
       existing.filter((message) => message.id !== messageId)
     )
-    await removeCachedMessage(messageId).catch(() => {})
-    await removeFromFtsIndex(messageId).catch(() => {})
+    await this.storage.removeCachedMessage(messageId).catch(() => {})
+    await this.storage.removeFromFtsIndex(messageId).catch(() => {})
     return messageId
   }
 
@@ -2153,6 +2392,7 @@ export class VesperEncryptedChat {
     const ready = await this.ensureScopeReady(scope)
     if (ready) {
       const encrypted = await this.encryptForScope(scope.id, emoji)
+      await cacheSentMessage(this.storage, encrypted.ciphertext, emoji)
       const pushed = await this.client.pushScopeEvent(scope.kind, scope.id, event, {
         message_id: messageId,
         ciphertext: encrypted.ciphertext,
@@ -2161,7 +2401,6 @@ export class VesperEncryptedChat {
       if (!pushed) {
         throw new Error(`Failed to update reaction in ${scopeTopic(scope)}`)
       }
-      await saveSentMessagePlaintext(encrypted.ciphertext, emoji)
       return
     }
 
@@ -2185,7 +2424,6 @@ export class VesperEncryptedChat {
     }
     this.scopeDisposers.clear()
     this.joinedTopics.clear()
-    this.scopeWatchRefs.clear()
   }
 }
 

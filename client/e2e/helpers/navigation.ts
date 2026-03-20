@@ -5,12 +5,13 @@
 
 import type { Page, BrowserContext, Browser } from '@playwright/test'
 import { readRunState } from '../harness/state'
-import { waitForAppShell } from './wait'
+import { waitForAppShell, waitForSocketConnected } from './wait'
 
 /** Hard page refresh and wait for app shell. */
 export async function hardRefresh(page: Page): Promise<void> {
-  await page.reload({ waitUntil: 'networkidle' })
+  await page.reload({ waitUntil: 'domcontentloaded' })
   await waitForAppShell(page)
+  await waitForSocketConnected(page)
 }
 
 /**
@@ -172,7 +173,7 @@ export async function restartBrowserContext(
   await restoreIndexedDB(page, idbDump)
 
   // Reload so the app re-reads from the restored IndexedDB
-  await page.reload({ waitUntil: 'networkidle' })
+  await page.reload({ waitUntil: 'domcontentloaded' })
   await waitForAppShell(page)
 
   return { context, page }
