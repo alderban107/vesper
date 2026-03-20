@@ -642,10 +642,25 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
           set({ statuses: recomputePresenceStatuses() })
         } else if (event === 'emoji_created') {
           const emoji = payload as { id: string; name: string; url: string; animated: boolean; server_id: string }
+          if (emoji.url.startsWith('/')) {
+            emoji.url = getRendererClient().resolveUrl(emoji.url)
+          }
           useServerStore.setState((s) => ({
             servers: s.servers.map((srv) =>
               srv.id === serverId
                 ? { ...srv, emojis: [...srv.emojis.filter((e) => e.id !== emoji.id), emoji].sort((a, b) => a.name.localeCompare(b.name)) }
+                : srv
+            )
+          }))
+        } else if (event === 'emoji_updated') {
+          const updated = payload as { id: string; name: string; url: string; animated: boolean; server_id: string }
+          if (updated.url.startsWith('/')) {
+            updated.url = getRendererClient().resolveUrl(updated.url)
+          }
+          useServerStore.setState((s) => ({
+            servers: s.servers.map((srv) =>
+              srv.id === serverId
+                ? { ...srv, emojis: srv.emojis.map((e) => (e.id === updated.id ? { ...e, ...updated } : e)) }
                 : srv
             )
           }))

@@ -339,8 +339,10 @@ interface ServerState {
   kickMember: (serverId: string, userId: string) => Promise<boolean>
   updateServer: (serverId: string, attrs: { name?: string }) => Promise<boolean>
   changeMemberRole: (serverId: string, userId: string, role: string) => Promise<boolean>
+  uploadServerIcon: (serverId: string, file: File) => Promise<boolean>
   fetchServerEmojis: (serverId: string) => Promise<CustomEmoji[]>
   uploadServerEmoji: (serverId: string, file: File, name?: string) => Promise<CustomEmoji | null>
+  renameServerEmoji: (serverId: string, emojiId: string, name: string) => Promise<CustomEmoji | null>
   deleteServerEmoji: (serverId: string, emojiId: string) => Promise<boolean>
 
   updateChannelTtl: (channelId: string, ttl: number | null) => void
@@ -908,6 +910,29 @@ export const useServerStore = create<ServerState>((set, get) => ({
     return false
   },
 
+  uploadServerIcon: async (serverId, file) => {
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+
+      const updated = await getRendererClient().uploadServerIcon(serverId, formData) as Server
+      set((s) => ({
+        servers: s.servers.map((srv) =>
+          srv.id === serverId
+            ? {
+                ...normalizeServer(updated, srv),
+                channels: srv.channels.length > 0 ? srv.channels : updated.channels ?? []
+              }
+            : srv
+        )
+      }))
+      return true
+    } catch {
+      // ignore
+    }
+    return false
+  },
+
   fetchServerEmojis: async (serverId) => {
     try {
       const emojis = await getRendererClient().fetchServerEmojis(serverId)
@@ -950,6 +975,26 @@ export const useServerStore = create<ServerState>((set, get) => ({
       // ignore
     }
 
+    return null
+  },
+
+  renameServerEmoji: async (serverId, emojiId, name) => {
+    try {
+      const emoji = await getRendererClient().renameServerEmoji(serverId, emojiId, name)
+      set((s) => ({
+        servers: s.servers.map((srv) =>
+          srv.id === serverId
+            ? {
+                ...srv,
+                emojis: srv.emojis.map((e) => (e.id === emojiId ? { ...e, name: emoji.name } : e))
+              }
+            : srv
+        )
+      }))
+      return emoji
+    } catch {
+      // ignore
+    }
     return null
   },
 

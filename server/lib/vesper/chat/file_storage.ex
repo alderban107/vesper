@@ -76,6 +76,20 @@ defmodule Vesper.Chat.FileStorage do
     end)
   end
 
+  def server_icon_dir do
+    Path.join(upload_dir(), "server_icons")
+  end
+
+  def delete_existing_server_icon(server_id) do
+    dir = server_icon_dir()
+
+    ~w(.jpg .png .gif .webp)
+    |> Enum.each(fn ext ->
+      path = Path.join(dir, "#{server_id}#{ext}")
+      if File.exists?(path), do: File.rm!(path)
+    end)
+  end
+
   def delete_existing_banner(user_id) do
     dir = banner_dir()
 

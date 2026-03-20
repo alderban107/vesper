@@ -1,9 +1,17 @@
+export interface EmojiCreator {
+  id: string
+  username: string
+  display_name: string | null
+  avatar_url: string | null
+}
+
 export interface CustomEmoji {
   id: string
   name: string
   url: string
   animated?: boolean
   server_id?: string
+  creator?: EmojiCreator | null
 }
 
 export interface ParsedEmojiToken {

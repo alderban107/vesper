@@ -35,6 +35,7 @@ defmodule VesperWeb.Router do
 
     get("/avatars/:user_id", AvatarController, :show)
     get("/banners/:user_id", AvatarController, :show_banner)
+    get("/servers/:server_id/icon", ServerController, :show_icon)
     get("/servers/:server_id/emojis/:emoji_id/file", EmojiController, :show)
   end
 
@@ -66,6 +67,7 @@ defmodule VesperWeb.Router do
       resources("/channels", ChannelController, except: [:new, :edit])
     end
 
+    post("/servers/:server_id/icon", ServerController, :upload_icon)
     post("/servers/join", ServerController, :join)
 
     # Invite code (permission-gated, rotates every 24h)
@@ -93,6 +95,7 @@ defmodule VesperWeb.Router do
     # Emojis
     get("/servers/:server_id/emojis", EmojiController, :index)
     post("/servers/:server_id/emojis", EmojiController, :create)
+    patch("/servers/:server_id/emojis/:emoji_id", EmojiController, :update)
     delete("/servers/:server_id/emojis/:emoji_id", EmojiController, :delete)
 
     get("/channels/:id/messages", MessageController, :index)

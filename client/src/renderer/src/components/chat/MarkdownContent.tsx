@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import rehypeKatex from 'rehype-katex'
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import type { Components } from 'react-markdown'
@@ -286,6 +286,7 @@ export default function MarkdownContent({ content }: Props): React.JSX.Element {
         <ReactMarkdown
           remarkPlugins={[remarkGfm, remarkMath]}
           rehypePlugins={[rehypeKatex]}
+          urlTransform={(url) => url.startsWith('emoji:') ? url : defaultUrlTransform(url)}
           components={components}
         >
           {processed}
