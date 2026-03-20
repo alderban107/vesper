@@ -39,6 +39,7 @@ import {
   type CryptoStorageRuntime
 } from '../crypto/storage.js'
 import { cacheSentMessage } from '../crypto/decryptionCache.js'
+import { withGroupLock } from '../crypto/groupLock.js'
 import type { MessagePayload } from '../crypto/payload.js'
 import type { VesperClient } from './index.js'
 
@@ -251,9 +252,11 @@ export class VesperEncryptedChat {
 
         try {
           const dispose = await this.client.watchScope(scope.kind, scope.id, async ({ event, payload }) => {
-            const nextEvent = await this.withStorageContext(async () => {
-              return await this.handleScopeEvent(scope, event, normalizePayload(payload))
-            })
+            const nextEvent = await withGroupLock(scope.id, async () => {
+              return await this.withStorageContext(async () => {
+                return await this.handleScopeEvent(scope, event, normalizePayload(payload))
+              })
+            }, 'urgent')
             if (nextEvent) {
               await this.notifyScopeListeners(
                 nextEvent.scope,
@@ -324,9 +327,11 @@ export class VesperEncryptedChat {
 
       if (!this.joinedTopics.has(topic)) {
         const dispose = await this.client.watchScope(scope.kind, scope.id, async ({ event, payload }) => {
-          const nextEvent = await this.withStorageContext(async () => {
-            return await this.handleScopeEvent(scope, event, normalizePayload(payload))
-          })
+          const nextEvent = await withGroupLock(scope.id, async () => {
+            return await this.withStorageContext(async () => {
+              return await this.handleScopeEvent(scope, event, normalizePayload(payload))
+            })
+          }, 'urgent')
           if (nextEvent) {
             await this.notifyScopeListeners(
               nextEvent.scope,
@@ -371,9 +376,11 @@ export class VesperEncryptedChat {
     event: string,
     payload: Record<string, unknown> | null
   ): Promise<EncryptedScopeWatchEvent | null> {
-    return await this.withStorageContext(async () => {
-      return await this.handleScopeEvent(scope, event, payload)
-    })
+    return await withGroupLock(scope.id, async () => {
+      return await this.withStorageContext(async () => {
+        return await this.handleScopeEvent(scope, event, payload)
+      })
+    }, 'urgent')
   }
 
   getMessages(scopeId: string): ProcessedScopeMessage[] {
@@ -425,34 +432,37 @@ export class VesperEncryptedChat {
     } = {}
   ): Promise<ScopeSyncResult> {
     return await this.withStorageContext(async () => {
-      const startedAt = performance.now()
-      const limit = options.limit ?? 50
+      return await withGroupLock(scope.id, async () => {
+        const startedAt = performance.now()
+        const limit = options.limit ?? 50
 
-      await this.ensureGroupMembership(scope.id)
-      await this.replayDurableEvents(scope.id)
+        await this.ensureGroupMembership(scope.id)
+        await this.replayDurableEvents(scope.id)
 
-      const cached = await this.loadProcessedCachedMessages(scope.id)
-      const existing = this.scopeMessages.get(scope.id) ?? cached
-      const afterSeq = highestRoomSeq(existing)
-      const delta =
-        afterSeq == null
-          ? {
-              messages: await this.fetchScopeMessages(scope, limit),
-              events: [] as ScopeSyncEvent[],
-              hasMore: false
-            }
-          : await this.fetchIncrementalScopeDelta(scope, limit, afterSeq)
-      const applied = await this.applyScopeSyncDelta(scope, existing, delta.messages, delta.events)
+        const cached = await this.loadProcessedCachedMessages(scope.id)
+        const existing = this.scopeMessages.get(scope.id) ?? cached
+        const afterSeq = highestRoomSeq(existing)
+        const delta =
+          afterSeq == null
+            ? {
+                messages: await this.fetchScopeMessages(scope, limit),
+                events: [] as ScopeSyncEvent[],
+                hasMore: false
+              }
+            : await this.fetchIncrementalScopeDelta(scope, limit, afterSeq)
+        const applied = await this.applyScopeSyncDelta(scope, existing, delta.messages, delta.events)
 
-      return {
-        durationMs: performance.now() - startedAt,
-        messages: applied.messages,
-        events: applied.events,
-        hasMore: delta.hasMore
-      }
+        return {
+          durationMs: performance.now() - startedAt,
+          messages: applied.messages,
+          events: applied.events,
+          hasMore: delta.hasMore
+        }
+      }, 'normal')
     })
   }
 
+  /** Ensures the MLS group for a scope is ready, optionally creating it if missing. Routes to channel or DM-specific logic. */
   async ensureScopeReady(scope: EncryptedScope, allowCreate = false): Promise<boolean> {
     return await this.withStorageContext(async () => {
       if (scope.kind === 'channel') {
@@ -566,12 +576,14 @@ export class VesperEncryptedChat {
     })
   }
 
+  /** Public API: loads or restores MLS group membership for a scope from storage or pending welcomes. */
   async ensureMembership(scope: EncryptedScope): Promise<boolean> {
     return await this.withStorageContext(async () => {
       return await this.ensureGroupMembership(scope.id)
     })
   }
 
+  /** Convenience wrapper: ensures MLS group state is loaded for a raw scope ID. Equivalent to ensureMembership with a pre-resolved scope. */
   async ensureScopeState(scopeId: string): Promise<boolean> {
     return await this.withStorageContext(async () => {
       return await this.ensureGroupMembership(scopeId)
@@ -919,7 +931,7 @@ export class VesperEncryptedChat {
         if (processed) {
           const welcomeId = this.getString(payload, 'id')
           if (welcomeId) {
-            await ackPendingWelcome(welcomeId, this.client.getHttpClient()).catch(() => {})
+            await ackPendingWelcome(welcomeId, this.client.getHttpClient()).catch((e) => this.logIgnoredError('ack welcome', e))
           }
         }
       }
@@ -1176,6 +1188,7 @@ export class VesperEncryptedChat {
     return this.hasGroup(conversationId)
   }
 
+  /** Core private impl: checks in-memory group state, falls back to persisted storage, then tries pending welcomes. Does not create new groups. */
   private async ensureGroupMembership(scopeId: string): Promise<boolean> {
     if (this.hasGroup(scopeId)) {
       await this.processPendingCommits(scopeId)
@@ -1210,7 +1223,7 @@ export class VesperEncryptedChat {
       )
 
       if (processed) {
-        await ackPendingWelcome(welcome.id, this.client.getHttpClient()).catch(() => {})
+        await ackPendingWelcome(welcome.id, this.client.getHttpClient()).catch((e) => this.logIgnoredError('ack welcome', e))
         this.welcomeAppliedAtByScope.set(scopeId, Date.now())
         this.notifyMembershipWaiters(scopeId, true)
         return true
@@ -1944,7 +1957,7 @@ export class VesperEncryptedChat {
       }
     }
 
-    await this.client.syncNow(false).catch(() => {})
+    await this.client.syncNow(false).catch((e) => this.logIgnoredError('background sync failed', e))
 
     for (const server of this.client.getState().servers) {
       const channel = server.channels.find((entry) => entry.id === channelId)
@@ -1972,7 +1985,7 @@ export class VesperEncryptedChat {
       return ownerUserId
     }
 
-    await this.client.syncNow(false).catch(() => {})
+    await this.client.syncNow(false).catch((e) => this.logIgnoredError('background sync failed', e))
     return this.findChannelOwnerId(channelId)
   }
 
@@ -2007,7 +2020,7 @@ export class VesperEncryptedChat {
       this.client.getState().conversations.find((entry) => entry.id === conversationId) ?? null
 
     if (!conversation || !session) {
-      await this.client.syncNow(false).catch(() => {})
+      await this.client.syncNow(false).catch((e) => this.logIgnoredError('background sync failed', e))
       conversation =
         this.client.getState().conversations.find((entry) => entry.id === conversationId) ?? null
     }
@@ -2117,6 +2130,16 @@ export class VesperEncryptedChat {
     return typeof value === 'string' ? value : null
   }
 
+  private logIgnoredError(context: string, error: unknown): void {
+    if (this.client.listenerCount('error') > 0) {
+      const wrapped =
+        error instanceof Error
+          ? new Error(`${context}: ${error.message}`, { cause: error })
+          : new Error(`${context}: ${String(error)}`)
+      this.client.emitError(wrapped)
+    }
+  }
+
   private getGroupEpoch(scopeId: string): number | null {
     const state = this.groupStates.get(scopeId)
     if (!state) {
@@ -2157,7 +2180,7 @@ export class VesperEncryptedChat {
             onMembership(true)
           }
         })
-        .catch(() => {})
+        .catch((e) => this.logIgnoredError('ensure group membership', e))
     })
   }
 
@@ -2378,8 +2401,8 @@ export class VesperEncryptedChat {
       scope.id,
       existing.filter((message) => message.id !== messageId)
     )
-    await this.storage.removeCachedMessage(messageId).catch(() => {})
-    await this.storage.removeFromFtsIndex(messageId).catch(() => {})
+    await this.storage.removeCachedMessage(messageId).catch((e) => this.logIgnoredError('remove cached message', e))
+    await this.storage.removeFromFtsIndex(messageId).catch((e) => this.logIgnoredError('remove FTS index', e))
     return messageId
   }
 

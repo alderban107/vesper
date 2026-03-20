@@ -1,5 +1,12 @@
 defmodule Vesper.SyncCursor do
-  @moduledoc false
+  @moduledoc """
+  Encodes and decodes opaque sync cursors for client delta polling.
+
+  On decode, the timestamp is shifted back by 1 second to guarantee inclusion
+  of events that were inserted in the same second as the cursor. This avoids
+  edge-case data loss when two events share an identical truncated-to-second
+  timestamp.
+  """
 
   def encode(%{synced_at: %DateTime{} = datetime} = payload) do
     encoded =
@@ -29,6 +36,7 @@ defmodule Vesper.SyncCursor do
     with {:ok, parsed} <- decode_json(decoded),
          {:ok, synced_at} <- decode_datetime(Map.get(parsed, "synced_at")) do
       %{
+        # Shift back 1s to catch events inserted in the same truncated second
         synced_at: DateTime.add(synced_at, -1, :second),
         user_sync_event_id: decode_integer(Map.get(parsed, "user_sync_event_id"))
       }
@@ -36,6 +44,7 @@ defmodule Vesper.SyncCursor do
       _ ->
         case DateTime.from_iso8601(decoded) do
           {:ok, parsed, _offset} ->
+            # Shift back 1s to catch events inserted in the same truncated second
             %{synced_at: DateTime.add(parsed, -1, :second), user_sync_event_id: nil}
 
           _ ->

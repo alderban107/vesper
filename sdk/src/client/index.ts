@@ -161,8 +161,18 @@ class TypedEmitter<Events extends object> {
     }
 
     for (const listener of listeners) {
-      ;(listener as Listener<Events[EventName]>)(payload)
+      try {
+        ;(listener as Listener<Events[EventName]>)(payload)
+      } catch (error) {
+        if (event !== 'error') {
+          this.emit('error' as EventName, error as Events[EventName])
+        }
+      }
     }
+  }
+
+  listenerCount<EventName extends keyof Events>(event: EventName): number {
+    return this.listeners.get(event)?.size ?? 0
   }
 }
 
@@ -566,26 +576,32 @@ export class VesperClient {
     return this.resolveDeviceIdentity ? this.resolveDeviceIdentity() : null
   }
 
+  /** @internal */
   getAuthSession(): VesperAuthSession | null {
     return this.authSession
   }
 
+  /** @internal */
   getHttpClient(): VesperHttpClient {
     return this.httpClient
   }
 
+  /** @internal */
   getSessionStore(): SessionStore {
     return this.httpClient.getSessionStore()
   }
 
+  /** @internal */
   getSocketClient(): VesperSocketClient {
     return this.socketClient
   }
 
+  /** @internal */
   getAuthClient(): VesperAuthClient {
     return this.auth
   }
 
+  /** @internal */
   getStorageRuntime(): CryptoStorageRuntime {
     return this.storageRuntime
   }
@@ -663,6 +679,10 @@ export class VesperClient {
     listener: Listener<VesperClientEvents[EventName]>
   ): () => void {
     return this.emitter.on(event, listener)
+  }
+
+  listenerCount<EventName extends keyof VesperClientEvents>(event: EventName): number {
+    return this.emitter.listenerCount(event)
   }
 
   async register(username: string, password: string): Promise<VesperAuthSession> {
@@ -2140,7 +2160,8 @@ export class VesperClient {
     return true
   }
 
-  private emitError(error: unknown): void {
+  /** @internal */
+  emitError(error: unknown): void {
     this.emitter.emit(
       'error',
       error instanceof Error ? error : new Error('Unknown Vesper client error')

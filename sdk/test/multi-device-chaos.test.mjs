@@ -8,13 +8,21 @@ import {
   teardownServerStack
 } from '../dist/testing/index.js'
 
+const WAIT_TIMEOUT_MS = 8_000
+const SYNC_TIMEOUT_MS = 10_000
+const CHAOS_TIMEOUT_MS = 12_000
+const EXTENDED_TIMEOUT_MS = 15_000
+const POLL_INTERVAL_MS = 100
+const SYNC_POLL_INTERVAL_MS = 150
+const ABSENCE_TIMEOUT_MS = 750
+
 function sleep(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms)
   })
 }
 
-async function waitFor(description, predicate, timeoutMs = 8_000, intervalMs = 100) {
+async function waitFor(description, predicate, timeoutMs = WAIT_TIMEOUT_MS, intervalMs = POLL_INTERVAL_MS) {
   const deadline = Date.now() + timeoutMs
   let lastError = null
 
@@ -150,8 +158,8 @@ async function syncUntilMessages(chat, scope, expectedTexts, options = {}) {
       const contents = result.messages.map((message) => message.content)
       return expectedTexts.every((text) => contents.includes(text)) ? result : null
     },
-    options.timeoutMs ?? 10_000,
-    options.intervalMs ?? 150
+    options.timeoutMs ?? SYNC_TIMEOUT_MS,
+    options.intervalMs ?? SYNC_POLL_INTERVAL_MS
   )
 }
 
@@ -167,8 +175,8 @@ async function syncUntilHealthy(chat, scope, expectedTexts, options = {}) {
       const healthy = !result.messages.some((message) => message.decryptionFailed)
       return allPresent && healthy ? result : null
     },
-    options.timeoutMs ?? 10_000,
-    options.intervalMs ?? 150
+    options.timeoutMs ?? SYNC_TIMEOUT_MS,
+    options.intervalMs ?? SYNC_POLL_INTERVAL_MS
   )
 }
 
@@ -198,12 +206,12 @@ async function waitForServerMembership(device, serverId, expectedPresent) {
       const present = servers.some((server) => server.id === serverId)
       return present === expectedPresent ? servers : null
     },
-    10_000,
-    150
+    SYNC_TIMEOUT_MS,
+    SYNC_POLL_INTERVAL_MS
   )
 }
 
-async function assertNoLiveMessage(chat, scopeId, expectedText, timeoutMs = 750) {
+async function assertNoLiveMessage(chat, scopeId, expectedText, timeoutMs = ABSENCE_TIMEOUT_MS) {
   await assert.rejects(
     chat.waitForMessage(scopeId, (message) => message.content === expectedText, timeoutMs),
     /Timed out waiting for a message/
@@ -480,7 +488,7 @@ test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable'
         secondaryBChat,
         scope,
         [alternatingBurst[0], alternatingBurst[15], alternatingBurst[31]],
-        { limit: 120, timeoutMs: 12_000 }
+        { limit: 120, timeoutMs: CHAOS_TIMEOUT_MS }
       )
       assertNoDecryptFailures(offlineRestore.messages, 'alternating multi-sender restore')
 
@@ -489,7 +497,7 @@ test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable'
         resumedSecondaryCChat,
         scope,
         [alternatingBurst[3], alternatingBurst[16], alternatingBurst[30]],
-        { limit: 120, timeoutMs: 12_000 }
+        { limit: 120, timeoutMs: CHAOS_TIMEOUT_MS }
       )
       assertNoDecryptFailures(resumedRestore.messages, 'alternating resumed restore')
 
@@ -550,7 +558,7 @@ test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable'
         ownerSecondaryChat,
         scope,
         [longDmBurst[0], longDmBurst[12], longDmBurst[23]],
-        { limit: 80, timeoutMs: 12_000 }
+        { limit: 80, timeoutMs: CHAOS_TIMEOUT_MS }
       )
       assertNoDecryptFailures(ownerSecondarySync.messages, 'owner secondary DM restore')
 
@@ -567,7 +575,7 @@ test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable'
         resumedGuestSecondaryChat,
         scope,
         ['dm-after-logout', 'dm-after-guest-reply', longDmBurst[23]],
-        { limit: 100, timeoutMs: 12_000 }
+        { limit: 100, timeoutMs: CHAOS_TIMEOUT_MS }
       )
       assertNoDecryptFailures(guestSecondarySync.messages, 'guest secondary DM relogin restore')
 
@@ -631,7 +639,7 @@ test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable'
         ownerSecondaryChat,
         channelScope,
         ['mix-channel-round-1-owner', 'mix-channel-round-1-guest'],
-        { limit: 40, timeoutMs: 12_000 }
+        { limit: 40, timeoutMs: CHAOS_TIMEOUT_MS }
       )
       assertNoDecryptFailures(firstChannelRestore.messages, 'mixed channel restore round 1')
 
@@ -639,7 +647,7 @@ test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable'
         ownerSecondaryChat,
         dmScope,
         ['mix-dm-round-1-owner', 'mix-dm-round-1-guest'],
-        { limit: 40, timeoutMs: 12_000 }
+        { limit: 40, timeoutMs: CHAOS_TIMEOUT_MS }
       )
       assertNoDecryptFailures(firstDmRestore.messages, 'mixed dm restore round 1')
 
@@ -654,7 +662,7 @@ test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable'
         resumedOwnerSecondaryChat,
         channelScope,
         ['mix-channel-round-2-owner', 'mix-channel-round-1-owner', 'mix-channel-round-1-guest'],
-        { limit: 60, timeoutMs: 12_000 }
+        { limit: 60, timeoutMs: CHAOS_TIMEOUT_MS }
       )
       assertNoDecryptFailures(secondChannelRestore.messages, 'mixed channel restore round 2')
 
@@ -662,7 +670,7 @@ test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable'
         resumedOwnerSecondaryChat,
         dmScope,
         ['mix-dm-round-2-guest', 'mix-dm-round-1-owner', 'mix-dm-round-1-guest'],
-        { limit: 60, timeoutMs: 12_000 }
+        { limit: 60, timeoutMs: CHAOS_TIMEOUT_MS }
       )
       assertNoDecryptFailures(secondDmRestore.messages, 'mixed dm restore round 2')
 
@@ -681,7 +689,7 @@ test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable'
           'mix-channel-round-2-owner',
           'mix-channel-round-3-guest'
         ],
-        { limit: 60, timeoutMs: 12_000 }
+        { limit: 60, timeoutMs: CHAOS_TIMEOUT_MS }
       )
       assertNoDecryptFailures(finalChannelRestore.messages, 'mixed channel restore round 3')
 
@@ -694,7 +702,7 @@ test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable'
           'mix-dm-round-2-guest',
           'mix-dm-round-3-owner'
         ],
-        { limit: 60, timeoutMs: 12_000 }
+        { limit: 60, timeoutMs: CHAOS_TIMEOUT_MS }
       )
       assertNoDecryptFailures(finalDmRestore.messages, 'mixed dm restore round 3')
 
@@ -768,7 +776,7 @@ test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable'
           resumedOwnerSecondaryChat,
           generalScope,
           [`general-hot-owner-${round}`, `general-hot-guest-${round}`],
-          { limit: 80, timeoutMs: 12_000 }
+          { limit: 80, timeoutMs: CHAOS_TIMEOUT_MS }
         )
         assertNoDecryptFailures(generalRestore.messages, `general hot restore round ${round}`)
 
@@ -783,7 +791,7 @@ test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable'
         finalOwnerSecondaryChat,
         archiveScope,
         [archiveBurst[0], archiveBurst[18], archiveBurst[archiveBurst.length - 1]],
-        { limit: 120, timeoutMs: 15_000 }
+        { limit: 120, timeoutMs: EXTENDED_TIMEOUT_MS }
       )
       assertNoDecryptFailures(finalArchiveRestore.messages, 'cold archive restore')
       assertMessageTexts(finalArchiveRestore.messages, [
@@ -796,7 +804,7 @@ test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable'
         finalOwnerSecondaryChat,
         generalScope,
         ['general-hot-owner-3', 'general-hot-guest-3'],
-        { limit: 80, timeoutMs: 12_000 }
+        { limit: 80, timeoutMs: CHAOS_TIMEOUT_MS }
       )
       assertNoDecryptFailures(finalGeneralRestore.messages, 'final general hot restore')
 
@@ -1042,8 +1050,8 @@ test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable'
               entry.payload.commit_data &&
               entry.payload.removed_device_id === secondary.deviceIdentity.id
           ) ?? null,
-        10_000,
-        100
+        SYNC_TIMEOUT_MS,
+        POLL_INTERVAL_MS
       )
 
       assert.equal(removal.payload.removed_user_id, primary.requireSession().user.id)
@@ -1053,8 +1061,8 @@ test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable'
       await waitFor(
         'secondary device to lose MLS group state after eviction',
         async () => (secondaryChat.hasGroup(scope.id) ? null : true),
-        10_000,
-        100
+        SYNC_TIMEOUT_MS,
+        POLL_INTERVAL_MS
       )
       assert.equal(primaryChat.hasGroup(scope.id), true)
     } finally {
