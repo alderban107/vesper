@@ -93,6 +93,7 @@ defmodule VesperWeb.Router do
     # Emojis
     get("/servers/:server_id/emojis", EmojiController, :index)
     post("/servers/:server_id/emojis", EmojiController, :create)
+    patch("/servers/:server_id/emojis/:emoji_id", EmojiController, :update)
     delete("/servers/:server_id/emojis/:emoji_id", EmojiController, :delete)
 
     get("/channels/:id/messages", MessageController, :index)

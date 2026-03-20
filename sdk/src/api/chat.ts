@@ -166,12 +166,20 @@ export interface VesperServerInvite {
   inserted_at: string
 }
 
+export interface VesperEmojiCreator {
+  id: string
+  username: string
+  display_name: string | null
+  avatar_url: string | null
+}
+
 export interface VesperCustomEmoji {
   id: string
   name: string
   url: string
   animated?: boolean
   server_id?: string
+  creator?: VesperEmojiCreator | null
 }
 
 export interface VesperChannelPin {

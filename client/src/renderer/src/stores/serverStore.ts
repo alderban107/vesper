@@ -341,6 +341,7 @@ interface ServerState {
   changeMemberRole: (serverId: string, userId: string, role: string) => Promise<boolean>
   fetchServerEmojis: (serverId: string) => Promise<CustomEmoji[]>
   uploadServerEmoji: (serverId: string, file: File, name?: string) => Promise<CustomEmoji | null>
+  renameServerEmoji: (serverId: string, emojiId: string, name: string) => Promise<CustomEmoji | null>
   deleteServerEmoji: (serverId: string, emojiId: string) => Promise<boolean>
 
   updateChannelTtl: (channelId: string, ttl: number | null) => void
@@ -950,6 +951,26 @@ export const useServerStore = create<ServerState>((set, get) => ({
       // ignore
     }
 
+    return null
+  },
+
+  renameServerEmoji: async (serverId, emojiId, name) => {
+    try {
+      const emoji = await getRendererClient().renameServerEmoji(serverId, emojiId, name)
+      set((s) => ({
+        servers: s.servers.map((srv) =>
+          srv.id === serverId
+            ? {
+                ...srv,
+                emojis: srv.emojis.map((e) => (e.id === emojiId ? { ...e, name: emoji.name } : e))
+              }
+            : srv
+        )
+      }))
+      return emoji
+    } catch {
+      // ignore
+    }
     return null
   },
 

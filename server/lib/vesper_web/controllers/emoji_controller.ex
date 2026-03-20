@@ -65,7 +65,8 @@ defmodule VesperWeb.EmojiController do
                     name: name,
                     url: emoji_url(server_id, emoji_id),
                     animated: content_type == "image/gif",
-                    storage_key: storage_key
+                    storage_key: storage_key,
+                    creator_id: user.id
                   }
 
                   case Servers.create_server_emoji(attrs) do
@@ -108,6 +109,46 @@ defmodule VesperWeb.EmojiController do
 
   def create(conn, _params) do
     conn |> put_status(:bad_request) |> json(%{error: "file is required"})
+  end
+
+  def update(conn, %{"server_id" => server_id, "emoji_id" => emoji_id, "name" => name}) do
+    user = conn.assigns.current_user
+
+    if Servers.user_can?(user.id, server_id, Permissions.manage_server()) do
+      case Servers.get_server_emoji(server_id, emoji_id) do
+        nil ->
+          conn |> put_status(:not_found) |> json(%{error: "emoji not found"})
+
+        emoji ->
+          case Servers.update_server_emoji(emoji, name) do
+            {:ok, updated} ->
+              VesperWeb.Endpoint.broadcast!(
+                "presence:server:#{server_id}",
+                "emoji_updated",
+                emoji_json(updated)
+              )
+
+              json(conn, %{emoji: emoji_json(updated)})
+
+            {:error, changeset} ->
+              if Keyword.has_key?(changeset.errors, :name) do
+                conn
+                |> put_status(:conflict)
+                |> json(%{error: "emoji name already exists or is invalid"})
+              else
+                conn
+                |> put_status(:unprocessable_entity)
+                |> json(%{error: "could not update emoji"})
+              end
+          end
+      end
+    else
+      conn |> put_status(:forbidden) |> json(%{error: "insufficient permissions"})
+    end
+  end
+
+  def update(conn, _params) do
+    conn |> put_status(:bad_request) |> json(%{error: "name is required"})
   end
 
   def delete(conn, %{"server_id" => server_id, "emoji_id" => emoji_id}) do
@@ -210,7 +251,21 @@ defmodule VesperWeb.EmojiController do
       name: emoji.name,
       url: emoji.url,
       animated: emoji.animated,
-      server_id: emoji.server_id
+      server_id: emoji.server_id,
+      creator: creator_json(emoji)
     }
   end
+
+  defp creator_json(%{
+         creator: %{
+           id: id,
+           username: username,
+           display_name: display_name,
+           avatar_url: avatar_url
+         }
+       }) do
+    %{id: id, username: username, display_name: display_name, avatar_url: avatar_url}
+  end
+
+  defp creator_json(_), do: nil
 end

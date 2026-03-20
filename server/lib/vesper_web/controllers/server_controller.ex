@@ -50,7 +50,7 @@ defmodule VesperWeb.ServerController do
         case Servers.update_server(server, params) do
           {:ok, updated} ->
             json(conn, %{
-              server: server_json(updated |> Vesper.Repo.preload([:channels, :emojis]))
+              server: server_json(updated |> Vesper.Repo.preload([:channels, [emojis: :creator]]))
             })
 
           {:error, _} ->
@@ -572,9 +572,23 @@ defmodule VesperWeb.ServerController do
       name: emoji.name,
       url: emoji.url,
       animated: emoji.animated,
-      server_id: emoji.server_id
+      server_id: emoji.server_id,
+      creator: emoji_creator_json(emoji)
     }
   end
+
+  defp emoji_creator_json(%{
+         creator: %{
+           id: id,
+           username: username,
+           display_name: display_name,
+           avatar_url: avatar_url
+         }
+       }) do
+    %{id: id, username: username, display_name: display_name, avatar_url: avatar_url}
+  end
+
+  defp emoji_creator_json(_), do: nil
 
   defp parse_limit_param(nil, default), do: default
 

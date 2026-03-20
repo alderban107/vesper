@@ -197,9 +197,23 @@ defmodule VesperWeb.SyncController do
       name: emoji.name,
       url: emoji.url,
       animated: emoji.animated,
-      server_id: emoji.server_id
+      server_id: emoji.server_id,
+      creator: emoji_creator_json(emoji)
     }
   end
+
+  defp emoji_creator_json(%{
+         creator: %{
+           id: id,
+           username: username,
+           display_name: display_name,
+           avatar_url: avatar_url
+         }
+       }) do
+    %{id: id, username: username, display_name: display_name, avatar_url: avatar_url}
+  end
+
+  defp emoji_creator_json(_), do: nil
 
   defp conversation_with_last_message_json(%{
          conversation: conversation,
