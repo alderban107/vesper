@@ -723,6 +723,7 @@ export class VesperEncryptedChat {
     userId: string,
     deviceId: string | null = null
   ): Promise<{
+    removeCommitBytes: string | null
     commitBytes: string
     welcomeBytes: string | null
     keyPackageRef: string
@@ -1103,13 +1104,33 @@ export class VesperEncryptedChat {
       return
     }
 
-    if (scope.kind === 'channel' && !(await this.isChannelOwner(scope.id, localUserId))) {
-      return
+    // Only the first member in the ratchet tree handles join requests to avoid
+    // concurrent epoch commits from multiple members. This replaces an earlier
+    // server-ownership gate that caused deadlocks during fork recovery.
+    if (scope.kind === 'channel') {
+      const state = this.groupStates.get(scope.id)
+      if (state) {
+        const memberIdentities = getGroupMemberIdentities(state)
+        if (
+          memberIdentities[0] !== localUserId &&
+          memberIdentities[0] !== (this.client.getAuthSession()?.user?.username ?? null)
+        ) {
+          return
+        }
+      }
     }
 
     const response = await this.handleJoinRequest(scope.id, requesterId, requesterDeviceId)
     if (!response) {
       return
+    }
+
+    if (response.removeCommitBytes) {
+      await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_remove', {
+        removed_user_id: requesterId,
+        ...(requesterDeviceId ? { removed_device_id: requesterDeviceId } : {}),
+        commit_data: response.removeCommitBytes
+      })
     }
 
     await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_commit', {
@@ -1435,6 +1456,7 @@ export class VesperEncryptedChat {
     userId: string,
     deviceId: string | null
   ): Promise<{
+    removeCommitBytes: string | null
     commitBytes: string
     welcomeBytes: string | null
     keyPackageRef: string
@@ -1466,18 +1488,33 @@ export class VesperEncryptedChat {
         ? new TextDecoder().decode(credential.identity)
         : null
 
+    let workingState = this.cloneGroupState(state)
+    let removeCommitBytes: string | null = null
+
+    // If the requester is already a member, they probably reset their local
+    // MLS state and are trying to rejoin. Remove the stale leaf first so the
+    // add below succeeds (same approach as handleResyncRequest).
+    if (requestedIdentity) {
+      const existingLeafIndex = findExactMemberLeafIndex(workingState, requestedIdentity)
+      if (existingLeafIndex !== null) {
+        const removed = await removeMemberFromGroup(workingState, existingLeafIndex)
+        workingState = removed.newState
+        removeCommitBytes = uint8ToBase64(removed.commitBytes)
+      }
+    }
+
     if (
       requestedIdentity &&
-      (getGroupLeafIdentities(state).includes(requestedIdentity) ||
-        groupHasMember(state, requestedIdentity))
+      findExactMemberLeafIndex(workingState, requestedIdentity) !== null
     ) {
       return null
     }
 
-    const result = await addMemberToGroup(this.cloneGroupState(state), memberKeyPackage)
+    const result = await addMemberToGroup(workingState, memberKeyPackage)
     await this.setGroupState(scopeId, result.newState)
 
     return {
+      removeCommitBytes,
       commitBytes: uint8ToBase64(result.commitBytes),
       welcomeBytes: result.welcomeBytes ? uint8ToBase64(result.welcomeBytes) : null,
       keyPackageRef: uint8ToBase64(keyPackageBytes)
