@@ -7,6 +7,7 @@ import type {
   RefObject,
   UIEventHandler
 } from 'react'
+import { Suspense, lazy } from 'react'
 import { Loader2, Paperclip, SendHorizonal, Smile } from 'lucide-react'
 import type { DmConversation } from '../../stores/dmStore'
 import type { Message } from '../../stores/messageStore'
@@ -14,8 +15,32 @@ import type { Member, Server } from '../../stores/serverStore'
 import type { PickerEmoji } from './EmojiPicker'
 import EmojiPicker from './EmojiPicker'
 import ComposerAutocomplete, { type ComposerAutocompleteItem } from './ComposerAutocomplete'
-import ComposerRichTextPreview from './ComposerRichTextPreview'
+import type { ComposerMentionDraft } from './composerAutocompleteUtils'
 import ComposerShell, { type StagedFile } from './message/ComposerShell'
+
+const ComposerRichTextPreview = lazy(() => import('./ComposerRichTextPreview'))
+
+const CODE_FENCE_PREVIEW_PATTERN = /^```(?!mermaid\b)([^\n`]*)\n[\s\S]*\n```$/i
+const MENTION_OR_TOKEN_PATTERN =
+  /<@([0-9a-f-]{36}|everyone)>|<#([0-9a-f-]{36})>|<(a?):([a-zA-Z0-9_~-]{2,32}):([a-zA-Z0-9_-]+)>/
+const MARKDOWN_PREVIEW_PATTERN =
+  /(^|\s)([*_~`>#-]|\d+\.)|\[[^\]]+\]\([^)]+\)|\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|`[^`]+`/
+
+function shouldShowRichPreview(
+  content: string,
+  mentionDrafts: ComposerMentionDraft[]
+): boolean {
+  if (content.trim().length === 0) {
+    return false
+  }
+
+  return (
+    mentionDrafts.length > 0 ||
+    CODE_FENCE_PREVIEW_PATTERN.test(content) ||
+    MENTION_OR_TOKEN_PATTERN.test(content) ||
+    MARKDOWN_PREVIEW_PATTERN.test(content)
+  )
+}
 
 interface Props {
   autocompleteItems: ComposerAutocompleteItem[]
@@ -27,6 +52,7 @@ interface Props {
   fileButtonTestId?: string
   fileInputRef: RefObject<HTMLInputElement | null>
   members: Member[]
+  mentionDrafts: ComposerMentionDraft[]
   onAutocompleteHover: (index: number) => void
   onAutocompleteSelect: (item: ComposerAutocompleteItem) => void
   onCancelReply: () => void
@@ -70,6 +96,7 @@ export default function ComposerForm({
   fileButtonTestId,
   fileInputRef,
   members,
+  mentionDrafts,
   onAutocompleteHover,
   onAutocompleteSelect,
   onCancelReply,
@@ -102,7 +129,7 @@ export default function ComposerForm({
   uploading,
   canSend
 }: Props): React.JSX.Element {
-  const showRichPreview = /^```(?!mermaid\b)([^\n`]*)\n[\s\S]*\n```$/i.test(content)
+  const showRichPreview = shouldShowRichPreview(content, mentionDrafts)
 
   return (
     <form
@@ -182,13 +209,16 @@ export default function ComposerForm({
           </div>
           <div className={`vesper-composer-input-stack${showRichPreview ? ' vesper-composer-input-stack-rich' : ''}`}>
             {showRichPreview && (
-              <ComposerRichTextPreview
-                containerRef={previewRef}
-                content={content}
-                members={members}
-                conversation={conversation}
-                server={server}
-              />
+              <Suspense fallback={null}>
+                <ComposerRichTextPreview
+                  containerRef={previewRef}
+                  content={content}
+                  members={members}
+                  mentionDrafts={mentionDrafts}
+                  conversation={conversation}
+                  server={server}
+                />
+              </Suspense>
             )}
             <textarea
               ref={textareaRef}

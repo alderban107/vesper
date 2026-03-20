@@ -4,7 +4,7 @@
  *         R-HARNESS-2 (runtime state isolated per run)
  */
 
-import { spawn, type ChildProcess, execSync } from 'child_process'
+import { spawn, type ChildProcess, execFileSync, execSync } from 'child_process'
 import fs from 'fs'
 import path from 'path'
 import { getFreePort } from './ports'
@@ -14,9 +14,51 @@ import { type RunState, generateRunId, readRunState, writeRunState } from './sta
 const ROOT = path.resolve(__dirname, '..', '..', '..')
 const SERVER_DIR = path.join(ROOT, 'server')
 const CLIENT_DIR = path.join(ROOT, 'client')
+const SDK_TEST_DB_START_SCRIPT = path.join(ROOT, 'sdk', 'scripts', 'start-test-postgres.sh')
 
 let phoenixProcess: ChildProcess | null = null
 let viteProcess: ChildProcess | null = null
+
+function loadRepoEnv(): void {
+  const envFile = process.env.VESPER_ENV_FILE ?? path.join(ROOT, '.env')
+
+  if (fs.existsSync(envFile)) {
+    for (const rawLine of fs.readFileSync(envFile, 'utf8').split(/\r?\n/)) {
+      const line = rawLine.trim()
+      if (line === '' || line.startsWith('#')) {
+        continue
+      }
+
+      const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/)
+      if (!match) {
+        continue
+      }
+
+      let [, key, value] = match
+      value = value.trim()
+
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1)
+      } else {
+        value = value.replace(/\s+#.*$/, '')
+      }
+
+      if (process.env[key] == null) {
+        process.env[key] = value
+      }
+    }
+  }
+
+  process.env.TEST_DB_HOST ??= process.env.VESPER_SDK_TEST_DB_HOST ?? '127.0.0.1'
+  process.env.TEST_DB_PORT ??= process.env.VESPER_SDK_TEST_DB_PORT ?? '55432'
+  process.env.TEST_DB_USER ??= process.env.VESPER_SDK_TEST_DB_USER ?? 'vesper_sdk'
+  process.env.TEST_DB_PASS ??= process.env.VESPER_SDK_TEST_DB_PASS ?? 'vesper_sdk'
+}
+
+loadRepoEnv()
 
 export async function bootStack(): Promise<RunState> {
   try {
@@ -55,6 +97,12 @@ export async function bootStack(): Promise<RunState> {
     artifactDir,
     profileDir,
   }
+
+  execFileSync('sh', [SDK_TEST_DB_START_SCRIPT], {
+    cwd: ROOT,
+    env: process.env,
+    stdio: 'pipe',
+  })
 
   // --- Database setup ---
   const mixEnv = {

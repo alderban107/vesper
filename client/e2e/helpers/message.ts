@@ -1,11 +1,5 @@
-/**
- * Message action helpers: react, edit, delete, pin.
- * Covers: R-DM-3, R-CHANNEL-5, R-CHANNEL-6, R-EMOJI-1, R-EMOJI-2
- */
-
 import type { Page } from '@playwright/test'
 
-/** Add a reaction to a message. */
 export async function addReaction(
   page: Page,
   messageText: string,
@@ -15,20 +9,15 @@ export async function addReaction(
   await row.hover()
   await row.locator('[data-testid="react-button"]').click()
 
-  // Wait for emoji picker
   await page.waitForSelector('[data-testid="emoji-picker"]', { timeout: 5_000 })
-
-  // Click the target emoji
   await page.click(`[data-testid="emoji-picker"] button:has-text("${emoji}")`)
-
-  // Wait for picker to close
   await page.waitForSelector('[data-testid="emoji-picker"]', {
     state: 'hidden',
     timeout: 5_000,
   })
 }
 
-/** Get reaction counts on a message. Returns Map<emoji, count>. */
+/** Returns Map<emoji, count>. */
 export async function getReactions(
   page: Page,
   messageText: string
@@ -42,7 +31,6 @@ export async function getReactions(
     const chip = reactionButtons.nth(i)
     const text = await chip.textContent()
     if (!text) continue
-    // Format is "emoji count" e.g. "👍 1"
     const match = text.match(/(.+?)\s*(\d+)/)
     if (match) {
       reactions.set(match[1].trim(), parseInt(match[2], 10))
@@ -52,7 +40,10 @@ export async function getReactions(
   return reactions
 }
 
-/** Edit a message (author only). Uses hover action bar buttons directly. */
+/**
+ * Uses hover action bar buttons. Falls back to the message menu if the inline
+ * edit button isn't visible (can happen with narrow viewports).
+ */
 export async function editMessage(
   page: Page,
   originalText: string,
@@ -68,13 +59,11 @@ export async function editMessage(
   await row.hover()
   await row.locator('[data-testid="edit-message"]').click()
 
-  // Wait for edit mode — the message content becomes a textarea
   const editInput = row.locator('[data-testid="edit-input"]')
   await editInput.waitFor({ state: 'visible', timeout: 10_000 })
   await editInput.fill(newText)
   await editInput.press('Enter')
 
-  // Wait for edited content to appear
   if (messageId) {
     await row.filter({ hasText: newText }).waitFor({ state: 'visible', timeout: 10_000 })
   } else {
@@ -84,7 +73,6 @@ export async function editMessage(
   }
 }
 
-/** Delete a message (author only). Uses hover action bar buttons directly. */
 export async function deleteMessage(page: Page, messageText: string): Promise<void> {
   const row = page.locator(`[data-testid="message-row"]:has-text("${messageText}")`)
   await row.hover()
@@ -97,21 +85,18 @@ export async function deleteMessage(page: Page, messageText: string): Promise<vo
     await page.locator('[data-testid="delete-message"]').click()
   }
 
-  // Confirm deletion if there's a confirm dialog
   const dialog = page.locator('.fixed.inset-0').last()
   const confirmBtn = dialog.locator('button:has-text("Delete")')
   if (await confirmBtn.isVisible({ timeout: 2_000 }).catch(() => false)) {
     await confirmBtn.click()
   }
 
-  // Wait for message to disappear
   await page.waitForSelector(`[data-testid="message-row"]:has-text("${messageText}")`, {
     state: 'hidden',
     timeout: 10_000,
   })
 }
 
-/** Pin a message via right-click context menu. */
 export async function pinMessage(page: Page, messageText: string): Promise<void> {
   const row = page.locator(`[data-testid="message-row"]:has-text("${messageText}")`)
   await row.click({ button: 'right' })
@@ -120,7 +105,6 @@ export async function pinMessage(page: Page, messageText: string): Promise<void>
   await page.waitForTimeout(1_000)
 }
 
-/** Unpin a message from the pinned messages panel. */
 export async function unpinMessage(page: Page, messageText: string): Promise<void> {
   await openPinsPanel(page)
 
@@ -133,7 +117,6 @@ export async function unpinMessage(page: Page, messageText: string): Promise<voi
   await pinnedRow.waitFor({ state: 'hidden', timeout: 10_000 })
 }
 
-/** Open the pins panel. */
 export async function openPinsPanel(page: Page): Promise<void> {
   const panel = page.locator('[data-testid="pins-panel"]')
   if (await panel.isVisible().catch(() => false)) {
@@ -144,7 +127,6 @@ export async function openPinsPanel(page: Page): Promise<void> {
   await panel.waitFor({ state: 'visible', timeout: 5_000 })
 }
 
-/** Get pinned message texts from the pins panel. */
 export async function getPinnedMessages(page: Page): Promise<string[]> {
   const panel = page.locator('[data-testid="pins-panel"]')
   const loadingIndicator = panel.getByText('Loading pins')
@@ -157,14 +139,10 @@ export async function getPinnedMessages(page: Page): Promise<string[]> {
   await page
     .waitForFunction(() => {
       const panelEl = document.querySelector('[data-testid="pins-panel"]')
-      if (!panelEl) {
-        return false
-      }
+      if (!panelEl) return false
 
       const hasLoadingText = panelEl.textContent?.includes('Loading pins') ?? false
-      if (hasLoadingText) {
-        return false
-      }
+      if (hasLoadingText) return false
 
       const hasPinnedMessages =
         panelEl.querySelectorAll('[data-testid="pinned-message"]').length > 0
@@ -175,7 +153,6 @@ export async function getPinnedMessages(page: Page): Promise<string[]> {
   return items.allTextContents()
 }
 
-/** Click a pinned message to jump to it. */
 export async function jumpToPinnedMessage(page: Page, text: string): Promise<void> {
   await page.click(`[data-testid="pins-panel"] [data-testid="pinned-message"]:has-text("${text}")`)
 }

@@ -16,7 +16,8 @@ import type { Components } from 'react-markdown'
 import type { DmConversation } from '../../stores/dmStore'
 import type { Member, Server } from '../../stores/serverStore'
 import { findCustomEmoji, parseCustomEmojiToken, type CustomEmoji } from '../../utils/emoji'
-import { extractMarkdownCodeBlock } from './markdownCodeBlock'
+import { serializeComposerMentions, type ComposerMentionDraft } from './composerAutocompleteUtils'
+import { extractMarkdownCodeBlock } from './MarkdownCodeBlock'
 import EmojiGlyph from './message/EmojiGlyph'
 
 hljs.registerLanguage('bash', bash)
@@ -41,6 +42,7 @@ hljs.registerLanguage('xml', xml)
 interface Props {
   content: string
   members?: Member[]
+  mentionDrafts?: ComposerMentionDraft[]
   conversation?: DmConversation | null
   server?: Server | null
   className?: string
@@ -168,6 +170,7 @@ function buildMentionUsers(
 export default function ComposerRichTextPreview({
   content,
   members = [],
+  mentionDrafts = [],
   conversation,
   server,
   className,
@@ -194,8 +197,9 @@ export default function ComposerRichTextPreview({
   const customEmojis: CustomEmoji[] = server?.emojis ?? []
   const channels = server?.channels ?? []
   const mentionUsers = buildMentionUsers(members, conversation)
+  const serializedContent = serializeComposerMentions(content, mentionDrafts)
   const processed = preprocessCustomEmoji(
-    preprocessChannels(preprocessMentions(content, mentionUsers), channels),
+    preprocessChannels(preprocessMentions(serializedContent, mentionUsers), channels),
     customEmojis
   )
 

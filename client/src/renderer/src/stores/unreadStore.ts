@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { apiFetch } from '../api/client'
+import { getRendererClient } from '../sdk/client'
 
 interface UnreadState {
   channelUnreads: Record<string, number>
@@ -70,12 +70,9 @@ export const useUnreadStore = create<UnreadState>((set) => ({
       channelUnreads: { ...s.channelUnreads, [channelId]: 0 }
     }))
     try {
-      await apiFetch(`/api/v1/channels/${channelId}/read`, {
-        method: 'PUT',
-        body: JSON.stringify({ message_id: messageId })
-      })
+      await getRendererClient().markChannelRead(channelId, messageId)
     } catch {
-      // ignore
+      // Best-effort: UI already updated optimistically above
     }
   },
 
@@ -84,27 +81,21 @@ export const useUnreadStore = create<UnreadState>((set) => ({
       dmUnreads: { ...s.dmUnreads, [conversationId]: 0 }
     }))
     try {
-      await apiFetch(`/api/v1/conversations/${conversationId}/read`, {
-        method: 'PUT',
-        body: JSON.stringify({ message_id: messageId })
-      })
+      await getRendererClient().markConversationRead(conversationId, messageId)
     } catch {
-      // ignore
+      // Best-effort: UI already updated optimistically above
     }
   },
 
   fetchUnreadCounts: async () => {
     try {
-      const res = await apiFetch('/api/v1/unread')
-      if (res.ok) {
-        const data = await res.json()
-        set({
-          channelUnreads: data.channels || {},
-          dmUnreads: data.conversations || {}
-        })
-      }
+      const data = await getRendererClient().fetchUnreadCounts()
+      set({
+        channelUnreads: data.channels || {},
+        dmUnreads: data.conversations || {}
+      })
     } catch {
-      // ignore
+      // Best-effort: stale counts are acceptable until next sync
     }
   }
 }))

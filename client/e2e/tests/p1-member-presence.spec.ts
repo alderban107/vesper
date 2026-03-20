@@ -50,10 +50,13 @@ test.describe('P1: Member list and presence', () => {
 
   test('Member list contains all expected users (R-SERVER-4)', async () => {
     await selectServer(alice.page, 'Presence Server')
+    await selectChannel(alice.page, 'presence-test')
 
-    // Open member list if it's toggled off
+    // Open member list — click the toggle and wait for the panel
     const toggleMembers = alice.page.locator('[data-testid="toggle-members"]')
-    if (await toggleMembers.isVisible()) {
+    await toggleMembers.waitFor({ state: 'visible', timeout: 10_000 })
+    const memberListAlreadyOpen = await alice.page.locator('[data-testid="member-list"]').isVisible().catch(() => false)
+    if (!memberListAlreadyOpen) {
       await toggleMembers.click()
     }
 

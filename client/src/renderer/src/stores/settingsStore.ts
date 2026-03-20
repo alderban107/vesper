@@ -1,8 +1,22 @@
 import { create } from 'zustand'
+import { getStoredValue, setStoredValue, writeStoredValue } from '../utils/localStorage'
 
-const DEFAULT_SERVER_URL =
-  (window as any).VESPER_API_URL || 'http://localhost:4000'
 const LINK_PREVIEWS_STORAGE_KEY = 'linkPreviews'
+
+function normalizeServerUrl(url: string): string {
+  return url.trim().replace(/\/+$/, '')
+}
+
+function getInitialServerUrl(): string {
+  const stored = getStoredValue('serverUrl')
+  if (stored) {
+    return normalizeServerUrl(stored)
+  }
+
+  if (typeof window === 'undefined') return ''
+  const configured = (window as { VESPER_API_URL?: string }).VESPER_API_URL
+  return typeof configured === 'string' ? normalizeServerUrl(configured) : ''
+}
 
 interface SettingsState {
   serverUrl: string
@@ -12,17 +26,17 @@ interface SettingsState {
 }
 
 export const useSettingsStore = create<SettingsState>((set) => ({
-  serverUrl: localStorage.getItem('serverUrl') || DEFAULT_SERVER_URL,
-  linkPreviewsEnabled: localStorage.getItem(LINK_PREVIEWS_STORAGE_KEY) === 'enabled',
+  serverUrl: getInitialServerUrl(),
+  linkPreviewsEnabled: getStoredValue(LINK_PREVIEWS_STORAGE_KEY) === 'enabled',
 
   setServerUrl: (url) => {
-    const normalized = url.replace(/\/+$/, '') // strip trailing slashes
-    localStorage.setItem('serverUrl', normalized)
+    const normalized = normalizeServerUrl(url)
+    writeStoredValue('serverUrl', normalized || null)
     set({ serverUrl: normalized })
   },
 
   setLinkPreviewsEnabled: (enabled) => {
-    localStorage.setItem(LINK_PREVIEWS_STORAGE_KEY, enabled ? 'enabled' : 'disabled')
+    setStoredValue(LINK_PREVIEWS_STORAGE_KEY, enabled ? 'enabled' : 'disabled')
     set({ linkPreviewsEnabled: enabled })
   }
 }))

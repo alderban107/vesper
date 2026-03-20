@@ -8,15 +8,14 @@
  * Fixes: https://github.com/vesper-chat/vesper/issues/21
  */
 import { useMessageStore, clearExpiryTimers } from './messageStore'
-import { useCryptoStore } from './cryptoStore'
 import { useServerStore } from './serverStore'
 import { useDmStore } from './dmStore'
 import { useUnreadStore } from './unreadStore'
 import { usePresenceStore, cleanupPresenceTimers } from './presenceStore'
 import { useVoiceStore } from './voiceStore'
 import { useSyncStore } from './syncStore'
-import { clearDecryptionCache } from '../crypto/decryptionCache'
-import { resetStorage } from '../crypto/storage'
+import { clearDecryptionCache } from '@vesper/sdk/crypto'
+import { getRendererStorageRuntime } from '../sdk/client'
 
 /**
  * Reset all application state to initial values.
@@ -41,7 +40,7 @@ export function resetAllStores(): void {
 
   // Reset the IndexedDB adapter singleton so the next login
   // opens a user-scoped database
-  resetStorage()
+  getRendererStorageRuntime().reset()
 
   // Reset all Zustand stores to initial state
   useMessageStore.setState({
@@ -65,11 +64,6 @@ export function resetAllStores(): void {
     pendingJumpTarget: null,
     focusedMessageId: null,
     pinnedByChannel: {}
-  })
-
-  useCryptoStore.setState({
-    groupStates: {},
-    groupSetupInProgress: {}
   })
 
   useServerStore.setState({

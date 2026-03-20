@@ -14,7 +14,7 @@ The system has four layers:
 
 ```
 ┌──────────────────────────────────────────────────┐
-│  Stores (authStore, cryptoStore, messageStore)    │  ← Orchestration
+│  UI stores + SDK client runtime                    │  ← Orchestration
 ├──────────────────────────────────────────────────┤
 │  Crypto (mls, identity, payload, groupLock, …)   │  ← Cryptographic operations
 ├──────────────────────────────────────────────────┤
@@ -348,10 +348,11 @@ The server is a relay and coordination point. It never processes MLS state or ac
 If you're adding a feature that involves encrypted content (e.g., encrypted typing indicators, encrypted read receipts):
 
 1. Define the payload type in `payload.ts` or create a new type.
-2. Encrypt using `encryptForChannel()` in `cryptoStore`.
+2. Encrypt using the SDK encrypted chat runtime (`sendPayload()` / `sendText()` in
+   `sdk/src/client/encryptedChat.ts`).
 3. Send the ciphertext + epoch via WebSocket.
 4. On the server, relay the ciphertext opaquely — don't parse it.
-5. On receive, decrypt via `decryptForChannel()`.
+5. On receive, decrypt via the SDK encrypted chat runtime.
 6. Remember: every encrypt/decrypt ratchets the MLS state. High-frequency encrypted operations burn through epoch retention faster.
 
 ### Modifying the Database Schema

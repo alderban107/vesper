@@ -1,7 +1,8 @@
 import { create } from 'zustand'
-import { joinChannel, leaveChannel, pushToChannel } from '../api/socket'
 import { useServerStore } from './serverStore'
 import type { DmConversation } from './dmStore'
+import { getRendererClient, getRendererEncryptedChat } from '../sdk/client'
+import { fireAndForget } from '../utils/async'
 
 export type PresenceStatus = 'online' | 'idle' | 'dnd' | 'offline'
 
@@ -17,20 +18,18 @@ interface PresenceState {
   getStatus: (userId: string) => PresenceStatus
 }
 
-let heartbeatInterval: ReturnType<typeof setInterval> | null = null
 let idleTimeout: ReturnType<typeof setTimeout> | null = null
 let userTopic: string | null = null
 let serverPresenceTopics: Set<string> = new Set()
 let activityListenersAttached = false
 let detachActivityListeners: (() => void) | null = null
+let detachUserFeedListeners: (() => void) | null = null
 let presenceSourcesByTopic = new Map<string, Record<string, PresenceStatus>>()
 let pendingScopeMutations = new Set<string>()
 let scopeMutationRefreshPromise: Promise<void> | null = null
 let recentUnreadMessageKeys = new Map<string, number>()
-let unreadRefreshPromise: Promise<void> | null = null
-let unreadRefreshRequested = false
+const serverPresenceDisposers = new Map<string, () => void>()
 
-const HEARTBEAT_INTERVAL = 30_000 // 30 seconds
 const IDLE_TIMEOUT = 300_000 // 5 minutes
 const UNREAD_EVENT_DEDUPE_WINDOW_MS = 15_000
 
@@ -148,12 +147,6 @@ async function flushScopeMutations(): Promise<void> {
           messageState.activeScopeId,
           ...messageState.recentScopeIds
         ].filter((scopeId): scopeId is string => Boolean(scopeId)))
-        const changedScopeKinds = new Set(
-          scopeKeys
-            .map((scopeKey) => scopeKey.split(':', 2)[0] ?? null)
-            .filter((kind): kind is 'channel' | 'dm' => kind === 'channel' || kind === 'dm')
-        )
-
         const changedTrackedScopeIds = [
           ...new Set(
             scopeKeys
@@ -172,25 +165,6 @@ async function flushScopeMutations(): Promise<void> {
             scopeIds: changedTrackedScopeIds
           })
         }
-
-        const refreshTasks: Promise<unknown>[] = []
-
-        if (changedScopeKinds.has('dm')) {
-          const [{ useDmStore }, { useUnreadStore }] = await Promise.all([
-            import('./dmStore'),
-            import('./unreadStore')
-          ])
-
-          refreshTasks.push(useDmStore.getState().fetchConversations())
-          refreshTasks.push(useUnreadStore.getState().fetchUnreadCounts())
-        } else if (changedScopeKinds.has('channel')) {
-          const { useUnreadStore } = await import('./unreadStore')
-          refreshTasks.push(useUnreadStore.getState().fetchUnreadCounts())
-        }
-
-        if (refreshTasks.length > 0) {
-          await Promise.all(refreshTasks)
-        }
       }
     } finally {
       scopeMutationRefreshPromise = null
@@ -202,7 +176,7 @@ async function flushScopeMutations(): Promise<void> {
 
 function queueScopeMutation(kind: 'channel' | 'dm', scopeId: string): void {
   pendingScopeMutations.add(`${kind}:${scopeId}`)
-  void flushScopeMutations().catch(() => {})
+  fireAndForget(flushScopeMutations())
 }
 
 export function queueScopeMutationHint(kind: 'channel' | 'dm', scopeId: string): void {
@@ -231,26 +205,8 @@ function claimUnreadMessageKey(
   return true
 }
 
-function scheduleUnreadCountsRefresh(): void {
-  unreadRefreshRequested = true
-
-  if (unreadRefreshPromise) {
-    return
-  }
-
-  unreadRefreshPromise = (async () => {
-    try {
-      while (unreadRefreshRequested) {
-        unreadRefreshRequested = false
-        const { useUnreadStore } = await import('./unreadStore')
-        await useUnreadStore.getState().fetchUnreadCounts()
-      }
-    } finally {
-      unreadRefreshPromise = null
-    }
-  })()
-
-  void unreadRefreshPromise.catch(() => {})
+function pushTopicEvent(topic: string, event: string, payload: object): void {
+  getRendererClient().pushTopicEvent(topic, event, payload)
 }
 
 function resetIdleTimer(): void {
@@ -259,7 +215,7 @@ function resetIdleTimer(): void {
     if (userTopic) {
       const store = usePresenceStore.getState()
       if (store.myStatus === 'online') {
-        pushToChannel(userTopic, 'set_status', { status: 'idle' })
+        pushTopicEvent(userTopic, 'set_status', { status: 'idle' })
         usePresenceStore.setState({ myStatus: 'idle' })
       }
     }
@@ -274,7 +230,7 @@ function setupActivityListeners(): void {
   const onActivity = (): void => {
     const store = usePresenceStore.getState()
     if (store.myStatus === 'idle' && userTopic) {
-      pushToChannel(userTopic, 'set_status', { status: 'online' })
+      pushTopicEvent(userTopic, 'set_status', { status: 'online' })
       usePresenceStore.setState({ myStatus: 'online' })
     }
     resetIdleTimer()
@@ -305,219 +261,349 @@ function triggerUrgentBackgroundSync(): void {
   })
 }
 
+function applyScopeSummaryUpdate(payload: unknown): void {
+  if (!payload || typeof payload !== 'object') {
+    return
+  }
+
+  const data = payload as {
+    kind?: 'channel' | 'dm'
+    channel_activity?: {
+      channel_id?: string
+      message_id?: string | null
+      inserted_at?: string | null
+      sender_id?: string | null
+      sender?: {
+        id: string
+        username: string
+        display_name?: string | null
+        avatar_url?: string | null
+      } | null
+    } | null
+    conversation_reset?: {
+      conversation_id?: string
+      last_message?: DmConversation['last_message'] | null
+    } | null
+  }
+
+  if (data.kind === 'channel' && data.channel_activity?.channel_id) {
+    const activity = data.channel_activity
+
+    useServerStore.getState().syncChannelLastMessage({
+      channelId: activity.channel_id,
+      lastMessage:
+        activity.message_id && activity.inserted_at
+          ? {
+              id: activity.message_id,
+              inserted_at: activity.inserted_at,
+              sender_id: activity.sender_id ?? null,
+              sender: activity.sender ?? null
+            }
+          : null
+    })
+
+    return
+  }
+
+  if (data.kind === 'dm' && data.conversation_reset?.conversation_id) {
+    import('./dmStore').then(({ useDmStore }) => {
+      useDmStore.getState().syncConversationLastMessage({
+        conversationId: data.conversation_reset?.conversation_id ?? '',
+        lastMessage: data.conversation_reset?.last_message ?? null
+      })
+    })
+  }
+}
+
+function handleUserFeedEvent(topic: string, event: string, payload: unknown): void {
+  if (event === 'presence_state') {
+    const state = payload as Record<string, { metas: Array<{ status: string }> }>
+    replaceTopicPresence(topic, state)
+    usePresenceStore.setState({ statuses: recomputePresenceStatuses(), connected: true })
+    return
+  }
+
+  if (event === 'presence_diff') {
+    const diff = payload as {
+      joins: Record<string, { metas: Array<{ status: string }> }>
+      leaves: Record<string, unknown>
+    }
+    applyTopicPresenceDiff(topic, diff)
+    usePresenceStore.setState({ statuses: recomputePresenceStatuses() })
+    return
+  }
+
+  if (event === 'new_conversation') {
+    import('./dmStore').then(({ useDmStore }) => {
+      const data = payload as { conversation: DmConversation }
+      useDmStore.getState().addConversation(data.conversation)
+    })
+    return
+  }
+
+  if (event === 'scope_summary_updated') {
+    applyScopeSummaryUpdate(payload)
+    return
+  }
+
+  if (event === 'server_membership_revoked') {
+    import('./serverStore').then(({ useServerStore }) => {
+      const data = payload as {
+        server_id?: string
+        channel_ids?: string[]
+      }
+
+      const serverId = typeof data.server_id === 'string' ? data.server_id : null
+      const channelIds = Array.isArray(data.channel_ids)
+        ? data.channel_ids.filter((channelId): channelId is string => typeof channelId === 'string')
+        : []
+
+      for (const channelId of channelIds) {
+        fireAndForget(getRendererEncryptedChat().resetScope(channelId))
+        fireAndForget(getRendererEncryptedChat().resetScope(`voice:channel:${channelId}`))
+      }
+
+      if (serverId) {
+        useServerStore.getState().removeServerLocally(serverId)
+      }
+    })
+    return
+  }
+
+  if (event === 'dm_message') {
+    Promise.all([
+      import('./dmStore'),
+      import('./unreadStore')
+    ]).then(([{ useDmStore }, { useUnreadStore }]) => {
+      const data = payload as {
+        conversation_id: string
+        message_id: string
+        sender_id: string | null
+        sender?: { id: string; username: string } | null
+        inserted_at: string
+      }
+
+      const applied = useDmStore.getState().applyConversationActivity({
+        conversationId: data.conversation_id,
+        messageId: data.message_id,
+        senderId: data.sender_id,
+        sender: data.sender ?? null,
+        insertedAt: data.inserted_at
+      })
+
+      if (!applied) {
+        void useDmStore.getState().fetchConversations()
+      }
+
+      if (
+        useDmStore.getState().selectedConversationId !== data.conversation_id &&
+        claimUnreadMessageKey('dm', data.conversation_id, data.message_id)
+      ) {
+        useUnreadStore.getState().incrementDm(data.conversation_id)
+      }
+    })
+    return
+  }
+
+  if (event === 'dm_typing_start') {
+    import('./messageStore').then(({ useMessageStore }) => {
+      const data = payload as {
+        conversation_id: string
+        payload?: {
+          user_id?: string
+          username?: string
+        }
+      }
+
+      const conversationId = data.conversation_id
+      const typingUser = data.payload
+      if (!conversationId || !typingUser?.user_id) {
+        return
+      }
+
+      useMessageStore.setState((state) => {
+        const current = state.typingUsers[conversationId] || []
+        if (current.some((entry) => entry.user_id === typingUser.user_id)) {
+          return state
+        }
+
+        return {
+          typingUsers: {
+            ...state.typingUsers,
+            [conversationId]: [
+              ...current,
+              {
+                user_id: typingUser.user_id,
+                username: typingUser.username ?? 'Someone'
+              }
+            ]
+          }
+        }
+      })
+    })
+    return
+  }
+
+  if (event === 'dm_typing_stop') {
+    import('./messageStore').then(({ useMessageStore }) => {
+      const data = payload as {
+        conversation_id: string
+        payload?: {
+          user_id?: string
+        }
+      }
+
+      const conversationId = data.conversation_id
+      const userId = data.payload?.user_id
+      if (!conversationId || !userId) {
+        return
+      }
+
+      useMessageStore.setState((state) => ({
+        typingUsers: {
+          ...state.typingUsers,
+          [conversationId]: (state.typingUsers[conversationId] || []).filter(
+            (entry) => entry.user_id !== userId
+          )
+        }
+      }))
+    })
+    return
+  }
+
+  if (event === 'mls_history_request_pending' || event === 'mls_history_bundle_pending') {
+    import('./messageStore').then(({ processPendingHistoryScope }) => {
+      const data = payload as {
+        scope_id: string
+        topic: string
+      }
+
+      fireAndForget(processPendingHistoryScope(data.scope_id, data.topic))
+    })
+    return
+  }
+
+  if (event === 'unread_update') {
+    const data = payload as {
+      channel_id: string
+      message_id: string
+      inserted_at?: string
+      sender_id: string | null
+      sender?: {
+        id: string
+        username: string
+        display_name?: string | null
+        avatar_url?: string | null
+      } | null
+    }
+    Promise.all([
+      import('./serverStore'),
+      import('./unreadStore')
+    ]).then(([{ useServerStore }, { useUnreadStore }]) => {
+      if (data.inserted_at) {
+        useServerStore.getState().applyChannelActivity({
+          channelId: data.channel_id,
+          messageId: data.message_id,
+          insertedAt: data.inserted_at,
+          senderId: data.sender_id,
+          sender: data.sender ?? null
+        })
+      }
+      if (useServerStore.getState().activeChannelId !== data.channel_id) {
+        useUnreadStore.getState().incrementChannel(data.channel_id)
+      }
+    })
+    return
+  }
+
+  if (event === 'mention') {
+    triggerUrgentBackgroundSync()
+    return
+  }
+
+  if (event === 'dm_unread_update') {
+    const data = payload as { conversation_id: string; message_id: string }
+    Promise.all([
+      import('./dmStore'),
+      import('./unreadStore')
+    ]).then(([{ useDmStore }, { useUnreadStore }]) => {
+      if (
+        useDmStore.getState().selectedConversationId !== data.conversation_id &&
+        claimUnreadMessageKey('dm', data.conversation_id, data.message_id)
+      ) {
+        useUnreadStore.getState().incrementDm(data.conversation_id)
+      }
+    })
+    return
+  }
+
+  if (event === 'scope_mutation') {
+    const data = payload as { kind: 'channel' | 'dm'; scope_id: string }
+    queueScopeMutation(data.kind, data.scope_id)
+    return
+  }
+
+  if (event === 'device_approval_requested' || event === 'device_updated') {
+    import('./authStore').then(({ useAuthStore }) => {
+      const data = payload as {
+        device?: {
+          id: string
+          client_id: string
+          name: string
+          platform: string | null
+          trust_state: 'pending' | 'trusted' | 'revoked'
+          approval_method: string | null
+          trusted_at: string | null
+          revoked_at: string | null
+          last_seen_at: string | null
+          inserted_at: string
+        }
+      }
+
+      if (data.device) {
+        void useAuthStore.getState().handleDeviceEvent(data.device)
+      }
+    })
+  }
+}
+
 export const usePresenceStore = create<PresenceState>((set, get) => ({
   statuses: {},
   myStatus: 'online',
   connected: false,
 
   joinPresence: (userId) => {
-    const topic = `user:${userId}`
-    userTopic = topic
+    userTopic = `user:${userId}`
 
-    joinChannel(topic, (event, payload) => {
-      if (event === 'presence_state') {
-        const state = payload as Record<string, { metas: Array<{ status: string }> }>
-        replaceTopicPresence(topic, state)
-        set({ statuses: recomputePresenceStatuses(), connected: true })
-      } else if (event === 'presence_diff') {
-        const diff = payload as {
-          joins: Record<string, { metas: Array<{ status: string }> }>
-          leaves: Record<string, unknown>
+    if (!detachUserFeedListeners) {
+      const client = getRendererClient()
+      const unsubscribeRaw = client.on('raw', ({ event, payload }) => {
+        if (!userTopic) {
+          return
         }
-        applyTopicPresenceDiff(topic, diff)
-        set({ statuses: recomputePresenceStatuses() })
-      } else if (event === 'new_conversation') {
-        import('./dmStore').then(({ useDmStore }) => {
-          const data = payload as { conversation: DmConversation }
-          useDmStore.getState().addConversation(data.conversation)
-        })
-      } else if (event === 'dm_message') {
-        triggerUrgentBackgroundSync()
-        Promise.all([
-          import('./dmStore'),
-          import('./unreadStore')
-        ]).then(([{ useDmStore }, { useUnreadStore }]) => {
-          const data = payload as {
-            conversation_id: string
-            message_id: string
-            sender_id: string | null
-            sender?: { id: string; username: string } | null
-            inserted_at: string
-          }
 
-          const applied = useDmStore.getState().applyConversationActivity({
-            conversationId: data.conversation_id,
-            messageId: data.message_id,
-            senderId: data.sender_id,
-            sender: data.sender ?? null,
-            insertedAt: data.inserted_at
-          })
+        handleUserFeedEvent(userTopic, event, payload)
+      })
+      const unsubscribeConnected = client.on('connected', () => {
+        set({ connected: true })
+      })
+      const unsubscribeLost = client.on('connection.lost', () => {
+        set({ connected: false })
+      })
+      const unsubscribeDisconnected = client.on('disconnected', () => {
+        set({ connected: false })
+      })
 
-          if (!applied) {
-            void useDmStore.getState().fetchConversations()
-          }
-
-          if (
-            useDmStore.getState().selectedConversationId !== data.conversation_id &&
-            claimUnreadMessageKey('dm', data.conversation_id, data.message_id)
-          ) {
-            useUnreadStore.getState().incrementDm(data.conversation_id)
-          }
-        })
-      } else if (event === 'dm_typing_start') {
-        import('./messageStore').then(({ useMessageStore }) => {
-          const data = payload as {
-            conversation_id: string
-            payload?: {
-              user_id?: string
-              username?: string
-            }
-          }
-
-          const conversationId = data.conversation_id
-          const typingUser = data.payload
-          if (!conversationId || !typingUser?.user_id) {
-            return
-          }
-
-          useMessageStore.setState((state) => {
-            const current = state.typingUsers[conversationId] || []
-            if (current.some((entry) => entry.user_id === typingUser.user_id)) {
-              return state
-            }
-
-            return {
-              typingUsers: {
-                ...state.typingUsers,
-                [conversationId]: [
-                  ...current,
-                  {
-                    user_id: typingUser.user_id,
-                    username: typingUser.username ?? 'Someone'
-                  }
-                ]
-              }
-            }
-          })
-        })
-      } else if (event === 'dm_typing_stop') {
-        import('./messageStore').then(({ useMessageStore }) => {
-          const data = payload as {
-            conversation_id: string
-            payload?: {
-              user_id?: string
-            }
-          }
-
-          const conversationId = data.conversation_id
-          const userId = data.payload?.user_id
-          if (!conversationId || !userId) {
-            return
-          }
-
-          useMessageStore.setState((state) => ({
-            typingUsers: {
-              ...state.typingUsers,
-              [conversationId]: (state.typingUsers[conversationId] || []).filter(
-                (entry) => entry.user_id !== userId
-              )
-            }
-          }))
-        })
-      } else if (
-        event === 'mls_history_request_pending' ||
-        event === 'mls_history_bundle_pending'
-      ) {
-        import('./messageStore').then(({ processPendingHistoryScope }) => {
-          const data = payload as {
-            scope_id: string
-            topic: string
-          }
-
-          void processPendingHistoryScope(data.scope_id, data.topic).catch(() => {})
-        })
-      } else if (event === 'unread_update') {
-        triggerUrgentBackgroundSync()
-        const data = payload as {
-          channel_id: string
-          message_id: string
-          inserted_at?: string
-          sender_id: string | null
-          sender?: {
-            id: string
-            username: string
-            display_name?: string | null
-            avatar_url?: string | null
-          } | null
-        }
-        Promise.all([
-          import('./serverStore'),
-          import('./unreadStore')
-        ]).then(([{ useServerStore }, { useUnreadStore }]) => {
-          if (data.inserted_at) {
-            useServerStore.getState().applyChannelActivity({
-              channelId: data.channel_id,
-              messageId: data.message_id,
-              insertedAt: data.inserted_at,
-              senderId: data.sender_id,
-              sender: data.sender ?? null
-            })
-          }
-          if (useServerStore.getState().activeChannelId !== data.channel_id) {
-            useUnreadStore.getState().incrementChannel(data.channel_id)
-          }
-          queueScopeMutation('channel', data.channel_id)
-        })
-      } else if (event === 'mention') {
-        triggerUrgentBackgroundSync()
-      } else if (event === 'dm_unread_update') {
-        triggerUrgentBackgroundSync()
-        const data = payload as { conversation_id: string; message_id: string }
-        Promise.all([
-          import('./dmStore'),
-          import('./unreadStore')
-        ]).then(([{ useDmStore }, { useUnreadStore }]) => {
-          if (
-            useDmStore.getState().selectedConversationId !== data.conversation_id &&
-            claimUnreadMessageKey('dm', data.conversation_id, data.message_id)
-          ) {
-            useUnreadStore.getState().incrementDm(data.conversation_id)
-          }
-        })
-        scheduleUnreadCountsRefresh()
-        queueScopeMutation('dm', data.conversation_id)
-      } else if (event === 'scope_mutation') {
-        const data = payload as { kind: 'channel' | 'dm'; scope_id: string }
-        queueScopeMutation(data.kind, data.scope_id)
-      } else if (event === 'device_approval_requested' || event === 'device_updated') {
-        import('./authStore').then(({ useAuthStore }) => {
-          const data = payload as {
-            device?: {
-              id: string
-              client_id: string
-              name: string
-              platform: string | null
-              trust_state: 'pending' | 'trusted' | 'revoked'
-              approval_method: string | null
-              trusted_at: string | null
-              revoked_at: string | null
-              last_seen_at: string | null
-              inserted_at: string
-            }
-          }
-
-          if (data.device) {
-            void useAuthStore.getState().handleDeviceEvent(data.device)
-          }
-        })
+      detachUserFeedListeners = () => {
+        unsubscribeRaw()
+        unsubscribeConnected()
+        unsubscribeLost()
+        unsubscribeDisconnected()
+        detachUserFeedListeners = null
       }
-    })
+    }
 
-    // Start heartbeat
-    if (heartbeatInterval) clearInterval(heartbeatInterval)
-    heartbeatInterval = setInterval(() => {
-      pushToChannel(topic, 'heartbeat', {})
-    }, HEARTBEAT_INTERVAL)
+    set({ connected: getRendererClient().getState().connected })
 
     // Start idle detection
     setupActivityListeners()
@@ -532,7 +618,8 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
     for (const topic of serverPresenceTopics) {
       if (!newTopics.has(topic)) {
         clearTopicPresence(topic)
-        leaveChannel(topic)
+        serverPresenceDisposers.get(topic)?.()
+        serverPresenceDisposers.delete(topic)
       }
     }
 
@@ -541,7 +628,7 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
       if (serverPresenceTopics.has(topic)) continue
       const serverId = topic.replace('presence:server:', '')
 
-      joinChannel(topic, (event, payload) => {
+      const dispose = getRendererClient().subscribeTopic(topic, (event, payload) => {
         if (event === 'presence_state') {
           const state = payload as Record<string, { metas: Array<{ status: string }> }>
           replaceTopicPresence(topic, state)
@@ -571,6 +658,11 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
                 : srv
             )
           }))
+        } else if (event === 'server_members_updated') {
+          const activeServerId = useServerStore.getState().activeServerId
+          if (activeServerId === serverId) {
+            void useServerStore.getState().fetchMembers(serverId)
+          }
         } else if (
           event === 'channel_created' ||
           event === 'channel_updated' ||
@@ -609,6 +701,8 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
           queueScopeMutation(data.kind, data.scope_id)
         }
       })
+
+      serverPresenceDisposers.set(topic, dispose)
     }
 
     serverPresenceTopics = newTopics
@@ -617,14 +711,15 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
   leaveAllServerPresence: () => {
     for (const topic of serverPresenceTopics) {
       clearTopicPresence(topic)
-      leaveChannel(topic)
+      serverPresenceDisposers.get(topic)?.()
+      serverPresenceDisposers.delete(topic)
     }
     serverPresenceTopics.clear()
   },
 
   setStatus: (status) => {
     if (userTopic && status !== 'offline') {
-      pushToChannel(userTopic, 'set_status', { status })
+      pushTopicEvent(userTopic, 'set_status', { status })
     }
     set({ myStatus: status })
   },
@@ -639,23 +734,20 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
  * Called during logout to stop heartbeats and idle detection.
  */
 export function cleanupPresenceTimers(): void {
-  if (heartbeatInterval) {
-    clearInterval(heartbeatInterval)
-    heartbeatInterval = null
-  }
   if (idleTimeout) {
     clearTimeout(idleTimeout)
     idleTimeout = null
   }
   if (userTopic) {
     clearTopicPresence(userTopic)
-    leaveChannel(userTopic)
     userTopic = null
   }
+  detachUserFeedListeners?.()
   detachActivityListeners?.()
   for (const topic of serverPresenceTopics) {
     clearTopicPresence(topic)
-    leaveChannel(topic)
+    serverPresenceDisposers.get(topic)?.()
+    serverPresenceDisposers.delete(topic)
   }
   serverPresenceTopics.clear()
   presenceSourcesByTopic.clear()

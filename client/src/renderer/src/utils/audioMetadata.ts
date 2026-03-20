@@ -1,5 +1,3 @@
-import { parseBlob, selectCover } from 'music-metadata-browser'
-
 export interface AudioMetadataResult {
   title?: string
   artist?: string
@@ -72,6 +70,7 @@ async function resizeCoverArt(data: Uint8Array, mime: string): Promise<Blob | nu
  */
 export async function extractAudioMetadata(file: File): Promise<AudioMetadataResult | null> {
   try {
+    const { parseBlob, selectCover } = await import('music-metadata-browser')
     const metadata = await parseBlob(file)
 
     const title = truncate(metadata.common.title, 128)

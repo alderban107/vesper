@@ -78,7 +78,22 @@ cd client
 npm run test:e2e
 ```
 
-E2E tests live in `client/e2e/` and use Playwright. They require a running server and test database. The suite is organized by priority (`p0-` smoke, `p1-` core features, `p2-` edge cases) with 19 spec files, fixtures, and harness tooling. See `client/e2e/REQUIREMENTS.md` for the full test plan.
+E2E tests live in `client/e2e/` and use Playwright. The harness boots Phoenix
+and Vite itself, and also starts the shared local Postgres helper container
+when Docker is available. The suite is organized by priority (`p0-` smoke,
+`p1-` core features, `p2-` edge cases) with 19 spec files, fixtures, and
+harness tooling. See `client/e2e/REQUIREMENTS.md` for the full test plan.
+
+### SDK live tests
+
+```bash
+cd client
+npm run test:sdk:e2e
+```
+
+This runs the Node-based live SDK suite in `sdk/test/`. It boots
+Phoenix automatically and uses the same local Postgres helper and root `.env`
+settings as the Playwright harness.
 
 **Note:** There are no client unit tests yet. `npm run check:web` (typecheck + production build) is the current client-side CI gate.
 

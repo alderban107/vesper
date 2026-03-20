@@ -19,11 +19,14 @@ defmodule VesperWeb.VoiceChannel do
       %{type: type} when type != "voice" ->
         {:error, %{reason: "not a voice channel"}}
 
-      _channel ->
+      channel ->
+        Phoenix.PubSub.subscribe(Vesper.PubSub, "server:members:#{channel.server_id}")
+
         socket =
           socket
           |> assign(:room_id, channel_id)
           |> assign(:room_type, :channel)
+          |> assign(:server_id, channel.server_id)
 
         send(self(), :after_join)
         {:ok, socket}
@@ -313,6 +316,13 @@ defmodule VesperWeb.VoiceChannel do
   def handle_info(:call_timeout, socket) do
     push(socket, "call_timeout", %{})
     {:noreply, socket}
+  end
+
+  def handle_info({:member_left, server_id, user_id}, socket)
+      when socket.assigns.room_type == :channel and
+             server_id == socket.assigns.server_id and
+             user_id == socket.assigns.user_id do
+    {:stop, {:shutdown, :membership_revoked}, socket}
   end
 
   @impl true

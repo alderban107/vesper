@@ -47,6 +47,68 @@ defmodule Vesper.ChatPaginationTest do
 
       assert Enum.map(newer_page, & &1.id) == [newest.id]
     end
+
+    test "channel latest-message fast path preserves attachments and reactions" do
+      user = insert_user()
+      server = insert_server(user)
+      channel = insert_channel(server)
+
+      assert {:ok, _room} = Runtime.ensure_room_for_channel(channel)
+
+      message =
+        insert_message(user, channel, %{
+          id: "00000000-0000-0000-0000-000000000021"
+        })
+
+      {_attachment, _storage_key} = insert_attachment_with_file(message)
+
+      assert {:ok, _reaction} =
+               Chat.add_reaction(%{
+                 message_id: message.id,
+                 sender_id: user.id,
+                 emoji: ":wave:"
+               })
+
+      assert {:ok, _event} = Runtime.project_message(message)
+
+      [latest] = Chat.list_channel_messages(channel.id, limit: 1)
+
+      assert latest.id == message.id
+      assert length(latest.attachments) == 1
+      assert Enum.map(latest.reactions, & &1.emoji) == [":wave:"]
+    end
+
+    test "conversation latest-message fast path preserves attachments and reactions" do
+      sender = insert_user()
+      peer = insert_user()
+      {:ok, conversation} = Chat.create_conversation(sender.id, [peer.id])
+
+      message =
+        Repo.insert!(%Vesper.Chat.Message{
+          id: "00000000-0000-0000-0000-000000000022",
+          ciphertext: <<4>>,
+          mls_epoch: 0,
+          sender_id: sender.id,
+          conversation_id: conversation.id
+        })
+
+      {_attachment, _storage_key} = insert_attachment_with_file(message)
+
+      assert {:ok, _reaction} =
+               Chat.add_reaction(%{
+                 message_id: message.id,
+                 sender_id: sender.id,
+                 emoji: ":sparkles:"
+               })
+
+      assert {:ok, _event} = Runtime.project_message(message)
+
+      [latest] = Chat.list_conversation_messages(conversation.id, limit: 1)
+
+      assert latest.id == message.id
+      assert length(latest.attachments) == 1
+      assert Enum.map(latest.reactions, & &1.emoji) == [":sparkles:"]
+    end
   end
 
   describe "unread counts" do

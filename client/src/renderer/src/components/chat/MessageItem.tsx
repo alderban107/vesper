@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { Suspense, lazy, useState, useRef, useEffect } from 'react'
 import { Copy, Lock, MessageSquare, Pencil, Pin, Reply, Trash2 } from 'lucide-react'
 import type { Message } from '../../stores/messageStore'
 import { useMessageStore, parseMessageContent } from '../../stores/messageStore'
@@ -8,7 +8,6 @@ import { useServerStore } from '../../stores/serverStore'
 import { useDmStore } from '../../stores/dmStore'
 import { useUIStore } from '../../stores/uiStore'
 import Avatar from '../ui/Avatar'
-import MarkdownContent from './MarkdownContent'
 import EmojiPicker from './EmojiPicker'
 import LinkPreview from './LinkPreview'
 import FilePreview from './FilePreview'
@@ -19,6 +18,8 @@ import MessageReplyPreview from './message/MessageReplyPreview'
 import MessageReactionBar from './message/MessageReactionBar'
 import ProfilePopout from '../profile/ProfilePopout'
 import { formatCustomEmojiToken, type CustomEmoji } from '../../utils/emoji'
+
+const MarkdownContent = lazy(() => import('./MarkdownContent'))
 
 interface Props {
   message: Message
@@ -503,7 +504,9 @@ export default function MessageItem({
                     <div className="vesper-message-unavailable-title">{unavailableLabel}</div>
                   </div>
                 ) : (
-                  <MarkdownContent content={displayText} />
+                  <Suspense fallback={<div>{displayText}</div>}>
+                    <MarkdownContent content={displayText} />
+                  </Suspense>
                 )}
                 {message.edited_at && (
                   <span data-testid="edited-marker" className="ml-1.5 text-xs text-text-faintest">(edited)</span>

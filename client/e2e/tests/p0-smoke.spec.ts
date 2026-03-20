@@ -30,10 +30,10 @@
  *   R-ASSERT-5   First run gates pre-merge CI
  */
 
-import { test, expect, type Browser, type Page, type BrowserContext } from '@playwright/test'
-import { readRunState, saveRecoveryKey } from '../harness/state'
+import { test, expect } from '@playwright/test'
+import { saveRecoveryKey } from '../harness/state'
 import { ConsoleMonitor } from '../harness/console-monitor'
-import { signup, createUserContext, login, approveWithRecoveryKey, type UserContext } from '../helpers/auth'
+import { signup, createUserContext, type UserContext } from '../helpers/auth'
 import { createDm, selectDm, sendDmMessage } from '../helpers/dm'
 import {
   createServer,
@@ -52,7 +52,6 @@ import {
   assertConvergence,
   assertThreeWayConvergence,
   assertNoDecryptionFailures,
-  assertMessageVisible,
 } from '../helpers/assertions'
 import { recordSnapshot, writeSnapshots } from '../helpers/snapshots'
 import { waitForMessage, waitForServerInSidebar, waitForChannel } from '../helpers/wait'
@@ -222,7 +221,7 @@ test.describe('P0 Smoke — full continuous run', () => {
 
   // --- Step 11: Restart one DM client context (R-DM-2, R-HARNESS-5) ---
   test('Step 11: browser context restart preserves DM state', async () => {
-    test.setTimeout(30_000) // context restart is inherently slower
+    test.setTimeout(60_000) // context restart + IndexedDB restore is inherently slower
 
     const result = await restartBrowserContext(
       alice.page.context().browser()!,

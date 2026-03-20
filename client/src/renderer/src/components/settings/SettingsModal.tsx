@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Bell, Globe, Mic, Moon, Palette, RefreshCw, Shield, SlidersHorizontal, Sparkles, Sun, UserRound, Volume2 } from 'lucide-react'
-import { getLocalDeviceIdentity } from '../../auth/deviceIdentity'
+import { getLocalDeviceIdentity } from '@vesper/sdk/auth'
 import { usePresenceStore } from '../../stores/presenceStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useSettingsStore } from '../../stores/settingsStore'
@@ -8,6 +8,7 @@ import { useVoiceStore } from '../../stores/voiceStore'
 import { useAuthStore } from '../../stores/authStore'
 import Avatar from '../ui/Avatar'
 import SettingsShell, { type SettingsSectionGroup } from './SettingsShell'
+import { getStoredValue, setStoredValue } from '../../utils/localStorage'
 
 type UserSettingsSection = 'profile' | 'appearance' | 'notifications' | 'voice' | 'advanced'
 
@@ -287,10 +288,10 @@ export default function SettingsModal(): React.JSX.Element {
   const [displayName, setDisplayName] = useState(user?.display_name || '')
   const [profileSaved, setProfileSaved] = useState(false)
   const [theme, setTheme] = useState<'dark' | 'light'>(
-    () => (localStorage.getItem('theme') as 'dark' | 'light') || 'dark'
+    () => (getStoredValue('theme') as 'dark' | 'light') || 'dark'
   )
   const [notificationsEnabled, setNotificationsEnabled] = useState(
-    () => localStorage.getItem('notifications') !== 'disabled'
+    () => getStoredValue('notifications') !== 'disabled'
   )
 
   const { inputs, outputs, loading: devicesLoading, reload: reloadDevices } = useAudioDevices()
@@ -334,14 +335,14 @@ export default function SettingsModal(): React.JSX.Element {
 
   const handleThemeChange = (nextTheme: 'dark' | 'light'): void => {
     setTheme(nextTheme)
-    localStorage.setItem('theme', nextTheme)
+    setStoredValue('theme', nextTheme)
     document.documentElement.setAttribute('data-theme', nextTheme)
   }
 
   const handleNotificationToggle = (): void => {
     const enabled = !notificationsEnabled
     setNotificationsEnabled(enabled)
-    localStorage.setItem('notifications', enabled ? 'enabled' : 'disabled')
+    setStoredValue('notifications', enabled ? 'enabled' : 'disabled')
   }
 
   const handleLinkPreviewToggle = (): void => {

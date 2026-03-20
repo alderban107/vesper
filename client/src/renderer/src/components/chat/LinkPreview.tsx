@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { ExternalLink } from 'lucide-react'
 import { useSettingsStore } from '../../stores/settingsStore'
-import { fetchLinkPreviewMetadata, type LinkPreviewData } from '../../lib/linkPreview'
+import { fetchLinkPreviewMetadata, type LinkPreviewData } from '../../utils/linkPreview'
 
 // Module-level cache to avoid re-fetching
 const previewCache = new Map<string, LinkPreviewData | null>()

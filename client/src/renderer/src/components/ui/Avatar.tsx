@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { getServerUrl } from '../../api/client'
+import { getRendererClient } from '../../sdk/client'
 import { avatarColor } from '../../utils/avatar'
 import type { PresenceStatus } from '../../stores/presenceStore'
 
@@ -7,12 +7,13 @@ interface Props {
   userId: string
   avatarUrl?: string | null
   displayName: string
-  size?: 'sm' | 'md' | 'lg'
+  size?: 'xs' | 'sm' | 'md' | 'lg'
   status?: PresenceStatus
   speaking?: boolean
 }
 
 const SIZES = {
+  xs: 'vesper-avatar vesper-avatar-xs text-[8px]',
   sm: 'vesper-avatar vesper-avatar-sm text-[10px]',
   md: 'vesper-avatar vesper-avatar-md text-xs',
   lg: 'vesper-avatar vesper-avatar-lg text-lg'
@@ -27,7 +28,7 @@ function resolveAvatarUrl(avatarUrl?: string | null): string | null {
     return avatarUrl
   }
 
-  return `${getServerUrl()}${avatarUrl.startsWith('/') ? avatarUrl : `/${avatarUrl}`}`
+  return getRendererClient().resolveUrl(avatarUrl)
 }
 
 export default function Avatar({

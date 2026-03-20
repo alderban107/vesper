@@ -10,6 +10,7 @@ server/tmp/
 server/*.tar
 
 # Client (Electron/Node)
+node_modules/
 client/node_modules/
 client/out/
 client/dist/
@@ -17,6 +18,8 @@ client/dist-web/
 client/coverage/
 client/test-results/
 client/playwright-report/
+sdk/artifacts/
+sdk/dist/
 
 # Project docs (private)
 CLAUDE.md
@@ -36,9 +39,26 @@ uploads/
 .DS_Store
 Thumbs.db
 
-# IDE
+# IDE / editor / agent tooling
 .idea/
 .vscode/
+.cursor/
+.codex/
+.gemini/
+.zed/
+.claude/
+.mcp.json
+opencode.json
 *.swp
 *~
+
+# Build artifacts
+*.tsbuildinfo
+
+# Test artifacts
+client/e2e/artifacts/
 media-test-files/
+
+# Analysis artifacts
+.desloppify/
+scorecard.png

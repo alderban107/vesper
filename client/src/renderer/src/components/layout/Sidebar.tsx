@@ -14,7 +14,6 @@ import {
   Trash2,
   Volume2
 } from 'lucide-react'
-import { apiFetch } from '../../api/client'
 import { useAuthStore } from '../../stores/authStore'
 import { useDmStore } from '../../stores/dmStore'
 import { usePresenceStore } from '../../stores/presenceStore'
@@ -23,6 +22,8 @@ import { useUIStore } from '../../stores/uiStore'
 import { useUnreadStore } from '../../stores/unreadStore'
 import { useVoiceStore } from '../../stores/voiceStore'
 import { useContextMenu } from '../../hooks/useContextMenu'
+import { getRendererClient } from '../../sdk/client'
+import { getStoredJson, setStoredJson } from '../../utils/localStorage'
 import DmSidebar from '../dm/DmSidebar'
 import ProfilePopout from '../profile/ProfilePopout'
 import ContextMenu, { type ContextMenuItem } from '../ui/ContextMenu'
@@ -42,19 +43,6 @@ type ChannelSection = {
 }
 
 const CHANNEL_COLLAPSE_STORAGE_KEY = 'vesper:channelCollapseState'
-function readCollapsedSections(): Record<string, boolean> {
-  if (typeof window === 'undefined') {
-    return {}
-  }
-
-  try {
-    const raw = window.localStorage.getItem(CHANNEL_COLLAPSE_STORAGE_KEY)
-    const parsed = raw ? JSON.parse(raw) : null
-    return parsed && typeof parsed === 'object' ? parsed as Record<string, boolean> : {}
-  } catch {
-    return {}
-  }
-}
 
 function sortChannels(channels: Channel[]): Channel[] {
   return [...channels].sort(
@@ -96,7 +84,7 @@ function buildSections(channels: Channel[]): ChannelSection[] {
     (channel) => channel.type === 'voice' && !channel.category_id
   )
 
-  const filteredSections = sections.filter((section) => {
+  const filteredSections: ChannelSection[] = sections.filter((section) => {
     if (!section.category || section.channels.length > 0) {
       return true
     }
@@ -185,14 +173,13 @@ export default function Sidebar(): React.JSX.Element {
   const leaveServer = useServerStore((s) => s.leaveServer)
   const selectedConversationId = useDmStore((s) => s.selectedConversationId)
   const selectConversation = useDmStore((s) => s.selectConversation)
-  const fetchConversations = useDmStore((s) => s.fetchConversations)
   const channelUnreads = useUnreadStore((s) => s.channelUnreads)
   const dmUnreads = useUnreadStore((s) => s.dmUnreads)
   const serverMenu = useContextMenu<string>()
   const channelMenu = useContextMenu<{ channelId: string; serverId: string }>()
   const [serverHeaderOpen, setServerHeaderOpen] = useState(false)
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>(
-    () => readCollapsedSections()
+    () => getStoredJson<Record<string, boolean>>(CHANNEL_COLLAPSE_STORAGE_KEY, {})
   )
   const [dragState, setDragState] = useState<DragState | null>(null)
   const [dropTarget, setDropTarget] = useState<string | null>(null)
@@ -237,11 +224,7 @@ export default function Sidebar(): React.JSX.Element {
   }, [serverHeaderOpen])
 
   useEffect(() => {
-    if (typeof window === 'undefined') {
-      return
-    }
-
-    window.localStorage.setItem(CHANNEL_COLLAPSE_STORAGE_KEY, JSON.stringify(collapsedSections))
+    setStoredJson(CHANNEL_COLLAPSE_STORAGE_KEY, collapsedSections)
   }, [collapsedSections])
 
   useEffect(() => {
@@ -274,7 +257,6 @@ export default function Sidebar(): React.JSX.Element {
     selectConversation(null)
     setActiveServer(null)
     setActiveChannel(null)
-    fetchConversations()
     setServerHeaderOpen(false)
     if (isMobileLayout) {
       closeMobileNav()
@@ -291,14 +273,9 @@ export default function Sidebar(): React.JSX.Element {
 
   const copyInviteCode = async (serverId: string): Promise<void> => {
     try {
-      const res = await apiFetch(`/api/v1/servers/${serverId}/invite-code`)
-      if (!res.ok) {
-        return
-      }
-
-      const data = await res.json()
-      if (typeof data.invite_code === 'string' && data.invite_code.length > 0) {
-        await navigator.clipboard.writeText(data.invite_code)
+      const inviteCode = await getRendererClient().fetchServerInviteCode(serverId)
+      if (inviteCode.length > 0) {
+        await navigator.clipboard.writeText(inviteCode)
       }
     } catch {
       // ignore

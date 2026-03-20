@@ -1,0 +1,12 @@
+{
+  "name": "vesper-opentui-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "client": "bun run client.mjs",
+    "client:watch": "bun --watch run client.mjs"
+  },
+  "dependencies": {
+    "@opentui/core": "^0.1.88"
+  }
+}

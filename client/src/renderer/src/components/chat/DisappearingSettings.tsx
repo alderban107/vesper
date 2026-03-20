@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { Timer } from 'lucide-react'
-import { pushToChannel } from '../../api/socket'
+import { getRendererClient } from '../../sdk/client'
 
 const TTL_OPTIONS = [
   { label: 'Off', value: null },
@@ -45,7 +45,7 @@ export default function DisappearingSettings({
   }, [open])
 
   const setTtl = (ttl: number | null): void => {
-    pushToChannel(topic, 'set_disappearing', { ttl })
+    getRendererClient().pushTopicEvent(topic, 'set_disappearing', { ttl })
     setOpen(false)
   }
 

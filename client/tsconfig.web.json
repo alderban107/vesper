@@ -7,14 +7,24 @@
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "outDir": "./out",
-    "rootDir": "./src/renderer",
+    "rootDir": ".",
     "strict": true,
     "skipLibCheck": true,
+    "target": "ESNext",
     "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/renderer/src/*"]
+      "@/*": ["./src/renderer/src/*"],
+      "@vesper/sdk": ["../sdk/src/index.ts"],
+      "@vesper/sdk/api": ["../sdk/src/api/index.ts"],
+      "@vesper/sdk/auth": ["../sdk/src/auth/index.ts"],
+      "@vesper/sdk/crypto": ["../sdk/src/crypto/index.ts"],
+      "@vesper/sdk/storage": ["../sdk/src/storage/index.ts"],
+      "@vesper/sdk/testing": ["../sdk/src/testing/index.ts"],
+      "@vesper/sdk/transport": ["../sdk/src/transport/index.ts"],
+      "@vesper/sdk/types": ["../sdk/src/types/index.ts"],
+      "@vesper/sdk/voice": ["../sdk/src/voice/index.ts"]
     }
   },
-  "include": ["src/renderer/**/*"]
+  "include": ["src/renderer/**/*", "../sdk/src/env.d.ts"]
 }

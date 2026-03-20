@@ -111,6 +111,20 @@ defmodule Vesper.Chat do
     |> Repo.all()
   end
 
+  def list_accessible_conversation_ids(user_id, conversation_ids)
+      when is_list(conversation_ids) do
+    if conversation_ids == [] do
+      MapSet.new()
+    else
+      from(p in DmParticipant,
+        where: p.user_id == ^user_id and p.conversation_id in ^conversation_ids,
+        select: p.conversation_id
+      )
+      |> Repo.all()
+      |> MapSet.new()
+    end
+  end
+
   @doc """
   List conversations whose structure or latest activity changed after the given time.
   """
@@ -432,57 +446,78 @@ defmodule Vesper.Chat do
     limit = Keyword.get(opts, :limit, 50)
     before = parse_message_cursor(Keyword.get(opts, :before))
     after_cursor = parse_message_cursor(Keyword.get(opts, :after))
+    preload = message_preload(opts)
 
-    query =
-      from(m in Message,
-        left_join: event in RoomEvent,
-        on: event.message_id == m.id,
-        where: m.channel_id == ^channel_id,
-        order_by: [desc: m.inserted_at, desc: m.id],
-        limit: ^limit,
-        select_merge: %{room_seq: event.room_seq},
-        preload: [:sender, :attachments, :reactions]
-      )
+    cond do
+      limit == 1 and is_nil(before) and is_nil(after_cursor) ->
+        case get_latest_channel_message(channel_id, opts) do
+          nil -> []
+          message -> [message]
+        end
 
-    query = apply_before_cursor(query, before)
-    query = apply_after_cursor(query, after_cursor)
+      true ->
+        query =
+          from(m in Message,
+            left_join: event in RoomEvent,
+            on: event.message_id == m.id,
+            where: m.channel_id == ^channel_id,
+            order_by: [desc: m.inserted_at, desc: m.id],
+            limit: ^limit,
+            select_merge: %{room_seq: event.room_seq},
+            preload: ^preload
+          )
 
-    Repo.all(query)
+        query = apply_before_cursor(query, before)
+        query = apply_after_cursor(query, after_cursor)
+
+        Repo.all(query)
+    end
   end
 
   def list_conversation_messages(conversation_id, opts \\ []) do
     limit = Keyword.get(opts, :limit, 50)
     before = parse_message_cursor(Keyword.get(opts, :before))
     after_cursor = parse_message_cursor(Keyword.get(opts, :after))
+    preload = message_preload(opts)
 
-    query =
-      from(m in Message,
-        left_join: event in RoomEvent,
-        on: event.message_id == m.id,
-        where: m.conversation_id == ^conversation_id,
-        order_by: [desc: m.inserted_at, desc: m.id],
-        limit: ^limit,
-        select_merge: %{room_seq: event.room_seq},
-        preload: [:sender, :attachments, :reactions]
-      )
+    cond do
+      limit == 1 and is_nil(before) and is_nil(after_cursor) ->
+        case get_latest_conversation_message(conversation_id, opts) do
+          nil -> []
+          message -> [message]
+        end
 
-    query = apply_before_cursor(query, before)
-    query = apply_after_cursor(query, after_cursor)
+      true ->
+        query =
+          from(m in Message,
+            left_join: event in RoomEvent,
+            on: event.message_id == m.id,
+            where: m.conversation_id == ^conversation_id,
+            order_by: [desc: m.inserted_at, desc: m.id],
+            limit: ^limit,
+            select_merge: %{room_seq: event.room_seq},
+            preload: ^preload
+          )
 
-    Repo.all(query)
+        query = apply_before_cursor(query, before)
+        query = apply_after_cursor(query, after_cursor)
+
+        Repo.all(query)
+    end
   end
 
-  def get_latest_channel_message(channel_id) do
-    from(m in Message,
-      left_join: event in RoomEvent,
-      on: event.message_id == m.id,
-      where: m.channel_id == ^channel_id,
-      order_by: [desc: m.inserted_at, desc: m.id],
+  def get_latest_channel_message(channel_id, opts \\ []) do
+    preload = message_preload(opts)
+
+    from(room in Room,
+      where: room.channel_id == ^channel_id and not is_nil(room.last_message_id),
+      join: m in Message,
+      on: m.id == room.last_message_id,
       limit: 1,
-      select_merge: %{room_seq: event.room_seq},
-      preload: [:sender]
+      select: %{m | room_seq: room.last_message_seq}
     )
     |> Repo.one()
+    |> maybe_preload_message(preload)
   end
 
   def get_latest_channel_messages(channel_ids) when is_list(channel_ids) do
@@ -510,17 +545,18 @@ defmodule Vesper.Chat do
     end
   end
 
-  def get_latest_conversation_message(conversation_id) do
-    from(m in Message,
-      left_join: event in RoomEvent,
-      on: event.message_id == m.id,
-      where: m.conversation_id == ^conversation_id,
-      order_by: [desc: m.inserted_at, desc: m.id],
+  def get_latest_conversation_message(conversation_id, opts \\ []) do
+    preload = message_preload(opts)
+
+    from(room in Room,
+      where: room.conversation_id == ^conversation_id and not is_nil(room.last_message_id),
+      join: m in Message,
+      on: m.id == room.last_message_id,
       limit: 1,
-      select_merge: %{room_seq: event.room_seq},
-      preload: [:sender]
+      select: %{m | room_seq: room.last_message_seq}
     )
     |> Repo.one()
+    |> maybe_preload_message(preload)
   end
 
   def get_latest_conversation_messages(conversation_ids) when is_list(conversation_ids) do
@@ -568,33 +604,94 @@ defmodule Vesper.Chat do
   def list_channel_messages_after_seq(channel_id, after_seq, opts \\ [])
       when is_integer(after_seq) do
     limit = Keyword.get(opts, :limit, 50)
+    preload = message_preload(opts)
+    room_id = Keyword.get(opts, :room_id)
 
-    from(m in Message,
-      join: event in RoomEvent,
-      on: event.message_id == m.id,
-      where: m.channel_id == ^channel_id and event.room_seq > ^after_seq,
-      order_by: [asc: event.room_seq],
-      limit: ^limit,
-      select_merge: %{room_seq: event.room_seq},
-      preload: [:sender, :attachments, :reactions]
-    )
-    |> Repo.all()
+    if is_binary(room_id) do
+      from(event in RoomEvent,
+        join: m in Message,
+        on: m.id == event.message_id,
+        where:
+          event.room_id == ^room_id and
+            m.channel_id == ^channel_id and
+            event.room_seq > ^after_seq,
+        order_by: [asc: event.room_seq],
+        limit: ^limit,
+        select: {m, event.room_seq}
+      )
+      |> Repo.all()
+      |> preload_messages_with_room_seq(preload)
+    else
+      from(m in Message,
+        join: event in RoomEvent,
+        on: event.message_id == m.id,
+        where: m.channel_id == ^channel_id and event.room_seq > ^after_seq,
+        order_by: [asc: event.room_seq],
+        limit: ^limit,
+        select_merge: %{room_seq: event.room_seq},
+        preload: ^preload
+      )
+      |> Repo.all()
+    end
   end
 
   def list_conversation_messages_after_seq(conversation_id, after_seq, opts \\ [])
       when is_integer(after_seq) do
     limit = Keyword.get(opts, :limit, 50)
+    preload = message_preload(opts)
+    room_id = Keyword.get(opts, :room_id)
 
-    from(m in Message,
-      join: event in RoomEvent,
-      on: event.message_id == m.id,
-      where: m.conversation_id == ^conversation_id and event.room_seq > ^after_seq,
-      order_by: [asc: event.room_seq],
-      limit: ^limit,
-      select_merge: %{room_seq: event.room_seq},
-      preload: [:sender, :attachments, :reactions]
-    )
-    |> Repo.all()
+    if is_binary(room_id) do
+      from(event in RoomEvent,
+        join: m in Message,
+        on: m.id == event.message_id,
+        where:
+          event.room_id == ^room_id and
+            m.conversation_id == ^conversation_id and
+            event.room_seq > ^after_seq,
+        order_by: [asc: event.room_seq],
+        limit: ^limit,
+        select: {m, event.room_seq}
+      )
+      |> Repo.all()
+      |> preload_messages_with_room_seq(preload)
+    else
+      from(m in Message,
+        join: event in RoomEvent,
+        on: event.message_id == m.id,
+        where: m.conversation_id == ^conversation_id and event.room_seq > ^after_seq,
+        order_by: [asc: event.room_seq],
+        limit: ^limit,
+        select_merge: %{room_seq: event.room_seq},
+        preload: ^preload
+      )
+      |> Repo.all()
+    end
+  end
+
+  defp message_preload(opts) do
+    if Keyword.get(opts, :lean, false) do
+      [:sender]
+    else
+      [:sender, :attachments, :reactions]
+    end
+  end
+
+  defp maybe_preload_message(nil, _preload), do: nil
+  defp maybe_preload_message(message, preload), do: Repo.preload(message, preload)
+
+  defp preload_messages_with_room_seq(message_pairs, preload) do
+    message_pairs
+    |> Enum.map(&elem(&1, 0))
+    |> Repo.preload(preload)
+    |> Map.new(&{&1.id, &1})
+    |> then(fn messages_by_id ->
+      Enum.map(message_pairs, fn {message, room_seq} ->
+        messages_by_id
+        |> Map.fetch!(message.id)
+        |> Map.put(:room_seq, room_seq)
+      end)
+    end)
   end
 
   defp parse_message_cursor(nil), do: nil
@@ -718,6 +815,7 @@ defmodule Vesper.Chat do
 
   def mark_channel_read(user_id, channel_id, message_id) do
     now = DateTime.utc_now()
+    last_read_seq = get_channel_message_room_seq(channel_id, message_id)
 
     result =
       %ChannelReadPosition{}
@@ -725,10 +823,17 @@ defmodule Vesper.Chat do
         user_id: user_id,
         channel_id: channel_id,
         last_read_message_id: message_id,
+        last_read_seq: last_read_seq,
         last_read_at: now
       })
       |> Repo.insert(
-        on_conflict: [set: [last_read_message_id: message_id, last_read_at: now]],
+        on_conflict: [
+          set: [
+            last_read_message_id: message_id,
+            last_read_seq: last_read_seq,
+            last_read_at: now
+          ]
+        ],
         conflict_target: [:user_id, :channel_id]
       )
 
@@ -741,6 +846,7 @@ defmodule Vesper.Chat do
 
   def mark_dm_read(user_id, conversation_id, message_id) do
     now = DateTime.utc_now()
+    last_read_seq = get_conversation_message_room_seq(conversation_id, message_id)
 
     result =
       %DmReadPosition{}
@@ -748,10 +854,17 @@ defmodule Vesper.Chat do
         user_id: user_id,
         conversation_id: conversation_id,
         last_read_message_id: message_id,
+        last_read_seq: last_read_seq,
         last_read_at: now
       })
       |> Repo.insert(
-        on_conflict: [set: [last_read_message_id: message_id, last_read_at: now]],
+        on_conflict: [
+          set: [
+            last_read_message_id: message_id,
+            last_read_seq: last_read_seq,
+            last_read_at: now
+          ]
+        ],
         conflict_target: [:user_id, :conversation_id]
       )
 
@@ -789,16 +902,10 @@ defmodule Vesper.Chat do
         on: event.message_id == m.id and event.event_type == "vesper.message",
         left_join: p in ChannelReadPosition,
         on: p.channel_id == m.channel_id and p.user_id == ^user_id,
-        left_join: last_event in RoomEvent,
-        on:
-          last_event.message_id == p.last_read_message_id and
-            last_event.event_type == "vesper.message" and
-            last_event.room_id == event.room_id,
         where:
           m.channel_id in ^channel_ids and
             m.sender_id != ^user_id and
-            (is_nil(p.last_read_message_id) or is_nil(last_event.room_seq) or
-               event.room_seq > last_event.room_seq),
+            (is_nil(p.last_read_seq) or event.room_seq > p.last_read_seq),
         group_by: m.channel_id,
         select: {m.channel_id, count(m.id)}
       )
@@ -825,16 +932,10 @@ defmodule Vesper.Chat do
         on: event.message_id == m.id and event.event_type == "vesper.message",
         left_join: p in DmReadPosition,
         on: p.conversation_id == m.conversation_id and p.user_id == ^user_id,
-        left_join: last_event in RoomEvent,
-        on:
-          last_event.message_id == p.last_read_message_id and
-            last_event.event_type == "vesper.message" and
-            last_event.room_id == event.room_id,
         where:
           m.conversation_id in ^conversation_ids and
             m.sender_id != ^user_id and
-            (is_nil(p.last_read_message_id) or is_nil(last_event.room_seq) or
-               event.room_seq > last_event.room_seq),
+            (is_nil(p.last_read_seq) or event.room_seq > p.last_read_seq),
         group_by: m.conversation_id,
         select: {m.conversation_id, count(m.id)}
       )
@@ -850,6 +951,34 @@ defmodule Vesper.Chat do
     conversation_ids
     |> Enum.uniq()
     |> Map.new(fn conversation_id -> {conversation_id, Map.get(counts, conversation_id, 0)} end)
+  end
+
+  defp get_channel_message_room_seq(channel_id, message_id) do
+    from(event in RoomEvent,
+      join: message in Message,
+      on: message.id == event.message_id,
+      where:
+        message.channel_id == ^channel_id and
+          event.message_id == ^message_id and
+          event.event_type == "vesper.message",
+      select: event.room_seq,
+      limit: 1
+    )
+    |> Repo.one()
+  end
+
+  defp get_conversation_message_room_seq(conversation_id, message_id) do
+    from(event in RoomEvent,
+      join: message in Message,
+      on: message.id == event.message_id,
+      where:
+        message.conversation_id == ^conversation_id and
+          event.message_id == ^message_id and
+          event.event_type == "vesper.message",
+      select: event.room_seq,
+      limit: 1
+    )
+    |> Repo.one()
   end
 
   # --- Pinned Messages ---

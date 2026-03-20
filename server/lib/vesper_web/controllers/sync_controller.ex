@@ -5,6 +5,7 @@ defmodule VesperWeb.SyncController do
   alias Vesper.Servers
   alias Vesper.Sync
   alias Vesper.SyncCursor
+  alias VesperWeb.ScopeSummary
 
   def index(conn, params) do
     user = conn.assigns.current_user
@@ -63,7 +64,18 @@ defmodule VesperWeb.SyncController do
 
     changed_conversation_ids = scope_changes.conversation_ids
 
-    conversation_reset_messages = Chat.get_latest_conversation_messages(changed_conversation_ids)
+    conversation_messages_by_id =
+      Map.new(conversations, fn %{conversation: conversation, last_message: last_message} ->
+        {conversation.id, last_message}
+      end)
+
+    missing_reset_ids =
+      Enum.reject(changed_conversation_ids, &Map.has_key?(conversation_messages_by_id, &1))
+
+    conversation_reset_messages =
+      conversation_messages_by_id
+      |> Map.take(changed_conversation_ids)
+      |> Map.merge(Chat.get_latest_conversation_messages(missing_reset_ids))
 
     conversation_resets =
       Enum.map(changed_conversation_ids, fn conversation_id ->
@@ -88,7 +100,7 @@ defmodule VesperWeb.SyncController do
               Chat.get_dm_unread_counts(user.id, Chat.list_user_conversation_ids(user.id))
           }
 
-          {[], unread_counts}
+          {Servers.list_channel_activity_snapshots(user.id, channel_ids), unread_counts}
 
         _value ->
           changed_channel_ids = scope_changes.channel_ids
@@ -240,13 +252,7 @@ defmodule VesperWeb.SyncController do
   end
 
   defp channel_activity_json(%{channel_id: channel_id, message: message}) do
-    %{
-      channel_id: channel_id,
-      message_id: if(message, do: message.id, else: nil),
-      inserted_at: if(message, do: message.inserted_at, else: nil),
-      sender_id: if(message, do: message.sender_id, else: nil),
-      sender: if(message, do: sender_json(message.sender), else: nil)
-    }
+    ScopeSummary.channel_activity_json(channel_id, message)
   end
 
   defp sender_json(nil), do: nil

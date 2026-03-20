@@ -1,18 +1,17 @@
-import { Component, useEffect, useState, type ReactNode, type ErrorInfo } from 'react'
+import { Component, Suspense, lazy, useEffect, useState, type ReactNode, type ErrorInfo } from 'react'
 import { AlertTriangle, Star } from 'lucide-react'
 import { useAuthStore } from './stores/authStore'
 import {
   SESSION_NOTICE_EVENT,
-  clearSessionNotice,
-  getSessionNotice,
+  rendererSessionStore,
   type SessionNotice
-} from './api/client'
-import LoginPage from './pages/LoginPage'
-import RegisterPage from './pages/RegisterPage'
-import RecoveryPage from './pages/RecoveryPage'
-import MainPage from './pages/MainPage'
-import RecoveryKeyModal from './components/auth/RecoveryKeyModal'
-import DeviceTrustGate from './components/auth/DeviceTrustGate'
+} from './sdk/bootstrap'
+const LoginPage = lazy(() => import('./pages/LoginPage'))
+const RegisterPage = lazy(() => import('./pages/RegisterPage'))
+const RecoveryPage = lazy(() => import('./pages/RecoveryPage'))
+const MainPage = lazy(() => import('./pages/MainPage'))
+const RecoveryKeyModal = lazy(() => import('./components/auth/RecoveryKeyModal'))
+const DeviceTrustGate = lazy(() => import('./components/auth/DeviceTrustGate'))
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state: { error: Error | null } = { error: null }
@@ -85,11 +84,22 @@ function SessionNoticeModal({
   )
 }
 
+function AppLoadingFallback(): React.JSX.Element {
+  return (
+    <div className="h-screen bg-bg-primary flex items-center justify-center">
+      <div className="flex items-center gap-2 animate-fade-in">
+        <Star className="w-6 h-6 text-accent animate-pulse" />
+        <p className="text-text-faint">Loading...</p>
+      </div>
+    </div>
+  )
+}
+
 function App(): React.JSX.Element {
   const { isAuthenticated, isLoading, checkAuth, recoveryMnemonic, clearRecoveryMnemonic } =
     useAuthStore()
   const [page, setPage] = useState<'login' | 'register' | 'recovery'>('login')
-  const [sessionNotice, setSessionNotice] = useState<SessionNotice | null>(() => getSessionNotice())
+  const [sessionNotice, setSessionNotice] = useState<SessionNotice | null>(() => rendererSessionStore.getSessionNotice())
 
   useEffect(() => {
     checkAuth()
@@ -97,7 +107,7 @@ function App(): React.JSX.Element {
 
   useEffect(() => {
     const syncSessionNotice = (): void => {
-      setSessionNotice(getSessionNotice())
+      setSessionNotice(rendererSessionStore.getSessionNotice())
     }
 
     window.addEventListener(SESSION_NOTICE_EVENT, syncSessionNotice)
@@ -110,45 +120,38 @@ function App(): React.JSX.Element {
   }, [])
 
   const handleDismissSessionNotice = (): void => {
-    clearSessionNotice()
+    rendererSessionStore.clearSessionNotice()
     setSessionNotice(null)
     setPage('login')
   }
 
   if (isLoading) {
-    return (
-      <div className="h-screen bg-bg-primary flex items-center justify-center">
-        <div className="flex items-center gap-2 animate-fade-in">
-          <Star className="w-6 h-6 text-accent animate-pulse" />
-          <p className="text-text-faint">Loading...</p>
-        </div>
-      </div>
-    )
+    return <AppLoadingFallback />
   }
 
   if (!isAuthenticated) {
     if (page === 'register') {
       return (
-        <>
+        <Suspense fallback={<AppLoadingFallback />}>
           <RegisterPage onSwitchToLogin={() => setPage('login')} />
           {sessionNotice && (
             <SessionNoticeModal notice={sessionNotice} onClose={handleDismissSessionNotice} />
           )}
-        </>
+        </Suspense>
       )
     }
     if (page === 'recovery') {
       return (
-        <>
+        <Suspense fallback={<AppLoadingFallback />}>
           <RecoveryPage onBack={() => setPage('login')} />
           {sessionNotice && (
             <SessionNoticeModal notice={sessionNotice} onClose={handleDismissSessionNotice} />
           )}
-        </>
+        </Suspense>
       )
     }
     return (
-      <>
+      <Suspense fallback={<AppLoadingFallback />}>
         <LoginPage
           onSwitchToRegister={() => setPage('register')}
           onSwitchToRecovery={() => setPage('recovery')}
@@ -156,12 +159,12 @@ function App(): React.JSX.Element {
         {sessionNotice && (
           <SessionNoticeModal notice={sessionNotice} onClose={handleDismissSessionNotice} />
         )}
-      </>
+      </Suspense>
     )
   }
 
   return (
-    <>
+    <Suspense fallback={<AppLoadingFallback />}>
       <MainPage />
       <DeviceTrustGate />
       {recoveryMnemonic && (
@@ -170,7 +173,7 @@ function App(): React.JSX.Element {
           onConfirm={clearRecoveryMnemonic}
         />
       )}
-    </>
+    </Suspense>
   )
 }
 

@@ -15,7 +15,7 @@ export default defineConfig({
   fullyParallel: false, // tests share state within a spec file
   retries: 0, // no retries — we want to see real failures
   workers: 1, // sequential — tests within a scenario share server state
-  maxFailures: 1, // stop on first failure so we can iterate fast
+  maxFailures: 0, // temporarily disabled — see all failures
   reporter: [
     ['list'],
     ['html', { open: 'never', outputFolder: './artifacts/html-report' }],

@@ -29,7 +29,7 @@ config :vesper, VesperWeb.Endpoint,
 if System.get_env("VESPER_E2E") do
   config :vesper, Vesper.Repo,
     pool: DBConnection.ConnectionPool,
-    pool_size: 10
+    pool_size: String.to_integer(System.get_env("VESPER_E2E_DB_POOL_SIZE", "64"))
 
   config :vesper, VesperWeb.Endpoint,
     server: true,

@@ -7,6 +7,7 @@ import { useDmStore, type DmConversation } from '../../stores/dmStore'
 import { usePresenceStore } from '../../stores/presenceStore'
 import { useAuthStore } from '../../stores/authStore'
 import Avatar from '../ui/Avatar'
+import { getStoredJson, setStoredJson } from '../../utils/localStorage'
 
 const RECENT_RECALL_QUERIES_KEY = 'vesper:recallRecentQueries'
 const MAX_RECENT_RECALL_QUERIES = 8
@@ -64,30 +65,14 @@ interface PaletteSection {
 }
 
 function readRecentQueries(): string[] {
-  if (typeof window === 'undefined') {
-    return []
-  }
-
-  try {
-    const raw = window.localStorage.getItem(RECENT_RECALL_QUERIES_KEY)
-    const parsed = raw ? JSON.parse(raw) : []
-    return Array.isArray(parsed)
-      ? parsed.filter((entry): entry is string => typeof entry === 'string').slice(0, MAX_RECENT_RECALL_QUERIES)
-      : []
-  } catch {
-    return []
-  }
+  const parsed = getStoredJson<string[]>(RECENT_RECALL_QUERIES_KEY, [])
+  return Array.isArray(parsed)
+    ? parsed.filter((entry): entry is string => typeof entry === 'string').slice(0, MAX_RECENT_RECALL_QUERIES)
+    : []
 }
 
 function writeRecentQueries(queries: string[]): void {
-  if (typeof window === 'undefined') {
-    return
-  }
-
-  window.localStorage.setItem(
-    RECENT_RECALL_QUERIES_KEY,
-    JSON.stringify(queries.slice(0, MAX_RECENT_RECALL_QUERIES))
-  )
+  setStoredJson(RECENT_RECALL_QUERIES_KEY, queries.slice(0, MAX_RECENT_RECALL_QUERIES))
 }
 
 function pushRecentQuery(query: string): string[] {

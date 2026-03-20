@@ -1,23 +1,8 @@
 import { useState, useEffect } from 'react'
 import { Copy, Trash2, Plus, Clock, Users } from 'lucide-react'
-import { apiFetch } from '../../api/client'
 import { useServerStore } from '../../stores/serverStore'
-
-interface Invite {
-  id: string
-  code: string
-  role_id: string | null
-  max_uses: number | null
-  uses: number
-  expires_at: string | null
-  creator: { id: string; username: string; display_name: string | null } | null
-  inserted_at: string
-}
-
-interface Role {
-  id: string
-  name: string
-}
+import { getRendererClient } from '../../sdk/client'
+import type { VesperServerInvite, VesperServerRole } from '@vesper/sdk/api'
 
 const EXPIRY_OPTIONS = [
   { label: 'Never', value: 0 },
@@ -41,39 +26,33 @@ const MAX_USES_OPTIONS = [
 
 export default function InviteManager(): React.JSX.Element {
   const activeServerId = useServerStore((s) => s.activeServerId)
-  const [invites, setInvites] = useState<Invite[]>([])
+  const [invites, setInvites] = useState<VesperServerInvite[]>([])
   const [loading, setLoading] = useState(true)
   const [expirySeconds, setExpirySeconds] = useState(0)
   const [maxUses, setMaxUses] = useState(0)
   const [roleId, setRoleId] = useState('')
-  const [roles, setRoles] = useState<Role[]>([])
+  const [roles, setRoles] = useState<VesperServerRole[]>([])
   const [creating, setCreating] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)
   const [permanentCode, setPermanentCode] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
   const fetchInviteCode = async (): Promise<void> => {
     if (!activeServerId) return
     try {
-      const res = await apiFetch(`/api/v1/servers/${activeServerId}/invite-code`)
-      if (res.ok) {
-        const data = await res.json()
-        setPermanentCode(data.invite_code)
-      }
+      setPermanentCode(await getRendererClient().fetchServerInviteCode(activeServerId))
     } catch {
-      // no permission or error — don't show
+      // Permission denied or missing — hide the permanent code section
     }
   }
 
   const fetchInvites = async (): Promise<void> => {
     if (!activeServerId) return
     try {
-      const res = await apiFetch(`/api/v1/servers/${activeServerId}/invites`)
-      if (res.ok) {
-        const data = await res.json()
-        setInvites(data.invites)
-      }
+      setInvites(await getRendererClient().listServerInvites(activeServerId))
+      setError(null)
     } catch {
-      // ignore
+      setError('Failed to load invites')
     } finally {
       setLoading(false)
     }
@@ -82,13 +61,7 @@ export default function InviteManager(): React.JSX.Element {
   const fetchRoles = async (): Promise<void> => {
     if (!activeServerId) return
     try {
-      const res = await apiFetch(`/api/v1/servers/${activeServerId}/roles`)
-      if (res.ok) {
-        const data = await res.json()
-        setRoles((data.roles || []) as Role[])
-      } else {
-        setRoles([])
-      }
+      setRoles(await getRendererClient().listServerRoles(activeServerId))
     } catch {
       setRoles([])
     }
@@ -104,21 +77,17 @@ export default function InviteManager(): React.JSX.Element {
   const createInvite = async (): Promise<void> => {
     if (!activeServerId) return
     setCreating(true)
+    setError(null)
     try {
       const body: Record<string, number | string> = {}
       if (expirySeconds > 0) body.expires_in_seconds = expirySeconds
       if (maxUses > 0) body.max_uses = maxUses
       if (roleId) body.role_id = roleId
 
-      const res = await apiFetch(`/api/v1/servers/${activeServerId}/invites`, {
-        method: 'POST',
-        body: JSON.stringify(body)
-      })
-      if (res.ok) {
-        fetchInvites()
-      }
+      await getRendererClient().createServerInvite(activeServerId, body)
+      void fetchInvites()
     } catch {
-      // ignore
+      setError('Failed to create invite')
     } finally {
       setCreating(false)
     }
@@ -127,14 +96,10 @@ export default function InviteManager(): React.JSX.Element {
   const revokeInvite = async (inviteId: string): Promise<void> => {
     if (!activeServerId) return
     try {
-      const res = await apiFetch(`/api/v1/servers/${activeServerId}/invites/${inviteId}`, {
-        method: 'DELETE'
-      })
-      if (res.ok) {
-        setInvites((prev) => prev.filter((i) => i.id !== inviteId))
-      }
+      await getRendererClient().deleteServerInvite(activeServerId, inviteId)
+      setInvites((prev) => prev.filter((i) => i.id !== inviteId))
     } catch {
-      // ignore
+      setError('Failed to revoke invite')
     }
   }
 
@@ -165,6 +130,10 @@ export default function InviteManager(): React.JSX.Element {
 
   return (
     <div className="space-y-4">
+      {error && (
+        <div className="text-red-400 text-sm bg-red-600/10 px-3 py-2 rounded-lg">{error}</div>
+      )}
+
       {/* Permanent invite code */}
       {permanentCode && (
         <div className="glass-card rounded-lg p-4">

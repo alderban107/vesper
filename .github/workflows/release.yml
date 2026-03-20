@@ -33,15 +33,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: client/package-lock.json
 
       - name: Install dependencies
         working-directory: client
         run: npm ci
+
+      - name: Ensure Rollup native package
+        working-directory: client
+        run: node ./scripts/ensure-rollup-native.mjs
 
       - name: Build client
         working-directory: client

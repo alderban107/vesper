@@ -10,6 +10,7 @@ defmodule Vesper.Encryption do
   alias Vesper.Encryption.{
     KeyPackage,
     MlsEvent,
+    PendingCryptoEviction,
     PendingHistoryBundle,
     PendingHistoryRequest,
     PendingResyncRequest,
@@ -143,38 +144,49 @@ defmodule Vesper.Encryption do
   Store a pending Welcome message for an offline user.
   """
   def store_pending_welcome(attrs) do
+    recipient_id = Map.get(attrs, :recipient_id) || Map.get(attrs, "recipient_id")
+    group_id = Map.get(attrs, :group_id) || Map.get(attrs, "group_id")
+
+    recipient_client_id =
+      Map.get(attrs, :recipient_client_id) || Map.get(attrs, "recipient_client_id")
+
+    has_client_id = is_binary(recipient_client_id) and byte_size(recipient_client_id) > 0
+
     Repo.transaction(fn ->
-      recipient_id = Map.get(attrs, :recipient_id) || Map.get(attrs, "recipient_id")
-      group_id = Map.get(attrs, :group_id) || Map.get(attrs, "group_id")
-
-      recipient_client_id =
-        Map.get(attrs, :recipient_client_id) || Map.get(attrs, "recipient_client_id")
-
-      if recipient_id && group_id do
-        query =
-          from(
-            pw in PendingWelcome,
-            where: pw.recipient_id == ^recipient_id and pw.group_id == ^group_id
-          )
-
-        query =
-          case recipient_client_id do
-            client_id when is_binary(client_id) and byte_size(client_id) > 0 ->
-              from(
-                pw in query,
-                where: pw.recipient_client_id == ^client_id or is_nil(pw.recipient_client_id)
-              )
-
-            _ ->
-              from(pw in query, where: is_nil(pw.recipient_client_id))
-          end
-
-        Repo.delete_all(query)
+      # When targeting a specific device, clean up any leftover generic (nil-device) welcome.
+      # The upsert below handles same-key races, but cross-key cleanup must be explicit.
+      if recipient_id && group_id && has_client_id do
+        from(pw in PendingWelcome,
+          where:
+            pw.recipient_id == ^recipient_id and pw.group_id == ^group_id and
+              is_nil(pw.recipient_client_id)
+        )
+        |> Repo.delete_all()
       end
 
       changeset = PendingWelcome.changeset(%PendingWelcome{}, attrs)
 
-      case Repo.insert(changeset) do
+      conflict_target =
+        if has_client_id do
+          {:unsafe_fragment,
+           "(recipient_id, group_id, recipient_client_id) WHERE recipient_client_id IS NOT NULL"}
+        else
+          {:unsafe_fragment, "(recipient_id, group_id) WHERE recipient_client_id IS NULL"}
+        end
+
+      case Repo.insert(changeset,
+             on_conflict:
+               {:replace,
+                [
+                  :welcome_data,
+                  :sender_id,
+                  :recipient_key_package_ref,
+                  :channel_id,
+                  :conversation_id
+                ]},
+             conflict_target: conflict_target,
+             returning: true
+           ) do
         {:ok, welcome} -> welcome
         {:error, changeset} -> Repo.rollback(changeset)
       end
@@ -451,6 +463,32 @@ defmodule Vesper.Encryption do
   Store a replayable MLS control-plane event for an encrypted scope.
   """
   def store_mls_event(attrs) do
+    insert_mls_event(attrs)
+  end
+
+  @doc """
+  Store a replayable MLS remove event and atomically complete any linked crypto eviction.
+  """
+  def store_mls_remove_event(attrs, crypto_eviction \\ nil) do
+    Repo.transaction(fn ->
+      with {:ok, event} <- insert_mls_event(attrs),
+           :ok <- maybe_complete_pending_crypto_eviction(crypto_eviction, event.id) do
+        event
+      else
+        {:error, %Ecto.Changeset{} = changeset} ->
+          Repo.rollback(changeset)
+
+        {:error, reason} ->
+          Repo.rollback(reason)
+      end
+    end)
+    |> case do
+      {:ok, event} -> {:ok, event}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp insert_mls_event(attrs) do
     %MlsEvent{}
     |> MlsEvent.changeset(attrs)
     |> Repo.insert()
@@ -466,5 +504,439 @@ defmodule Vesper.Encryption do
       limit: ^limit
     )
     |> Repo.all()
+  end
+
+  # --- Pending Crypto Evictions ---
+
+  def queue_scope_crypto_evictions(evictions) when is_list(evictions) do
+    if evictions == [] do
+      :ok
+    else
+      now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+      entries =
+        Enum.map(evictions, fn eviction ->
+          %{
+            id: Ecto.UUID.generate(),
+            scope_kind: eviction.scope_kind,
+            scope_id: eviction.scope_id,
+            group_id: eviction.group_id,
+            server_id: eviction.server_id,
+            target_user_id: eviction.target_user_id,
+            target_device_id: eviction.target_device_id,
+            reason: eviction.reason,
+            status: "pending",
+            attempt_count: 0,
+            inserted_at: now,
+            updated_at: now
+          }
+        end)
+
+      Repo.insert_all(PendingCryptoEviction, entries)
+
+      evictions
+      |> Enum.map(&{&1.scope_kind, &1.scope_id})
+      |> Enum.uniq()
+      |> Enum.each(fn {scope_kind, scope_id} ->
+        :ok = enqueue_crypto_eviction_scope(scope_kind, scope_id)
+      end)
+
+      :ok
+    end
+  end
+
+  def enqueue_crypto_eviction_scope(scope_kind, scope_id, opts \\ []) do
+    schedule_in = Keyword.get(opts, :schedule_in, 0)
+
+    %{"scope_kind" => scope_kind, "scope_id" => scope_id}
+    |> Vesper.Workers.ProcessPendingCryptoEvictions.new(schedule_in: schedule_in)
+    |> Oban.insert()
+    |> case do
+      {:ok, _job} ->
+        :ok
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        if unique_constraint_error?(changeset) do
+          :ok
+        else
+          {:error, changeset}
+        end
+
+      {:error, changeset} ->
+        {:error, changeset}
+    end
+  end
+
+  defp unique_constraint_error?(%Ecto.Changeset{} = changeset) do
+    Enum.any?(changeset.errors, fn
+      {_field, {_message, meta}} ->
+        meta[:constraint] == :unique or meta[:error_type] == :unique
+
+      _ ->
+        false
+    end)
+  end
+
+  def request_next_pending_crypto_eviction(scope_kind, scope_id) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    requested_cutoff = DateTime.add(now, -5, :second)
+    claimed_cutoff = DateTime.add(now, -15, :second)
+
+    Repo.transaction(fn ->
+      query =
+        from(eviction in PendingCryptoEviction,
+          where:
+            eviction.scope_kind == ^scope_kind and
+              eviction.scope_id == ^scope_id and
+              (eviction.status == "pending" or
+                 (eviction.status == "requested" and
+                    (is_nil(eviction.requested_at) or eviction.requested_at < ^requested_cutoff)) or
+                 (eviction.status == "claimed" and
+                    (is_nil(eviction.claimed_at) or eviction.claimed_at < ^claimed_cutoff))),
+          order_by: [asc: eviction.inserted_at],
+          limit: 1,
+          lock: "FOR UPDATE SKIP LOCKED"
+        )
+
+      case Repo.one(query) do
+        nil ->
+          nil
+
+        eviction ->
+          {:ok, requested} =
+            eviction
+            |> PendingCryptoEviction.changeset(%{
+              status: "requested",
+              attempt_count: eviction.attempt_count + 1,
+              last_error: nil,
+              sponsor_user_id: nil,
+              sponsor_device_id: nil,
+              requested_at: now,
+              claimed_at: nil
+            })
+            |> Repo.update()
+
+          requested
+      end
+    end)
+    |> case do
+      {:ok, eviction} -> eviction
+      {:error, _reason} -> nil
+    end
+  end
+
+  def has_active_crypto_evictions?(scope_kind, scope_id) do
+    from(eviction in PendingCryptoEviction,
+      where:
+        eviction.scope_kind == ^scope_kind and
+          eviction.scope_id == ^scope_id and
+          eviction.status in ["pending", "requested", "claimed"]
+    )
+    |> Repo.exists?()
+  end
+
+  def claim_pending_crypto_eviction(
+        id,
+        scope_kind,
+        scope_id,
+        sponsor_user_id,
+        sponsor_device_id
+      ) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    Repo.transaction(fn ->
+      case lock_crypto_eviction(id, scope_kind, scope_id) do
+        nil ->
+          Repo.rollback(:not_found)
+
+        %PendingCryptoEviction{target_user_id: target_user_id}
+        when target_user_id == sponsor_user_id ->
+          Repo.rollback(:target_cannot_sponsor)
+
+        %PendingCryptoEviction{status: status} = eviction
+        when status in ["pending", "requested", "claimed"] ->
+          {:ok, claimed} =
+            eviction
+            |> PendingCryptoEviction.changeset(%{
+              status: "claimed",
+              sponsor_user_id: sponsor_user_id,
+              sponsor_device_id: sponsor_device_id,
+              claimed_at: now
+            })
+            |> Repo.update()
+
+          claimed
+
+        _eviction ->
+          Repo.rollback(:not_claimable)
+      end
+    end)
+    |> case do
+      {:ok, eviction} -> {:ok, eviction}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def complete_pending_crypto_eviction(
+        id,
+        scope_kind,
+        scope_id,
+        removed_user_id,
+        removed_device_id,
+        commit_event_id,
+        sponsor_user_id,
+        sponsor_device_id
+      ) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    Repo.transaction(fn ->
+      case complete_pending_crypto_eviction_transaction(
+             id,
+             scope_kind,
+             scope_id,
+             removed_user_id,
+             removed_device_id,
+             commit_event_id,
+             sponsor_user_id,
+             sponsor_device_id,
+             now
+           ) do
+        {:ok, eviction} -> eviction
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+    |> case do
+      {:ok, eviction} -> {:ok, eviction}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp maybe_complete_pending_crypto_eviction(nil, _commit_event_id), do: :ok
+
+  defp maybe_complete_pending_crypto_eviction(crypto_eviction, commit_event_id) do
+    case complete_pending_crypto_eviction_transaction(
+           crypto_eviction.eviction_id,
+           crypto_eviction.scope_kind,
+           crypto_eviction.scope_id,
+           crypto_eviction.removed_user_id,
+           crypto_eviction.removed_device_id,
+           commit_event_id,
+           crypto_eviction.sponsor_user_id,
+           crypto_eviction.sponsor_device_id,
+           DateTime.utc_now() |> DateTime.truncate(:second)
+         ) do
+      {:ok, _eviction} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp complete_pending_crypto_eviction_transaction(
+         id,
+         scope_kind,
+         scope_id,
+         removed_user_id,
+         removed_device_id,
+         commit_event_id,
+         sponsor_user_id,
+         sponsor_device_id,
+         now
+       ) do
+    case lock_crypto_eviction(id, scope_kind, scope_id) do
+      nil ->
+        {:error, :not_found}
+
+      %PendingCryptoEviction{} = eviction ->
+        cond do
+          eviction.target_user_id != removed_user_id ->
+            {:error, :target_mismatch}
+
+          not is_nil(eviction.target_device_id) and
+              eviction.target_device_id != removed_device_id ->
+            {:error, :target_device_mismatch}
+
+          eviction.status not in ["pending", "requested", "claimed"] ->
+            {:error, :not_claimable}
+
+          eviction.status == "claimed" and
+              (eviction.sponsor_user_id != sponsor_user_id or
+                 eviction.sponsor_device_id != sponsor_device_id) ->
+            {:error, :sponsor_mismatch}
+
+          true ->
+            {:ok, committed} =
+              eviction
+              |> PendingCryptoEviction.changeset(%{
+                status: "committed",
+                sponsor_user_id: sponsor_user_id,
+                sponsor_device_id: sponsor_device_id,
+                commit_event_id: commit_event_id,
+                committed_at: now,
+                applied_at: nil,
+                last_error: nil
+              })
+              |> Repo.update()
+
+            purge_pending_crypto_artifacts(
+              committed.group_id,
+              committed.target_user_id,
+              committed.target_device_id
+            )
+
+            {:ok, committed}
+        end
+    end
+  end
+
+  def skip_pending_crypto_eviction(
+        id,
+        scope_kind,
+        scope_id,
+        target_user_id,
+        target_device_id,
+        sponsor_user_id,
+        sponsor_device_id,
+        reason
+      ) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    Repo.transaction(fn ->
+      case lock_crypto_eviction(id, scope_kind, scope_id) do
+        nil ->
+          Repo.rollback(:not_found)
+
+        %PendingCryptoEviction{} = eviction ->
+          cond do
+            eviction.target_user_id != target_user_id ->
+              Repo.rollback(:target_mismatch)
+
+            not is_nil(eviction.target_device_id) and
+                eviction.target_device_id != target_device_id ->
+              Repo.rollback(:target_device_mismatch)
+
+            eviction.status not in ["pending", "requested", "claimed"] ->
+              Repo.rollback(:not_claimable)
+
+            eviction.status == "claimed" and
+                (eviction.sponsor_user_id != sponsor_user_id or
+                   eviction.sponsor_device_id != sponsor_device_id) ->
+              Repo.rollback(:sponsor_mismatch)
+
+            true ->
+              {:ok, applied} =
+                eviction
+                |> PendingCryptoEviction.changeset(%{
+                  status: "applied",
+                  sponsor_user_id: sponsor_user_id,
+                  sponsor_device_id: sponsor_device_id,
+                  applied_at: now,
+                  last_error: reason
+                })
+                |> Repo.update()
+
+              purge_pending_crypto_artifacts(
+                applied.group_id,
+                applied.target_user_id,
+                applied.target_device_id
+              )
+
+              applied
+          end
+      end
+    end)
+    |> case do
+      {:ok, eviction} -> {:ok, eviction}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def list_pending_crypto_evictions(scope_kind, scope_id) do
+    from(eviction in PendingCryptoEviction,
+      where: eviction.scope_kind == ^scope_kind and eviction.scope_id == ^scope_id,
+      order_by: [asc: eviction.inserted_at]
+    )
+    |> Repo.all()
+  end
+
+  defp lock_crypto_eviction(id, scope_kind, scope_id) do
+    from(eviction in PendingCryptoEviction,
+      where:
+        eviction.id == ^id and
+          eviction.scope_kind == ^scope_kind and
+          eviction.scope_id == ^scope_id,
+      limit: 1,
+      lock: "FOR UPDATE"
+    )
+    |> Repo.one()
+  end
+
+  defp purge_pending_crypto_artifacts(group_id, target_user_id, target_device_id) do
+    delete_pending_welcomes(group_id, target_user_id, target_device_id)
+    delete_pending_history_bundles(group_id, target_user_id, target_device_id)
+
+    history_query =
+      from(request in PendingHistoryRequest,
+        where: request.group_id == ^group_id and request.requester_id == ^target_user_id
+      )
+
+    history_query =
+      if is_binary(target_device_id) and byte_size(target_device_id) > 0 do
+        from(request in history_query, where: request.requester_client_id == ^target_device_id)
+      else
+        history_query
+      end
+
+    Repo.delete_all(history_query)
+
+    resync_query =
+      from(request in PendingResyncRequest,
+        where: request.group_id == ^group_id and request.requester_id == ^target_user_id
+      )
+
+    resync_query =
+      if is_binary(target_device_id) and byte_size(target_device_id) > 0 do
+        from(request in resync_query, where: request.requester_client_id == ^target_device_id)
+      else
+        resync_query
+      end
+
+    Repo.delete_all(resync_query)
+
+    :ok
+  end
+
+  defp delete_pending_welcomes(group_id, target_user_id, target_device_id) do
+    query =
+      from(welcome in PendingWelcome,
+        where: welcome.group_id == ^group_id and welcome.recipient_id == ^target_user_id
+      )
+
+    query =
+      if is_binary(target_device_id) and byte_size(target_device_id) > 0 do
+        from(welcome in query,
+          where:
+            welcome.recipient_client_id == ^target_device_id or
+              is_nil(welcome.recipient_client_id)
+        )
+      else
+        query
+      end
+
+    Repo.delete_all(query)
+  end
+
+  defp delete_pending_history_bundles(group_id, target_user_id, target_device_id) do
+    query =
+      from(bundle in PendingHistoryBundle,
+        where: bundle.group_id == ^group_id and bundle.recipient_id == ^target_user_id
+      )
+
+    query =
+      if is_binary(target_device_id) and byte_size(target_device_id) > 0 do
+        from(bundle in query, where: bundle.recipient_client_id == ^target_device_id)
+      else
+        query
+      end
+
+    Repo.delete_all(query)
   end
 end

@@ -1,7 +1,9 @@
 defmodule Vesper.Servers do
   import Bitwise
   import Ecto.Query
+  require Logger
   alias Vesper.Repo
+  alias Vesper.Accounts
 
   alias Vesper.Servers.{
     Server,
@@ -18,6 +20,7 @@ defmodule Vesper.Servers do
     AuditLog
   }
 
+  alias Vesper.Encryption
   alias Vesper.Runtime
   alias Vesper.Runtime.Room
   alias Vesper.Servers.PermissionsCache
@@ -487,8 +490,13 @@ defmodule Vesper.Servers do
         result = Repo.delete(membership)
 
         case result do
-          {:ok, _} -> broadcast_membership_change(server_id, user_id, :member_left)
-          _ -> :ok
+          {:ok, _} ->
+            broadcast_membership_change(server_id, user_id, :member_left)
+            broadcast_membership_revoked(server_id, user_id, "left")
+            queue_membership_crypto_evictions(server_id, user_id, "left")
+
+          _ ->
+            :ok
         end
 
         result
@@ -508,6 +516,8 @@ defmodule Vesper.Servers do
         case result do
           {:ok, _} ->
             broadcast_membership_change(server_id, user_id, :member_left)
+            broadcast_membership_revoked(server_id, user_id, "kicked")
+            queue_membership_crypto_evictions(server_id, user_id, "kicked")
             maybe_log_admin_action(server_id, actor_id, "member_kicked", target_user_id: user_id)
 
           _ ->
@@ -534,12 +544,18 @@ defmodule Vesper.Servers do
         {:ok, ban} ->
           case Repo.get_by(Membership, user_id: user_id, server_id: server_id) do
             nil ->
-              :ok
+              broadcast_membership_revoked(server_id, user_id, "banned")
+              queue_membership_crypto_evictions(server_id, user_id, "banned")
 
             membership ->
               case Repo.delete(membership) do
-                {:ok, _} -> broadcast_membership_change(server_id, user_id, :member_left)
-                _ -> :ok
+                {:ok, _} ->
+                  broadcast_membership_change(server_id, user_id, :member_left)
+                  broadcast_membership_revoked(server_id, user_id, "banned")
+                  queue_membership_crypto_evictions(server_id, user_id, "banned")
+
+                _ ->
+                  :ok
               end
           end
 
@@ -1694,6 +1710,73 @@ defmodule Vesper.Servers do
       "server:members:#{server_id}",
       {event, server_id, user_id}
     )
+
+    VesperWeb.Endpoint.broadcast("presence:server:#{server_id}", "server_members_updated", %{
+      server_id: server_id,
+      event: event,
+      user_id: user_id
+    })
+  end
+
+  defp broadcast_membership_revoked(server_id, user_id, reason) do
+    channel_ids =
+      server_id
+      |> list_channels()
+      |> Enum.reject(&(&1.type == "category"))
+      |> Enum.map(& &1.id)
+
+    VesperWeb.Endpoint.broadcast("user:#{user_id}", "server_membership_revoked", %{
+      server_id: server_id,
+      channel_ids: channel_ids,
+      reason: reason
+    })
+  end
+
+  defp queue_membership_crypto_evictions(server_id, user_id, reason) do
+    channel_ids =
+      server_id
+      |> list_channels()
+      |> Enum.filter(&(&1.type == "text"))
+      |> Enum.map(& &1.id)
+
+    target_device_ids =
+      user_id
+      |> Accounts.list_devices()
+      |> Enum.reject(&(not is_nil(&1.revoked_at) or &1.trust_state == "revoked"))
+      |> Enum.map(& &1.client_id)
+      |> case do
+        [] -> [nil]
+        device_ids -> device_ids
+      end
+
+    evictions =
+      for channel_id <- channel_ids, target_device_id <- target_device_ids do
+        %{
+          scope_kind: "channel",
+          scope_id: channel_id,
+          group_id: channel_id,
+          server_id: server_id,
+          target_user_id: user_id,
+          target_device_id: target_device_id,
+          reason: reason
+        }
+      end
+
+    case Encryption.queue_scope_crypto_evictions(evictions) do
+      :ok ->
+        :ok
+
+      other ->
+        Logger.warning("Could not queue MLS evictions for membership revoke",
+          extra: %{
+            server_id: server_id,
+            target_user_id: user_id,
+            reason: inspect(other)
+          }
+        )
+
+        :ok
+    end
   end
 
   defp broadcast_permissions_changed(server_id) do

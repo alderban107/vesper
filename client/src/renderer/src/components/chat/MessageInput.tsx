@@ -1,20 +1,13 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { useServerStore } from '../../stores/serverStore'
-import {
-  useMessageStore,
-  cacheSentPlaintext,
-  ensureChannelGroupReady,
-  pushToChannelWithAck,
-  waitForChannelMembershipReady
-} from '../../stores/messageStore'
-import { encodePayload } from '../../crypto/payload'
-import { useCryptoStore } from '../../stores/cryptoStore'
-import { pushToChannel } from '../../api/socket'
+import { useDmStore } from '../../stores/dmStore'
+import { useMessageStore } from '../../stores/messageStore'
 import { useAuthStore } from '../../stores/authStore'
 import ComposerForm from './ComposerForm'
 import type { StagedFile } from './message/ComposerShell'
 import { formatCustomEmojiToken, type CustomEmoji } from '../../utils/emoji'
 import { prepareMessageAttachment } from '../../utils/messageAttachment'
+import { getRendererEncryptedChat } from '../../sdk/client'
 import {
   applyAutocompleteSelection,
   buildChannelSuggestions,
@@ -31,7 +24,11 @@ let stagedIdCounter = 0
 const EMPTY_MESSAGES: Message[] = []
 const COMPOSER_MIN_HEIGHT = 56
 
-export default function MessageInput(): React.JSX.Element {
+interface Props {
+  scope: { kind: 'channel'; id: string } | { kind: 'dm'; id: string }
+}
+
+export default function MessageInput({ scope }: Props): React.JSX.Element {
   const [content, setContent] = useState('')
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
   const [trigger, setTrigger] = useState<ComposerTriggerMatch | null>(null)
@@ -39,13 +36,20 @@ export default function MessageInput(): React.JSX.Element {
   const [selectedAutocompleteIndex, setSelectedAutocompleteIndex] = useState(0)
   const [uploading, setUploading] = useState(false)
   const [stagedFiles, setStagedFiles] = useState<StagedFile[]>([])
-  const activeChannelId = useServerStore((s) => s.activeChannelId)
+
+  const scopeId = scope.id
+  const isChannel = scope.kind === 'channel'
+
   const servers = useServerStore((s) => s.servers)
   const members = useServerStore((s) => s.members)
   const activeServerId = useServerStore((s) => s.activeServerId)
+  const conversations = useDmStore((s) => s.conversations)
   const sendMessage = useMessageStore((s) => s.sendMessage)
+  const sendDmMessage = useMessageStore((s) => s.sendDmMessage)
   const sendTypingStart = useMessageStore((s) => s.sendTypingStart)
   const sendTypingStop = useMessageStore((s) => s.sendTypingStop)
+  const sendDmTypingStart = useMessageStore((s) => s.sendDmTypingStart)
+  const sendDmTypingStop = useMessageStore((s) => s.sendDmTypingStop)
   const replyingTo = useMessageStore((s) => s.replyingTo)
   const setReplyingTo = useMessageStore((s) => s.setReplyingTo)
   const setEditingMessage = useMessageStore((s) => s.setEditingMessage)
@@ -53,9 +57,10 @@ export default function MessageInput(): React.JSX.Element {
   const canUseE2EE = useAuthStore((s) => s.canUseE2EE)
   const myUserId = useAuthStore((s) => s.user?.id)
   const messages = useMessageStore((s) =>
-    activeChannelId ? (s.messagesByChannel[activeChannelId] ?? EMPTY_MESSAGES) : EMPTY_MESSAGES
+    s.messagesByChannel[scopeId] ?? EMPTY_MESSAGES
   )
   const activeServer = servers.find((server) => server.id === activeServerId)
+  const activeConversation = isChannel ? undefined : conversations.find((c) => c.id === scopeId)
 
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isTypingRef = useRef(false)
@@ -67,11 +72,13 @@ export default function MessageInput(): React.JSX.Element {
   const [dragActive, setDragActive] = useState(false)
 
   const handleTyping = useCallback(() => {
-    if (!activeChannelId) return
-
     if (!isTypingRef.current) {
       isTypingRef.current = true
-      sendTypingStart(activeChannelId)
+      if (isChannel) {
+        sendTypingStart(scopeId)
+      } else {
+        sendDmTypingStart(scopeId)
+      }
     }
 
     if (typingTimeoutRef.current) {
@@ -80,9 +87,13 @@ export default function MessageInput(): React.JSX.Element {
 
     typingTimeoutRef.current = setTimeout(() => {
       isTypingRef.current = false
-      sendTypingStop(activeChannelId)
+      if (isChannel) {
+        sendTypingStop(scopeId)
+      } else {
+        sendDmTypingStop(scopeId)
+      }
     }, 2000)
-  }, [activeChannelId, sendTypingStart, sendTypingStop])
+  }, [isChannel, scopeId, sendTypingStart, sendTypingStop, sendDmTypingStart, sendDmTypingStop])
 
   const stageFiles = useCallback((files: Iterable<File>): void => {
     const entries = Array.from(files)
@@ -115,7 +126,6 @@ export default function MessageInput(): React.JSX.Element {
   }
 
   const uploadAndSendFile = async (file: File, text: string | undefined): Promise<boolean> => {
-    if (!activeChannelId) return false
     if (!canUseE2EE) {
       useMessageStore.setState({
         encryptionError: 'Approve this device to send encrypted messages.'
@@ -126,56 +136,41 @@ export default function MessageInput(): React.JSX.Element {
     const preparedAttachment = await prepareMessageAttachment(file)
     if (!preparedAttachment) return false
 
-    const envelope = encodePayload({
-      v: 1,
-      type: 'file',
-      text: text ?? null,
-      file: preparedAttachment.file
-    })
-    const { attachmentIds } = preparedAttachment
-
-    const topic = `chat:channel:${activeChannelId}`
-    const crypto = useCryptoStore.getState()
     const replyTo = useMessageStore.getState().replyingTo
     const parentId = replyTo?.id || undefined
-    if (!crypto.hasGroup(activeChannelId)) {
-      const ready = await ensureChannelGroupReady(activeChannelId, true)
-      if (!ready) {
-        useMessageStore.setState({
-          encryptionError: 'File could not be encrypted. Please try again.'
-        })
-        return false
-      }
-    }
 
-    if (crypto.hasGroup(activeChannelId)) {
-      await waitForChannelMembershipReady(activeChannelId, topic)
-      const enc = await crypto.encryptForChannel(activeChannelId, envelope)
-      if (enc) {
-        cacheSentPlaintext(enc.ciphertext, envelope)
-        const pushed = await pushToChannelWithAck(topic, 'new_message', {
-          ciphertext: enc.ciphertext,
-          mls_epoch: enc.epoch,
-          attachment_ids: attachmentIds,
-          ...(parentId && { parent_message_id: parentId })
-        })
-        if (pushed) {
-          return true
+    try {
+      await getRendererEncryptedChat().sendPayload(
+        scope,
+        {
+          v: 1,
+          type: 'file',
+          text: text ?? null,
+          file: preparedAttachment.file
+        },
+        {
+          attachmentIds: preparedAttachment.attachmentIds,
+          ...(parentId ? { parentMessageId: parentId } : {})
         }
-      }
+      )
+      return true
+    } catch {
+      useMessageStore.setState({
+        encryptionError: 'File could not be encrypted. Please try again.'
+      })
+      return false
     }
-
-    useMessageStore.setState({ encryptionError: 'File could not be encrypted. Please try again.' })
-    return false
   }
 
   const autocompleteItems = trigger
     ? (
         trigger.type === 'mention'
-          ? buildMentionSuggestions(trigger.query, useServerStore.getState().members)
-          : trigger.type === 'channel'
+          ? buildMentionSuggestions(trigger.query, useServerStore.getState().members, isChannel ? undefined : activeConversation)
+          : trigger.type === 'channel' && isChannel
             ? buildChannelSuggestions(trigger.query, activeServer)
-            : buildEmojiSuggestions(trigger.query, activeServer)
+            : trigger.type === 'emoji'
+              ? buildEmojiSuggestions(trigger.query, activeServer)
+              : []
       )
     : []
 
@@ -219,7 +214,11 @@ export default function MessageInput(): React.JSX.Element {
 
   const updateAutocompleteState = (value: string, cursorPos: number): void => {
     const nextTrigger = detectComposerTrigger(value, cursorPos)
-    setTrigger(nextTrigger)
+    if (!isChannel && nextTrigger?.type === 'channel') {
+      setTrigger(null)
+    } else {
+      setTrigger(nextTrigger)
+    }
     setSelectedAutocompleteIndex(0)
   }
 
@@ -311,20 +310,18 @@ export default function MessageInput(): React.JSX.Element {
       window.removeEventListener('drop', handleWindowDrop)
     }
   }, [stageFiles, uploading])
+
   const handleSubmit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault()
-    if (!activeChannelId) return
 
     const hasText = content.trim().length > 0
     const hasFiles = stagedFiles.length > 0
 
     if (!hasText && !hasFiles) return
 
-    // If there are staged files, upload them
     if (hasFiles) {
       setUploading(true)
       try {
-        // First file gets the text caption, rest are sent without text
         for (let i = 0; i < stagedFiles.length; i++) {
           const text = i === 0 ? content.trim() : undefined
           const serializedText = text ? serializeComposerMentions(text, mentionDrafts) : undefined
@@ -344,8 +341,8 @@ export default function MessageInput(): React.JSX.Element {
         setUploading(false)
       }
     } else {
-      // Text-only message
-      sendMessage(activeChannelId, serializeComposerMentions(content.trim(), mentionDrafts))
+      const send = isChannel ? sendMessage : sendDmMessage
+      send(scopeId, serializeComposerMentions(content.trim(), mentionDrafts))
       setContent('')
       setMentionDrafts([])
     }
@@ -358,7 +355,11 @@ export default function MessageInput(): React.JSX.Element {
     }
     if (isTypingRef.current) {
       isTypingRef.current = false
-      sendTypingStop(activeChannelId)
+      if (isChannel) {
+        sendTypingStop(scopeId)
+      } else {
+        sendDmTypingStop(scopeId)
+      }
     }
   }
 
@@ -477,11 +478,13 @@ export default function MessageInput(): React.JSX.Element {
     <ComposerForm
       autocompleteItems={autocompleteItems}
       content={content}
+      conversation={activeConversation ?? undefined}
       dragActive={dragActive}
       emojiButtonRef={emojiButtonRef}
       encryptionError={encryptionError}
       fileInputRef={fileInputRef}
       members={members}
+      mentionDrafts={mentionDrafts}
       onAutocompleteHover={setSelectedAutocompleteIndex}
       onAutocompleteSelect={(item) => {
         const index = autocompleteItems.findIndex((entry) => entry.id === item.id)
@@ -511,16 +514,16 @@ export default function MessageInput(): React.JSX.Element {
       onTextareaKeyUp={(event) => updateAutocompleteState(event.currentTarget.value, event.currentTarget.selectionStart)}
       onTextareaScroll={syncPreviewScroll}
       onToggleEmojiPicker={() => setShowEmojiPicker(!showEmojiPicker)}
-      placeholder="Message this channel"
+      placeholder={isChannel ? 'Message this channel' : 'Message this conversation'}
       previewRef={previewRef}
       replyingTo={replyingTo}
       selectedAutocompleteIndex={selectedAutocompleteIndex}
-      sendButtonTestId="send-button"
+      sendButtonTestId={isChannel ? 'send-button' : undefined}
       server={activeServer}
       showEmojiPicker={showEmojiPicker}
       stagedFiles={stagedFiles}
       textareaRef={textareaRef}
-      textareaTestId="message-input"
+      textareaTestId={isChannel ? 'message-input' : undefined}
       triggerQuery={trigger?.query ?? null}
       uploading={uploading}
       canSend={canSend}

@@ -1,17 +1,9 @@
 import { useState, useEffect } from 'react'
 import { Shield, Loader2, Trash2 } from 'lucide-react'
-import { apiFetch } from '../../api/client'
 import { useServerStore } from '../../stores/serverStore'
 import { useUIStore } from '../../stores/uiStore'
-
-interface Role {
-  id: string
-  server_id: string
-  name: string
-  color: string | null
-  permissions: number
-  position: number
-}
+import { getRendererClient } from '../../sdk/client'
+import type { VesperServerRole } from '@vesper/sdk/api'
 
 const PERMISSION_FLAGS = [
   { name: 'Send Messages', value: 1 },
@@ -31,12 +23,14 @@ export default function RoleManager({ embedded }: { embedded?: boolean } = {}): 
   const closeRoleManager = useUIStore((s) => s.closeRoleManager)
   const activeServerId = useServerStore((s) => s.activeServerId)
 
-  const [roles, setRoles] = useState<Role[]>([])
-  const [selectedRole, setSelectedRole] = useState<Role | null>(null)
+  const [roles, setRoles] = useState<VesperServerRole[]>([])
+  const [selectedRole, setSelectedRole] = useState<VesperServerRole | null>(null)
   const [newRoleName, setNewRoleName] = useState('')
   const [editName, setEditName] = useState('')
   const [editColor, setEditColor] = useState('#3498db')
   const [editPermissions, setEditPermissions] = useState(0)
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     if (activeServerId) fetchRoles()
@@ -45,56 +39,67 @@ export default function RoleManager({ embedded }: { embedded?: boolean } = {}): 
   const fetchRoles = async (): Promise<void> => {
     if (!activeServerId) return
     try {
-      const res = await apiFetch(`/api/v1/servers/${activeServerId}/roles`)
-      if (res.ok) {
-        const data = await res.json()
-        setRoles(data.roles)
-      }
-    } catch { /* ignore */ }
+      setRoles(await getRendererClient().listServerRoles(activeServerId))
+      setError(null)
+    } catch {
+      setError('Failed to load roles')
+    }
   }
 
   const createRole = async (): Promise<void> => {
     if (!activeServerId || !newRoleName.trim()) return
+    setSaving(true)
+    setError(null)
     try {
-      const res = await apiFetch(`/api/v1/servers/${activeServerId}/roles`, {
-        method: 'POST',
-        body: JSON.stringify({ name: newRoleName, permissions: 1, color: '#3498db' })
+      await getRendererClient().createServerRole(activeServerId, {
+        name: newRoleName,
+        permissions: 1,
+        color: '#3498db'
       })
-      if (res.ok) {
-        setNewRoleName('')
-        fetchRoles()
-      }
-    } catch { /* ignore */ }
+      setNewRoleName('')
+      void fetchRoles()
+    } catch {
+      setError('Failed to create role')
+    } finally {
+      setSaving(false)
+    }
   }
 
   const saveRole = async (): Promise<void> => {
     if (!activeServerId || !selectedRole) return
+    setSaving(true)
+    setError(null)
     try {
-      const res = await apiFetch(`/api/v1/servers/${activeServerId}/roles/${selectedRole.id}`, {
-        method: 'PUT',
-        body: JSON.stringify({ name: editName, color: editColor, permissions: editPermissions })
+      await getRendererClient().updateServerRole(activeServerId, selectedRole.id, {
+        name: editName,
+        color: editColor,
+        permissions: editPermissions
       })
-      if (res.ok) {
-        fetchRoles()
-        setSelectedRole(null)
-      }
-    } catch { /* ignore */ }
+      void fetchRoles()
+      setSelectedRole(null)
+    } catch {
+      setError('Failed to save role')
+    } finally {
+      setSaving(false)
+    }
   }
 
   const deleteRole = async (roleId: string): Promise<void> => {
     if (!activeServerId) return
+    setSaving(true)
+    setError(null)
     try {
-      const res = await apiFetch(`/api/v1/servers/${activeServerId}/roles/${roleId}`, {
-        method: 'DELETE'
-      })
-      if (res.ok) {
-        if (selectedRole?.id === roleId) setSelectedRole(null)
-        fetchRoles()
-      }
-    } catch { /* ignore */ }
+      await getRendererClient().deleteServerRole(activeServerId, roleId)
+      if (selectedRole?.id === roleId) setSelectedRole(null)
+      void fetchRoles()
+    } catch {
+      setError('Failed to delete role')
+    } finally {
+      setSaving(false)
+    }
   }
 
-  const selectRole = (role: Role): void => {
+  const selectRole = (role: VesperServerRole): void => {
     setSelectedRole(role)
     setEditName(role.name)
     setEditColor(role.color || '#3498db')
@@ -116,6 +121,10 @@ export default function RoleManager({ embedded }: { embedded?: boolean } = {}): 
         </div>
       )}
 
+      {error && (
+        <div className="text-red-400 text-sm bg-red-600/10 px-3 py-2 rounded-lg mb-3">{error}</div>
+      )}
+
       {/* Create role */}
       <div className="flex gap-2 mb-4">
         <input
@@ -128,7 +137,7 @@ export default function RoleManager({ embedded }: { embedded?: boolean } = {}): 
         />
         <button
           onClick={createRole}
-          disabled={!newRoleName.trim()}
+          disabled={!newRoleName.trim() || saving}
           className="px-3 py-2 glow-accent hover:glow-accent-hover disabled:opacity-40 disabled:shadow-none text-bg-base rounded-lg text-sm font-medium transition-all"
         >
           Create
@@ -205,9 +214,10 @@ export default function RoleManager({ embedded }: { embedded?: boolean } = {}): 
             <div className="flex gap-2 pt-2">
               <button
                 onClick={saveRole}
-                className="px-3 py-1.5 glow-accent hover:glow-accent-hover text-bg-base rounded-lg text-sm font-medium transition-all"
+                disabled={saving}
+                className="px-3 py-1.5 glow-accent hover:glow-accent-hover disabled:opacity-40 text-bg-base rounded-lg text-sm font-medium transition-all"
               >
-                Save
+                {saving ? 'Saving…' : 'Save'}
               </button>
               <button
                 onClick={() => deleteRole(selectedRole.id)}

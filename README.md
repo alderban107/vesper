@@ -57,6 +57,21 @@ mix phx.server   # start on localhost:4000
 
 Dev database defaults: `postgres:postgres@localhost/vesper_dev`
 
+To point local Phoenix dev at a custom Postgres instance, set:
+`DEV_DB_HOST`, `DEV_DB_PORT`, `DEV_DB_USER`, `DEV_DB_PASS`, and optionally `DEV_DB_NAME`.
+
+The repo pre-commit hook now defaults its test database settings to the SDK local DB helper
+(`localhost:55432`, user/password `vesper_sdk`) unless `TEST_DB_*` is already set.
+
+For a shared local source setup, put these in the repo root `.env` so Phoenix
+dev, the SDK live tests, and the Playwright harness all point at the same local
+Postgres instance:
+
+`DEV_DB_HOST`, `DEV_DB_PORT`, `DEV_DB_USER`, `DEV_DB_PASS`, `DEV_DB_NAME`,
+`TEST_DB_HOST`, `TEST_DB_PORT`, `TEST_DB_USER`, `TEST_DB_PASS`,
+`VESPER_SDK_TEST_DB_HOST`, `VESPER_SDK_TEST_DB_PORT`,
+`VESPER_SDK_TEST_DB_USER`, and `VESPER_SDK_TEST_DB_PASS`.
+
 ## Downloading the Client
 
 ### Pre-built releases
@@ -84,6 +99,8 @@ npm run dev          # Electron dev with hot reload
 npm run dev:web      # web client dev server
 npm run check:web    # typecheck + production web build
 npm run build:web    # production web build (outputs dist-web/)
+npm run test:e2e:p0  # Playwright smoke run
+npm run test:sdk:e2e # SDK live suite
 npm run dist:linux   # build AppImage + deb
 ```
 
@@ -117,12 +134,14 @@ The client connects to a Vesper server URL. In development, this defaults to `lo
 
 ## Project Structure
 
+The root `package.json` defines an npm workspaces monorepo linking `client/` and `sdk/`.
+
 ```
 server/                  Elixir/Phoenix backend (API + WebSocket)
   lib/vesper/              domain logic (accounts, chat, encryption)
   lib/vesper_web/          controllers, channels, router
   config/test.exs          test DB config (supports TEST_DB_* env overrides)
-  priv/repo/migrations/   database migrations
+  priv/repo/migrations/    database migrations
   test/
     test_helper.exs        ExUnit bootstrap
     support/
@@ -144,6 +163,19 @@ client/                  Electron + React frontend
     harness/                 test orchestration helpers
     REQUIREMENTS.md          full test plan
 
+sdk/                     TypeScript SDK (@vesper/sdk npm workspace)
+  src/                     SDK source (auth, crypto, client, transport, voice)
+  test/                    live integration tests (boots Phoenix)
+  examples/                example apps (CLI client, bots, OpenTUI)
+  scripts/                 local Postgres helper and chaos/load test runners
+
+scripts/                 repo-level tooling
+  setup-git-hooks.sh       configure git hooks from .githooks/
+  pre-commit-checks.sh     pre-commit gate (server precommit + client web check)
+  pre-push-checks.sh       pre-push gate (client web check)
+  load-test-env.sh         source repo .env and normalize test DB vars (shell)
+  load-repo-env.mjs        same as above for Node (used by SDK test harness)
+
 .github/workflows/
   test-server.yml          server CI — mix test + PostgreSQL 17
   test-client.yml          client CI — typecheck + production build
@@ -154,11 +186,12 @@ client/                  Electron + React frontend
 .github/CI.md             CI/CD pipeline documentation
 
 doc/
-  DESIGN.md              architecture overview
-  e2ee/                  end-to-end encryption documentation
-    REQUIREMENTS-E2EE.md        requirements & design analysis
-    REQUIREMENTS-E2EE-AUDIT.md  implementation status audit
-    E2EE-IMPLEMENTATION.md      developer guide
+  DESIGN.md                architecture overview
+  sdk/                     SDK developer guides (quickstart, auth, messaging, etc.)
+  e2ee/                    end-to-end encryption documentation
+    REQUIREMENTS-E2EE.md          requirements & design analysis
+    REQUIREMENTS-E2EE-AUDIT.md    implementation status audit
+    E2EE-IMPLEMENTATION.md        developer guide
 
 docker-compose.yml       full stack (PostgreSQL, Phoenix, web client, coturn)
 turnserver.conf          coturn configuration for voice relay
@@ -181,6 +214,11 @@ All variables are set in `.env` (loaded by Docker Compose) or exported in the sh
 | `DATABASE_URL` | — | **Yes** (prod) | Full Ecto connection string, e.g. `ecto://user:pass@host/db`. Only used in production; dev/test use compiled config. |
 | `POOL_SIZE` | `10` | No | Database connection pool size |
 | `ECTO_IPV6` | — | No | Set to `true` or `1` to connect to PostgreSQL over IPv6 |
+| `DEV_DB_HOST` | `localhost` | No | Phoenix dev PostgreSQL host when running from source |
+| `DEV_DB_PORT` | `5432` | No | Phoenix dev PostgreSQL port when running from source |
+| `DEV_DB_USER` | `postgres` | No | Phoenix dev PostgreSQL username when running from source |
+| `DEV_DB_PASS` | `postgres` | No | Phoenix dev PostgreSQL password when running from source |
+| `DEV_DB_NAME` | `vesper_dev` | No | Phoenix dev PostgreSQL database name when running from source |
 
 ### Server
 
@@ -230,8 +268,13 @@ These are not needed for production deployments.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TEST_DB_HOST` | `localhost` | PostgreSQL host for test database |
+| `TEST_DB_PORT` | `5432` | PostgreSQL port for test database |
 | `TEST_DB_USER` | `postgres` | PostgreSQL user for test database |
 | `TEST_DB_PASS` | `postgres` | PostgreSQL password for test database |
+| `VESPER_SDK_TEST_DB_HOST` | `127.0.0.1` | Host used by the SDK local Postgres helper |
+| `VESPER_SDK_TEST_DB_PORT` | `55432` | Port used by the SDK local Postgres helper |
+| `VESPER_SDK_TEST_DB_USER` | `vesper_sdk` | User used by the SDK local Postgres helper |
+| `VESPER_SDK_TEST_DB_PASS` | `vesper_sdk` | Password used by the SDK local Postgres helper |
 | `VESPER_E2E` | — | Set to `1` to run the server in E2E test mode (real connection pool instead of Ecto sandbox) |
 | `MIX_TEST_PARTITION` | — | Appended to test database name for parallel test runs |
 | `ELECTRON_RENDERER_URL` | — | Dev server URL for Electron hot reload |

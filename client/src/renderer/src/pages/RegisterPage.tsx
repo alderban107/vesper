@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import { ArrowRight, KeyRound, Laptop2, Loader2, ShieldCheck, User } from 'lucide-react'
 import AuthShell from '../components/auth/AuthShell'
+import ServerConnectionCard from '../components/auth/ServerConnectionCard'
 import { useAuthStore } from '../stores/authStore'
+import { useSettingsStore } from '../stores/settingsStore'
 
 interface Props {
   onSwitchToLogin: () => void
@@ -30,6 +32,7 @@ export default function RegisterPage({ onSwitchToLogin }: Props): React.JSX.Elem
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const { register, error } = useAuthStore()
+  const serverUrl = useSettingsStore((state) => state.serverUrl)
   const [loading, setLoading] = useState(false)
   const [localError, setLocalError] = useState<string | null>(null)
 
@@ -61,6 +64,7 @@ export default function RegisterPage({ onSwitchToLogin }: Props): React.JSX.Elem
     >
       <form onSubmit={handleSubmit} data-testid="register-form" className="vesper-auth-form">
         {displayError && <div className="vesper-auth-error">{displayError}</div>}
+        <ServerConnectionCard />
 
         <label className="vesper-auth-field">
           <span className="vesper-auth-label">Username</span>
@@ -73,6 +77,8 @@ export default function RegisterPage({ onSwitchToLogin }: Props): React.JSX.Elem
               className="vesper-auth-input input-focus"
               placeholder="Choose a username"
               autoFocus
+              autoComplete="username"
+              spellCheck={false}
             />
           </div>
         </label>
@@ -87,6 +93,7 @@ export default function RegisterPage({ onSwitchToLogin }: Props): React.JSX.Elem
               onChange={(event) => setPassword(event.target.value)}
               className="vesper-auth-input input-focus"
               placeholder="Create a password"
+              autoComplete="new-password"
             />
           </div>
         </label>
@@ -101,13 +108,14 @@ export default function RegisterPage({ onSwitchToLogin }: Props): React.JSX.Elem
               onChange={(event) => setConfirmPassword(event.target.value)}
               className="vesper-auth-input input-focus"
               placeholder="Repeat your password"
+              autoComplete="new-password"
             />
           </div>
         </label>
 
         <button
           type="submit"
-          disabled={loading || !username || !password || !confirmPassword}
+          disabled={loading || !username || !password || !confirmPassword || !serverUrl.trim()}
           className="vesper-auth-submit glow-accent hover:glow-accent-hover disabled:opacity-40 disabled:shadow-none"
         >
           {loading ? (

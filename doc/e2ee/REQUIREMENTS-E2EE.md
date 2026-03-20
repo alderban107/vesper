@@ -454,10 +454,10 @@ one has the group state (e.g., the creator left, or this is a freshly deployed s
 any member should be able to create a new group. The subsequent member joins via
 normal join request + Welcome flow.
 
-This is already implemented in `cryptoStore.ts` (`createGroup` function). It works but
-has a race: two members might both try to create the group simultaneously. The server
-needs to handle this — probably by treating the first Commit as authoritative and
-rejecting the second.
+This is already implemented in the SDK encrypted chat runtime
+(`sdk/src/client/encryptedChat.ts`, `createGroup`). It works but has a race:
+two members might both try to create the group simultaneously. The server needs to
+handle this by treating the first Commit as authoritative and rejecting the second.
 
 ---
 

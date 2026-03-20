@@ -106,10 +106,38 @@ defmodule Vesper.Runtime do
     end
   end
 
-  def list_scope_events(scope_kind, scope_id, since, opts \\ []) do
+  def list_rooms_for_channels(channel_ids) when is_list(channel_ids) do
+    if channel_ids == [] do
+      %{}
+    else
+      from(room in Room,
+        where: room.channel_id in ^channel_ids,
+        select: {room.channel_id, room}
+      )
+      |> Repo.all()
+      |> Map.new()
+    end
+  end
+
+  def list_rooms_for_conversations(conversation_ids) when is_list(conversation_ids) do
+    if conversation_ids == [] do
+      %{}
+    else
+      from(room in Room,
+        where: room.conversation_id in ^conversation_ids,
+        select: {room.conversation_id, room}
+      )
+      |> Repo.all()
+      |> Map.new()
+    end
+  end
+
+  def list_scope_events(%Room{} = room, since, opts) do
     limit = Keyword.get(opts, :limit, 200)
 
-    with {:ok, room} <- room_for_scope(scope_kind, scope_id) do
+    if is_nil(room.last_mutation_at) or DateTime.compare(room.last_mutation_at, since) != :gt do
+      []
+    else
       from(e in RoomEvent,
         where:
           e.room_id == ^room.id and
@@ -119,16 +147,24 @@ defmodule Vesper.Runtime do
         limit: ^limit
       )
       |> Repo.all()
+    end
+  end
+
+  def list_scope_events(scope_kind, scope_id, since, opts \\ []) do
+    with {:ok, room} <- room_for_scope(scope_kind, scope_id) do
+      list_scope_events(room, since, opts)
     else
       _ -> []
     end
   end
 
-  def list_scope_events_after_seq(scope_kind, scope_id, after_seq, opts \\ [])
+  def list_scope_events_after_seq(%Room{} = room, after_seq, opts)
       when is_integer(after_seq) do
     limit = Keyword.get(opts, :limit, 200)
 
-    with {:ok, room} <- room_for_scope(scope_kind, scope_id) do
+    if is_nil(room.last_mutation_seq) or after_seq >= room.last_mutation_seq do
+      []
+    else
       from(e in RoomEvent,
         where:
           e.room_id == ^room.id and
@@ -138,6 +174,13 @@ defmodule Vesper.Runtime do
         limit: ^limit
       )
       |> Repo.all()
+    end
+  end
+
+  def list_scope_events_after_seq(scope_kind, scope_id, after_seq, opts \\ [])
+      when is_integer(after_seq) do
+    with {:ok, room} <- room_for_scope(scope_kind, scope_id) do
+      list_scope_events_after_seq(room, after_seq, opts)
     else
       _ -> []
     end

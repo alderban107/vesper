@@ -1,92 +1,170 @@
-/**
- * DM helpers: create conversations, send messages, verify state.
- * Covers: R-DM-1, R-DM-2, R-DM-3, R-DM-4, R-DM-5
- */
-
-import type { Page } from '@playwright/test'
-import { waitForMessage } from './wait'
+import type { Locator, Page } from '@playwright/test'
+import { sendMessageWithEncryptionRetry } from './sendRetry'
+import { waitForSocketConnected } from './wait'
 
 const ENCRYPTION_READY_TIMEOUT = 10_000
 const ENCRYPTION_POLL_INTERVAL = 500
+const DM_HYDRATION_TIMEOUT = 5_000
 
-/** Navigate to the DM view by clicking the DM icon in the server rail. */
 export async function openDmView(page: Page): Promise<void> {
-  await page.click('[data-testid="sidebar"] button[title="Direct Messages"]')
+  const dmButton = page.locator('[data-testid="sidebar"] button[title="Direct Messages"]')
+  const classes = await dmButton.getAttribute('class')
+  if (!classes?.includes('bg-accent')) {
+    await dmButton.click()
+  }
   await page.waitForSelector('text=Direct Messages', { timeout: 5_000 })
-  await page.waitForFunction(() => {
-    const composer = document.querySelector('.vesper-composer-textarea')
-    return !composer
-  }, { timeout: 5_000 })
 }
 
-/** Create a new DM with a user by username. */
 export async function createDm(page: Page, username: string): Promise<void> {
   await openDmView(page)
 
-  // Click the + button to open NewDmModal
   await page.click('[data-testid="sidebar"] button[title="New Message"]')
   await page.waitForSelector('text=New Message', { timeout: 5_000 })
 
-  // Fill username and submit
   await page.locator('input[placeholder="Enter exact username"]').fill(username)
   await page.click('button:has-text("Start Chat")')
 
-  // Wait for the modal to close and the DM to be selected
   await page.waitForSelector('text=New Message', { state: 'hidden', timeout: 5_000 })
-
-  // Wait for the composer to appear
   await page.waitForSelector('.vesper-composer-textarea', { timeout: 5_000 })
 
-  // Wait for MLS encryption to sync before allowing sends
+  // MLS encryption may not be ready yet -- dismiss error banners until it syncs
   await waitForEncryptionReady(page)
 }
 
-/** Select an existing DM conversation by the other user's display text. */
 export async function selectDm(page: Page, displayName: string): Promise<void> {
-  await openDmView(page)
-  await page.click(`[data-testid="dm-row"]:has-text("${displayName}")`)
-  // Wait for the composer to appear
-  await page.waitForSelector('.vesper-composer-textarea', { timeout: 5_000 })
-}
-
-/** Send a message in the current DM. Retries if encryption is still syncing. */
-export async function sendDmMessage(page: Page, text: string): Promise<void> {
-  const deadline = Date.now() + ENCRYPTION_READY_TIMEOUT
-
-  while (Date.now() < deadline) {
-    const textarea = page.locator('.vesper-composer-textarea')
-    await textarea.fill(text)
-    await textarea.press('Enter')
-
-    // Give the send a moment to process
-    await page.waitForTimeout(400)
-
-    // Check if encryption error banner appeared
-    const alert = page.locator('.vesper-composer-alert')
-    const alertVisible = await alert.isVisible().catch(() => false)
-
-    if (alertVisible) {
-      // Dismiss the banner, clear composer, wait, retry
-      const dismissBtn = alert.locator('button')
-      if (await dismissBtn.isVisible().catch(() => false)) {
-        await dismissBtn.click().catch(() => {})
-      }
-      await textarea.fill('')
-      await page.waitForTimeout(ENCRYPTION_POLL_INTERVAL)
-      continue
+  const normalizedDisplayName = displayName.trim()
+  const initialState = await resolveDmState(page, normalizedDisplayName)
+  if (initialState.kind === 'open') {
+    const row = await findDmRow(page, normalizedDisplayName)
+    if (row) {
+      await row.click()
+      await waitForOpenDm(page, normalizedDisplayName)
+      return
     }
 
-    // No error — wait for the message to appear
-    await waitForMessage(page, text)
+    await waitForSocketConnected(page)
+    return
+  }
+  if (initialState.kind === 'listed') {
+    await initialState.row.click()
+    await waitForOpenDm(page, normalizedDisplayName)
     return
   }
 
-  throw new Error(`Could not send DM "${text}" — encryption did not become ready within ${ENCRYPTION_READY_TIMEOUT}ms`)
+  const hydratedState = await waitForDmState(page, normalizedDisplayName, DM_HYDRATION_TIMEOUT)
+  if (hydratedState.kind === 'open') {
+    return
+  }
+  if (hydratedState.kind === 'listed') {
+    await hydratedState.row.click()
+    await waitForOpenDm(page, normalizedDisplayName)
+    return
+  }
+
+  await openDmView(page)
+
+  await page.waitForFunction((name) => {
+    return Array.from(document.querySelectorAll('[data-testid="dm-row"]')).some((element) =>
+      element.textContent?.includes(name)
+    )
+  }, normalizedDisplayName, { timeout: 15_000 })
+
+  const row = await findDmRow(page, normalizedDisplayName)
+  if (!row) {
+    throw new Error(`Could not find DM row for ${normalizedDisplayName}`)
+  }
+
+  await row.click()
+  await waitForOpenDm(page, normalizedDisplayName)
 }
 
-/**
- * Wait for the MLS encryption to be ready by dismissing any existing error banners.
- */
+async function findDmRow(page: Page, displayName: string): Promise<Locator | null> {
+  const rows = page.getByTestId('dm-row')
+  const count = await rows.count()
+
+  for (let index = 0; index < count; index += 1) {
+    const row = rows.nth(index)
+    const text = (await row.textContent().catch(() => null))?.trim()
+    if (text?.includes(displayName)) {
+      return row
+    }
+  }
+
+  return null
+}
+
+async function waitForOpenDm(page: Page, displayName: string): Promise<void> {
+  await page.waitForFunction((name) => {
+    const title = document
+      .querySelector('.vesper-chat-header .text-text-primary.font-semibold')
+      ?.textContent
+      ?.trim()
+    return title === name && Boolean(document.querySelector('.vesper-composer-textarea'))
+  }, displayName, { timeout: 10_000 })
+
+  await waitForSocketConnected(page)
+}
+
+async function resolveDmState(
+  page: Page,
+  displayName: string
+): Promise<
+  | { kind: 'open' }
+  | { kind: 'listed'; row: Locator }
+  | { kind: 'missing' }
+> {
+  const header = page.locator('.vesper-chat-header .text-text-primary.font-semibold')
+  const composer = page.locator('.vesper-composer-textarea')
+  const currentHeader =
+    (await header.count().catch(() => 0)) > 0
+      ? (await header.first().textContent().catch(() => null))?.trim()
+      : null
+
+  if (currentHeader === displayName && await composer.isVisible().catch(() => false)) {
+    return { kind: 'open' }
+  }
+
+  const row = await findDmRow(page, displayName)
+  if (row) {
+    return { kind: 'listed', row }
+  }
+
+  return { kind: 'missing' }
+}
+
+async function waitForDmState(
+  page: Page,
+  displayName: string,
+  timeoutMs: number
+): Promise<
+  | { kind: 'open' }
+  | { kind: 'listed'; row: Locator }
+  | { kind: 'missing' }
+> {
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() < deadline) {
+    const state = await resolveDmState(page, displayName)
+    if (state.kind !== 'missing') {
+      return state
+    }
+
+    await page.waitForTimeout(200)
+  }
+
+  return { kind: 'missing' }
+}
+
+export async function sendDmMessage(page: Page, text: string): Promise<void> {
+  await sendMessageWithEncryptionRetry(
+    page,
+    page.locator('.vesper-composer-textarea'),
+    page.getByTestId('message-row'),
+    text,
+    { timeout: ENCRYPTION_READY_TIMEOUT, simplePoll: true, errorLabel: 'DM' }
+  )
+}
+
 async function waitForEncryptionReady(page: Page): Promise<void> {
   const deadline = Date.now() + ENCRYPTION_READY_TIMEOUT
 
@@ -96,7 +174,6 @@ async function waitForEncryptionReady(page: Page): Promise<void> {
 
     if (!alertVisible) return
 
-    // Dismiss the banner and wait
     const dismissBtn = alert.locator('button')
     if (await dismissBtn.isVisible().catch(() => false)) {
       await dismissBtn.click().catch(() => {})
@@ -105,38 +182,32 @@ async function waitForEncryptionReady(page: Page): Promise<void> {
   }
 }
 
-/** Send typing in the current DM (type some text without pressing Enter). */
 export async function startDmTyping(page: Page): Promise<void> {
   const textarea = page.locator('.vesper-composer-textarea')
   await textarea.type('typing...', { delay: 50 })
 }
 
-/** Clear the DM composer without sending. */
 export async function clearDmComposer(page: Page): Promise<void> {
   const textarea = page.locator('.vesper-composer-textarea')
   await textarea.fill('')
 }
 
-/** Get all visible DM message texts. */
 export async function getDmMessages(page: Page): Promise<string[]> {
   const messages = page.locator('[data-testid="message-row"] [data-testid="message-content"]')
   return messages.allTextContents()
 }
 
-/** Upload a file attachment in the current DM. */
 export async function uploadDmAttachment(
   page: Page,
   filePath: string
 ): Promise<void> {
   const fileInput = page.locator('.vesper-composer-form input[type="file"]')
   await fileInput.setInputFiles(filePath)
-  // Wait for staging/upload prep to complete.
   await page.waitForSelector('.vesper-composer-icon-button .animate-spin', {
     state: 'hidden',
     timeout: 10_000,
   })
 
-  // Submit the staged file as a DM message.
   const textarea = page.locator('.vesper-composer-textarea')
   await textarea.press('Enter')
 }

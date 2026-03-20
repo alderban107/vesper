@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { useServerStore } from '../../stores/serverStore'
+import { useDmStore } from '../../stores/dmStore'
 import { useMessageStore, type Message } from '../../stores/messageStore'
 import { useUnreadStore } from '../../stores/unreadStore'
 import MessageFeed from './message/MessageFeed'
@@ -7,60 +8,72 @@ import MessageFeed from './message/MessageFeed'
 const EMPTY_MESSAGES: Message[] = []
 const EMPTY_TYPING: { user_id: string; username: string }[] = []
 
-export default function MessageList(): React.JSX.Element {
-  const activeChannelId = useServerStore((s) => s.activeChannelId)
+interface Props {
+  scope: { kind: 'channel'; id: string } | { kind: 'dm'; id: string }
+}
+
+export default function MessageList({ scope }: Props): React.JSX.Element {
+  const scopeId = scope.id
   const allMessages = useMessageStore((s) =>
-    activeChannelId ? (s.messagesByChannel[activeChannelId] ?? EMPTY_MESSAGES) : EMPTY_MESSAGES
+    s.messagesByChannel[scopeId] ?? EMPTY_MESSAGES
   )
   const messages = useMemo(
     () => allMessages.filter((message) => !message.parent_message_id),
     [allMessages]
   )
   const typingUsers = useMessageStore((s) =>
-    activeChannelId ? (s.typingUsers[activeChannelId] ?? EMPTY_TYPING) : EMPTY_TYPING
+    s.typingUsers[scopeId] ?? EMPTY_TYPING
   )
   const isLoading = useMessageStore((s) =>
-    activeChannelId ? (s.loadingByScope[activeChannelId] ?? false) : false
+    s.loadingByScope[scopeId] ?? false
   )
   const hasLoaded = useMessageStore((s) =>
-    activeChannelId ? (s.loadedByScope[activeChannelId] ?? false) : false
+    s.loadedByScope[scopeId] ?? false
   )
   const hasMore = useMessageStore((s) =>
-    activeChannelId ? s.hasMore[activeChannelId] ?? true : false
+    s.hasMore[scopeId] ?? true
   )
   const hasNewer = useMessageStore((s) =>
-    activeChannelId ? s.hasNewer[activeChannelId] ?? false : false
+    s.hasNewer[scopeId] ?? false
   )
+
   const joinChannelChat = useMessageStore((s) => s.joinChannelChat)
   const leaveChannelChat = useMessageStore((s) => s.leaveChannelChat)
+  const joinDmChat = useMessageStore((s) => s.joinDmChat)
+  const leaveDmChat = useMessageStore((s) => s.leaveDmChat)
   const activateScope = useMessageStore((s) => s.activateScope)
   const fetchOlderMessages = useMessageStore((s) => s.fetchOlderMessages)
   const fetchNewerMessages = useMessageStore((s) => s.fetchNewerMessages)
+  const fetchOlderDmMessages = useMessageStore((s) => s.fetchOlderDmMessages)
+  const fetchNewerDmMessages = useMessageStore((s) => s.fetchNewerDmMessages)
   const markChannelRead = useUnreadStore((s) => s.markChannelRead)
+  const markDmRead = useUnreadStore((s) => s.markDmRead)
 
-  const prevChannelRef = useRef<string | null>(null)
+  const prevScopeRef = useRef<string | null>(null)
 
-  // Join/leave channel when activeChannelId changes
   useEffect(() => {
-    if (prevChannelRef.current) {
-      leaveChannelChat(prevChannelRef.current)
+    const leave = scope.kind === 'channel' ? leaveChannelChat : leaveDmChat
+    const join = scope.kind === 'channel' ? joinChannelChat : joinDmChat
+
+    if (prevScopeRef.current) {
+      leave(prevScopeRef.current)
     }
-    if (activeChannelId) {
-      activateScope(activeChannelId, 'channel')
-      joinChannelChat(activeChannelId)
-    }
-    prevChannelRef.current = activeChannelId
-  }, [activeChannelId, activateScope, joinChannelChat, leaveChannelChat])
+    activateScope(scopeId, scope.kind)
+    join(scopeId)
+    prevScopeRef.current = scopeId
+  }, [activateScope, joinChannelChat, joinDmChat, leaveChannelChat, leaveDmChat, scope.kind, scopeId])
 
   const handleLoadMore = (): void => {
-    if (hasMore && activeChannelId) {
-      fetchOlderMessages(activeChannelId)
+    if (hasMore) {
+      const fetch = scope.kind === 'channel' ? fetchOlderMessages : fetchOlderDmMessages
+      fetch(scopeId)
     }
   }
 
   const handleLoadNewer = (): void => {
-    if (hasNewer && activeChannelId) {
-      fetchNewerMessages(activeChannelId)
+    if (hasNewer) {
+      const fetch = scope.kind === 'channel' ? fetchNewerMessages : fetchNewerDmMessages
+      fetch(scopeId)
     }
   }
 
@@ -69,18 +82,21 @@ export default function MessageList(): React.JSX.Element {
       messages={messages}
       messageLookup={allMessages}
       typingUsers={typingUsers}
-      isLoading={Boolean(activeChannelId) && (!hasLoaded || isLoading)}
+      isLoading={!hasLoaded || isLoading}
       hasMore={hasMore}
       hasNewer={hasNewer}
       emptyState="No messages yet. Say something!"
       onLoadMore={handleLoadMore}
       onLoadNewer={handleLoadNewer}
       onMarkRead={(messageId) => {
-        if (
-          activeChannelId &&
-          useServerStore.getState().activeChannelId === activeChannelId
-        ) {
-          markChannelRead(activeChannelId, messageId)
+        if (scope.kind === 'channel') {
+          if (useServerStore.getState().activeChannelId === scopeId) {
+            markChannelRead(scopeId, messageId)
+          }
+        } else {
+          if (useDmStore.getState().selectedConversationId === scopeId) {
+            markDmRead(scopeId, messageId)
+          }
         }
       }}
     />

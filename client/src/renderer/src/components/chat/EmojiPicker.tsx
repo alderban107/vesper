@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } fro
 import { Search, X } from 'lucide-react'
 import { CATEGORIES, EMOJIS, type EmojiCategory } from '../../data/emojis'
 import { useServerStore } from '../../stores/serverStore'
+import { getStoredJson, setStoredJson } from '../../utils/localStorage'
 import type { CustomEmoji } from '../../utils/emoji'
 import FloatingSurface from '../ui/FloatingSurface'
 
@@ -40,20 +41,15 @@ interface Props {
 }
 
 function readRecentEmoji(): string[] {
-  try {
-    const raw = localStorage.getItem('vesper.recent-emoji')
-    const parsed = raw ? JSON.parse(raw) : []
-    return Array.isArray(parsed)
-      ? parsed.filter((value): value is string => typeof value === 'string')
-      : []
-  } catch {
-    return []
-  }
+  const parsed = getStoredJson<string[]>('vesper.recent-emoji', [])
+  return Array.isArray(parsed)
+    ? parsed.filter((value): value is string => typeof value === 'string')
+    : []
 }
 
 function saveRecentEmoji(value: string): void {
   const next = [value, ...readRecentEmoji().filter((entry) => entry !== value)].slice(0, 24)
-  localStorage.setItem('vesper.recent-emoji', JSON.stringify(next))
+  setStoredJson('vesper.recent-emoji', next)
 }
 
 export default function EmojiPicker({

@@ -19,6 +19,24 @@ defmodule VesperWeb.ControllerHelpers do
   def parse_int(_, default), do: default
 
   @doc """
+  Parses a string, integer, or boolean value as a boolean, returning `default`
+  on failure.
+  """
+  def parse_bool(nil, default), do: default
+  def parse_bool(value, _default) when is_boolean(value), do: value
+  def parse_bool(value, _default) when is_integer(value), do: value != 0
+
+  def parse_bool(value, default) when is_binary(value) do
+    case String.downcase(String.trim(value)) do
+      value when value in ["1", "true", "yes", "on"] -> true
+      value when value in ["0", "false", "no", "off"] -> false
+      _ -> default
+    end
+  end
+
+  def parse_bool(_, default), do: default
+
+  @doc """
   Formats Ecto changeset errors into a plain map of field => message strings,
   suitable for returning in JSON API responses.
   """

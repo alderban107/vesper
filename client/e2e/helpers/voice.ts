@@ -114,28 +114,48 @@ export async function waitForRemoteVideo(
     .toBe(visible)
 }
 
-/** Get voice participant names. */
+/** Get voice participant names from all possible UI locations. */
 export async function getVoiceParticipants(page: Page): Promise<string[]> {
-  const participants = page.locator('[data-testid="voice-participant-name"]')
-  return participants.allTextContents()
+  const names = new Set<string>()
+  // Avatar tiles (audio-only mode)
+  for (const text of await page.locator('[data-testid="voice-participant-name"]').allTextContents()) {
+    names.add(text.trim())
+  }
+  // Video tiles (when streams are active)
+  for (const text of await page.locator('.vesper-voice-call-tile-name').allTextContents()) {
+    names.add(text.trim())
+  }
+  // Mini presence strip (voice-only participants in video mode)
+  for (const text of await page.locator('.vesper-call-overlay-presence-name').allTextContents()) {
+    names.add(text.trim())
+  }
+  return [...names]
 }
 
-/** Wait until the voice roster reaches the requested visible participant count. */
+/**
+ * Wait until the voice panel header shows the requested participant count.
+ * Uses the "N in voice" counter which is always visible regardless of video mode.
+ */
 export async function waitForVoiceParticipants(
   page: Page,
   minimumCount: number,
   timeout = 15_000,
 ): Promise<string[]> {
-  const participants = page.locator('[data-testid="voice-participant-name"]')
-
   await expect
     .poll(
-      async () => countVisible(participants),
+      async () => {
+        const metaText = await page
+          .locator('.vesper-voice-room-section-meta')
+          .textContent()
+          .catch(() => null)
+        const match = metaText?.match(/(\d+)\s+in voice/)
+        return match ? parseInt(match[1], 10) : 0
+      },
       { timeout },
     )
     .toBeGreaterThanOrEqual(minimumCount)
 
-  return participants.allTextContents()
+  return getVoiceParticipants(page)
 }
 
 /** Toggle screen share. */

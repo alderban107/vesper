@@ -26,12 +26,16 @@ defmodule Vesper.Servers.PermissionsCache do
   On cache miss, populates from DB via the GenServer.
   """
   def get(user_id, server_id) do
-    case :ets.lookup(@table, {user_id, server_id}) do
-      [{{^user_id, ^server_id}, permissions}] ->
-        permissions
+    if sandbox_pool?() do
+      Vesper.Servers.get_user_permissions(user_id, server_id)
+    else
+      case :ets.lookup(@table, {user_id, server_id}) do
+        [{{^user_id, ^server_id}, permissions}] ->
+          permissions
 
-      [] ->
-        GenServer.call(__MODULE__, {:populate, user_id, server_id})
+        [] ->
+          GenServer.call(__MODULE__, {:populate, user_id, server_id})
+      end
     end
   end
 
@@ -94,5 +98,9 @@ defmodule Vesper.Servers.PermissionsCache do
     permissions = Vesper.Servers.get_user_permissions(user_id, server_id)
     :ets.insert(@table, {{user_id, server_id}, permissions})
     permissions
+  end
+
+  defp sandbox_pool? do
+    Application.get_env(:vesper, Vesper.Repo, [])[:pool] == Ecto.Adapters.SQL.Sandbox
   end
 end

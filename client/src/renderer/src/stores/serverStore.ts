@@ -1,30 +1,32 @@
 import { create } from 'zustand'
-import { apiFetch, apiUpload } from '../api/client'
 import { useDmStore } from './dmStore'
 import type { CustomEmoji } from '../utils/emoji'
+import { getRendererClient, getRendererEncryptedChat } from '../sdk/client'
+import { getStoredValue as readStoredValue, writeStoredValue } from '../utils/localStorage'
+import type {
+  VesperServerRole,
+  VesperServerMember,
+  VesperServerBan,
+  VesperAuditLogEntry
+} from '@vesper/sdk/api'
 
 const LAST_SERVER_KEY = 'vesper:lastServerId'
 const LAST_CHANNEL_KEY = 'vesper:lastChannelId'
 
-function readStoredValue(key: string): string | null {
-  if (typeof window === 'undefined') {
-    return null
-  }
-
-  return localStorage.getItem(key)
-}
-
-function writeStoredValue(key: string, value: string | null): void {
-  if (typeof window === 'undefined') {
+async function resetServerGroups(server: Server | undefined): Promise<void> {
+  if (!server) {
     return
   }
 
-  if (value) {
-    localStorage.setItem(key, value)
-    return
-  }
+  const encryptedChat = getRendererEncryptedChat()
+  const channelIds = Array.from(new Set(server.channels.map((channel) => channel.id)))
 
-  localStorage.removeItem(key)
+  await Promise.allSettled(
+    channelIds.map((channelId) => encryptedChat.resetScope(channelId))
+  )
+  await Promise.allSettled(
+    channelIds.map((channelId) => encryptedChat.resetScope(`voice:channel:${channelId}`))
+  )
 }
 
 export interface Channel {
@@ -56,69 +58,10 @@ export interface Server {
   emojis: CustomEmoji[]
 }
 
-export interface Member {
-  id: string
-  user_id: string
-  role: string
-  nickname: string | null
-  user: {
-    id: string
-    username: string
-    display_name: string | null
-    avatar_url: string | null
-    status: string
-  }
-}
-
-export interface ServerRole {
-  id: string
-  server_id: string
-  name: string
-  color: string | null
-  permissions: number
-  position: number
-}
-
-export interface ServerBan {
-  id: string
-  server_id: string
-  user_id: string
-  reason: string | null
-  inserted_at: string
-  banned_by_id: string | null
-  user?: {
-    id: string
-    username: string
-    display_name: string | null
-    avatar_url: string | null
-  } | null
-  banned_by?: {
-    id: string
-    username: string
-    display_name: string | null
-  } | null
-}
-
-export interface AuditLogEntry {
-  id: string
-  server_id?: string
-  action: string
-  inserted_at: string
-  actor_id: string | null
-  target_user_id: string | null
-  target_id: string | null
-  metadata?: Record<string, unknown> | null
-  actor?: {
-    id: string
-    username: string
-    display_name: string | null
-  } | null
-  target_user?: {
-    id: string
-    username: string
-    display_name: string | null
-  } | null
-}
+export type Member = VesperServerMember
+export type ServerRole = VesperServerRole
+export type ServerBan = VesperServerBan
+export type AuditLogEntry = VesperAuditLogEntry
 
 export interface ChannelPermissionOverride {
   channel_id: string
@@ -204,13 +147,7 @@ function getFirstNavigableChannel(server: Server | undefined | null): Channel | 
 
 async function fetchServerChannels(serverId: string): Promise<Channel[] | null> {
   try {
-    const res = await apiFetch(`/api/v1/servers/${serverId}/channels`)
-    if (!res.ok) {
-      return null
-    }
-
-    const data = await res.json()
-    return data.channels as Channel[]
+    return await getRendererClient().fetchServerChannels(serverId) as Channel[]
   } catch {
     return null
   }
@@ -362,6 +299,7 @@ interface ServerState {
   joinServer: (inviteCode: string) => Promise<Server | null>
   deleteServer: (id: string) => Promise<boolean>
   leaveServer: (serverId: string) => Promise<boolean>
+  removeServerLocally: (serverId: string) => void
   setActiveServer: (id: string | null) => void
   setActiveChannel: (id: string | null) => void
   createChannel: (
@@ -459,34 +397,30 @@ export const useServerStore = create<ServerState>((set, get) => ({
 
   fetchServers: async () => {
     try {
-      const res = await apiFetch('/api/v1/servers')
-      if (res.ok) {
-        const data = await res.json()
-        const existingById = new Map(get().servers.map((server) => [server.id, server]))
-        const servers = (data.servers as Server[]).map((server) =>
-          normalizeServer(server, existingById.get(server.id))
-        )
-        const currentServerId = get().activeServerId
-        const currentChannelId = get().activeChannelId
-        const restoredServer = servers.find((server) => server.id === currentServerId) ?? null
-        const restoredChannel = restoredServer?.channels.find((channel) => channel.id === currentChannelId) ?? null
-        const fallbackChannel = getFirstNavigableChannel(restoredServer)
+      const existingById = new Map(get().servers.map((server) => [server.id, server]))
+      const servers = (await getRendererClient().listServers() as Server[]).map((server) =>
+        normalizeServer(server, existingById.get(server.id))
+      )
+      const currentServerId = get().activeServerId
+      const currentChannelId = get().activeChannelId
+      const restoredServer = servers.find((server) => server.id === currentServerId) ?? null
+      const restoredChannel = restoredServer?.channels.find((channel) => channel.id === currentChannelId) ?? null
+      const fallbackChannel = getFirstNavigableChannel(restoredServer)
 
-        set({
-          servers,
-          activeServerId: restoredServer?.id ?? null,
-          activeChannelId: restoredChannel?.id ?? fallbackChannel?.id ?? null
-        })
+      set({
+        servers,
+        activeServerId: restoredServer?.id ?? null,
+        activeChannelId: restoredChannel?.id ?? fallbackChannel?.id ?? null
+      })
 
-        writeStoredValue(LAST_SERVER_KEY, restoredServer?.id ?? null)
-        writeStoredValue(
-          LAST_CHANNEL_KEY,
-          restoredChannel?.id ?? fallbackChannel?.id ?? null
-        )
+      writeStoredValue(LAST_SERVER_KEY, restoredServer?.id ?? null)
+      writeStoredValue(
+        LAST_CHANNEL_KEY,
+        restoredChannel?.id ?? fallbackChannel?.id ?? null
+      )
 
-        if (restoredServer) {
-          void get().fetchMembers(restoredServer.id)
-        }
+      if (restoredServer) {
+        void get().fetchMembers(restoredServer.id)
       }
     } catch {
       // ignore
@@ -533,16 +467,9 @@ export const useServerStore = create<ServerState>((set, get) => ({
 
   createServer: async (name) => {
     try {
-      const res = await apiFetch('/api/v1/servers', {
-        method: 'POST',
-        body: JSON.stringify({ name })
-      })
-      if (res.ok) {
-        const data = await res.json()
-        const server = normalizeServer(data.server as Server)
-        set((s) => ({ servers: [...s.servers, server] }))
-        return server
-      }
+      const server = normalizeServer(await getRendererClient().createServer(name) as Server)
+      set((s) => ({ servers: [...s.servers, server] }))
+      return server
     } catch {
       // ignore
     }
@@ -551,20 +478,14 @@ export const useServerStore = create<ServerState>((set, get) => ({
 
   joinServer: async (inviteCode) => {
     try {
-      const res = await apiFetch('/api/v1/servers/join', {
-        method: 'POST',
-        body: JSON.stringify({ invite_code: inviteCode })
+      const server = normalizeServer(
+        await getRendererClient().joinServerByInvite(inviteCode) as Server
+      )
+      set((s) => {
+        const exists = s.servers.some((srv) => srv.id === server.id)
+        return exists ? s : { servers: [...s.servers, server] }
       })
-      if (res.ok) {
-        const data = await res.json()
-        const server = normalizeServer(data.server as Server)
-        // Add if not already in list
-        set((s) => {
-          const exists = s.servers.some((srv) => srv.id === server.id)
-          return exists ? s : { servers: [...s.servers, server] }
-        })
-        return server
-      }
+      return server
     } catch {
       // ignore
     }
@@ -573,19 +494,10 @@ export const useServerStore = create<ServerState>((set, get) => ({
 
   deleteServer: async (id) => {
     try {
-      const res = await apiFetch(`/api/v1/servers/${id}`, { method: 'DELETE' })
-      if (res.ok) {
-        set((s) => ({
-          servers: s.servers.filter((srv) => srv.id !== id),
-          activeServerId: s.activeServerId === id ? null : s.activeServerId,
-          activeChannelId: s.activeServerId === id ? null : s.activeChannelId
-        }))
-        if (get().activeServerId === null) {
-          writeStoredValue(LAST_SERVER_KEY, null)
-          writeStoredValue(LAST_CHANNEL_KEY, null)
-        }
-        return true
-      }
+      await getRendererClient().deleteServer(id)
+      await resetServerGroups(get().servers.find((server) => server.id === id))
+      get().removeServerLocally(id)
+      return true
     } catch {
       // ignore
     }
@@ -594,23 +506,45 @@ export const useServerStore = create<ServerState>((set, get) => ({
 
   leaveServer: async (serverId) => {
     try {
-      const res = await apiFetch(`/api/v1/servers/${serverId}/leave`, { method: 'DELETE' })
-      if (res.ok) {
-        set((s) => ({
-          servers: s.servers.filter((srv) => srv.id !== serverId),
-          activeServerId: s.activeServerId === serverId ? null : s.activeServerId,
-          activeChannelId: s.activeServerId === serverId ? null : s.activeChannelId
-        }))
-        if (get().activeServerId === null) {
-          writeStoredValue(LAST_SERVER_KEY, null)
-          writeStoredValue(LAST_CHANNEL_KEY, null)
-        }
-        return true
-      }
+      await getRendererClient().leaveServer(serverId)
+      await resetServerGroups(get().servers.find((server) => server.id === serverId))
+      get().removeServerLocally(serverId)
+      return true
     } catch {
       // ignore
     }
     return false
+  },
+
+  removeServerLocally: (serverId) => {
+    set((state) => {
+      const removedServer = state.servers.find((server) => server.id === serverId)
+      const removedChannelIds = new Set((removedServer?.channels ?? []).map((channel) => channel.id))
+      const activeServerRemoved = state.activeServerId === serverId
+      const { [serverId]: _roles, ...rolesByServer } = state.rolesByServer
+      const { [serverId]: _bans, ...bansByServer } = state.bansByServer
+      const { [serverId]: _audit, ...auditLogByServer } = state.auditLogByServer
+
+      return {
+        servers: state.servers.filter((server) => server.id !== serverId),
+        activeServerId: activeServerRemoved ? null : state.activeServerId,
+        activeChannelId: activeServerRemoved ? null : state.activeChannelId,
+        members: activeServerRemoved ? [] : state.members,
+        rolesByServer,
+        bansByServer,
+        auditLogByServer,
+        channelPermissionOverrides: Object.fromEntries(
+          Object.entries(state.channelPermissionOverrides).filter(
+            ([channelId]) => !removedChannelIds.has(channelId)
+          )
+        )
+      }
+    })
+
+    if (get().activeServerId === null) {
+      writeStoredValue(LAST_SERVER_KEY, null)
+      writeStoredValue(LAST_CHANNEL_KEY, null)
+    }
   },
 
   setActiveServer: (id) => {
@@ -644,19 +578,17 @@ export const useServerStore = create<ServerState>((set, get) => ({
 
   createChannel: async (serverId, name, type = 'text', categoryId = null) => {
     try {
-      const res = await apiFetch(`/api/v1/servers/${serverId}/channels`, {
-        method: 'POST',
-        body: JSON.stringify({ name, type, category_id: categoryId })
+      const channel = await getRendererClient().createServerChannel(serverId, {
+        name,
+        type,
+        category_id: categoryId
+      }) as Channel
+      get().applyChannelMutation({
+        serverId,
+        action: 'created',
+        channel
       })
-      if (res.ok) {
-        const data = await res.json()
-        get().applyChannelMutation({
-          serverId,
-          action: 'created',
-          channel: data.channel as Channel
-        })
-        return data.channel
-      }
+      return channel
     } catch {
       // ignore
     }
@@ -700,19 +632,13 @@ export const useServerStore = create<ServerState>((set, get) => ({
 
   updateChannel: async (serverId, channelId, attrs) => {
     try {
-      const res = await apiFetch(`/api/v1/servers/${serverId}/channels/${channelId}`, {
-        method: 'PUT',
-        body: JSON.stringify(attrs)
+      const channel = await getRendererClient().updateServerChannel(serverId, channelId, attrs)
+      get().applyChannelMutation({
+        serverId,
+        action: 'updated',
+        channel
       })
-      if (res.ok) {
-        const data = await res.json()
-        get().applyChannelMutation({
-          serverId,
-          action: 'updated',
-          channel: data.channel as Channel
-        })
-        return data.channel
-      }
+      return channel
     } catch {
       // ignore
     }
@@ -721,17 +647,13 @@ export const useServerStore = create<ServerState>((set, get) => ({
 
   deleteChannel: async (serverId, channelId) => {
     try {
-      const res = await apiFetch(`/api/v1/servers/${serverId}/channels/${channelId}`, {
-        method: 'DELETE'
+      await getRendererClient().deleteServerChannel(serverId, channelId)
+      get().applyChannelMutation({
+        serverId,
+        action: 'deleted',
+        channelId
       })
-      if (res.ok) {
-        get().applyChannelMutation({
-          serverId,
-          action: 'deleted',
-          channelId
-        })
-        return true
-      }
+      return true
     } catch {
       // ignore
     }
@@ -740,11 +662,7 @@ export const useServerStore = create<ServerState>((set, get) => ({
 
   fetchMembers: async (serverId) => {
     try {
-      const res = await apiFetch(`/api/v1/servers/${serverId}/members`)
-      if (res.ok) {
-        const data = await res.json()
-        set({ members: data.members })
-      }
+      set({ members: await getRendererClient().fetchServerMembers(serverId) })
     } catch {
       // ignore
     }
@@ -752,18 +670,14 @@ export const useServerStore = create<ServerState>((set, get) => ({
 
   fetchRoles: async (serverId) => {
     try {
-      const res = await apiFetch(`/api/v1/servers/${serverId}/roles`)
-      if (res.ok) {
-        const data = await res.json()
-        const roles = (data.roles as ServerRole[]) ?? []
-        set((s) => ({
-          rolesByServer: {
-            ...s.rolesByServer,
-            [serverId]: roles
-          }
-        }))
-        return roles
-      }
+      const roles = await getRendererClient().listServerRoles(serverId)
+      set((s) => ({
+        rolesByServer: {
+          ...s.rolesByServer,
+          [serverId]: roles
+        }
+      }))
+      return roles
     } catch {
       // ignore
     }
@@ -773,18 +687,14 @@ export const useServerStore = create<ServerState>((set, get) => ({
 
   fetchBans: async (serverId) => {
     try {
-      const res = await apiFetch(`/api/v1/servers/${serverId}/bans`)
-      if (res.ok) {
-        const data = await res.json()
-        const bans = (data.bans as ServerBan[]) ?? []
-        set((s) => ({
-          bansByServer: {
-            ...s.bansByServer,
-            [serverId]: bans
-          }
-        }))
-        return bans
-      }
+      const bans = await getRendererClient().fetchServerBans(serverId)
+      set((s) => ({
+        bansByServer: {
+          ...s.bansByServer,
+          [serverId]: bans
+        }
+      }))
+      return bans
     } catch {
       // ignore
     }
@@ -794,19 +704,12 @@ export const useServerStore = create<ServerState>((set, get) => ({
 
   banMember: async (serverId, userId, reason) => {
     try {
-      const res = await apiFetch(`/api/v1/servers/${serverId}/members/${userId}/ban`, {
-        method: 'POST',
-        body: JSON.stringify({
-          ...(reason?.trim() ? { reason: reason.trim() } : {})
-        })
-      })
-      if (res.ok) {
-        set((s) => ({
-          members: s.members.filter((member) => member.user_id !== userId)
-        }))
-        await get().fetchBans(serverId)
-        return true
-      }
+      await getRendererClient().banServerMember(serverId, userId, reason)
+      set((s) => ({
+        members: s.members.filter((member) => member.user_id !== userId)
+      }))
+      await get().fetchBans(serverId)
+      return true
     } catch {
       // ignore
     }
@@ -816,18 +719,14 @@ export const useServerStore = create<ServerState>((set, get) => ({
 
   unbanMember: async (serverId, userId) => {
     try {
-      const res = await apiFetch(`/api/v1/servers/${serverId}/members/${userId}/ban`, {
-        method: 'DELETE'
-      })
-      if (res.ok) {
-        set((s) => ({
-          bansByServer: {
-            ...s.bansByServer,
-            [serverId]: (s.bansByServer[serverId] ?? []).filter((ban) => ban.user_id !== userId)
-          }
-        }))
-        return true
-      }
+      await getRendererClient().unbanServerMember(serverId, userId)
+      set((s) => ({
+        bansByServer: {
+          ...s.bansByServer,
+          [serverId]: (s.bansByServer[serverId] ?? []).filter((ban) => ban.user_id !== userId)
+        }
+      }))
+      return true
     } catch {
       // ignore
     }
@@ -837,18 +736,14 @@ export const useServerStore = create<ServerState>((set, get) => ({
 
   fetchAuditLog: async (serverId, limit = 100) => {
     try {
-      const res = await apiFetch(`/api/v1/servers/${serverId}/audit-logs?limit=${limit}`)
-      if (res.ok) {
-        const data = await res.json()
-        const entries = (data.audit_logs as AuditLogEntry[]) ?? []
-        set((s) => ({
-          auditLogByServer: {
-            ...s.auditLogByServer,
-            [serverId]: entries
-          }
-        }))
-        return entries
-      }
+      const entries = await getRendererClient().fetchServerAuditLog(serverId, limit)
+      set((s) => ({
+        auditLogByServer: {
+          ...s.auditLogByServer,
+          [serverId]: entries
+        }
+      }))
+      return entries
     } catch {
       // ignore
     }
@@ -858,22 +753,18 @@ export const useServerStore = create<ServerState>((set, get) => ({
 
   fetchChannelPermissionOverrides: async (serverId, channelId) => {
     try {
-      const res = await apiFetch(`/api/v1/servers/${serverId}/channels/${channelId}`)
-      if (res.ok) {
-        const data = await res.json()
-        const channelData = (data.channel as Record<string, unknown> | undefined) ?? {}
-        const overrides = normalizePermissionOverrides(
-          channelId,
-          channelData.permission_overrides
-        )
-        set((s) => ({
-          channelPermissionOverrides: {
-            ...s.channelPermissionOverrides,
-            [channelId]: overrides
-          }
-        }))
-        return overrides
-      }
+      const channelData = await getRendererClient().fetchServerChannel(serverId, channelId)
+      const overrides = normalizePermissionOverrides(
+        channelId,
+        channelData.permission_overrides
+      )
+      set((s) => ({
+        channelPermissionOverrides: {
+          ...s.channelPermissionOverrides,
+          [channelId]: overrides
+        }
+      }))
+      return overrides
     } catch {
       // ignore
     }
@@ -901,34 +792,31 @@ export const useServerStore = create<ServerState>((set, get) => ({
         }
       ]
 
-      const res = await apiFetch(`/api/v1/servers/${serverId}/channels/${channelId}`, {
-        method: 'PUT',
-        body: JSON.stringify({
+      const channelData = await getRendererClient().updateServerChannel(
+        serverId,
+        channelId,
+        {
           permission_overrides: serializePermissionOverrides(next)
-        })
-      })
-      if (res.ok) {
-        const data = await res.json()
-        const channelData = (data.channel as Record<string, unknown> | undefined) ?? {}
-        const normalized = normalizePermissionOverrides(
-          channelId,
-          channelData.permission_overrides
-        )
+        }
+      )
+      const normalized = normalizePermissionOverrides(
+        channelId,
+        channelData.permission_overrides
+      )
 
-        const override = normalized.find((entry) =>
-          entry.target_type === payload.target_type && entry.target_id === payload.target_id
-        ) ?? null
+      const override = normalized.find((entry) =>
+        entry.target_type === payload.target_type && entry.target_id === payload.target_id
+      ) ?? null
 
-        set((s) => {
-          return {
-            channelPermissionOverrides: {
-              ...s.channelPermissionOverrides,
-              [channelId]: normalized
-            }
+      set((s) => {
+        return {
+          channelPermissionOverrides: {
+            ...s.channelPermissionOverrides,
+            [channelId]: normalized
           }
-        })
-        return override
-      }
+        }
+      })
+      return override
     } catch {
       // ignore
     }
@@ -944,27 +832,24 @@ export const useServerStore = create<ServerState>((set, get) => ({
         !(entry.target_type === targetType && entry.target_id === targetId)
       )
 
-      const res = await apiFetch(`/api/v1/servers/${serverId}/channels/${channelId}`, {
-        method: 'PUT',
-        body: JSON.stringify({
+      const channelData = await getRendererClient().updateServerChannel(
+        serverId,
+        channelId,
+        {
           permission_overrides: serializePermissionOverrides(next)
-        })
-      })
-      if (res.ok) {
-        const data = await res.json()
-        const channelData = (data.channel as Record<string, unknown> | undefined) ?? {}
-        const normalized = normalizePermissionOverrides(
-          channelId,
-          channelData.permission_overrides
-        )
-        set((s) => ({
-          channelPermissionOverrides: {
-            ...s.channelPermissionOverrides,
-            [channelId]: normalized
-          }
-        }))
-        return true
-      }
+        }
+      )
+      const normalized = normalizePermissionOverrides(
+        channelId,
+        channelData.permission_overrides
+      )
+      set((s) => ({
+        channelPermissionOverrides: {
+          ...s.channelPermissionOverrides,
+          [channelId]: normalized
+        }
+      }))
+      return true
     } catch {
       // ignore
     }
@@ -974,15 +859,11 @@ export const useServerStore = create<ServerState>((set, get) => ({
 
   kickMember: async (serverId, userId) => {
     try {
-      const res = await apiFetch(`/api/v1/servers/${serverId}/members/${userId}`, {
-        method: 'DELETE'
-      })
-      if (res.ok) {
-        set((s) => ({
-          members: s.members.filter((m) => m.user_id !== userId)
-        }))
-        return true
-      }
+      await getRendererClient().kickServerMember(serverId, userId)
+      set((s) => ({
+        members: s.members.filter((m) => m.user_id !== userId)
+      }))
+      return true
     } catch {
       // ignore
     }
@@ -991,26 +872,21 @@ export const useServerStore = create<ServerState>((set, get) => ({
 
   updateServer: async (serverId, attrs) => {
     try {
-      const res = await apiFetch(`/api/v1/servers/${serverId}`, {
-        method: 'PUT',
-        body: JSON.stringify({ server: attrs })
-      })
-      if (res.ok) {
-        const data = await res.json()
-        const updated = normalizeServer(data.server as Server)
-        set((s) => ({
-          servers: s.servers.map((srv) =>
-            srv.id === serverId
-              ? {
-                  ...updated,
-                  channels: updated.channels.length > 0 ? updated.channels : srv.channels,
-                  emojis: updated.emojis
-                }
-              : srv
-          )
-        }))
-        return true
-      }
+      const updated = normalizeServer(
+        await getRendererClient().updateServerDetails(serverId, attrs) as Server
+      )
+      set((s) => ({
+        servers: s.servers.map((srv) =>
+          srv.id === serverId
+            ? {
+                ...updated,
+                channels: updated.channels.length > 0 ? updated.channels : srv.channels,
+                emojis: updated.emojis
+              }
+            : srv
+        )
+      }))
+      return true
     } catch {
       // ignore
     }
@@ -1019,18 +895,13 @@ export const useServerStore = create<ServerState>((set, get) => ({
 
   changeMemberRole: async (serverId, userId, role) => {
     try {
-      const res = await apiFetch(`/api/v1/servers/${serverId}/members/${userId}/roles`, {
-        method: 'PUT',
-        body: JSON.stringify({ role })
-      })
-      if (res.ok) {
-        set((s) => ({
-          members: s.members.map((m) =>
-            m.user_id === userId ? { ...m, role } : m
-          )
-        }))
-        return true
-      }
+      await getRendererClient().updateServerMemberRole(serverId, userId, role)
+      set((s) => ({
+        members: s.members.map((m) =>
+          m.user_id === userId ? { ...m, role } : m
+        )
+      }))
+      return true
     } catch {
       // ignore
     }
@@ -1039,17 +910,13 @@ export const useServerStore = create<ServerState>((set, get) => ({
 
   fetchServerEmojis: async (serverId) => {
     try {
-      const res = await apiFetch(`/api/v1/servers/${serverId}/emojis`)
-      if (res.ok) {
-        const data = await res.json()
-        const emojis = (data.emojis as CustomEmoji[]) ?? []
-        set((s) => ({
-          servers: s.servers.map((srv) =>
-            srv.id === serverId ? { ...srv, emojis } : srv
-          )
-        }))
-        return emojis
-      }
+      const emojis = await getRendererClient().fetchServerEmojis(serverId)
+      set((s) => ({
+        servers: s.servers.map((srv) =>
+          srv.id === serverId ? { ...srv, emojis } : srv
+        )
+      }))
+      return emojis
     } catch {
       // ignore
     }
@@ -1065,24 +932,20 @@ export const useServerStore = create<ServerState>((set, get) => ({
         formData.append('name', name.trim())
       }
 
-      const res = await apiUpload(`/api/v1/servers/${serverId}/emojis`, formData)
-      if (res.ok) {
-        const data = await res.json()
-        const emoji = data.emoji as CustomEmoji
-        set((s) => ({
-          servers: s.servers.map((srv) =>
-            srv.id === serverId
-              ? {
-                  ...srv,
-                  emojis: [...srv.emojis.filter((item) => item.id !== emoji.id), emoji].sort(
-                    (left, right) => left.name.localeCompare(right.name)
-                  )
-                }
-              : srv
-          )
-        }))
-        return emoji
-      }
+      const emoji = await getRendererClient().uploadServerEmoji(serverId, formData)
+      set((s) => ({
+        servers: s.servers.map((srv) =>
+          srv.id === serverId
+            ? {
+                ...srv,
+                emojis: [...srv.emojis.filter((item) => item.id !== emoji.id), emoji].sort(
+                  (left, right) => left.name.localeCompare(right.name)
+                )
+              }
+            : srv
+        )
+      }))
+      return emoji
     } catch {
       // ignore
     }
@@ -1092,19 +955,15 @@ export const useServerStore = create<ServerState>((set, get) => ({
 
   deleteServerEmoji: async (serverId, emojiId) => {
     try {
-      const res = await apiFetch(`/api/v1/servers/${serverId}/emojis/${emojiId}`, {
-        method: 'DELETE'
-      })
-      if (res.ok) {
-        set((s) => ({
-          servers: s.servers.map((srv) =>
-            srv.id === serverId
-              ? { ...srv, emojis: srv.emojis.filter((emoji) => emoji.id !== emojiId) }
-              : srv
-          )
-        }))
-        return true
-      }
+      await getRendererClient().deleteServerEmoji(serverId, emojiId)
+      set((s) => ({
+        servers: s.servers.map((srv) =>
+          srv.id === serverId
+            ? { ...srv, emojis: srv.emojis.filter((emoji) => emoji.id !== emojiId) }
+            : srv
+        )
+      }))
+      return true
     } catch {
       // ignore
     }
@@ -1190,7 +1049,14 @@ export const useServerStore = create<ServerState>((set, get) => ({
                 ...channel,
                 last_message_id: lastMessage?.id ?? null,
                 last_message_inserted_at: lastMessage?.inserted_at ?? null,
-                last_message_sender: lastMessage?.sender ?? null
+                last_message_sender:
+                  lastMessage?.sender ??
+                  (lastMessage?.sender_id
+                    ? {
+                        id: lastMessage.sender_id,
+                        username: 'Unknown'
+                      }
+                    : null)
               }
             : channel
         )
