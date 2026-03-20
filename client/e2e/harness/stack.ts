@@ -98,7 +98,7 @@ export async function bootStack(): Promise<RunState> {
     profileDir,
   }
 
-  execFileSync('sh', [SDK_TEST_DB_START_SCRIPT], {
+  execFileSync('bash', [SDK_TEST_DB_START_SCRIPT], {
     cwd: ROOT,
     env: process.env,
     stdio: 'pipe',

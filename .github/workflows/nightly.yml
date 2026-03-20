@@ -217,7 +217,7 @@ jobs:
         working-directory: client
         run: npx electron-builder --linux --publish never
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: desktop-linux
           path: |
@@ -257,7 +257,7 @@ jobs:
         working-directory: client
         run: npx electron-builder --mac --publish never
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: desktop-mac
           path: |
@@ -297,7 +297,7 @@ jobs:
         working-directory: client
         run: npx electron-builder --win --publish never
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: desktop-win
           path: |
