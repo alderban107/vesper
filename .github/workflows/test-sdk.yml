@@ -1,0 +1,107 @@
+# SDK CI — live integration tests
+#
+# Runs the SDK integration test suite, which boots Phoenix + PostgreSQL
+# per test file via the SDK's own test harness. Triggers when server/,
+# client/, or sdk/ files change relative to main.
+
+name: SDK Tests
+
+on:
+  push:
+    branches-ignore: [main]
+    tags-ignore: ["v*"]
+
+concurrency:
+  group: test-sdk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sdk-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check for relevant changes
+        id: check
+        run: |
+          git fetch origin main --depth=1 2>/dev/null || true
+          BASE=$(git merge-base origin/main "${{ github.sha }}" 2>/dev/null || echo "")
+
+          if [ -z "$BASE" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # SDK tests exercise the full stack — trigger on server, client, or sdk changes
+          if git diff --name-only "$BASE" "${{ github.sha }}" -- 'server/' 'client/' 'sdk/' 'scripts/' | grep -qvE '\.md$'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  sdk-test:
+    needs: sdk-changes
+    if: needs.sdk-changes.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+
+    env:
+      MIX_ENV: test
+      TEST_DB_HOST: 127.0.0.1
+      TEST_DB_PORT: "55432"
+      TEST_DB_USER: vesper_sdk
+      TEST_DB_PASS: vesper_sdk
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.18"
+          otp-version: "27"
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Cache Elixir deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            server/deps
+            server/_build
+          key: mix-${{ runner.os }}-${{ hashFiles('server/mix.lock') }}
+          restore-keys: mix-${{ runner.os }}-
+
+      - name: Install Elixir dependencies
+        working-directory: server
+        run: mix deps.get
+
+      - name: Compile server
+        working-directory: server
+        run: mix compile
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Run SDK integration tests
+        run: npm run test:sdk:e2e
+
+  # Gate job — branch protection should require this check.
+  sdk-checks:
+    if: always()
+    needs: [sdk-changes, sdk-test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate result
+        run: |
+          if [ "${{ needs.sdk-test.result }}" = "failure" ] || [ "${{ needs.sdk-test.result }}" = "cancelled" ]; then
+            echo "SDK tests failed or were cancelled"
+            exit 1
+          fi
+          echo "SDK tests passed or were skipped (no relevant changes)"

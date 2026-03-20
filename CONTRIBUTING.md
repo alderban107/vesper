@@ -44,12 +44,17 @@ The git hooks run these checks automatically:
 
 `pre-commit` runs `mix precommit` in `server/`, then `npm run check:web` in `client/`. `pre-push` reruns `npm run check:web`, so a push is blocked if the web app no longer typechecks or builds.
 
-Git hooks help for local clones, but the real repo-wide gate is GitHub Actions. Two CI workflows run on every push to non-`main` branches:
+Git hooks help for local clones, but the real repo-wide gate is GitHub Actions. Five CI workflows run on every push to non-`main` branches:
 
-- **Server Tests** (`.github/workflows/test-server.yml`) — runs `mix test` with a PostgreSQL 17 service container when `server/` files change
-- **Client Checks** (`.github/workflows/test-client.yml`) — runs `npm run check:web` when `client/` files change
+- **Server Tests** (`test-server.yml`) — runs `mix test` with PostgreSQL when `server/` files change
+- **Client Checks** (`test-client.yml`) — runs `npm run check:web` when `client/` or `sdk/` files change
+- **SDK Tests** (`test-sdk.yml`) — runs the SDK live integration suite when `server/`, `client/`, `sdk/`, or `scripts/` files change
+- **E2E Tests** (`test-e2e.yml`) — runs Playwright browser E2E tests when `server/`, `client/`, `sdk/`, or `scripts/` files change
+- **Docker Build** (`test-docker.yml`) — smoke-tests that both Docker images build when code or Docker files change
 
-Both skip `.md`-only changes and use a gate job pattern so branch protection status checks pass even when the test jobs are skipped (e.g., a server-only change won't block on client checks). Configure branch protection to require the `server-checks` and `client-checks` job names.
+All workflows detect changes by diffing the branch against its merge-base with `main` (not per-commit), so a docs-only follow-up push won't cause tests to be skipped when the branch has code changes. All use a gate job pattern so branch protection status checks pass even when tests are skipped (e.g., a server-only change won't block on client checks).
+
+Configure branch protection to require: `server-checks`, `client-checks`, `sdk-checks`, `e2e-checks`, and `docker-checks`. See `.github/CI.md` for full pipeline documentation.
 
 ### Server tests
 

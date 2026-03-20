@@ -1,0 +1,76 @@
+# Docker build CI — smoke-test that Docker images build successfully
+#
+# Runs `docker build` for both the server and web client images without
+# pushing. Catches Dockerfile, build-context, and .dockerignore issues
+# that local builds (mix compile, npm run check:web) wouldn't surface.
+
+name: Docker Build
+
+on:
+  push:
+    branches-ignore: [main]
+    tags-ignore: ["v*"]
+
+concurrency:
+  group: test-docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docker-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check for relevant changes
+        id: check
+        run: |
+          git fetch origin main --depth=1 2>/dev/null || true
+          BASE=$(git merge-base origin/main "${{ github.sha }}" 2>/dev/null || echo "")
+
+          if [ -z "$BASE" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Trigger on code changes or Docker infrastructure changes
+          if git diff --name-only "$BASE" "${{ github.sha }}" -- \
+              'server/' 'client/' 'sdk/' \
+              'Dockerfile*' '**/Dockerfile*' \
+              '.dockerignore' '**/dockerignore' \
+              'docker-compose.yml' \
+            | grep -qvE '\.md$'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  docker-build:
+    needs: docker-changes
+    if: needs.docker-changes.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build server image
+        run: docker build -f server/Dockerfile -t vesper-app-test ./server
+
+      - name: Build web client image
+        run: docker build -f client/Dockerfile.web -t vesper-web-test .
+
+  # Gate job — branch protection should require this check.
+  docker-checks:
+    if: always()
+    needs: [docker-changes, docker-build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate result
+        run: |
+          if [ "${{ needs.docker-build.result }}" = "failure" ] || [ "${{ needs.docker-build.result }}" = "cancelled" ]; then
+            echo "Docker build failed or was cancelled"
+            exit 1
+          fi
+          echo "Docker build passed or was skipped (no relevant changes)"

@@ -103,7 +103,7 @@ export function ensureLocalTestPostgres(options = {}) {
     return
   }
 
-  execFileSync('sh', [START_TEST_POSTGRES_SCRIPT], {
+  execFileSync('bash', [START_TEST_POSTGRES_SCRIPT], {
     cwd: REPO_ROOT,
     env: process.env,
     stdio: options.stdio ?? 'pipe'
