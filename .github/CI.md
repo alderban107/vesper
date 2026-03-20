@@ -124,6 +124,29 @@ All five use the gate job pattern: the gate succeeds when tests pass OR when tes
 skipped (no relevant changes). It fails only when tests actually fail. This means a
 server-only change won't block on client checks, but a broken server will always block.
 
+## Performance Thresholds
+
+Some SDK integration tests include hard performance assertions — for example, the
+hot-path sync test gates on decryption completing within 20ms. These targets are
+intentionally aggressive: they're tuned for local hardware and exist to catch real
+regressions early.
+
+GitHub Actions runners are significantly slower than local development machines (shared
+vCPUs, Docker-in-Docker PostgreSQL, virtualized I/O). A test that completes in 15ms
+locally might take 25ms on a GHA runner. To prevent CI from failing on hardware
+variance rather than actual regressions, the SDK test suite supports a
+`VESPER_PERF_MULTIPLIER` environment variable.
+
+- **Locally (default):** multiplier is `1`. Thresholds are at their original aggressive
+  values (e.g. 20ms for hot-path sync).
+- **CI:** the `test-sdk.yml` workflow sets `VESPER_PERF_MULTIPLIER=5`, scaling thresholds
+  proportionally (e.g. 100ms). This is high enough to absorb runner variance while still
+  catching order-of-magnitude regressions.
+
+The multiplier is not documented in `.env.example` or developer-facing setup guides.
+Developers running tests locally should always hit the unscaled targets — if a test fails
+locally, that's a real signal worth investigating.
+
 ## Operational Notes
 
 ### Docker tag namespaces

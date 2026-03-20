@@ -3416,9 +3416,6 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         fireAndForget(handleWelcomeProcessedForScope(scope))
       }
 
-      const conversation = getDmConversation(conversationId)
-      const isExistingConversation = conversation?.last_message != null
-
       getRendererEncryptedChat()
         .ensureMembership({ kind: 'dm', id: conversationId })
         .then(async (processedPendingWelcome) => {
@@ -3434,69 +3431,52 @@ export const useMessageStore = create<MessageState>((set, get) => ({
             return
           }
 
-          if (isExistingConversation) {
-            // Existing conversation — request to join the existing group rather
-            // than creating a local solo branch that cannot decrypt shared
-            // ciphertext and can diverge from the real DM state.
-            recentMlsJoinRequests.delete(topic)
-            await maybeRequestMlsJoin(conversationId, topic)
+          // Always try the join path first: send mls_request_join so the other
+          // participant (who may already own an MLS group) can respond with a
+          // Welcome. This avoids the race where both sides independently
+          // create separate groups because the `new_conversation` WebSocket
+          // event doesn't include `last_message`, making both think the
+          // conversation is brand-new.
+          recentMlsJoinRequests.delete(topic)
+          await maybeRequestMlsJoin(conversationId, topic)
 
-            // Wait for the other participant to respond with a Welcome
-            const joined = await waitForDmBootstrap(conversationId, 2000)
-            if (joined) {
-              return
-            }
-
-            // Re-send the join request after the newly approved device has had
-            // a moment to publish key packages instead of forcing a resync.
-            recentMlsJoinRequests.delete(topic)
-            await maybeRequestMlsJoin(conversationId, topic)
-            await getRendererEncryptedChat()
-              .ensureMembership({ kind: 'dm', id: conversationId })
-              .catch(() => {})
-
-            if (getRendererEncryptedChat().hasGroup(conversationId)) {
-              return
-            }
-
-            const bootstrapped = await bootstrapDmGroupIfLeader(conversationId, topic)
-            if (bootstrapped || getRendererEncryptedChat().hasGroup(conversationId)) {
-              return
-            }
-
-            const forced = await forceBootstrapDmGroup(conversationId, topic)
-            if (forced || getRendererEncryptedChat().hasGroup(conversationId)) {
-              return
-            }
-
-            maybeRequestMlsResync(
-              conversationId,
-              conversationId,
-              topic,
-              null,
-              'missing_state'
-            )
-          } else {
-            // New conversation — create the group immediately
-            const bootstrapped = await bootstrapDmGroupIfLeader(conversationId, topic)
-            if (bootstrapped || getRendererEncryptedChat().hasGroup(conversationId)) {
-              return
-            }
-
-            const forced = await forceBootstrapDmGroup(conversationId, topic)
-            if (forced || getRendererEncryptedChat().hasGroup(conversationId)) {
-              return
-            }
-
-            await maybeRequestMlsJoin(conversationId, topic)
-            maybeRequestMlsResync(
-              conversationId,
-              conversationId,
-              topic,
-              null,
-              'missing_state'
-            )
+          // Wait for the other participant to respond with a Welcome
+          const joined = await waitForDmBootstrap(conversationId, 2000)
+          if (joined) {
+            return
           }
+
+          // Re-send the join request after the newly approved device has had
+          // a moment to publish key packages instead of forcing a resync.
+          recentMlsJoinRequests.delete(topic)
+          await maybeRequestMlsJoin(conversationId, topic)
+          await getRendererEncryptedChat()
+            .ensureMembership({ kind: 'dm', id: conversationId })
+            .catch(() => {})
+
+          if (getRendererEncryptedChat().hasGroup(conversationId)) {
+            return
+          }
+
+          // Fall back to creating a group locally if nobody responded to the
+          // join request (the other participant may be offline).
+          const bootstrapped = await bootstrapDmGroupIfLeader(conversationId, topic)
+          if (bootstrapped || getRendererEncryptedChat().hasGroup(conversationId)) {
+            return
+          }
+
+          const forced = await forceBootstrapDmGroup(conversationId, topic)
+          if (forced || getRendererEncryptedChat().hasGroup(conversationId)) {
+            return
+          }
+
+          maybeRequestMlsResync(
+            conversationId,
+            conversationId,
+            topic,
+            null,
+            'missing_state'
+          )
         })
         .catch(() => {
           // Continue without encryption

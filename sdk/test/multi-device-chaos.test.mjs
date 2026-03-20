@@ -8,6 +8,7 @@ import {
   teardownServerStack
 } from '../dist/testing/index.js'
 
+const PERF_MULTIPLIER = Number(process.env.VESPER_PERF_MULTIPLIER) || 1
 const WAIT_TIMEOUT_MS = 8_000
 const SYNC_TIMEOUT_MS = 10_000
 const CHAOS_TIMEOUT_MS = 12_000
@@ -224,7 +225,7 @@ test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable'
     await teardownServerStack(stack)
   })
 
-  await t.test('same-user offline catch-up decrypts the latest channel message in under 20ms', async () => {
+  await t.test(`[perf] same-user offline catch-up decrypts the latest channel message under threshold (${20 * PERF_MULTIPLIER}ms)`, async () => {
     const username = `sdk_chaos_hot_${Date.now()}`
     const password = 'vesper-sdk-chaos-password'
     const primary = createDeviceHarness(stack.apiUrl, 'hot-primary')
@@ -246,9 +247,13 @@ test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable'
       await primaryChat.sendText(scope, 'offline hello 2')
 
       const latestSync = await secondaryChat.syncScope(scope, { limit: 1 })
+      const latestSyncThreshold = 20 * PERF_MULTIPLIER
       assert.ok(
-        latestSync.durationMs < 20,
-        `expected latest-message sync to stay under 20ms, got ${latestSync.durationMs.toFixed(2)}ms`
+        latestSync.durationMs < latestSyncThreshold,
+        `[PERF] latest-message sync took ${latestSync.durationMs.toFixed(2)}ms, threshold is ${latestSyncThreshold}ms. ` +
+        'This is a performance gate, not a correctness failure — the sync completed but too slowly. ' +
+        `Local threshold: 20ms, CI multiplier: ${PERF_MULTIPLIER}x. ` +
+        'If this fails locally, investigate the hot-path. If only in CI, consider adjusting VESPER_PERF_MULTIPLIER.'
       )
 
       const backlogSync = await secondaryChat.syncScope(scope, { limit: 10 })

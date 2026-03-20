@@ -95,6 +95,8 @@ jobs:
 
       - name: Run SDK integration tests
         working-directory: client
+        env:
+          VESPER_PERF_MULTIPLIER: "5"
         run: npm run test:sdk:e2e
 
   # Gate job — branch protection should require this check.

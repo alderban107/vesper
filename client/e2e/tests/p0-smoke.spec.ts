@@ -139,8 +139,10 @@ test.describe('P0 Smoke — full continuous run', () => {
     await selectDm(bob.page, USERS.alice.username)
 
     // Wait for alice's messages to appear on bob's side
-    await waitForMessage(bob.page, DM_MESSAGES.aliceToBob1)
-    await waitForMessage(bob.page, DM_MESSAGES.aliceToBob2)
+    // MLS bootstrap + history sync requires multiple round trips, so allow
+    // extra time beyond the default 10s.
+    await waitForMessage(bob.page, DM_MESSAGES.aliceToBob1, 30_000)
+    await waitForMessage(bob.page, DM_MESSAGES.aliceToBob2, 30_000)
 
     // Bob replies
     await sendDmMessage(bob.page, DM_MESSAGES.bobToAlice1)
