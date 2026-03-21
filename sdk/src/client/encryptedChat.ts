@@ -193,6 +193,7 @@ export class VesperEncryptedChat {
   private readonly welcomeAppliedAtByScope = new Map<string, number>()
   private readonly recentDmJoinProcessed = new Map<string, number>()
   private readonly yieldedDmScopes = new Set<string>()
+  private readonly pendingGroupCreations = new Map<string, Promise<void>>()
   private restoreConnectionsPromise: Promise<void> | null = null
 
   constructor(client: VesperClient) {
@@ -652,6 +653,7 @@ export class VesperEncryptedChat {
       this.pendingCommits.delete(scopeId)
       this.scopeMessages.delete(scopeId)
       this.welcomeAppliedAtByScope.delete(scopeId)
+      this.pendingGroupCreations.delete(scopeId)
       this.notifyMembershipWaiters(scopeId, false)
       this.membershipWaiters.delete(scopeId)
       await this.storage.deleteGroupState(scopeId)
@@ -1506,6 +1508,28 @@ export class VesperEncryptedChat {
       return
     }
 
+    // Guard against concurrent createGroup calls for the same scope.
+    // Without this, two callers (e.g. ensureDmGroupReady and
+    // forceBootstrapDmGroup) can both pass the hasGroup check before
+    // either finishes, each consuming a key package and overwriting
+    // the other's group state. The second caller awaits the first
+    // call's completion instead of creating a duplicate group.
+    const inflight = this.pendingGroupCreations.get(scopeId)
+    if (inflight) {
+      await inflight.catch(() => {})
+      return
+    }
+
+    const promise = this.doCreateGroup(scopeId)
+    this.pendingGroupCreations.set(scopeId, promise)
+    try {
+      await promise
+    } finally {
+      this.pendingGroupCreations.delete(scopeId)
+    }
+  }
+
+  private async doCreateGroup(scopeId: string): Promise<void> {
     await initCipherSuite()
     await this.client.replenishKeyPackages()
 
