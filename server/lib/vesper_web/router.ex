@@ -141,6 +141,7 @@ defmodule VesperWeb.Router do
     # Key package directory
     post("/key-packages", KeyPackageController, :create)
     get("/key-packages/me/count", KeyPackageController, :count)
+    post("/key-packages/me/consume", KeyPackageController, :consume)
     delete("/key-packages/me", KeyPackageController, :purge)
     get("/key-packages/:user_id", KeyPackageController, :show)
 

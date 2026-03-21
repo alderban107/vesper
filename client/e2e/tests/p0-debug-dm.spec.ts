@@ -1,5 +1,5 @@
-import { test } from '@playwright/test'
-import { saveRecoveryKey, readRunState } from '../harness/state'
+import { test, expect } from '@playwright/test'
+import { saveRecoveryKey } from '../harness/state'
 import { signup, createUserContext, type UserContext } from '../helpers/auth'
 import { USERS, DM_MESSAGES } from '../fixtures/test-data'
 
@@ -24,40 +24,35 @@ test.describe('DM Debug', () => {
     saveRecoveryKey(bob.username, bob.recoveryKey!)
   })
 
-  test('trace MLS events', async () => {
+  test('DM message exchange', async () => {
     test.setTimeout(60_000)
 
-    // Inject MLS event interceptor into both pages BEFORE any DM activity
+    // Inject MLS event interceptor for diagnostics
     for (const [name, user] of [['alice', alice], ['bob', bob]] as const) {
+      user.page.on('console', msg => {
+        if (msg.text().includes('[MLS]')) {
+          console.log(`[${name}] ${msg.text()}`)
+        }
+      })
       await user.page.evaluate((userName) => {
-        (window as any).__mlsEvents = [];
-        // Monkey-patch Phoenix channel push to log MLS events
-        const origPush = (window as any).WebSocket.prototype.send
-        const ws = (window as any).WebSocket
-        ;(window as any).__origSend = origPush
-        ws.prototype.send = function(data: any) {
+        (window as any).__mlsEvents = []
+        const origSend = WebSocket.prototype.send
+        WebSocket.prototype.send = function(data: any) {
           try {
             const str = typeof data === 'string' ? data : ''
             if (str.includes('mls_') || str.includes('new_message')) {
               (window as any).__mlsEvents.push({
-                dir: 'out',
-                t: Date.now(),
-                preview: str.substring(0, 200),
-                user: userName
+                t: Date.now(), user: userName,
+                preview: str.substring(0, 200)
               })
             }
           } catch {}
-          return origPush.call(this, data)
+          return origSend.call(this, data)
         }
-
-        // Also intercept incoming messages
-        const origAddEventListener = EventTarget.prototype.addEventListener
-        // Can't easily intercept WS onmessage, but we can use a MutationObserver
-        // to detect DOM changes as a proxy for event processing
       }, name)
     }
 
-    // Create DM
+    // Alice creates DM
     await alice.page.locator('[data-testid="sidebar"] button[title="Direct Messages"]').click()
     await alice.page.waitForSelector('text=Direct Messages', { timeout: 5_000 })
     await alice.page.click('[data-testid="sidebar"] button[title="New Message"]')
@@ -66,11 +61,6 @@ test.describe('DM Debug', () => {
     await alice.page.click('button:has-text("Start Chat")')
     await alice.page.waitForSelector('text=New Message', { state: 'hidden', timeout: 5_000 })
     await alice.page.waitForSelector('.vesper-composer-textarea', { timeout: 5_000 })
-    console.log('--- DM created ---')
-
-    // Check Alice's outgoing MLS events
-    const aliceEvents1 = await alice.page.evaluate(() => (window as any).__mlsEvents)
-    console.log('Alice MLS events after DM create:', JSON.stringify(aliceEvents1, null, 2))
 
     // Bob opens DM
     await bob.page.locator('[data-testid="sidebar"] button[title="Direct Messages"]').click()
@@ -88,38 +78,51 @@ test.describe('DM Debug', () => {
       }
     }
     await bob.page.waitForSelector('.vesper-composer-textarea', { timeout: 5_000 })
-    console.log('--- Bob in DM ---')
 
-    // Check Bob's outgoing MLS events
-    const bobEvents1 = await bob.page.evaluate(() => (window as any).__mlsEvents)
-    console.log('Bob MLS events after DM open:', JSON.stringify(bobEvents1, null, 2))
+    // Wait for MLS handshake to converge
+    await alice.page.waitForTimeout(5_000)
 
-    // Wait 3s for MLS handshake
-    await alice.page.waitForTimeout(3000)
-    
-    const aliceEvents2 = await alice.page.evaluate(() => (window as any).__mlsEvents)
-    const bobEvents2 = await bob.page.evaluate(() => (window as any).__mlsEvents)
-    console.log('Alice MLS events after 3s:', JSON.stringify(aliceEvents2, null, 2))
-    console.log('Bob MLS events after 3s:', JSON.stringify(bobEvents2, null, 2))
-
-    // Alice sends
+    // Alice sends message
     const textarea = alice.page.locator('.vesper-composer-textarea')
     await textarea.fill(DM_MESSAGES.aliceToBob1)
     await textarea.press('Enter')
-    console.log('--- Alice sent ---')
 
-    await alice.page.waitForTimeout(3000)
-    const aliceEvents3 = await alice.page.evaluate(() => (window as any).__mlsEvents)
-    const bobEvents3 = await bob.page.evaluate(() => (window as any).__mlsEvents)
-    console.log('Alice MLS events after send:', JSON.stringify(aliceEvents3, null, 2))
-    console.log('Bob MLS events after send:', JSON.stringify(bobEvents3, null, 2))
+    // Wait for Bob to receive and decrypt
+    const bobDecrypted = await bob.page.waitForFunction(
+      (expectedText: string) => {
+        const rows = document.querySelectorAll('[data-testid="message-row"]')
+        for (const row of rows) {
+          const content = row.querySelector('[data-testid="message-content"]')
+          if (content?.textContent?.includes(expectedText)) return true
+        }
+        return false
+      },
+      DM_MESSAGES.aliceToBob1,
+      { timeout: 15_000 }
+    ).then(() => true).catch(() => false)
 
-    const bobMsgs = await bob.page.evaluate(() => {
-      return Array.from(document.querySelectorAll('[data-testid="message-row"]')).map(r => {
-        const c = r.querySelector('[data-testid="message-content"]')
-        return c?.textContent ?? null
-      }).filter(Boolean)
-    })
-    console.log('Bob messages:', JSON.stringify(bobMsgs))
+    // Dump trace on failure for diagnostics
+    if (!bobDecrypted) {
+      const extractEvents = (events: any[]) => events?.map((e: any) => {
+        try {
+          const parsed = JSON.parse(e.preview?.padEnd(200, '"}]') || '[]')
+          const eventName = Array.isArray(parsed) ? parsed[3] : 'unknown'
+          return `${e.user} t+${((e.t - events[0]?.t) / 1000).toFixed(1)}s ${eventName}`
+        } catch { return e.preview?.substring(0, 80) }
+      })
+      const aliceEvents = await alice.page.evaluate(() => (window as any).__mlsEvents)
+      const bobEvents = await bob.page.evaluate(() => (window as any).__mlsEvents)
+      console.log('Alice events:', JSON.stringify(extractEvents(aliceEvents), null, 2))
+      console.log('Bob events:', JSON.stringify(extractEvents(bobEvents), null, 2))
+
+      const bobMsgs = await bob.page.evaluate(() =>
+        Array.from(document.querySelectorAll('[data-testid="message-row"]')).map(r =>
+          r.querySelector('[data-testid="message-content"]')?.textContent ?? null
+        ).filter(Boolean)
+      )
+      console.log('Bob messages:', JSON.stringify(bobMsgs))
+    }
+
+    expect(bobDecrypted).toBe(true)
   })
 })

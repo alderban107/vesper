@@ -71,4 +71,35 @@ defmodule VesperWeb.KeyPackageController do
 
     json(conn, %{purged: count})
   end
+
+  @doc "POST /api/v1/key-packages/me/consume — mark a specific own key package as consumed"
+  def consume(conn, %{"key_package" => b64}) when is_binary(b64) do
+    case Base.decode64(b64) do
+      {:ok, decoded} ->
+        case Encryption.consume_own_key_package(
+               conn.assigns.current_user.id,
+               conn.assigns.current_device.client_id,
+               decoded
+             ) do
+          :ok ->
+            json(conn, %{consumed: true})
+
+          {:error, :not_found} ->
+            conn
+            |> put_status(:not_found)
+            |> json(%{error: "key package not found or already consumed"})
+        end
+
+      :error ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{error: "invalid base64"})
+    end
+  end
+
+  def consume(conn, _params) do
+    conn
+    |> put_status(:bad_request)
+    |> json(%{error: "key_package is required"})
+  end
 end
