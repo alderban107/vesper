@@ -1,4 +1,4 @@
-import { Component, Suspense, lazy, useEffect, useState, type ReactNode, type ErrorInfo } from 'react'
+import { Component, Suspense, useEffect, useState, type ReactNode, type ErrorInfo } from 'react'
 import { AlertTriangle, Star } from 'lucide-react'
 import { useAuthStore } from './stores/authStore'
 import {
@@ -6,12 +6,13 @@ import {
   rendererSessionStore,
   type SessionNotice
 } from './sdk/bootstrap'
-const LoginPage = lazy(() => import('./pages/LoginPage'))
-const RegisterPage = lazy(() => import('./pages/RegisterPage'))
-const RecoveryPage = lazy(() => import('./pages/RecoveryPage'))
-const MainPage = lazy(() => import('./pages/MainPage'))
-const RecoveryKeyModal = lazy(() => import('./components/auth/RecoveryKeyModal'))
-const DeviceTrustGate = lazy(() => import('./components/auth/DeviceTrustGate'))
+import lazyWithRetry from './utils/lazyWithRetry'
+const LoginPage = lazyWithRetry(() => import('./pages/LoginPage'))
+const RegisterPage = lazyWithRetry(() => import('./pages/RegisterPage'))
+const RecoveryPage = lazyWithRetry(() => import('./pages/RecoveryPage'))
+const MainPage = lazyWithRetry(() => import('./pages/MainPage'))
+const RecoveryKeyModal = lazyWithRetry(() => import('./components/auth/RecoveryKeyModal'))
+const DeviceTrustGate = lazyWithRetry(() => import('./components/auth/DeviceTrustGate'))
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state: { error: Error | null } = { error: null }
@@ -26,6 +27,8 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
 
   render(): ReactNode {
     if (this.state.error) {
+      const isChunkError = this.state.error.message?.includes('dynamically imported module')
+
       return (
         <div className="h-screen bg-bg-primary flex items-center justify-center p-8">
           <div className="glass-card rounded-2xl p-6 max-w-lg w-full">
@@ -37,10 +40,18 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
               {this.state.error.stack}
             </pre>
             <button
-              onClick={() => this.setState({ error: null })}
+              onClick={() => {
+                if (isChunkError) {
+                  // Chunk load failures leave React.lazy() in a permanently
+                  // rejected state. A full reload is the only reliable recovery.
+                  window.location.reload()
+                } else {
+                  this.setState({ error: null })
+                }
+              }}
               className="mt-4 px-4 py-2 glow-accent text-bg-base rounded-lg text-sm font-medium"
             >
-              Try Again
+              {isChunkError ? 'Reload' : 'Try Again'}
             </button>
           </div>
         </div>

@@ -1,4 +1,4 @@
-import { Suspense, lazy, useState, useRef, useEffect } from 'react'
+import { Suspense, useState, useRef, useEffect } from 'react'
 import { Copy, Lock, MessageSquare, Pencil, Pin, Reply, Trash2 } from 'lucide-react'
 import type { Message } from '../../stores/messageStore'
 import { useMessageStore, parseMessageContent } from '../../stores/messageStore'
@@ -18,8 +18,9 @@ import MessageReplyPreview from './message/MessageReplyPreview'
 import MessageReactionBar from './message/MessageReactionBar'
 import ProfilePopout from '../profile/ProfilePopout'
 import { formatCustomEmojiToken, type CustomEmoji } from '../../utils/emoji'
+import lazyWithRetry from '../../utils/lazyWithRetry'
 
-const MarkdownContent = lazy(() => import('./MarkdownContent'))
+const MarkdownContent = lazyWithRetry(() => import('./MarkdownContent'))
 
 interface Props {
   message: Message
