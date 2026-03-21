@@ -142,7 +142,13 @@ test('sdk scope sync applies offline mutation events and deleted messages stay g
     client.stop()
 
     await chat.editText(scope, baseline.id, 'edited while offline')
-    const edited = await chat.syncScope(scope, { limit: 10 })
+    const edited = await waitFor('edit event in sync response', async () => {
+      const synced = await chat.syncScope(scope, { limit: 10 })
+      if (synced.events.some((event) => event.eventType === 'message_edited')) {
+        return synced
+      }
+      return null
+    })
     const editedMessage = edited.messages.find((message) => message.id === baseline.id) ?? null
 
     assert.ok(edited.events.some((event) => event.eventType === 'message_edited'))
@@ -152,7 +158,13 @@ test('sdk scope sync applies offline mutation events and deleted messages stay g
     client.stop()
 
     await chat.deleteMessage(scope, baseline.id)
-    const deleted = await chat.syncScope(scope, { limit: 10 })
+    const deleted = await waitFor('delete event in sync response', async () => {
+      const synced = await chat.syncScope(scope, { limit: 10 })
+      if (synced.events.some((event) => event.eventType === 'message_deleted')) {
+        return synced
+      }
+      return null
+    })
 
     assert.ok(deleted.events.some((event) => event.eventType === 'message_deleted'))
     assert.equal(
