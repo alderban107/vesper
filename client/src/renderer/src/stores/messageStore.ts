@@ -3480,11 +3480,20 @@ export const useMessageStore = create<MessageState>((set, get) => ({
             // New conversation — create the group immediately
             const bootstrapped = await bootstrapDmGroupIfLeader(conversationId, topic)
             if (bootstrapped || getRendererEncryptedChat().hasGroup(conversationId)) {
+              // Group created — broadcast so the other participant can join
+              // via the mls_request_join → welcome flow. Without this, both
+              // sides silently create independent groups and never converge.
+              getRendererEncryptedChat()
+                .requestJoinAll({ kind: 'dm', id: conversationId })
+                .catch(() => {})
               return
             }
 
             const forced = await forceBootstrapDmGroup(conversationId, topic)
             if (forced || getRendererEncryptedChat().hasGroup(conversationId)) {
+              getRendererEncryptedChat()
+                .requestJoinAll({ kind: 'dm', id: conversationId })
+                .catch(() => {})
               return
             }
 

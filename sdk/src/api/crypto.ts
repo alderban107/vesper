@@ -55,6 +55,26 @@ export async function purgeMyKeyPackages(
 }
 
 /**
+ * Mark a specific own key package as consumed on the server.
+ * Called after consuming a key package locally (e.g. during group creation)
+ * to prevent the server from handing out the stale package to other clients.
+ */
+export async function consumeOwnKeyPackage(
+  keyPackageData: Uint8Array,
+  httpClient: VesperHttpClient = getDefaultHttpClient()
+): Promise<void> {
+  const res = await httpClient.apiFetch('/api/v1/key-packages/me/consume', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key_package: uint8ToBase64(keyPackageData) })
+  })
+  // Best-effort — don't throw on failure since the local consumption already succeeded
+  if (!res.ok) {
+    // Silently ignore; the package may have already been consumed by a fetch
+  }
+}
+
+/**
  * Get count of unconsumed key packages for the current user.
  */
 export async function getMyKeyPackageCount(

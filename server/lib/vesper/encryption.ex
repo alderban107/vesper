@@ -104,6 +104,29 @@ defmodule Vesper.Encryption do
   end
 
   @doc """
+  Mark a specific unconsumed key package as consumed, identified by its raw data.
+  Used when a client consumes a key package locally (e.g. during group creation)
+  and needs to synchronize that consumption with the server to prevent the stale
+  package from being handed out to other clients via fetch_and_consume_key_package.
+  """
+  def consume_own_key_package(user_id, client_id, key_package_data)
+      when is_binary(key_package_data) do
+    query =
+      from(kp in KeyPackage,
+        where:
+          kp.user_id == ^user_id and
+            kp.client_id == ^client_id and
+            kp.key_package_data == ^key_package_data and
+            kp.consumed == false
+      )
+
+    case Repo.update_all(query, set: [consumed: true]) do
+      {n, _} when n > 0 -> :ok
+      {0, _} -> {:error, :not_found}
+    end
+  end
+
+  @doc """
   Purge all unconsumed key packages for a user.
   Used when a new device is set up to remove stale packages from previous devices.
   """

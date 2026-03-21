@@ -118,11 +118,15 @@ Each text channel, DM conversation, and voice channel maps to one MLS group. The
 
 ### 4.2 Group Lifecycle
 
-**Creation:** The first user to send a message in a channel creates the MLS group. `createGroup()` consumes a local key package, calls `ts-mls.createGroup()`, and persists the resulting `ClientState`.
+**Creation:** The first user to need encryption in a scope creates the MLS group. `createGroup()` consumes a local key package, calls `ts-mls.createGroup()`, and persists the resulting `ClientState`. A `pendingGroupCreations` Map prevents concurrent calls from creating duplicate groups for the same scope. The consumed key package is also marked consumed on the server via `POST /api/v1/key-packages/me/consume` to prevent stale packages from being handed out.
 
-**Joining:** When a new user sends `mls_request_join` via WebSocket, an existing group member (typically the one online) calls `handleJoinRequest()`. This fetches the joiner's key package from the server directory, calls `addMemberToGroup()`, and broadcasts the resulting Commit + Welcome messages.
+For channels, only the channel owner creates the group (via `ensureChannelGroupReady`). For DMs, deterministic leader election decides: the participant with the lower UUID creates the group.
 
-**Welcome processing:** The joining user receives the Welcome message and calls `handleWelcome()`, which produces a `ClientState` for the group.
+**Joining (channels):** When a user enters a channel that already has an MLS group, the existing group owner (first member in the ratchet tree) handles join requests. The flow: the joining user receives `mls_request_join_all` → responds with `mls_request_join` → the group owner fetches the joiner's key package, calls `addMemberToGroup()`, and broadcasts the resulting Commit + Welcome. Join requests are deduplicated per user per scope (10-second window) to prevent cascading epoch storms from multiple code paths sending duplicate join requests.
+
+**Joining (DMs):** When two users open a DM simultaneously, both independently create MLS groups. The `mls_request_join_all` handler uses deterministic leader election (lower UUID wins) to break symmetry. The leader adds the non-leader directly. The non-leader yields (drops their group via `resetScope`, marks the scope in `yieldedDmScopes` to prevent recreation, and sends `mls_request_join`). The server stores `mls_request_join_all` events durably and replays them to late-joining DM participants, solving the missed-broadcast timing problem.
+
+**Welcome processing:** The joining user receives the Welcome message and calls `handleWelcome()`, which tries each local key package until one matches. On success, it produces a `ClientState` for the group and processes any pending commits that arrived before the Welcome.
 
 **Commit processing:** All other group members receive the Commit message and call `handleCommit()` to advance their epoch.
 
@@ -400,8 +404,8 @@ The Electron-specific code (SQLite, safeStorage, IPC) is not covered by the Play
 | Multi-device | Each device must independently join every MLS group | Shared identity with key sync | No "rejoin all channels" flow exists — each channel rejoins lazily on first visit |
 | Key package expiry | No server-side expiration | `expires_at` column + Oban purge job + server rejection of expired packages | |
 | Batch removes | Each member leave = separate Commit | Batch Commit with 100ms collection window | Design: start a timer on first leave event, collect additional leaves, issue single batched Remove Commit when timer fires |
-| History for new members | No history on join | Encrypted history snapshot (post-v1) | Option C from requirements: adder creates re-encrypted history bundle under Welcome's group secret |
-| Group creator race | `groupSetupInProgress` flag prevents double-creation within one client | Server-side first-wins arbitration | Two clients may both create a group simultaneously; server should accept first Commit and reject second |
+| History for new members | History bundle mechanism re-encrypts recent messages at current epoch for new joiners | Streaming history for large channels | Works for DMs and channels via `mls_history_request` / `mls_history_bundle` exchange after welcome processing |
+| Group creator race | `pendingGroupCreations` Map prevents concurrent creation within one client; DM leader election (lower UUID wins) prevents cross-client dual creation | Server-side first-wins arbitration for edge cases | DM convergence solved. Channel groups are owner-gated. Remaining edge case: two owners (unlikely) creating groups simultaneously |
 
 ---
 

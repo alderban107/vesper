@@ -1,5 +1,6 @@
 import {
   ackPendingWelcome,
+  consumeOwnKeyPackage,
   fetchKeyPackage,
   fetchMlsEvents,
   fetchPendingWelcomes,
@@ -190,6 +191,9 @@ export class VesperEncryptedChat {
   private readonly scopeMessages = new Map<string, ProcessedScopeMessage[]>()
   private readonly membershipWaiters = new Map<string, Set<(ready: boolean) => void>>()
   private readonly welcomeAppliedAtByScope = new Map<string, number>()
+  private readonly recentDmJoinProcessed = new Map<string, number>()
+  private readonly yieldedDmScopes = new Set<string>()
+  private readonly pendingGroupCreations = new Map<string, Promise<void>>()
   private restoreConnectionsPromise: Promise<void> | null = null
 
   constructor(client: VesperClient) {
@@ -300,6 +304,8 @@ export class VesperEncryptedChat {
     this.evictionLocks.clear()
     this.scopeMessages.clear()
     this.welcomeAppliedAtByScope.clear()
+    this.recentDmJoinProcessed.clear()
+    this.yieldedDmScopes.clear()
 
     for (const waiters of this.membershipWaiters.values()) {
       for (const waiter of waiters) {
@@ -647,6 +653,7 @@ export class VesperEncryptedChat {
       this.pendingCommits.delete(scopeId)
       this.scopeMessages.delete(scopeId)
       this.welcomeAppliedAtByScope.delete(scopeId)
+      this.pendingGroupCreations.delete(scopeId)
       this.notifyMembershipWaiters(scopeId, false)
       this.membershipWaiters.delete(scopeId)
       await this.storage.deleteGroupState(scopeId)
@@ -872,7 +879,72 @@ export class VesperEncryptedChat {
       }
     }
 
-    if (event === 'mls_request_join_all' && scope.kind === 'channel' && !this.hasGroup(scope.id)) {
+    if (event === 'mls_request_join_all') {
+      const senderId = this.getString(payload, 'user_id')
+      const localUserId = this.client.getAuthSession()?.user.id ?? this.client.getState().user?.id
+
+      if (scope.kind === 'dm' && senderId && localUserId) {
+        if (!this.hasGroup(scope.id)) {
+          // No group yet — the messageStore will create one and send its own
+          // requestJoinAll. Leader election happens once both sides have groups.
+          // Don't send mls_request_join here; it would race with group creation.
+          return { scope, event, payload }
+        }
+
+        // Both sides independently created MLS groups for this DM.
+        // Use deterministic leader election (lower user ID wins) to break
+        // the symmetry — otherwise both sides try to add each other
+        // simultaneously, creating a cascading epoch storm.
+        if (localUserId < senderId) {
+          // We're the leader — add the sender to our group directly.
+          // The stale-key-package problem is mitigated by the server-side
+          // consume endpoint: clients mark consumed packages on the server
+          // during group creation, so fetchKeyPackage returns valid ones.
+          const key = `${scope.id}:${senderId}`
+          const now = Date.now()
+          const last = this.recentDmJoinProcessed.get(key)
+          if (!last || now - last >= 10_000) {
+            this.recentDmJoinProcessed.set(key, now)
+            const response = await this.handleJoinRequest(scope.id, senderId, null)
+            if (response) {
+              if (response.removeCommitBytes) {
+                await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_remove', {
+                  removed_user_id: senderId,
+                  commit_data: response.removeCommitBytes
+                })
+              }
+              await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_commit', {
+                commit_data: response.commitBytes
+              })
+              if (response.welcomeBytes) {
+                await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_welcome', {
+                  recipient_id: senderId,
+                  welcome_data: response.welcomeBytes,
+                  key_package_ref: response.keyPackageRef
+                })
+              }
+            }
+          }
+          return { scope, event, payload }
+        }
+
+        // We're not the leader — but if we received this group via a
+        // Welcome, we've already converged onto the leader's group.
+        if (this.welcomeAppliedAtByScope.has(scope.id)) {
+          return { scope, event, payload }
+        }
+
+        // We independently created this group — drop it and request
+        // to join the leader's group instead. Mark as yielded so that
+        // concurrent code paths (e.g. forceBootstrapDmGroup) don't
+        // immediately recreate the group we just dropped.
+        this.yieldedDmScopes.add(scope.id)
+        await this.resetScope(scope.id)
+        await this.requestMlsJoin(scope)
+        return { scope, event, payload }
+      }
+
+      // Non-DM scope — respond with a join request so the sender can add us.
       await this.requestMlsJoin(scope)
       return { scope, event, payload }
     }
@@ -1096,6 +1168,19 @@ export class VesperEncryptedChat {
       return
     }
 
+    // Deduplicate join request processing. Multiple join requests
+    // can arrive for the same user from different code paths (server replay,
+    // live broadcast, messageStore retry, ensureChannelGroupReady polling).
+    // Without this guard, each one triggers a full remove+add+commit+welcome
+    // cycle that burns through key packages and churns the epoch.
+    const dedupeKey = `${scope.id}:${requesterId}`
+    const now = Date.now()
+    const lastProcessed = this.recentDmJoinProcessed.get(dedupeKey)
+    if (lastProcessed && now - lastProcessed < 10_000) {
+      return
+    }
+    this.recentDmJoinProcessed.set(dedupeKey, now)
+
     // Only the first member in the ratchet tree handles join requests to avoid
     // concurrent epoch commits from multiple members. This replaces an earlier
     // server-ownership gate that caused deadlocks during fork recovery.
@@ -1116,7 +1201,6 @@ export class VesperEncryptedChat {
     if (!response) {
       return
     }
-
     if (response.removeCommitBytes) {
       await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_remove', {
         removed_user_id: requesterId,
@@ -1415,6 +1499,34 @@ export class VesperEncryptedChat {
       return
     }
 
+    // If this DM scope was recently yielded via leader election, don't
+    // recreate — we're waiting for the leader's Welcome to arrive.
+    if (this.yieldedDmScopes.has(scopeId)) {
+      return
+    }
+
+    // Guard against concurrent createGroup calls for the same scope.
+    // Without this, two callers (e.g. ensureDmGroupReady and
+    // forceBootstrapDmGroup) can both pass the hasGroup check before
+    // either finishes, each consuming a key package and overwriting
+    // the other's group state. The second caller awaits the first
+    // call's completion instead of creating a duplicate group.
+    const inflight = this.pendingGroupCreations.get(scopeId)
+    if (inflight) {
+      await inflight.catch(() => {})
+      return
+    }
+
+    const promise = this.doCreateGroup(scopeId)
+    this.pendingGroupCreations.set(scopeId, promise)
+    try {
+      await promise
+    } finally {
+      this.pendingGroupCreations.delete(scopeId)
+    }
+  }
+
+  private async doCreateGroup(scopeId: string): Promise<void> {
     await initCipherSuite()
     await this.client.replenishKeyPackages()
 
@@ -1429,6 +1541,16 @@ export class VesperEncryptedChat {
       await this.storage.consumeKeyPackage(localPackage.id)
       publicPackage = decodeKeyPackageBytes(new Uint8Array(localPackage.publicData))
       privatePackage = deserializePrivatePackage(new Uint8Array(localPackage.privateData))
+      // Also mark consumed on the server so it won't be handed out to other
+      // clients via fetchKeyPackage. Without this, the server may return a
+      // stale package whose private key we no longer hold, causing Welcome
+      // decryption failures during DM group convergence.
+      // This must complete before the group is considered ready — otherwise
+      // another client may race and fetch the stale package.
+      await consumeOwnKeyPackage(
+        new Uint8Array(localPackage.publicData),
+        this.client.getHttpClient()
+      ).catch(() => {})
     } else {
       const pairs = await createKeyPackageBatch(
         buildClientCredentialIdentity(session.user.id, localDeviceId),
@@ -1539,6 +1661,7 @@ export class VesperEncryptedChat {
         )
 
         await this.setGroupState(scopeId, state)
+        this.yieldedDmScopes.delete(scopeId)
         this.welcomeAppliedAtByScope.set(scopeId, Date.now())
         await this.storage.consumeKeyPackage(localPackage.id)
         await this.processPendingCommits(scopeId)
@@ -1686,7 +1809,6 @@ export class VesperEncryptedChat {
 
     const encrypted = await encryptMessage(this.cloneGroupState(state), plaintext)
     await this.setGroupState(scopeId, encrypted.newState)
-
     return {
       ciphertext: uint8ToBase64(encrypted.ciphertext),
       epoch: encrypted.epoch

@@ -86,8 +86,11 @@ npm run test:e2e
 E2E tests live in `client/e2e/` and use Playwright. The harness boots Phoenix
 and Vite itself, and also starts the shared local Postgres helper container
 when Docker is available. The suite is organized by priority (`p0-` smoke,
-`p1-` core features, `p2-` edge cases) with 19 spec files, fixtures, and
+`p1-` core features, `p2-` edge cases) with 21 spec files, fixtures, and
 harness tooling. See `client/e2e/REQUIREMENTS.md` for the full test plan.
+
+Set `VESPER_PERF_MULTIPLIER` (default `1`) to scale timing thresholds on
+slower machines (e.g., `VESPER_PERF_MULTIPLIER=3` triples all timeout windows).
 
 ### SDK live tests
 
