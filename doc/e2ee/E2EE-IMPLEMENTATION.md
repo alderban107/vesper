@@ -389,6 +389,85 @@ The Electron-specific code (SQLite, safeStorage, IPC) is not covered by the Play
 2. Manual testing with two Electron clients.
 3. Checking that the server health endpoint responds after migration.
 
+### MLS Diagnostics and Epoch Budget Testing
+
+MLS bugs are uniquely difficult to catch with conventional assertions. A message that decrypts correctly today might be the result of an epoch storm that burned through 58 epoch transitions when it should have taken 2. The decryption succeeds — the group eventually converged — but the protocol health is catastrophic. Key packages are exhausted, epoch retention windows are blown, and the next user who joins will find an unrecoverable state.
+
+Traditional E2E tests check outcomes: "did Bob see Alice's message?" They don't check the cost of getting there. The MLS diagnostics system addresses this by tracking protocol-level counters and asserting quantitative budgets.
+
+#### Why epoch count is a performance metric
+
+Every MLS membership change (add, remove, update) advances the group's epoch by 1. A healthy 2-user DM handshake produces epoch 1. A healthy 3-user channel join produces epoch 2. These numbers are deterministic — for a given topology, the minimum epoch count is known.
+
+When the epoch count exceeds the expected minimum, something went wrong in the protocol flow:
+
+- **Epoch storm** — duplicate join requests cause cascading remove+add cycles, each advancing the epoch by 2. We observed epochs reaching 58+ from a bug where channel join request deduplication was scoped to DMs only.
+- **Thundering herd** — multiple code paths send join requests concurrently, and the handler processes all of them instead of deduplicating.
+- **Welcome replay** — pending welcome polling reprocesses the same welcome multiple times, consuming key packages unnecessarily.
+
+These problems are invisible to a test that only checks "did decryption succeed?" They're caught immediately by a test that checks "is the epoch ≤ 2?"
+
+#### Architecture
+
+**`MLSDiagnostics`** (`sdk/src/client/mlsDiagnostics.ts`) is a lightweight counters class instantiated once per `VesperEncryptedChat` session. It tracks per-scope (per channel or conversation) metrics:
+
+| Counter | What it measures |
+|---------|-----------------|
+| `epoch` | Current MLS epoch — updated on every `setGroupState` |
+| `groupCreations` | How many times `createGroup` completed for this scope |
+| `commitsProcessed` | Successful commit processing (epoch advances) |
+| `commitsFailed` | Failed commits (wrong epoch, wrong group — expected during welcome processing) |
+| `welcomesProcessed` | Successful welcome processing |
+| `welcomesFailed` | Failed welcome attempts (no matching key package) |
+| `joinRequestsHandled` | Add-member operations processed |
+| `keyPackagesConsumed` | Local key packages consumed during group creation |
+
+The counters are always-on. Each operation is an integer increment plus a Map lookup — effectively zero cost at any scale. No string formatting, no I/O, no persistence. Memory is ~56 bytes per scope; a user in 150 scopes uses ~8.4 KB.
+
+Counters are NOT cleared on `resetScope` — the diagnostic value is cumulative. A scope that was created, yielded, reset, and recreated should show the full history of what happened. Counters are only cleared explicitly by tests via `diagnostics.reset()`.
+
+#### How tests use it
+
+The renderer exposes the diagnostics instance on `window.__mlsDiagnostics` during encrypted chat initialization. Playwright tests read it via `page.evaluate()`.
+
+The test helper (`client/e2e/helpers/mls-diagnostics.ts`) provides:
+
+- **`getMlsDiagnostics(page, scopeId)`** — reads the counter snapshot for a scope
+- **`assertMlsBudget(diagnostics, budget, label)`** — asserts each counter is within budget. Failure messages are explicit: `MLS budget exceeded for alice DM: epoch = 58, max allowed = 1`
+- **`findDiagnosticScopes(page, filter)`** — discovers scope IDs when tests don't know the UUID (filters by which scopes have group creations, welcomes, etc.)
+
+#### Defining budgets
+
+Each test defines its own budget based on the expected protocol topology:
+
+```typescript
+// 2-user DM: create at epoch 0, add one member → epoch 1
+assertMlsBudget(diag, {
+  maxEpoch: 1,
+  maxGroupCreations: 1,
+  maxJoinRequestsHandled: 1,
+  maxKeyPackagesConsumed: 1,
+}, 'alice DM epoch budget')
+
+// 3-user channel: create at epoch 0, add Bob → 1, add Charlie → 2
+assertMlsBudget(diag, {
+  maxEpoch: 2,
+  maxGroupCreations: 1,
+  maxJoinRequestsHandled: 2,
+}, 'alice channel epoch budget')
+```
+
+Budgets are hardcoded per test, not derived from a formula. Each test knows its topology and the minimum epoch count for that topology. The budget should be tight for the critical counters (epoch, join requests handled, group creations) and loose for counters with harmless noise (welcome retries from polling loops).
+
+#### Adding budget assertions to new tests
+
+1. After the MLS handshake converges (messages visible on all clients), find the scope ID — either by knowing it or using `findDiagnosticScopes`.
+2. Read diagnostics from each user's page via `getMlsDiagnostics`.
+3. Call `assertMlsBudget` with a budget that reflects the expected minimum for the test's topology.
+4. Epoch count = number of add/remove operations. For N users joining a fresh group, the minimum epoch is N-1.
+
+If a budget assertion fails, it means the protocol flow has regressed — likely a deduplication guard was removed, a code path is sending duplicate join requests, or a race condition is creating duplicate groups.
+
 ---
 
 ## 12. Known Limitations and Future Work

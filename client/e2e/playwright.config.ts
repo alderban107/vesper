@@ -53,6 +53,10 @@ export default defineConfig({
       testMatch: /p0-.*\.spec\.ts/,
     },
     {
+      name: 'diagnostic',
+      testMatch: /debug-.*\.spec\.ts/,
+    },
+    {
       name: 'p1-extended',
       testMatch: /p1-.*\.spec\.ts/,
       dependencies: ['p0-smoke'],

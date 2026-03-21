@@ -43,6 +43,7 @@ import { cacheSentMessage } from '../crypto/decryptionCache.js'
 import { withGroupLock } from '../crypto/groupLock.js'
 import type { MessagePayload } from '../crypto/payload.js'
 import type { VesperClient } from './index.js'
+import { MLSDiagnostics } from './mlsDiagnostics.js'
 
 const JOIN_WAIT_MS = 2_500
 const EVICTION_REQUEST_COOLDOWN_MS = 3_000
@@ -194,6 +195,7 @@ export class VesperEncryptedChat {
   private readonly recentDmJoinProcessed = new Map<string, number>()
   private readonly yieldedDmScopes = new Set<string>()
   private readonly pendingGroupCreations = new Map<string, Promise<void>>()
+  private readonly diagnostics = new MLSDiagnostics()
   private restoreConnectionsPromise: Promise<void> | null = null
 
   constructor(client: VesperClient) {
@@ -395,6 +397,10 @@ export class VesperEncryptedChat {
 
   hasGroup(scopeId: string): boolean {
     return this.groupStates.has(scopeId)
+  }
+
+  getDiagnostics(): MLSDiagnostics {
+    return this.diagnostics
   }
 
   getMemberCount(scopeId: string): number {
@@ -907,6 +913,7 @@ export class VesperEncryptedChat {
             this.recentDmJoinProcessed.set(key, now)
             const response = await this.handleJoinRequest(scope.id, senderId, null)
             if (response) {
+              this.diagnostics.recordJoinRequestHandled(scope.id)
               if (response.removeCommitBytes) {
                 await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_remove', {
                   removed_user_id: senderId,
@@ -1201,6 +1208,9 @@ export class VesperEncryptedChat {
     if (!response) {
       return
     }
+
+    this.diagnostics.recordJoinRequestHandled(scope.id)
+
     if (response.removeCommitBytes) {
       await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_remove', {
         removed_user_id: requesterId,
@@ -1539,6 +1549,7 @@ export class VesperEncryptedChat {
     if (localPackages.length > 0) {
       const localPackage = localPackages[0]
       await this.storage.consumeKeyPackage(localPackage.id)
+      this.diagnostics.recordKeyPackageConsumed(scopeId)
       publicPackage = decodeKeyPackageBytes(new Uint8Array(localPackage.publicData))
       privatePackage = deserializePrivatePackage(new Uint8Array(localPackage.privateData))
       // Also mark consumed on the server so it won't be handed out to other
@@ -1562,6 +1573,7 @@ export class VesperEncryptedChat {
 
     const state = await createMLSGroup(scopeId, publicPackage, privatePackage)
     await this.setGroupState(scopeId, state)
+    this.diagnostics.recordGroupCreated(scopeId)
     await this.client.replenishKeyPackages()
   }
 
@@ -1666,12 +1678,14 @@ export class VesperEncryptedChat {
         await this.storage.consumeKeyPackage(localPackage.id)
         await this.processPendingCommits(scopeId)
         await this.client.replenishKeyPackages()
+        this.diagnostics.recordWelcome(scopeId, true)
         return true
       } catch {
         continue
       }
     }
 
+    this.diagnostics.recordWelcome(scopeId, false)
     return false
   }
 
@@ -1695,9 +1709,11 @@ export class VesperEncryptedChat {
         Buffer.from(commitData, 'base64')
       )
       await this.setGroupState(scopeId, nextState)
+      this.diagnostics.recordCommit(scopeId, true)
       this.notifyMembershipWaiters(scopeId, true)
       return true
     } catch {
+      this.diagnostics.recordCommit(scopeId, false)
       return false
     }
   }
@@ -2008,6 +2024,7 @@ export class VesperEncryptedChat {
     const serializedState = serializeGroupState(state)
     const epoch = Number(state.groupContext.epoch)
     this.groupStates.set(scopeId, state)
+    this.diagnostics.updateEpoch(scopeId, epoch)
     await this.storage.saveGroupState(scopeId, serializedState, epoch)
     this.notifyMembershipWaiters(scopeId, true)
   }

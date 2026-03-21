@@ -26,6 +26,11 @@ export function getRendererClient(): VesperClient {
 export function getRendererEncryptedChat(): VesperEncryptedChat {
   if (!rendererEncryptedChat) {
     rendererEncryptedChat = getRendererClient().createEncryptedChat()
+
+    // Expose MLS diagnostics for Playwright E2E assertions.
+    // Tests call page.evaluate(() => window.__mlsDiagnostics?.forScope(id))
+    // to read counters without coupling to SDK internals.
+    ;(window as any).__mlsDiagnostics = rendererEncryptedChat.getDiagnostics()
   }
 
   return rendererEncryptedChat
