@@ -1168,20 +1168,18 @@ export class VesperEncryptedChat {
       return
     }
 
-    // For DMs, deduplicate join request processing. Multiple join requests
+    // Deduplicate join request processing. Multiple join requests
     // can arrive for the same user from different code paths (server replay,
-    // live broadcast, messageStore retry). Without this guard, each one
-    // triggers a full remove+add+commit+welcome cycle that burns through
-    // key packages and churns the epoch.
-    if (scope.kind === 'dm') {
-      const key = `${scope.id}:${requesterId}`
-      const now = Date.now()
-      const lastProcessed = this.recentDmJoinProcessed.get(key)
-      if (lastProcessed && now - lastProcessed < 10_000) {
-        return
-      }
-      this.recentDmJoinProcessed.set(key, now)
+    // live broadcast, messageStore retry, ensureChannelGroupReady polling).
+    // Without this guard, each one triggers a full remove+add+commit+welcome
+    // cycle that burns through key packages and churns the epoch.
+    const dedupeKey = `${scope.id}:${requesterId}`
+    const now = Date.now()
+    const lastProcessed = this.recentDmJoinProcessed.get(dedupeKey)
+    if (lastProcessed && now - lastProcessed < 10_000) {
+      return
     }
+    this.recentDmJoinProcessed.set(dedupeKey, now)
 
     // Only the first member in the ratchet tree handles join requests to avoid
     // concurrent epoch commits from multiple members. This replaces an earlier
@@ -1203,7 +1201,6 @@ export class VesperEncryptedChat {
     if (!response) {
       return
     }
-
     if (response.removeCommitBytes) {
       await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_remove', {
         removed_user_id: requesterId,
@@ -1812,7 +1809,6 @@ export class VesperEncryptedChat {
 
     const encrypted = await encryptMessage(this.cloneGroupState(state), plaintext)
     await this.setGroupState(scopeId, encrypted.newState)
-
     return {
       ciphertext: uint8ToBase64(encrypted.ciphertext),
       epoch: encrypted.epoch
