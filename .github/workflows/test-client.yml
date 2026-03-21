@@ -39,8 +39,8 @@ jobs:
             exit 0
           fi
 
-          # Any non-markdown files changed under client/ or sdk/?
-          if git diff --name-only "$BASE" "${{ github.sha }}" -- 'client/' 'sdk/' | grep -qvE '\.md$'; then
+          # Any non-markdown files changed under client/, sdk/, or this workflow?
+          if git diff --name-only "$BASE" "${{ github.sha }}" -- 'client/' 'sdk/' '.github/workflows/test-client.yml' | grep -qvE '\.md$'; then
             echo "client=true" >> "$GITHUB_OUTPUT"
           else
             echo "client=false" >> "$GITHUB_OUTPUT"

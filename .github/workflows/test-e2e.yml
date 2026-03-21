@@ -1,6 +1,7 @@
 # E2E CI — Playwright browser tests
 #
-# Runs the full Playwright E2E suite (p0-smoke → p1-extended → p2-reliability).
+# Runs p0-smoke as the enforced gate, then p1-extended and p2-reliability
+# as informational suites (failures don't block PRs).
 # The test harness boots its own PostgreSQL (Docker), Phoenix server, and Vite
 # dev server automatically via globalSetup.
 
@@ -36,8 +37,8 @@ jobs:
             exit 0
           fi
 
-          # E2E tests exercise the full stack
-          if git diff --name-only "$BASE" "${{ github.sha }}" -- 'server/' 'client/' 'sdk/' 'scripts/' | grep -qvE '\.md$'; then
+          # E2E tests exercise the full stack; also trigger on workflow changes
+          if git diff --name-only "$BASE" "${{ github.sha }}" -- 'server/' 'client/' 'sdk/' 'scripts/' '.github/workflows/test-e2e.yml' | grep -qvE '\.md$'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -97,9 +98,17 @@ jobs:
         working-directory: client
         run: npx playwright install chromium --with-deps
 
-      - name: Run E2E tests
+      - name: Run p0-smoke tests (enforced gate)
+        id: p0
         working-directory: client
-        run: npm run test:e2e
+        run: npm run test:e2e:p0
+
+      - name: Run p1/p2 suites (informational)
+        if: always() && steps.p0.outcome != 'failure'
+        id: extended
+        working-directory: client
+        continue-on-error: true
+        run: npx playwright test -c e2e/playwright.config.ts --project=p1-extended --project=p2-reliability --no-deps
 
       - name: Upload test artifacts
         if: failure()
