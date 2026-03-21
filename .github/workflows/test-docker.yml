@@ -36,12 +36,13 @@ jobs:
             exit 0
           fi
 
-          # Trigger on code changes or Docker infrastructure changes
+          # Trigger on code changes, Docker infrastructure changes, or workflow changes
           if git diff --name-only "$BASE" "${{ github.sha }}" -- \
               'server/' 'client/' 'sdk/' \
               'Dockerfile*' '**/Dockerfile*' \
               '.dockerignore' '**/dockerignore' \
               'docker-compose.yml' \
+              '.github/workflows/test-docker.yml' \
             | grep -qvE '\.md$'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else

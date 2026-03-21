@@ -42,8 +42,8 @@ jobs:
             exit 0
           fi
 
-          # Any non-markdown files changed under server/?
-          if git diff --name-only "$BASE" "${{ github.sha }}" -- 'server/' | grep -qvE '\.md$'; then
+          # Any non-markdown files changed under server/ or this workflow?
+          if git diff --name-only "$BASE" "${{ github.sha }}" -- 'server/' '.github/workflows/test-server.yml' | grep -qvE '\.md$'; then
             echo "server=true" >> "$GITHUB_OUTPUT"
           else
             echo "server=false" >> "$GITHUB_OUTPUT"
