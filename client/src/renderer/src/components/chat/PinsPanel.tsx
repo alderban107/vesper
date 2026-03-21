@@ -1,10 +1,11 @@
-import { Suspense, lazy, useState, useEffect } from 'react'
+import { Suspense, useState, useEffect } from 'react'
 import { Pin, PinOff, X } from 'lucide-react'
 import { useMessageStore } from '../../stores/messageStore'
 import { getRendererClient } from '../../sdk/client'
 import type { VesperChannelPin } from '@vesper/sdk/api'
+import lazyWithRetry from '../../utils/lazyWithRetry'
 
-const MarkdownContent = lazy(() => import('./MarkdownContent'))
+const MarkdownContent = lazyWithRetry(() => import('./MarkdownContent'))
 
 interface Props {
   channelId: string

@@ -7,7 +7,7 @@ import type {
   RefObject,
   UIEventHandler
 } from 'react'
-import { Suspense, lazy } from 'react'
+import { Suspense } from 'react'
 import { Loader2, Paperclip, SendHorizonal, Smile } from 'lucide-react'
 import type { DmConversation } from '../../stores/dmStore'
 import type { Message } from '../../stores/messageStore'
@@ -17,8 +17,9 @@ import EmojiPicker from './EmojiPicker'
 import ComposerAutocomplete, { type ComposerAutocompleteItem } from './ComposerAutocomplete'
 import type { ComposerMentionDraft } from './composerAutocompleteUtils'
 import ComposerShell, { type StagedFile } from './message/ComposerShell'
+import lazyWithRetry from '../../utils/lazyWithRetry'
 
-const ComposerRichTextPreview = lazy(() => import('./ComposerRichTextPreview'))
+const ComposerRichTextPreview = lazyWithRetry(() => import('./ComposerRichTextPreview'))
 
 const CODE_FENCE_PREVIEW_PATTERN = /^```(?!mermaid\b)([^\n`]*)\n[\s\S]*\n```$/i
 const MENTION_OR_TOKEN_PATTERN =

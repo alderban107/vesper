@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useRef, useState } from 'react'
+import { Suspense, useEffect, useRef, useState } from 'react'
 import { SendHorizonal, Star, X } from 'lucide-react'
 import Sidebar from '../components/layout/Sidebar'
 import Header from '../components/layout/Header'
@@ -15,20 +15,21 @@ import { usePresenceStore } from '../stores/presenceStore'
 import { parseMessageContent, useMessageStore, type Message } from '../stores/messageStore'
 import { useSyncStore } from '../stores/syncStore'
 import { getRendererClient } from '../sdk/client'
+import lazyWithRetry from '../utils/lazyWithRetry'
 
-const CreateServerModal = lazy(() => import('../components/server/CreateServerModal'))
-const JoinServerModal = lazy(() => import('../components/server/JoinServerModal'))
-const CreateChannelModal = lazy(() => import('../components/server/CreateChannelModal'))
-const NewDmModal = lazy(() => import('../components/dm/NewDmModal'))
-const SettingsModal = lazy(() => import('../components/settings/SettingsModal'))
-const IncomingCallModal = lazy(() => import('../components/voice/IncomingCallModal'))
-const CallOverlay = lazy(() => import('../components/voice/CallOverlay'))
-const RoleManager = lazy(() => import('../components/server/RoleManager'))
-const ServerSettingsModal = lazy(() => import('../components/server/ServerSettingsModal'))
-const ChannelSettingsModal = lazy(() => import('../components/server/ChannelSettingsModal'))
-const MemberListPanel = lazy(() => import('../components/server/MemberListPanel'))
-const PinsPanel = lazy(() => import('../components/chat/PinsPanel'))
-const VoiceChannelPanel = lazy(() => import('../components/voice/VoiceChannelPanel'))
+const CreateServerModal = lazyWithRetry(() => import('../components/server/CreateServerModal'))
+const JoinServerModal = lazyWithRetry(() => import('../components/server/JoinServerModal'))
+const CreateChannelModal = lazyWithRetry(() => import('../components/server/CreateChannelModal'))
+const NewDmModal = lazyWithRetry(() => import('../components/dm/NewDmModal'))
+const SettingsModal = lazyWithRetry(() => import('../components/settings/SettingsModal'))
+const IncomingCallModal = lazyWithRetry(() => import('../components/voice/IncomingCallModal'))
+const CallOverlay = lazyWithRetry(() => import('../components/voice/CallOverlay'))
+const RoleManager = lazyWithRetry(() => import('../components/server/RoleManager'))
+const ServerSettingsModal = lazyWithRetry(() => import('../components/server/ServerSettingsModal'))
+const ChannelSettingsModal = lazyWithRetry(() => import('../components/server/ChannelSettingsModal'))
+const MemberListPanel = lazyWithRetry(() => import('../components/server/MemberListPanel'))
+const PinsPanel = lazyWithRetry(() => import('../components/chat/PinsPanel'))
+const VoiceChannelPanel = lazyWithRetry(() => import('../components/voice/VoiceChannelPanel'))
 
 const EMPTY_MESSAGES: Message[] = []
 const EMPTY_TYPING_USERS: { user_id: string; username: string }[] = []
