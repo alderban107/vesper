@@ -337,9 +337,11 @@ test.describe('P0 Smoke — full continuous run', () => {
     await sendChannelMessage(alice.page, CHANNEL_MESSAGES.alice1)
 
     // Wait for Alice's message on all clients — this confirms everyone
-    // has joined the group and can decrypt. No arbitrary sleep.
+    // has joined the group and can decrypt. On CI runners, the history
+    // bundle flow (Alice sends at epoch 0, joiners decrypt via re-encrypted
+    // bundle) can take longer than local, so use a generous timeout.
     for (const page of [alice.page, bob.page, charlie.page]) {
-      await waitForMessage(page, CHANNEL_MESSAGES.alice1, 15_000)
+      await waitForMessage(page, CHANNEL_MESSAGES.alice1, 30_000)
     }
 
     // Group is confirmed ready — Bob and Charlie send
