@@ -62,3 +62,4 @@ media-test-files/
 # Analysis artifacts
 .desloppify/
 scorecard.png
+erl_crash.dump

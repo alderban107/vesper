@@ -872,7 +872,11 @@ export class VesperEncryptedChat {
       }
     }
 
-    if (event === 'mls_request_join_all' && scope.kind === 'channel' && !this.hasGroup(scope.id)) {
+    if (event === 'mls_request_join_all') {
+      // Always respond with a join request so the sender (who owns a group)
+      // can add us. For DMs where both sides independently created groups,
+      // the Welcome from the sender will replace our local group via
+      // handleWelcome → setGroupState, converging both sides.
       await this.requestMlsJoin(scope)
       return { scope, event, payload }
     }

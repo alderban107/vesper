@@ -455,6 +455,11 @@ defmodule VesperWeb.DmChannel do
     {:noreply, socket}
   end
 
+  def handle_in("mls_request_join_all", _payload, socket) do
+    broadcast_from!(socket, "mls_request_join_all", %{user_id: socket.assigns.user_id})
+    {:noreply, socket}
+  end
+
   def handle_in("mls_resync_request", payload, socket) when is_map(payload) do
     case normalize_resync_request(payload) do
       {:ok, attrs} ->

@@ -65,8 +65,6 @@ import {
   CUSTOM_EMOJI,
 } from '../fixtures/test-data'
 
-const PERF_MULTIPLIER = Number(process.env.VESPER_PERF_MULTIPLIER) || 1
-
 let alice: UserContext
 let bob: UserContext
 let charlie: UserContext
@@ -141,10 +139,8 @@ test.describe('P0 Smoke — full continuous run', () => {
     await selectDm(bob.page, USERS.alice.username)
 
     // Wait for alice's messages to appear on bob's side
-    // MLS bootstrap + history sync requires multiple round trips, so allow
-    // extra time beyond the default 10s.
-    await waitForMessage(bob.page, DM_MESSAGES.aliceToBob1, 10_000 * PERF_MULTIPLIER)
-    await waitForMessage(bob.page, DM_MESSAGES.aliceToBob2, 10_000 * PERF_MULTIPLIER)
+    await waitForMessage(bob.page, DM_MESSAGES.aliceToBob1)
+    await waitForMessage(bob.page, DM_MESSAGES.aliceToBob2)
 
     // Bob replies
     await sendDmMessage(bob.page, DM_MESSAGES.bobToAlice1)
@@ -311,29 +307,30 @@ test.describe('P0 Smoke — full continuous run', () => {
 
   // --- Step 16: Channel messages from all three (R-CHANNEL-1) ---
   test('Step 16: three users chat in channels', async () => {
-    test.setTimeout(60_000) // MLS group formation across 3 users
-
-    // All users join the channel — this triggers MLS group formation.
-    // Alice goes first and creates the group. The others join via the
-    // mls_request_join → welcome flow triggered by joinChannelChat.
+    // All users open the channel
     await selectChannel(alice.page, CHANNELS.general)
-    // Small delay so alice's group is created before others subscribe
-    await alice.page.waitForTimeout(1_000)
     await selectChannel(bob.page, CHANNELS.general)
     await selectChannel(charlie.page, CHANNELS.general)
-    // Allow MLS welcomes to propagate
-    await alice.page.waitForTimeout(2_000)
 
-    // Now send messages — all users should be in the same MLS group
+    // Alice sends first — her sendPayload creates the MLS group and
+    // broadcasts mls_request_join_all. Bob and Charlie's scope watchers
+    // pick up the broadcast and join via the welcome flow.
     await sendChannelMessage(alice.page, CHANNEL_MESSAGES.alice1)
+
+    // Wait for Alice's message on all clients — this confirms everyone
+    // has joined the group and can decrypt. No arbitrary sleep.
+    for (const page of [alice.page, bob.page, charlie.page]) {
+      await waitForMessage(page, CHANNEL_MESSAGES.alice1, 15_000)
+    }
+
+    // Group is confirmed ready — Bob and Charlie send
     await sendChannelMessage(bob.page, CHANNEL_MESSAGES.bob1)
     await sendChannelMessage(charlie.page, CHANNEL_MESSAGES.charlie1)
 
-    // All three users should be able to decrypt all three messages
+    // All three users should see all messages
     for (const page of [alice.page, bob.page, charlie.page]) {
-      await waitForMessage(page, CHANNEL_MESSAGES.alice1, 15_000)
-      await waitForMessage(page, CHANNEL_MESSAGES.bob1, 15_000)
-      await waitForMessage(page, CHANNEL_MESSAGES.charlie1, 15_000)
+      await waitForMessage(page, CHANNEL_MESSAGES.bob1, 10_000)
+      await waitForMessage(page, CHANNEL_MESSAGES.charlie1, 10_000)
     }
   })
 
