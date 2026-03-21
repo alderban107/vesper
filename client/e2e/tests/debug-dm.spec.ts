@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test'
 import { saveRecoveryKey } from '../harness/state'
 import { signup, createUserContext, type UserContext } from '../helpers/auth'
 import { USERS, DM_MESSAGES } from '../fixtures/test-data'
+import { getMlsDiagnostics, assertMlsBudget } from '../helpers/mls-diagnostics'
 
 let alice: UserContext
 let bob: UserContext
@@ -124,5 +125,36 @@ test.describe('DM Debug', () => {
     }
 
     expect(bobDecrypted).toBe(true)
+
+    // --- MLS epoch budget assertion ---
+    // A 2-user DM handshake: leader creates group (epoch 0), adds non-leader
+    // (epoch 1). Message encrypted at epoch 1. No storms.
+    const dmScopeId = await alice.page.evaluate(() => {
+      const diag = (window as any).__mlsDiagnostics
+      if (!diag) return null
+      const scopes = diag.allScopes()
+      // Find the DM scope (the one with a group creation)
+      for (const [id, entry] of Object.entries(scopes) as [string, any][]) {
+        if (entry.groupCreations > 0 || entry.welcomesProcessed > 0) return id
+      }
+      return null
+    })
+
+    if (dmScopeId) {
+      // Leader (Alice or Bob — depends on UUID ordering)
+      for (const [name, user] of [['alice', alice], ['bob', bob]] as const) {
+        const diag = await getMlsDiagnostics(user.page, dmScopeId)
+        if (diag) {
+          // Epoch should be 1 (group created at 0, one member added → 1)
+          assertMlsBudget(diag, { maxEpoch: 1 }, `${name} DM`)
+          // At most 1 join request handled (leader adds non-leader once)
+          assertMlsBudget(diag, { maxJoinRequestsHandled: 1 }, `${name} DM join handling`)
+          // At most 1 group creation per user
+          assertMlsBudget(diag, { maxGroupCreations: 1 }, `${name} DM group creation`)
+          // At most 1 key package consumed per user
+          assertMlsBudget(diag, { maxKeyPackagesConsumed: 1 }, `${name} DM key package consumption`)
+        }
+      }
+    }
   })
 })

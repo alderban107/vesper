@@ -2246,6 +2246,7 @@ export function createVesperClient(options: VesperClientOptions = {}): VesperCli
 }
 
 export * from './encryptedChat.js'
+export { MLSDiagnostics, type ScopeDiagnostics } from './mlsDiagnostics.js'
 
 export type {
   VesperAuthDevice,
