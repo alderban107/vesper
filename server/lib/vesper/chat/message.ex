@@ -36,7 +36,7 @@ defmodule Vesper.Chat.Message do
       :parent_message_id,
       :edited_at
     ])
-    |> validate_required([:ciphertext, :mls_epoch, :sender_id])
+    |> validate_required([:ciphertext, :sender_id])
     |> validate_target()
   end
 
@@ -53,7 +53,7 @@ defmodule Vesper.Chat.Message do
       :parent_message_id,
       :edited_at
     ])
-    |> validate_required([:ciphertext, :mls_epoch, :sender_id])
+    |> validate_required([:ciphertext, :sender_id])
     |> validate_target()
   end
 

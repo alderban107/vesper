@@ -20,7 +20,6 @@ defmodule Vesper.Servers do
     AuditLog
   }
 
-  alias Vesper.Encryption
   alias Vesper.Runtime
   alias Vesper.Runtime.Room
   alias Vesper.Servers.PermissionsCache
@@ -1749,52 +1748,10 @@ defmodule Vesper.Servers do
     })
   end
 
-  defp queue_membership_crypto_evictions(server_id, user_id, reason) do
-    channel_ids =
-      server_id
-      |> list_channels()
-      |> Enum.filter(&(&1.type == "text"))
-      |> Enum.map(& &1.id)
-
-    target_device_ids =
-      user_id
-      |> Accounts.list_devices()
-      |> Enum.reject(&(not is_nil(&1.revoked_at) or &1.trust_state == "revoked"))
-      |> Enum.map(& &1.client_id)
-      |> case do
-        [] -> [nil]
-        device_ids -> device_ids
-      end
-
-    evictions =
-      for channel_id <- channel_ids, target_device_id <- target_device_ids do
-        %{
-          scope_kind: "channel",
-          scope_id: channel_id,
-          group_id: channel_id,
-          server_id: server_id,
-          target_user_id: user_id,
-          target_device_id: target_device_id,
-          reason: reason
-        }
-      end
-
-    case Encryption.queue_scope_crypto_evictions(evictions) do
-      :ok ->
-        :ok
-
-      other ->
-        Logger.warning("Could not queue MLS evictions for membership revoke",
-          extra: %{
-            server_id: server_id,
-            target_user_id: user_id,
-            reason: inspect(other)
-          }
-        )
-
-        :ok
-    end
-  end
+  # With Signal Protocol, crypto evictions are no longer needed.
+  # When a member leaves/is kicked/banned, other clients simply stop
+  # distributing sender keys to them. No server-side orchestration required.
+  defp queue_membership_crypto_evictions(_server_id, _user_id, _reason), do: :ok
 
   defp broadcast_permissions_changed(server_id) do
     Phoenix.PubSub.broadcast(

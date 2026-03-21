@@ -138,29 +138,12 @@ defmodule VesperWeb.Router do
     put("/search-index", SearchIndexController, :upsert)
     delete("/search-index", SearchIndexController, :delete)
 
-    # Key package directory
+    # Key package / pre-key bundle directory
     post("/key-packages", KeyPackageController, :create)
     get("/key-packages/me/count", KeyPackageController, :count)
     post("/key-packages/me/consume", KeyPackageController, :consume)
     delete("/key-packages/me", KeyPackageController, :purge)
     get("/key-packages/:user_id", KeyPackageController, :show)
-
-    # Pending welcomes
-    get("/pending-welcomes/:channel_id", PendingWelcomeController, :index)
-    delete("/pending-welcomes/:id", PendingWelcomeController, :delete)
-
-    # Durable MLS control-plane event replay
-    get("/mls-events/:channel_id", MlsEventController, :index)
-
-    # Pending MLS resync requests
-    get("/pending-resync-requests/:channel_id", PendingResyncRequestController, :index)
-    delete("/pending-resync-requests/:id", PendingResyncRequestController, :delete)
-
-    # Pending same-user MLS history recovery
-    get("/pending-history-requests/:channel_id", PendingHistoryRequestController, :index)
-    delete("/pending-history-requests/:id", PendingHistoryRequestController, :delete)
-    get("/pending-history-bundles/:channel_id", PendingHistoryBundleController, :index)
-    delete("/pending-history-bundles/:id", PendingHistoryBundleController, :delete)
   end
 
   # Enable LiveDashboard in development
