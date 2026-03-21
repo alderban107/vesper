@@ -93,6 +93,9 @@ jobs:
         working-directory: client
         run: node ./scripts/ensure-rollup-native.mjs
 
+      - name: Pre-pull Postgres image
+        run: docker pull postgres:16-alpine
+
       - name: Run SDK integration tests
         working-directory: client
         env:
