@@ -20,6 +20,11 @@ import { randomBytes } from '@noble/hashes/utils.js'
 //  Constants
 // ---------------------------------------------------------------------------
 
+/** Cast to BufferSource for WebCrypto API compatibility */
+function asBufferSource(value: Uint8Array): BufferSource {
+  return value as unknown as BufferSource
+}
+
 /** HKDF info tag for X3DH shared secret derivation */
 const X3DH_INFO = new TextEncoder().encode('VesperX3DH')
 
@@ -393,13 +398,13 @@ async function aesEncrypt(
   const nonce = derived.slice(32, 44)
 
   const aesKey = await crypto.subtle.importKey(
-    'raw', aesKeyBytes, { name: 'AES-GCM' }, false, ['encrypt']
+    'raw', asBufferSource(aesKeyBytes), { name: 'AES-GCM' }, false, ['encrypt']
   )
 
   const ciphertext = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv: nonce, additionalData: associatedData },
+    { name: 'AES-GCM', iv: asBufferSource(nonce), additionalData: asBufferSource(associatedData) },
     aesKey,
-    plaintext
+    asBufferSource(plaintext)
   )
 
   return { ciphertext: new Uint8Array(ciphertext), nonce }
@@ -418,13 +423,13 @@ async function aesDecrypt(
   const nonce = derived.slice(32, 44)
 
   const aesKey = await crypto.subtle.importKey(
-    'raw', aesKeyBytes, { name: 'AES-GCM' }, false, ['decrypt']
+    'raw', asBufferSource(aesKeyBytes), { name: 'AES-GCM' }, false, ['decrypt']
   )
 
   const plaintext = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: nonce, additionalData: associatedData },
+    { name: 'AES-GCM', iv: asBufferSource(nonce), additionalData: asBufferSource(associatedData) },
     aesKey,
-    ciphertext
+    asBufferSource(ciphertext)
   )
 
   return new Uint8Array(plaintext)
