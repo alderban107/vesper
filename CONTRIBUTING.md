@@ -103,6 +103,22 @@ This runs the Node-based live SDK suite in `sdk/test/`. It boots
 Phoenix automatically and uses the same local Postgres helper and root `.env`
 settings as the Playwright harness.
 
+When asserting on server-side state that follows a mutation (e.g. checking that a sync response contains a `message_edited` event after calling `editText`), always use the `waitFor` poll helper instead of a bare assert. The server may not have persisted the event by the time the next API call lands:
+
+```javascript
+// Wrong — races with server-side persistence:
+await chat.editText(scope, id, 'new text')
+const synced = await chat.syncScope(scope, { limit: 10 })
+assert.ok(synced.events.some((e) => e.eventType === 'message_edited'))
+
+// Right — polls until the event appears or times out:
+await chat.editText(scope, id, 'new text')
+const synced = await waitFor('edit event in sync', async () => {
+  const result = await chat.syncScope(scope, { limit: 10 })
+  return result.events.some((e) => e.eventType === 'message_edited') ? result : null
+})
+```
+
 **Note:** There are no client unit tests yet. `npm run check:web` (typecheck + production build) is the current client-side CI gate.
 
 ## Code Conventions
