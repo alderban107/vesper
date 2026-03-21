@@ -282,6 +282,7 @@ class VesperSocketClient {
 |----------|--------|----------|
 | `uploadKeyPackages(packages, deviceId, http?)` | POST | `/api/v1/key-packages` |
 | `fetchKeyPackage(userId, deviceId?, http?)` | GET | `/api/v1/key-packages/{userId}` |
+| `consumeOwnKeyPackage(keyPackageData, http?)` | POST | `/api/v1/key-packages/me/consume` |
 | `purgeMyKeyPackages(deviceId, http?)` | DELETE | `/api/v1/key-packages/mine` |
 | `getMyKeyPackageCount(deviceId, http?)` | GET | `/api/v1/key-packages/mine/count` |
 | `fetchPendingWelcomes(scopeId, http?)` | GET | `/api/v1/mls/welcomes/{scopeId}` |

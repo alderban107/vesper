@@ -63,11 +63,12 @@ Each channel and DM conversation maps to one MLS group. The SDK identifies group
 
 ### Group Lifecycle
 
-1. **Creation**: The first user to join a scope creates the MLS group
-2. **Join requests**: Other users request to join; existing members process join requests by adding the requester's key package and creating a commit
+1. **Creation**: For channels, the channel owner creates the MLS group when first sending a message. For DMs, deterministic leader election (lower UUID wins) decides which participant creates the group. A `pendingGroupCreations` guard prevents concurrent creation from consuming duplicate key packages.
+2. **Join requests**: Other users request to join via `mls_request_join`; the group owner (channels) or leader (DMs) processes join requests by adding the requester's key package and creating a commit. Join requests are deduplicated per user per scope (10-second window) to prevent epoch storms.
 3. **Welcome messages**: The server delivers Welcome messages to new members, allowing them to initialize their group state
 4. **Messaging**: Members encrypt/decrypt application messages using the shared group key
 5. **Membership changes**: Adding or removing members advances the epoch
+6. **History bundles**: After joining, the new member requests re-encrypted history from an existing member via the `mls_history_request` / `mls_history_bundle` exchange
 
 ### Group State
 
