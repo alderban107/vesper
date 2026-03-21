@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Crown, MessageCircle, Copy, MoonStar, Shield, UserMinus, AtSign, X } from 'lucide-react'
 import { useServerStore, type Member } from '../../stores/serverStore'
 import { usePresenceStore, type PresenceStatus } from '../../stores/presenceStore'
@@ -144,6 +144,8 @@ function MemberRow({
 
 export default function MemberListPanel(): React.JSX.Element {
   const members = useServerStore((s) => s.members)
+  const activeServerId = useServerStore((s) => s.activeServerId)
+  const fetchMembers = useServerStore((s) => s.fetchMembers)
   const statuses = usePresenceStore((s) => s.statuses)
   const myId = useAuthStore((s) => s.user?.id)
   const activeServer = useServerStore((s) => s.servers.find((srv) => srv.id === s.activeServerId))
@@ -155,6 +157,14 @@ export default function MemberListPanel(): React.JSX.Element {
   const setActiveServer = useServerStore((s) => s.setActiveServer)
   const [selectedMember, setSelectedMember] = useState<Member | null>(null)
   const [profileAnchor, setProfileAnchor] = useState<DOMRect | null>(null)
+
+  // Fetch members when the panel mounts if the store is empty — handles the
+  // case where the initial fetch in setActiveServer failed silently.
+  useEffect(() => {
+    if (activeServerId && members.length === 0) {
+      void fetchMembers(activeServerId)
+    }
+  }, [activeServerId, fetchMembers, members.length])
 
   const memberMenu = useContextMenu<Member>()
   const groups = getMemberGroups(members, statuses, myId, activeServer?.owner_id)
