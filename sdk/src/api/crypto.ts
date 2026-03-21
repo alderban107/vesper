@@ -1,7 +1,7 @@
 import { getDefaultHttpClient, type VesperHttpClient } from './client.js'
 
 /**
- * Upload key packages to the server directory.
+ * Upload key packages (pre-key bundles) to the server directory.
  */
 export async function uploadKeyPackages(
   packages: Uint8Array[],
@@ -21,7 +21,8 @@ export async function uploadKeyPackages(
 }
 
 /**
- * Fetch one unconsumed key package for a user.
+ * Fetch one unconsumed key package (pre-key bundle) for a user.
+ * Used during X3DH session establishment — the recipient doesn't need to be online.
  */
 export async function fetchKeyPackage(
   userId: string,
@@ -56,7 +57,7 @@ export async function purgeMyKeyPackages(
 
 /**
  * Mark a specific own key package as consumed on the server.
- * Called after consuming a key package locally (e.g. during group creation)
+ * Called after consuming a key package locally (e.g. during session establishment)
  * to prevent the server from handing out the stale package to other clients.
  */
 export async function consumeOwnKeyPackage(
@@ -89,209 +90,6 @@ export async function getMyKeyPackageCount(
 
   const data = await res.json()
   return data.count || 0
-}
-
-/**
- * Fetch pending Welcome messages for an MLS scope.
- */
-export async function fetchPendingWelcomes(
-  scopeId: string,
-  httpClient: VesperHttpClient = getDefaultHttpClient()
-): Promise<
-  Array<{
-    id: string
-    welcome_data: Uint8Array
-    key_package_ref?: string | null
-    sender_id: string
-  }>
-> {
-  const res = await httpClient.apiFetch(`/api/v1/pending-welcomes/${encodeURIComponent(scopeId)}`)
-  if (!res.ok) {
-    throw new Error(`Could not fetch pending welcomes for scope ${scopeId}: ${res.status}`)
-  }
-
-  const data = await res.json()
-  return (data.welcomes || []).map(
-    (w: { id: string; welcome_data: string; key_package_ref?: string | null; sender_id: string }) => ({
-      id: w.id,
-      welcome_data: base64ToUint8(w.welcome_data),
-      key_package_ref: typeof w.key_package_ref === 'string' ? w.key_package_ref : null,
-      sender_id: w.sender_id
-    })
-  )
-}
-
-/**
- * Acknowledge (delete) a processed pending Welcome.
- */
-export async function ackPendingWelcome(
-  welcomeId: string,
-  httpClient: VesperHttpClient = getDefaultHttpClient()
-): Promise<void> {
-  const res = await httpClient.apiFetch(`/api/v1/pending-welcomes/${welcomeId}`, {
-    method: 'DELETE'
-  })
-  if (!res.ok) {
-    throw new Error(`Could not acknowledge pending welcome ${welcomeId}: ${res.status}`)
-  }
-}
-
-/**
- * Fetch pending MLS resync requests for an MLS scope.
- */
-export async function fetchPendingResyncRequests(
-  scopeId: string,
-  httpClient: VesperHttpClient = getDefaultHttpClient()
-): Promise<
-  Array<{
-    id: string
-    requester_id: string
-    requester_username: string | null
-    requester_client_id: string | null
-    request_id: string
-    last_known_epoch: number | null
-    reason: string | null
-  }>
-> {
-  const res = await httpClient.apiFetch(
-    `/api/v1/pending-resync-requests/${encodeURIComponent(scopeId)}`
-  )
-  if (!res.ok) {
-    throw new Error(`Could not fetch pending resync requests for scope ${scopeId}: ${res.status}`)
-  }
-
-  const data = await res.json()
-  return data.requests || []
-}
-
-/**
- * Acknowledge (delete) a processed pending MLS resync request.
- */
-export async function ackPendingResyncRequest(
-  requestId: string,
-  httpClient: VesperHttpClient = getDefaultHttpClient()
-): Promise<void> {
-  const res = await httpClient.apiFetch(`/api/v1/pending-resync-requests/${requestId}`, {
-    method: 'DELETE'
-  })
-  if (!res.ok) {
-    throw new Error(`Could not acknowledge pending resync request ${requestId}: ${res.status}`)
-  }
-}
-
-/**
- * Fetch pending same-user history requests for an MLS scope.
- */
-export async function fetchPendingHistoryRequests(
-  scopeId: string,
-  httpClient: VesperHttpClient = getDefaultHttpClient()
-): Promise<
-  Array<{
-    id: string
-    requester_id: string
-    requester_username: string | null
-    requester_client_id: string | null
-  }>
-> {
-  const res = await httpClient.apiFetch(
-    `/api/v1/pending-history-requests/${encodeURIComponent(scopeId)}`
-  )
-  if (!res.ok) {
-    throw new Error(`Could not fetch pending history requests for scope ${scopeId}: ${res.status}`)
-  }
-
-  const data = await res.json()
-  return data.requests || []
-}
-
-/**
- * Acknowledge a processed pending same-user history request.
- */
-export async function ackPendingHistoryRequest(
-  requestId: string,
-  httpClient: VesperHttpClient = getDefaultHttpClient()
-): Promise<void> {
-  const res = await httpClient.apiFetch(`/api/v1/pending-history-requests/${requestId}`, {
-    method: 'DELETE'
-  })
-  if (!res.ok) {
-    throw new Error(`Could not acknowledge pending history request ${requestId}: ${res.status}`)
-  }
-}
-
-/**
- * Fetch pending same-user history bundles for an MLS scope.
- */
-export async function fetchPendingHistoryBundles(
-  scopeId: string,
-  httpClient: VesperHttpClient = getDefaultHttpClient()
-): Promise<
-  Array<{
-    id: string
-    ciphertext: string
-    mls_epoch: number
-    recipient_id: string
-    recipient_client_id: string | null
-    sender_id: string
-  }>
-> {
-  const res = await httpClient.apiFetch(
-    `/api/v1/pending-history-bundles/${encodeURIComponent(scopeId)}`
-  )
-  if (!res.ok) {
-    throw new Error(`Could not fetch pending history bundles for scope ${scopeId}: ${res.status}`)
-  }
-
-  const data = await res.json()
-  return data.bundles || []
-}
-
-/**
- * Acknowledge a processed pending same-user history bundle.
- */
-export async function ackPendingHistoryBundle(
-  bundleId: string,
-  httpClient: VesperHttpClient = getDefaultHttpClient()
-): Promise<void> {
-  const res = await httpClient.apiFetch(`/api/v1/pending-history-bundles/${bundleId}`, {
-    method: 'DELETE'
-  })
-  if (!res.ok) {
-    throw new Error(`Could not acknowledge pending history bundle ${bundleId}: ${res.status}`)
-  }
-}
-
-/**
- * Fetch durable MLS control-plane events for an encrypted scope after a local cursor.
- */
-export async function fetchMlsEvents(
-  scopeId: string,
-  afterSeq: number,
-  limit = 200,
-  httpClient: VesperHttpClient = getDefaultHttpClient()
-): Promise<
-  Array<{
-    seq: number
-    event_type: 'mls_commit' | 'mls_remove'
-    payload: {
-      commit_data?: string
-      removed_user_id?: string
-    }
-    sender_id: string
-    sender_device_id: string | null
-  }>
-> {
-  const params = new URLSearchParams({
-    after_seq: String(Math.max(0, afterSeq)),
-    limit: String(limit)
-  })
-  const res = await httpClient.apiFetch(`/api/v1/mls-events/${encodeURIComponent(scopeId)}?${params}`)
-  if (!res.ok) {
-    throw new Error(`Could not fetch MLS events for scope ${scopeId}: ${res.status}`)
-  }
-
-  const data = await res.json()
-  return data.events || []
 }
 
 // --- Helpers ---

@@ -38,9 +38,10 @@ defmodule VesperWeb.DmChannel do
   @impl true
   def handle_in(
         "new_message",
-        %{"ciphertext" => ciphertext, "mls_epoch" => epoch} = params,
+        %{"ciphertext" => ciphertext} = params,
         socket
       ) do
+    epoch = Map.get(params, "mls_epoch")
     client_nonce =
       case Map.get(params, "client_nonce") do
         value when is_binary(value) and value != "" -> value
@@ -317,9 +318,10 @@ defmodule VesperWeb.DmChannel do
 
   def handle_in(
         "edit_message",
-        %{"message_id" => id, "ciphertext" => ciphertext, "mls_epoch" => epoch},
+        %{"message_id" => id, "ciphertext" => ciphertext} = params,
         socket
       ) do
+    epoch = Map.get(params, "mls_epoch")
     case handle_edit_message(id, ciphertext, epoch, socket) do
       {:ok, payload} ->
         room_seq =
@@ -442,6 +444,22 @@ defmodule VesperWeb.DmChannel do
     })
 
     {:noreply, socket}
+  end
+
+  # Signal Protocol: relay sender key distributions to DM participants
+  def handle_in(
+        "sender_key_distribution",
+        %{"encrypted_sender_key" => _encrypted_key} = payload,
+        socket
+      ) do
+    broadcast_from!(socket, "sender_key_distribution", %{
+      sender_id: socket.assigns.user_id,
+      sender_device_id: Map.get(payload, "sender_device_id"),
+      encrypted_sender_key: Map.get(payload, "encrypted_sender_key"),
+      scope_id: socket.assigns.conversation_id
+    })
+
+    {:reply, :ok, socket}
   end
 
   def handle_in(_event, _payload, socket),

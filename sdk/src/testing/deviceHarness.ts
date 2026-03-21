@@ -61,16 +61,7 @@ const silentLogger = {
 const FIRE_AND_FORGET_SCOPE_EVENTS = new Set([
   'typing_start',
   'typing_stop',
-  'mls_request_join',
-  'mls_request_join_all',
-  'mls_resync_request',
-  'mls_eviction_claim',
-  'mls_eviction_skip',
-  'mls_commit',
-  'mls_remove',
-  'mls_welcome',
-  'mls_history_request',
-  'mls_history_bundle'
+  'sender_key_distribution'
 ])
 
 function createDeviceIdentity(label: string, options: TestingDeviceHarnessOptions): TestingDeviceIdentity {

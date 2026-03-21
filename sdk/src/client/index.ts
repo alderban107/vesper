@@ -1,14 +1,4 @@
 import {
-  ackPendingHistoryBundle,
-  ackPendingHistoryRequest,
-  ackPendingResyncRequest,
-  ackPendingWelcome,
-  fetchPendingHistoryBundles,
-  fetchPendingHistoryRequests,
-  fetchPendingResyncRequests,
-  fetchPendingWelcomes
-} from '../api/crypto.js'
-import {
   createConversation,
   createServer,
   createServerChannel,
@@ -1634,71 +1624,6 @@ export class VesperClient {
   async pushTopicEventWithAck(topic: string, event: string, payload: object): Promise<boolean> {
     this.socketClient.connect()
     return await this.socketClient.pushToChannelWithAck(topic, event, payload)
-  }
-
-  async fetchPendingWelcomes(scopeId: string): Promise<
-    Array<{
-      id: string
-      welcome_data: Uint8Array
-      key_package_ref?: string | null
-      sender_id: string
-    }>
-  > {
-    return await fetchPendingWelcomes(scopeId, this.httpClient)
-  }
-
-  async ackPendingWelcome(welcomeId: string): Promise<void> {
-    await ackPendingWelcome(welcomeId, this.httpClient)
-  }
-
-  async fetchPendingResyncRequests(scopeId: string): Promise<
-    Array<{
-      id: string
-      requester_id: string
-      requester_username: string | null
-      requester_client_id: string | null
-      request_id: string
-      last_known_epoch: number | null
-      reason: string | null
-    }>
-  > {
-    return await fetchPendingResyncRequests(scopeId, this.httpClient)
-  }
-
-  async ackPendingResyncRequest(requestId: string): Promise<void> {
-    await ackPendingResyncRequest(requestId, this.httpClient)
-  }
-
-  async fetchPendingHistoryRequests(scopeId: string): Promise<
-    Array<{
-      id: string
-      requester_id: string
-      requester_username: string | null
-      requester_client_id: string | null
-    }>
-  > {
-    return await fetchPendingHistoryRequests(scopeId, this.httpClient)
-  }
-
-  async ackPendingHistoryRequest(requestId: string): Promise<void> {
-    await ackPendingHistoryRequest(requestId, this.httpClient)
-  }
-
-  async fetchPendingHistoryBundles(scopeId: string): Promise<
-    Array<{
-      id: string
-      ciphertext: string
-      mls_epoch: number
-      recipient_id: string
-      recipient_client_id: string | null
-      sender_id: string
-    }>
-  > {
-    return await fetchPendingHistoryBundles(scopeId, this.httpClient)
-  }
-
-  async ackPendingHistoryBundle(bundleId: string): Promise<void> {
-    await ackPendingHistoryBundle(bundleId, this.httpClient)
   }
 
   async fetchVoiceRtcConfig(forceRefresh = false): Promise<VoiceRtcConfig> {

@@ -19,7 +19,6 @@ import {
   decryptEncryptedKeyBundle,
   decryptWithRecoveryKey,
   recoveryKeyToBytes,
-  serializePrivatePackage
 } from '../crypto/index.js'
 import {
   createCryptoStorageRuntime,
@@ -27,11 +26,12 @@ import {
   type CryptoStorageRuntime
 } from '../crypto/storage.js'
 import {
-  buildClientCredentialIdentity,
-  createKeyPackageBatch,
-  encodeKeyPackageBytes,
-  initCipherSuite
-} from '../crypto/mls.js'
+  generateIdentityKeyPair,
+  generateSignedPreKey,
+  generateOneTimePreKeys,
+  buildPreKeyBundle,
+  encodePreKeyBundle,
+} from '../crypto/protocol.js'
 import type { VesperTransport } from '../transport/context.js'
 
 export interface VesperUser {
@@ -100,6 +100,8 @@ export interface VesperAuthClientOptions {
 
 const KEY_PACKAGE_TARGET = 20
 const KEY_PACKAGE_THRESHOLD = 5
+const SIGNED_PRE_KEY_ID = 1
+const ONE_TIME_PRE_KEY_START_ID = 1
 
 export class VesperAuthClient {
   private readonly resolveDeviceIdentity: () => LocalDeviceIdentity
@@ -134,13 +136,19 @@ export class VesperAuthClient {
 
   async register(username: string, password: string): Promise<VesperAuthSession> {
     return await this.withStorageContext(null, async () => {
-      await initCipherSuite()
+      // Generate Signal Protocol identity keys
+      const identity = generateIdentityKeyPair()
+      const signingPublicKey = identity.signing.publicKey
+      const dhPublicKey = identity.dh.publicKey
 
-      const keyPackages = await createKeyPackageBatch(username, 1)
-      const signaturePrivateKey = keyPackages[0].privatePackage.signaturePrivateKey
-      const signaturePublicKey = keyPackages[0].publicPackage.leafNode.signaturePublicKey
-      const encryptedBundle = await createEncryptedKeyBundle(signaturePrivateKey, password)
-      const recoveryData = await createRecoveryData(signaturePrivateKey)
+      // Combine both private keys into a single blob for encryption/storage
+      // Layout: [32 bytes Ed25519 signing key][32 bytes X25519 DH key]
+      const combinedPrivateKeys = new Uint8Array(64)
+      combinedPrivateKeys.set(identity.signing.privateKey, 0)
+      combinedPrivateKeys.set(identity.dh.privateKey, 32)
+
+      const encryptedBundle = await createEncryptedKeyBundle(combinedPrivateKeys, password)
+      const recoveryData = await createRecoveryData(combinedPrivateKeys)
 
       const response = await this.httpClient.apiFetch('/api/v1/auth/register', {
         method: 'POST',
@@ -151,8 +159,8 @@ export class VesperAuthClient {
             encrypted_key_bundle: uint8ToBase64(encryptedBundle.ciphertext),
             key_bundle_salt: uint8ToBase64(encryptedBundle.salt),
             key_bundle_nonce: uint8ToBase64(encryptedBundle.nonce),
-            public_identity_key: uint8ToBase64(signaturePublicKey),
-            public_key_exchange: uint8ToBase64(signaturePublicKey),
+            public_identity_key: uint8ToBase64(signingPublicKey),
+            public_key_exchange: uint8ToBase64(dhPublicKey),
             recovery_key_hash: recoveryData.hash,
             encrypted_recovery_bundle: uint8ToBase64(recoveryData.encryptedBundle)
           })
@@ -170,32 +178,16 @@ export class VesperAuthClient {
 
       await this.storage.saveIdentity(
         data.user.id,
-        signaturePublicKey,
-        signaturePublicKey,
+        signingPublicKey,
+        dhPublicKey,
         encryptedBundle.ciphertext,
         encryptedBundle.nonce,
         encryptedBundle.salt,
-        signaturePrivateKey
+        combinedPrivateKeys
       )
 
-      const batchPairs = await createKeyPackageBatch(
-        this.getCurrentMlsCredentialIdentity(data.user.id),
-        KEY_PACKAGE_TARGET,
-        {
-          signKey: signaturePrivateKey,
-          publicKey: signaturePublicKey
-        }
-      )
-
-      await this.storage.saveKeyPackages(
-        batchPairs.map((pair) => ({
-          publicData: encodeKeyPackageBytes(pair.publicPackage),
-          privateData: serializePrivatePackage(pair.privatePackage)
-        }))
-      )
-
-      const publicPackageBytes = batchPairs.map((pair) => encodeKeyPackageBytes(pair.publicPackage))
-      await uploadKeyPackages(publicPackageBytes, this.resolveDeviceIdentity().id, this.httpClient)
+      // Generate and upload Signal pre-key bundle
+      await this.generateAndUploadPreKeyBundle(identity)
 
       void this.registerCurrentDeviceNotificationCapability()
 
@@ -264,7 +256,6 @@ export class VesperAuthClient {
         data.current_device?.trust_state === 'trusted' &&
         (await hasUnlockedLocalIdentity(this.storage, data.user.id))
       ) {
-        void initCipherSuite().catch(() => {})
         canUseE2EE = true
       }
 
@@ -537,6 +528,29 @@ export class VesperAuthClient {
         privateKeys
       )
 
+      // Generate and upload pre-key bundles if we have a full identity (64-byte combined key)
+      if (privateKeys.length >= 64) {
+        try {
+          const restoredIdentity = {
+            signing: {
+              privateKey: privateKeys.slice(0, 32),
+              publicKey: resetData.public_identity_key
+                ? base64ToUint8(resetData.public_identity_key)
+                : new Uint8Array(32)
+            },
+            dh: {
+              privateKey: privateKeys.slice(32, 64),
+              publicKey: resetData.public_key_exchange
+                ? base64ToUint8(resetData.public_key_exchange)
+                : new Uint8Array(32)
+            }
+          }
+          await this.generateAndUploadPreKeyBundle(restoredIdentity)
+        } catch {
+          // Non-fatal — replenishKeyPackages will retry later
+        }
+      }
+
       void this.registerCurrentDeviceNotificationCapability()
 
       return {
@@ -613,30 +627,49 @@ export class VesperAuthClient {
         return
       }
 
-      await initCipherSuite()
       const identity = await this.storage.loadIdentity(user.id)
-      if (!identity?.signaturePrivateKey) {
+      if (!identity?.signaturePrivateKey || identity.signaturePrivateKey.length < 64) {
         return
       }
 
-      const pairs = await createKeyPackageBatch(
-        this.getCurrentMlsCredentialIdentity(user.id),
-        KEY_PACKAGE_TARGET - count,
-        {
-          signKey: identity.signaturePrivateKey,
-          publicKey: identity.publicIdentityKey
-        }
-      )
+      // Reconstruct identity key pairs from stored combined private keys
+      const signingKeyPair = {
+        privateKey: identity.signaturePrivateKey.slice(0, 32),
+        publicKey: identity.publicIdentityKey
+      }
+      const dhKeyPair = {
+        privateKey: identity.signaturePrivateKey.slice(32, 64),
+        publicKey: identity.publicKeyExchange
+      }
 
-      await this.storage.saveKeyPackages(
-        pairs.map((pair) => ({
-          publicData: encodeKeyPackageBytes(pair.publicPackage),
-          privateData: serializePrivatePackage(pair.privatePackage)
-        }))
+      const batchSize = KEY_PACKAGE_TARGET - count
+      const startId = ONE_TIME_PRE_KEY_START_ID + count
+      const signedPreKey = generateSignedPreKey({ privateKey: signingKeyPair.privateKey, publicKey: signingKeyPair.publicKey }, SIGNED_PRE_KEY_ID)
+      const oneTimePreKeys = generateOneTimePreKeys(startId, batchSize)
+      const bundle = buildPreKeyBundle(
+        { signing: signingKeyPair, dh: dhKeyPair },
+        signedPreKey,
+        oneTimePreKeys
       )
+      const encodedBundle = encodePreKeyBundle(bundle)
 
-      const publicPackageBytes = pairs.map((pair) => encodeKeyPackageBytes(pair.publicPackage))
-      await uploadKeyPackages(publicPackageBytes, this.resolveDeviceIdentity().id, this.httpClient)
+      // Store pre-key private material locally
+      const spkPrivateData = new Uint8Array(64)
+      spkPrivateData.set(signedPreKey.keyPair.privateKey, 0)
+      spkPrivateData.set(signedPreKey.keyPair.publicKey, 32)
+
+      await this.storage.saveKeyPackages([
+        { publicData: encodedBundle, privateData: spkPrivateData },
+        ...oneTimePreKeys.map((otpk) => {
+          const otpkData = new Uint8Array(68)
+          new DataView(otpkData.buffer).setUint32(0, otpk.id, false)
+          otpkData.set(otpk.keyPair.privateKey, 4)
+          otpkData.set(otpk.keyPair.publicKey, 36)
+          return { publicData: new Uint8Array(0), privateData: otpkData }
+        })
+      ])
+
+      await uploadKeyPackages([encodedBundle], this.resolveDeviceIdentity().id, this.httpClient)
     }).finally(() => {
       this.keyPackageReplenishPromise = null
     })
@@ -655,10 +688,6 @@ export class VesperAuthClient {
     }
   }
 
-  private getCurrentMlsCredentialIdentity(userId: string): string {
-    return buildClientCredentialIdentity(userId, this.resolveDeviceIdentity().id)
-  }
-
   private resolveKnownUserId(): string | null {
     return this.lastKnownUserId
   }
@@ -671,27 +700,70 @@ export class VesperAuthClient {
   }
 
   private async createFreshLocalDeviceIdentity(userId: string): Promise<boolean> {
-    await initCipherSuite()
+    const identity = generateIdentityKeyPair()
 
-    const pairs = await createKeyPackageBatch(this.getCurrentMlsCredentialIdentity(userId), 1)
-    const signaturePrivateKey = pairs[0]?.privatePackage.signaturePrivateKey
-    const signaturePublicKey = pairs[0]?.publicPackage.leafNode.signaturePublicKey
-
-    if (!signaturePrivateKey || !signaturePublicKey) {
-      return false
-    }
+    // Combine both private keys: [32 bytes signing][32 bytes DH]
+    const combinedPrivateKeys = new Uint8Array(64)
+    combinedPrivateKeys.set(identity.signing.privateKey, 0)
+    combinedPrivateKeys.set(identity.dh.privateKey, 32)
 
     await this.storage.saveIdentity(
       userId,
-      signaturePublicKey,
-      signaturePublicKey,
+      identity.signing.publicKey,
+      identity.dh.publicKey,
       new Uint8Array(0),
       new Uint8Array(0),
       new Uint8Array(0),
-      signaturePrivateKey
+      combinedPrivateKeys
     )
 
+    // Generate and upload pre-key bundle so others can establish sessions
+    try {
+      await this.generateAndUploadPreKeyBundle(identity)
+    } catch {
+      // Non-fatal — replenishKeyPackages will retry later
+    }
+
     return true
+  }
+
+  /**
+   * Generate a Signal pre-key bundle and upload it to the server.
+   * Also stores the private key material locally for session establishment.
+   */
+  private async generateAndUploadPreKeyBundle(identity: {
+    signing: { privateKey: Uint8Array; publicKey: Uint8Array }
+    dh: { privateKey: Uint8Array; publicKey: Uint8Array }
+  }): Promise<void> {
+    const signedPreKey = generateSignedPreKey(
+      { privateKey: identity.signing.privateKey, publicKey: identity.signing.publicKey },
+      SIGNED_PRE_KEY_ID
+    )
+    const oneTimePreKeys = generateOneTimePreKeys(ONE_TIME_PRE_KEY_START_ID, KEY_PACKAGE_TARGET)
+    const bundle = buildPreKeyBundle(
+      { signing: identity.signing, dh: identity.dh },
+      signedPreKey,
+      oneTimePreKeys
+    )
+    const encodedBundle = encodePreKeyBundle(bundle)
+
+    // Store pre-key private material locally
+    const spkPrivateData = new Uint8Array(64)
+    spkPrivateData.set(signedPreKey.keyPair.privateKey, 0)
+    spkPrivateData.set(signedPreKey.keyPair.publicKey, 32)
+
+    await this.storage.saveKeyPackages([
+      { publicData: encodedBundle, privateData: spkPrivateData },
+      ...oneTimePreKeys.map((otpk) => {
+        const otpkData = new Uint8Array(68)
+        new DataView(otpkData.buffer).setUint32(0, otpk.id, false)
+        otpkData.set(otpk.keyPair.privateKey, 4)
+        otpkData.set(otpk.keyPair.publicKey, 36)
+        return { publicData: new Uint8Array(0), privateData: otpkData }
+      })
+    ])
+
+    await uploadKeyPackages([encodedBundle], this.resolveDeviceIdentity().id, this.httpClient)
   }
 
   private async registerCurrentDeviceNotificationCapability(): Promise<void> {
@@ -776,8 +848,6 @@ async function hydrateTrustedCryptoFromPasswordResponse(
   if (!data.encrypted_key_bundle || !data.key_bundle_nonce || !data.key_bundle_salt) {
     return false
   }
-
-  await initCipherSuite()
 
   const bundle = {
     ciphertext: base64ToUint8(data.encrypted_key_bundle),

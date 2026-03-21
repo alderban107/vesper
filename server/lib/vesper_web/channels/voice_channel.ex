@@ -83,7 +83,7 @@ defmodule VesperWeb.VoiceChannel do
     {:noreply, socket}
   end
 
-  # Voice E2EE key exchange — server relays MLS ciphertext without reading it
+  # Voice E2EE key exchange — server relays encrypted key material without reading it
   def handle_in("voice_key", payload, socket) do
     broadcast_from!(socket, "voice_key", Map.put(payload, "sender_id", socket.assigns.user_id))
     {:noreply, socket}
@@ -123,7 +123,21 @@ defmodule VesperWeb.VoiceChannel do
     {:noreply, socket}
   end
 
-  # MLS events for voice E2EE (same pattern as ChatChannel)
+  # Sender key distribution for voice E2EE
+  def handle_in(
+        "sender_key_distribution",
+        %{"encrypted_sender_key" => _encrypted_key} = payload,
+        socket
+      ) do
+    broadcast_from!(socket, "sender_key_distribution", %{
+      sender_id: socket.assigns.user_id,
+      sender_device_id: Map.get(payload, "sender_device_id"),
+      encrypted_sender_key: Map.get(payload, "encrypted_sender_key"),
+      scope_id: socket.assigns.room_id
+    })
+
+    {:reply, :ok, socket}
+  end
 
   def handle_in(_event, _payload, socket),
     do: {:reply, {:error, %{reason: "unrecognized event"}}, socket}

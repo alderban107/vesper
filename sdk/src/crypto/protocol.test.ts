@@ -596,14 +596,60 @@ await test('sender key skips forward correctly', async () => {
   assertEq(decoder.decode(d2!.plaintext), 'msg 2', 'msg 2 content')
   receiver = d2!.receiver
 
-  // msg 0 and 1 are now unreachable (chain has advanced past them)
+  // msg 0 and 1 were skipped over, so they should be in the skipped-key cache and still decryptable
   const d0 = await senderKeyDecrypt(receiver, results[0].ciphertext, results[0].signature, results[0].iteration)
-  assertEq(d0, null, 'msg 0 unreachable after chain advanced')
+  assert(d0 !== null, 'msg 0 still decryptable via skipped-key cache')
+  assertEq(decoder.decode(d0!.plaintext), 'msg 0', 'msg 0 content correct')
+  const d1 = await senderKeyDecrypt(d0!.receiver, results[1].ciphertext, results[1].signature, results[1].iteration)
+  assert(d1 !== null, 'msg 1 still decryptable via skipped-key cache')
+  assertEq(decoder.decode(d1!.plaintext), 'msg 1', 'msg 1 content correct')
 
-  // msg 3 should still work (next in sequence)
-  const d3 = await senderKeyDecrypt(receiver, results[3].ciphertext, results[3].signature, results[3].iteration)
+  // msg 3 should still work (next in sequence after msg 2)
+  const d3 = await senderKeyDecrypt(d2!.receiver, results[3].ciphertext, results[3].signature, results[3].iteration)
   assert(d3 !== null, 'msg 3 decrypted')
   assertEq(decoder.decode(d3!.plaintext), 'msg 3', 'msg 3 content')
+  receiver = d3!.receiver
+})
+
+await test('sender key out-of-order messages', async () => {
+  let senderState = generateSenderKey()
+  let receiver = createSenderKeyReceiver(
+    senderState.chainKey,
+    senderState.signingKey.publicKey
+  )
+
+  // Send 5 messages
+  const results: Awaited<ReturnType<typeof senderKeyEncrypt>>[] = []
+  for (let i = 0; i < 5; i++) {
+    const result = await senderKeyEncrypt(senderState, encoder.encode(`out-of-order msg ${i}`))
+    senderState = result.state
+    results.push(result)
+  }
+
+  // Receive in order: 2, 0, 1, 4, 3
+  const d2 = await senderKeyDecrypt(receiver, results[2].ciphertext, results[2].signature, results[2].iteration)
+  assert(d2 !== null, 'msg 2 decrypted first')
+  assertEq(decoder.decode(d2!.plaintext), 'out-of-order msg 2', 'msg 2 content')
+  receiver = d2!.receiver
+
+  const d0 = await senderKeyDecrypt(receiver, results[0].ciphertext, results[0].signature, results[0].iteration)
+  assert(d0 !== null, 'msg 0 decrypted from skipped-key cache')
+  assertEq(decoder.decode(d0!.plaintext), 'out-of-order msg 0', 'msg 0 content')
+  receiver = d0!.receiver
+
+  const d1 = await senderKeyDecrypt(receiver, results[1].ciphertext, results[1].signature, results[1].iteration)
+  assert(d1 !== null, 'msg 1 decrypted from skipped-key cache')
+  assertEq(decoder.decode(d1!.plaintext), 'out-of-order msg 1', 'msg 1 content')
+  receiver = d1!.receiver
+
+  const d4 = await senderKeyDecrypt(receiver, results[4].ciphertext, results[4].signature, results[4].iteration)
+  assert(d4 !== null, 'msg 4 decrypted (skips forward, caches msg 3)')
+  assertEq(decoder.decode(d4!.plaintext), 'out-of-order msg 4', 'msg 4 content')
+  receiver = d4!.receiver
+
+  const d3 = await senderKeyDecrypt(receiver, results[3].ciphertext, results[3].signature, results[3].iteration)
+  assert(d3 !== null, 'msg 3 decrypted from skipped-key cache')
+  assertEq(decoder.decode(d3!.plaintext), 'out-of-order msg 3', 'msg 3 content')
   receiver = d3!.receiver
 })
 

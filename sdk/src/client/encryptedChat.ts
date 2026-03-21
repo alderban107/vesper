@@ -541,7 +541,9 @@ export class VesperEncryptedChat {
    * Derive a 128-bit AES key for voice E2EE.
    *
    * For DMs: derived from the pairwise session's root key.
-   * For groups: derived from a hash of all current sender keys.
+   * For groups: derived from a hash of all members' signing public keys.
+   * Uses stable identity material (public keys) rather than ephemeral chain
+   * keys, so all participants derive the same key regardless of message state.
    */
   async deriveScopeVoiceKey(scopeId: string): Promise<Uint8Array | null> {
     return await this.withStorageContext(async () => {
@@ -555,22 +557,24 @@ export class VesperEncryptedChat {
         return deriveVoiceKey(session.rootKey)
       }
 
-      // For channels, use a hash of all sender keys as shared secret
+      // For channels, derive from sorted member signing public keys
+      // This is stable across message state changes — all participants
+      // who have the same set of sender keys will derive the same voice key
       const senderKeyMap = this.receivedSenderKeys.get(scopeId)
       const ourKey = this.senderKeys.get(scopeId)
       if (!senderKeyMap && !ourKey) return null
 
-      // Combine all sender key chain keys into a shared secret
-      const parts: Uint8Array[] = []
-      if (ourKey) parts.push(ourKey.chainKey)
+      // Collect all signing public keys (stable identity, not ephemeral chain keys)
+      const signingKeys: Uint8Array[] = []
+      if (ourKey) signingKeys.push(ourKey.signingKey.publicKey)
       if (senderKeyMap) {
         for (const receiver of senderKeyMap.values()) {
-          parts.push(receiver.chainKey)
+          signingKeys.push(receiver.signingPublicKey)
         }
       }
 
       // Sort for determinism
-      parts.sort((a, b) => {
+      signingKeys.sort((a, b) => {
         for (let i = 0; i < Math.min(a.length, b.length); i++) {
           if (a[i] !== b[i]) return a[i] - b[i]
         }
@@ -580,8 +584,8 @@ export class VesperEncryptedChat {
       const { hmac } = await import('@noble/hashes/hmac.js')
       const { sha256 } = await import('@noble/hashes/sha2.js')
       let combined = new Uint8Array(32) as Uint8Array
-      for (const part of parts) {
-        combined = new Uint8Array(hmac(sha256, combined, part))
+      for (const key of signingKeys) {
+        combined = new Uint8Array(hmac(sha256, combined, key))
       }
 
       return deriveVoiceKey(combined)
@@ -725,16 +729,17 @@ export class VesperEncryptedChat {
     if (!localUserId) return null
 
     const identity = await this.storage.loadIdentity(localUserId)
-    if (!identity) return null
+    if (!identity?.signaturePrivateKey || identity.signaturePrivateKey.length < 64) return null
 
-    // Perform X3DH — fully async, no interaction with the other party
+    // Reconstruct identity key pairs from stored combined private keys
+    // Layout: [32 bytes Ed25519 signing key][32 bytes X25519 DH key]
     const ourIdentity = {
       signing: {
-        privateKey: identity.encryptedPrivateKeys.slice(0, 32),
+        privateKey: identity.signaturePrivateKey.slice(0, 32),
         publicKey: identity.publicIdentityKey
       },
       dh: {
-        privateKey: identity.encryptedPrivateKeys.slice(32, 64),
+        privateKey: identity.signaturePrivateKey.slice(32, 64),
         publicKey: identity.publicKeyExchange
       }
     }
@@ -770,35 +775,57 @@ export class VesperEncryptedChat {
     if (!localUserId) return null
 
     const identity = await this.storage.loadIdentity(localUserId)
-    if (!identity) return null
+    if (!identity?.signaturePrivateKey || identity.signaturePrivateKey.length < 64) return null
 
     const ourIdentity = {
       signing: {
-        privateKey: identity.encryptedPrivateKeys.slice(0, 32),
+        privateKey: identity.signaturePrivateKey.slice(0, 32),
         publicKey: identity.publicIdentityKey
       },
       dh: {
-        privateKey: identity.encryptedPrivateKeys.slice(32, 64),
+        privateKey: identity.signaturePrivateKey.slice(32, 64),
         publicKey: identity.publicKeyExchange
       }
     }
 
-    // Load our signed pre-key
+    // Load our signed pre-key from local storage
     const packages = await this.storage.loadKeyPackages()
     if (packages.length === 0) return null
 
-    // Find the signed pre-key (for now, use the first available)
-    const spkData = packages[0]
+    // First package with 64-byte privateData is the signed pre-key
+    // Layout: [32 bytes SPK private][32 bytes SPK public]
+    const spkPackage = packages.find(p => p.privateData.length === 64)
+    if (!spkPackage) return null
+
     const spkKeyPair = {
-      privateKey: new Uint8Array(spkData.privateData.slice(0, 32)),
-      publicKey: new Uint8Array(spkData.publicData.slice(0, 32))
+      privateKey: new Uint8Array(spkPackage.privateData.slice(0, 32)),
+      publicKey: new Uint8Array(spkPackage.privateData.slice(32, 64))
     }
 
     // Find one-time pre-key if used
+    // OPK layout: [4 bytes ID][32 bytes private][32 bytes public]
     let otpk = null
     if (usedOneTimePreKeyId !== null) {
-      // TODO: Look up specific OPK by ID from storage
-      // For now, this is a placeholder
+      for (const pkg of packages) {
+        if (pkg.privateData.length === 68) {
+          const pkgId = new DataView(
+            pkg.privateData.buffer,
+            pkg.privateData.byteOffset
+          ).getUint32(0, false)
+          if (pkgId === usedOneTimePreKeyId) {
+            otpk = {
+              id: pkgId,
+              keyPair: {
+                privateKey: new Uint8Array(pkg.privateData.slice(4, 36)),
+                publicKey: new Uint8Array(pkg.privateData.slice(36, 68))
+              }
+            }
+            // Consume this one-time pre-key
+            await this.storage.consumeKeyPackage(pkg.id)
+            break
+          }
+        }
+      }
     }
 
     // Complete X3DH as responder

@@ -10,12 +10,12 @@
  */
 
 const DB_NAME_PREFIX = 'vesper-crypto'
-const DB_VERSION = 5
+const DB_VERSION = 6
 
 const STORES = {
   identityKeys: 'identity_keys',
-  mlsGroups: 'mls_groups',
-  mlsGroupSyncState: 'mls_group_sync_state',
+  sessions: 'signal_sessions',
+  sessionSyncState: 'signal_session_sync_state',
   localKeyPackages: 'local_key_packages',
   messageCache: 'message_cache',
   sentMessageCache: 'sent_message_cache'
@@ -96,12 +96,20 @@ function openDb(userId: string): Promise<IDBDatabase> {
         db.createObjectStore(STORES.identityKeys, { keyPath: 'user_id' })
       }
 
-      if (!db.objectStoreNames.contains(STORES.mlsGroups)) {
-        db.createObjectStore(STORES.mlsGroups, { keyPath: 'group_id' })
+      if (!db.objectStoreNames.contains(STORES.sessions)) {
+        db.createObjectStore(STORES.sessions, { keyPath: 'group_id' })
       }
 
-      if (!db.objectStoreNames.contains(STORES.mlsGroupSyncState)) {
-        db.createObjectStore(STORES.mlsGroupSyncState, { keyPath: 'group_id' })
+      if (!db.objectStoreNames.contains(STORES.sessionSyncState)) {
+        db.createObjectStore(STORES.sessionSyncState, { keyPath: 'group_id' })
+      }
+
+      // Clean up old MLS stores from previous versions
+      if (db.objectStoreNames.contains('mls_groups')) {
+        db.deleteObjectStore('mls_groups')
+      }
+      if (db.objectStoreNames.contains('mls_group_sync_state')) {
+        db.deleteObjectStore('mls_group_sync_state')
       }
 
       if (!db.objectStoreNames.contains(STORES.localKeyPackages)) {
@@ -255,7 +263,7 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
 
     async getGroupState(groupId: string) {
       const db = await getDb()
-      const result = await req(tx(db, STORES.mlsGroups, 'readonly').get(groupId))
+      const result = await req(tx(db, STORES.sessions, 'readonly').get(groupId))
       if (!result) return null
       return {
         state: result.state,
@@ -266,7 +274,7 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
     async setGroupState(groupId: string, state: Uint8Array, epoch: number) {
       const db = await getDb()
       await req(
-        tx(db, STORES.mlsGroups, 'readwrite').put({
+        tx(db, STORES.sessions, 'readwrite').put({
           group_id: groupId,
           state: state,
           epoch: epoch
@@ -276,19 +284,19 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
 
     async deleteGroupState(groupId: string) {
       const db = await getDb()
-      await req(tx(db, STORES.mlsGroups, 'readwrite').delete(groupId))
-      await req(tx(db, STORES.mlsGroupSyncState, 'readwrite').delete(groupId))
+      await req(tx(db, STORES.sessions, 'readwrite').delete(groupId))
+      await req(tx(db, STORES.sessionSyncState, 'readwrite').delete(groupId))
     },
 
     async getGroupSyncCursor(groupId: string) {
       const db = await getDb()
-      const result = await req(tx(db, STORES.mlsGroupSyncState, 'readonly').get(groupId))
+      const result = await req(tx(db, STORES.sessionSyncState, 'readonly').get(groupId))
       return result?.last_event_seq ?? 0
     },
 
     async setGroupSyncCursor(groupId: string, lastEventSeq: number) {
       const db = await getDb()
-      const store = tx(db, STORES.mlsGroupSyncState, 'readwrite')
+      const store = tx(db, STORES.sessionSyncState, 'readwrite')
       const existing = await req(store.get(groupId))
       await req(
         store.put({

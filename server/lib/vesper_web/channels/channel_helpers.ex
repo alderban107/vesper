@@ -209,7 +209,7 @@ defmodule VesperWeb.ChannelHelpers do
     )
   end
 
-  # Reaction with optional encryption metadata (ciphertext + mls_epoch)
+  # Reaction with optional encryption metadata (ciphertext + epoch)
   def handle_reaction(
         action,
         message_id,

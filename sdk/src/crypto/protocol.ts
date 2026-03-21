@@ -114,7 +114,6 @@ export interface MessageHeader {
 export interface EncryptedMessage {
   header: MessageHeader
   ciphertext: Uint8Array    // AES-256-GCM ciphertext + 16-byte tag
-  nonce: Uint8Array         // 12-byte IV
 }
 
 /** Double Ratchet session state */
@@ -157,6 +156,8 @@ export interface SenderKeyReceiver {
   signingPublicKey: Uint8Array
   /** Last processed iteration */
   iteration: number
+  /** Skipped message keys: Map<iteration, messageKey> */
+  skippedKeys: Map<number, Uint8Array>
 }
 
 // ---------------------------------------------------------------------------
@@ -592,10 +593,10 @@ export async function ratchetEncrypt(
   newSession.sendingCounter++
 
   const ad = encodeHeader(header)
-  const { ciphertext, nonce } = await aesEncrypt(messageKey, plaintext, ad)
+  const { ciphertext } = await aesEncrypt(messageKey, plaintext, ad)
 
   return {
-    message: { header, ciphertext, nonce },
+    message: { header, ciphertext },
     session: newSession
   }
 }
@@ -725,7 +726,8 @@ export async function senderKeyEncrypt(
  * Decrypt a group message using a received Sender Key.
  *
  * Verifies the signature and ratchets the receiver's copy of the chain
- * forward to the correct iteration.
+ * forward to the correct iteration. Stores skipped message keys so
+ * out-of-order messages that arrive late can still be decrypted.
  */
 export async function senderKeyDecrypt(
   receiver: SenderKeyReceiver,
@@ -738,40 +740,66 @@ export async function senderKeyDecrypt(
     return null
   }
 
-  // Fast-forward chain key to the correct iteration
+  // Clone skippedKeys to avoid mutating the original receiver on failure
+  const newSkippedKeys = new Map(
+    Array.from(receiver.skippedKeys.entries()).map(([k, v]) => [k, new Uint8Array(v)])
+  )
+
+  // Check skipped keys first (out-of-order message that arrived after a later one)
+  const skippedKey = newSkippedKeys.get(iteration)
+  if (skippedKey !== undefined) {
+    newSkippedKeys.delete(iteration)
+    const rawCiphertext = ciphertext.slice(12)
+    const iterBytes = new Uint8Array(4)
+    new DataView(iterBytes.buffer).setUint32(0, iteration, false)
+    try {
+      const plaintext = await aesDecrypt(skippedKey, rawCiphertext, iterBytes)
+      const newReceiver: SenderKeyReceiver = {
+        chainKey: new Uint8Array(receiver.chainKey),
+        signingPublicKey: receiver.signingPublicKey,
+        iteration: receiver.iteration,
+        skippedKeys: newSkippedKeys
+      }
+      return { plaintext, receiver: newReceiver }
+    } catch {
+      return null
+    }
+  }
+
+  // Message is truly in the past and not cached — permanently lost
   if (iteration < receiver.iteration) {
-    // Message from the past — we've already advanced past this
     return null
   }
 
-  let chainKey = receiver.chainKey
-  let currentIter = receiver.iteration
-
-  // Skip forward if needed (handles out-of-order messages)
-  const skip = iteration - currentIter
+  // Refuse to skip too far ahead (guards against memory exhaustion)
+  const skip = iteration - receiver.iteration
   if (skip > MAX_SKIP) {
     return null
   }
 
-  // Advance chain key to target iteration
+  // Advance chain key forward, caching each skipped message key
+  let chainKey = receiver.chainKey
+  let currentIter = receiver.iteration
+
   for (let i = 0; i < skip; i++) {
-    const { nextChainKey } = kdfChainKey(chainKey)
+    const { messageKey, nextChainKey } = kdfChainKey(chainKey)
+    newSkippedKeys.set(currentIter, messageKey)
     chainKey = nextChainKey
     currentIter++
+  }
+
+  // Evict oldest entries if cache exceeds limit
+  while (newSkippedKeys.size > MAX_SKIP) {
+    const firstKey = newSkippedKeys.keys().next().value
+    if (firstKey !== undefined) newSkippedKeys.delete(firstKey)
   }
 
   // Derive message key at the target iteration
   const { messageKey, nextChainKey } = kdfChainKey(chainKey)
 
-  // Extract nonce and ciphertext from payload
-  // nonce is derived deterministically in aesEncrypt via HKDF from the message key,
-  // but the payload format from senderKeyEncrypt is: nonce (12 bytes) + ciphertext
-  // However, aesDecrypt re-derives nonce from the message key, so we need the raw ciphertext.
-  // Wait — aesEncrypt returns { ciphertext, nonce } and senderKeyEncrypt does concat(nonce, ciphertext).
-  // But aesDecrypt also re-derives the nonce from the message key deterministically.
-  // So the nonce in the payload is redundant — aesDecrypt ignores it.
-  // We just need to extract the raw ciphertext portion.
-  const rawCiphertext = ciphertext.slice(12) // Skip the 12-byte nonce prefix
+  // Strip the 12-byte nonce prefix (payload format from senderKeyEncrypt: nonce || ciphertext)
+  // aesDecrypt re-derives the nonce deterministically from the message key, so we pass raw ciphertext
+  const rawCiphertext = ciphertext.slice(12)
 
   const iterBytes = new Uint8Array(4)
   new DataView(iterBytes.buffer).setUint32(0, iteration, false)
@@ -782,7 +810,8 @@ export async function senderKeyDecrypt(
     const newReceiver: SenderKeyReceiver = {
       chainKey: nextChainKey,
       signingPublicKey: receiver.signingPublicKey,
-      iteration: currentIter + 1
+      iteration: currentIter + 1,
+      skippedKeys: newSkippedKeys
     }
 
     return { plaintext, receiver: newReceiver }
@@ -803,7 +832,8 @@ export function createSenderKeyReceiver(
   return {
     chainKey: new Uint8Array(chainKey),
     signingPublicKey: new Uint8Array(signingPublicKey),
-    iteration
+    iteration,
+    skippedKeys: new Map()
   }
 }
 
@@ -909,7 +939,10 @@ export function serializeSenderKeyReceiver(receiver: SenderKeyReceiver): Uint8Ar
     v: 1,
     ck: bytesToHex(receiver.chainKey),
     spk: bytesToHex(receiver.signingPublicKey),
-    iter: receiver.iteration
+    iter: receiver.iteration,
+    skip: Object.fromEntries(
+      Array.from(receiver.skippedKeys.entries()).map(([k, v]) => [k.toString(), bytesToHex(v)])
+    )
   }
   return new TextEncoder().encode(JSON.stringify(obj))
 }
@@ -922,7 +955,10 @@ export function deserializeSenderKeyReceiver(bytes: Uint8Array): SenderKeyReceiv
   return {
     chainKey: hexToBytes(obj.ck),
     signingPublicKey: hexToBytes(obj.spk),
-    iteration: obj.iter
+    iteration: obj.iter,
+    skippedKeys: new Map(
+      Object.entries((obj.skip ?? {}) as Record<string, string>).map(([k, v]) => [parseInt(k), hexToBytes(v)])
+    )
   }
 }
 
@@ -1038,7 +1074,6 @@ export function decodeMessage(buf: Uint8Array): EncryptedMessage {
   return {
     header: { publicKey, previousChainLength, messageNumber },
     ciphertext,
-    nonce: new Uint8Array(12) // nonce is derived from message key, not stored
   }
 }
 

@@ -20,9 +20,25 @@ defmodule Vesper.Repo.Migrations.DropMlsTables do
     drop_if_exists table(:mls_pending_history_requests)
     drop_if_exists table(:mls_pending_resync_requests)
     drop_if_exists table(:mls_pending_welcomes)
+
+    # Add sender key distribution store for offline delivery
+    create_if_not_exists table(:pending_sender_keys, primary_key: false) do
+      add :id, :uuid, primary_key: true, default: fragment("gen_random_uuid()")
+      add :recipient_id, references(:users, type: :uuid, on_delete: :delete_all), null: false
+      add :recipient_device_id, :string
+      add :scope_id, :string, null: false
+      add :encrypted_sender_key, :binary, null: false
+      add :sender_id, references(:users, type: :uuid, on_delete: :delete_all), null: false
+      timestamps(type: :utc_datetime)
+    end
+
+    create_if_not_exists index(:pending_sender_keys, [:recipient_id, :scope_id])
   end
 
   def down do
+    # Drop Signal Protocol tables
+    drop_if_exists table(:pending_sender_keys)
+
     # Recreate MLS tables for rollback
     create table(:mls_pending_welcomes, primary_key: false) do
       add :id, :uuid, primary_key: true, default: fragment("gen_random_uuid()")

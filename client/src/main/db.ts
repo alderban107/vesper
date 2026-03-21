@@ -72,13 +72,13 @@ const SCHEMA_SQL = `
     signature_private_key BLOB
   );
 
-  CREATE TABLE IF NOT EXISTS mls_groups (
+  CREATE TABLE IF NOT EXISTS signal_sessions (
     group_id TEXT PRIMARY KEY,
     state BLOB NOT NULL,
     epoch INTEGER NOT NULL DEFAULT 0
   );
 
-  CREATE TABLE IF NOT EXISTS mls_group_sync_state (
+  CREATE TABLE IF NOT EXISTS signal_session_sync_state (
     group_id TEXT PRIMARY KEY,
     last_event_seq INTEGER NOT NULL DEFAULT 0
   );
@@ -349,26 +349,26 @@ export function getGroupState(
   groupId: string
 ): { state: Buffer; epoch: number } | null {
   return getDb()
-    .prepare('SELECT state, epoch FROM mls_groups WHERE group_id = ?')
+    .prepare('SELECT state, epoch FROM signal_sessions WHERE group_id = ?')
     .get(groupId) as ReturnType<typeof getGroupState>
 }
 
 export function setGroupState(groupId: string, state: Buffer, epoch: number): void {
   getDb()
     .prepare(
-      'INSERT OR REPLACE INTO mls_groups (group_id, state, epoch) VALUES (?, ?, ?)'
+      'INSERT OR REPLACE INTO signal_sessions (group_id, state, epoch) VALUES (?, ?, ?)'
     )
     .run(groupId, state, epoch)
 }
 
 export function deleteGroupState(groupId: string): void {
-  getDb().prepare('DELETE FROM mls_groups WHERE group_id = ?').run(groupId)
-  getDb().prepare('DELETE FROM mls_group_sync_state WHERE group_id = ?').run(groupId)
+  getDb().prepare('DELETE FROM signal_sessions WHERE group_id = ?').run(groupId)
+  getDb().prepare('DELETE FROM signal_session_sync_state WHERE group_id = ?').run(groupId)
 }
 
 export function getGroupSyncCursor(groupId: string): number {
   const row = getDb()
-    .prepare('SELECT last_event_seq FROM mls_group_sync_state WHERE group_id = ?')
+    .prepare('SELECT last_event_seq FROM signal_session_sync_state WHERE group_id = ?')
     .get(groupId) as { last_event_seq: number } | undefined
 
   return row?.last_event_seq ?? 0
@@ -377,10 +377,10 @@ export function getGroupSyncCursor(groupId: string): number {
 export function setGroupSyncCursor(groupId: string, lastEventSeq: number): void {
   getDb()
     .prepare(
-      `INSERT INTO mls_group_sync_state (group_id, last_event_seq)
+      `INSERT INTO signal_session_sync_state (group_id, last_event_seq)
        VALUES (?, ?)
        ON CONFLICT(group_id) DO UPDATE SET
-         last_event_seq = MAX(mls_group_sync_state.last_event_seq, excluded.last_event_seq)`
+         last_event_seq = MAX(signal_session_sync_state.last_event_seq, excluded.last_event_seq)`
     )
     .run(groupId, lastEventSeq)
 }
