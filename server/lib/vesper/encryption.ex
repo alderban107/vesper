@@ -117,12 +117,11 @@ defmodule Vesper.Encryption do
           kp.user_id == ^user_id and
             kp.client_id == ^client_id and
             kp.key_package_data == ^key_package_data and
-            kp.consumed == false,
-        limit: 1
+            kp.consumed == false
       )
 
     case Repo.update_all(query, set: [consumed: true]) do
-      {1, _} -> :ok
+      {n, _} when n > 0 -> :ok
       {0, _} -> {:error, :not_found}
     end
   end
