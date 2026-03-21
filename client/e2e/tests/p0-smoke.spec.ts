@@ -53,6 +53,7 @@ import {
   assertThreeWayConvergence,
   assertNoDecryptionFailures,
 } from '../helpers/assertions'
+import { getMlsDiagnostics, assertMlsBudget, findDiagnosticScopes } from '../helpers/mls-diagnostics'
 import { recordSnapshot, writeSnapshots } from '../helpers/snapshots'
 import { waitForMessage, waitForServerInSidebar, waitForChannel } from '../helpers/wait'
 import {
@@ -158,6 +159,24 @@ test.describe('P0 Smoke — full continuous run', () => {
     await assertConvergence(alice.page, bob.page, 'DM initial')
     await recordSnapshot(alice.page, 'dm-convergence', 'alice')
     await recordSnapshot(bob.page, 'dm-convergence', 'bob')
+
+    // MLS epoch budget: 2-user DM creates group (epoch 0), adds one member (epoch 1).
+    // Both users should see epoch 1, with at most 1 join handled and 1 group created.
+    const dmScopes = await findDiagnosticScopes(alice.page, { hasGroupCreations: true })
+    if (dmScopes.length > 0) {
+      const dmId = dmScopes[0]
+      for (const [name, user] of [['alice', alice], ['bob', bob]] as const) {
+        const diag = await getMlsDiagnostics(user.page, dmId)
+        if (diag) {
+          assertMlsBudget(diag, {
+            maxEpoch: 1,
+            maxGroupCreations: 1,
+            maxJoinRequestsHandled: 1,
+            maxKeyPackagesConsumed: 1,
+          }, `${name} DM epoch budget`)
+        }
+      }
+    }
   })
 
   // --- Step 7: DM reaction (R-DM-3) ---
@@ -331,6 +350,36 @@ test.describe('P0 Smoke — full continuous run', () => {
     for (const page of [alice.page, bob.page, charlie.page]) {
       await waitForMessage(page, CHANNEL_MESSAGES.bob1, 10_000)
       await waitForMessage(page, CHANNEL_MESSAGES.charlie1, 10_000)
+    }
+
+    // MLS epoch budget: 3-user channel. Alice creates group (epoch 0),
+    // adds Bob (epoch 1), adds Charlie (epoch 2). All users at epoch 2.
+    const channelScopes = await findDiagnosticScopes(alice.page, { hasGroupCreations: true })
+    // Filter to the channel scope (not the DM from Steps 5-6)
+    for (const scopeId of channelScopes) {
+      const aliceDiag = await getMlsDiagnostics(alice.page, scopeId)
+      if (aliceDiag && aliceDiag.joinRequestsHandled >= 2) {
+        // This is the channel scope (Alice handled 2 join requests: Bob + Charlie)
+        assertMlsBudget(aliceDiag, {
+          maxEpoch: 2,
+          maxGroupCreations: 1,
+          maxJoinRequestsHandled: 2,
+        }, 'alice channel epoch budget')
+
+        for (const [name, user] of [['bob', bob], ['charlie', charlie]] as const) {
+          const diag = await getMlsDiagnostics(user.page, scopeId)
+          if (diag) {
+            assertMlsBudget(diag, {
+              maxEpoch: 2,
+              // Welcomes may be re-processed via pending welcome polling
+              // in ensureChannelGroupReady. Epoch is the critical metric.
+              maxWelcomesProcessed: 5,
+              maxKeyPackagesConsumed: 1,
+            }, `${name} channel epoch budget`)
+          }
+        }
+        break
+      }
     }
   })
 

@@ -63,6 +63,28 @@ export async function getMlsDiagnostics(
 }
 
 /**
+ * Find scope IDs that have recorded diagnostics on a page.
+ * Useful when the test doesn't know the conversation/channel UUID.
+ */
+export async function findDiagnosticScopes(
+  page: Page,
+  filter?: { hasGroupCreations?: boolean; hasWelcomes?: boolean }
+): Promise<string[]> {
+  return await page.evaluate((f) => {
+    const diag = (window as any).__mlsDiagnostics
+    if (!diag) return []
+    const all = diag.allScopes()
+    return Object.entries(all)
+      .filter(([, entry]: [string, any]) => {
+        if (f?.hasGroupCreations && entry.groupCreations === 0) return false
+        if (f?.hasWelcomes && entry.welcomesProcessed === 0) return false
+        return entry.epoch > 0 || entry.groupCreations > 0 || entry.welcomesProcessed > 0
+      })
+      .map(([id]: [string, any]) => id)
+  }, filter ?? {})
+}
+
+/**
  * Assert that MLS diagnostics for a scope stay within the given budget.
  *
  * Each field in the budget is optional — only specified fields are checked.
