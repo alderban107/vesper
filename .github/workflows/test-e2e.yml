@@ -98,6 +98,9 @@ jobs:
         working-directory: client
         run: npx playwright install chromium --with-deps
 
+      - name: Pre-pull Postgres image
+        run: docker pull postgres:16-alpine
+
       - name: Run p0-smoke tests (enforced gate)
         id: p0
         working-directory: client
