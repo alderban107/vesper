@@ -135,6 +135,7 @@ The suite must prove state convergence across clients, not just isolated actions
 | R-E2EE-2 | P0 | Recovery flows stay end-to-end encrypted |
 | R-E2EE-3 | P1 | Trusted-but-locked device unlock is covered |
 | R-E2EE-4 | P1 | Pending device approval with recovery key is covered |
+| R-E2EE-5 | P0 | MLS epoch count stays within budget for each tested topology |
 | R-VOICE-1 | P1 | Encrypted DM call setup and teardown work |
 | R-VOICE-2 | P1 | Encrypted channel voice join and reconnect work |
 | R-VOICE-3 | P1 | Camera publish and remote video rendering work |
@@ -685,6 +686,37 @@ P1 coverage should verify:
 - device gate appears
 - recovery-key approval works
 - encrypted chat becomes available afterward
+
+### R-E2EE-5: MLS epoch count stays within budget for each tested topology
+
+MLS bugs can produce correct outcomes (decryption succeeds) via catastrophic
+protocol paths (58 epoch transitions instead of 2). Conventional assertions
+miss this because they check results, not cost.
+
+Every MLS membership change advances the epoch by 1. For a known topology,
+the minimum epoch count is deterministic:
+
+| Topology | Expected epoch |
+|----------|---------------|
+| 2-user DM | 1 (create + add one member) |
+| 3-user channel | 2 (create + add two members) |
+| N-user channel | N-1 |
+
+The test suite uses `MLSDiagnostics` counters (always-on in the SDK) to
+assert that epoch counts and related MLS operations stay within defined
+budgets after each handshake converges. Exceeding the budget means the
+protocol flow has regressed — typically a missing deduplication guard,
+a concurrent code path sending duplicate join requests, or a race
+condition creating duplicate groups.
+
+Budgets are defined per test, not per formula. Each test knows its topology
+and sets tight limits on critical counters (epoch, join requests handled)
+while allowing slack on counters with harmless noise (welcome retries from
+polling loops).
+
+Implementation details: see `client/e2e/helpers/mls-diagnostics.ts` and
+the "MLS Diagnostics and Epoch Budget Testing" section in
+`doc/e2ee/E2EE-IMPLEMENTATION.md`.
 
 ## Voice, Video, And Screen Share Requirements
 
