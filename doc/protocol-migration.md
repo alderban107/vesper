@@ -1,5 +1,8 @@
 # Protocol Migration: MLS → Signal Protocol
 
+> **Status: Implementation complete.** All 5 phases landed on the `protocol-migration` branch.
+> See commit history for per-phase changes. Protocol primitives have 184 test assertions.
+
 ## Motivation
 
 MLS (Messaging Layer Security) requires an existing group member to be **online** to process a new member's join. The server can't do it — only a client holding the group's ratchet tree can create the commit and welcome messages needed to admit a new member. For a small self-hosted messaging app where users aren't always online simultaneously, this is a fundamental UX failure: opening a conversation with someone who's offline simply doesn't work until they come back.

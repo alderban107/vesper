@@ -8,7 +8,7 @@
  * Depends on P0 having already signed up alice_e2e and bob_e2e.
  *
  * NOTE: Old P0 messages will show as "syncing" on new device contexts due to
- * MLS forward secrecy. This test only verifies that messages sent DURING the
+ * E2EE forward secrecy. This test only verifies that messages sent DURING the
  * test are decryptable across devices.
  */
 
@@ -22,7 +22,7 @@ import { assertNoDecryptionFailures } from '../helpers/assertions'
 import { getRecoveryKey } from '../harness/state'
 import { USERS } from '../fixtures/test-data'
 
-/** Standard timeout for messages that go through MLS encryption. */
+/** Standard timeout for messages that go through E2EE encryption. */
 const MSG_TIMEOUT = 15_000
 
 let alice1: UserContext // Alice's existing session (device 1)
@@ -39,15 +39,15 @@ test.describe('P1: Multi-device encrypted message access', () => {
   test('New device reads DM messages sent in this session after approval (R-E2EE-4)', async ({ browser }) => {
     const recoveryKey = getRecoveryKey(USERS.alice.username)
 
-    // --- Device 1: Alice logs in first to establish the MLS group ---
+    // --- Device 1: Alice logs in first to establish the encrypted session ---
     alice1 = await createUserContext(browser, 'alice-md-dev1', USERS.alice.username, USERS.alice.password)
     await login(alice1)
 
-    // Alice opens DM — triggers MLS group creation (takes ~4s for bootstrap)
+    // Alice opens DM — triggers session establishment (takes ~4s for bootstrap)
     await selectDm(alice1.page, USERS.bob.username)
 
     // Bob logs in — this takes several seconds (navigate, fill, submit, trust gate)
-    // giving Alice time to create the MLS group. Bob's login also purges stale
+    // giving Alice time to create the encrypted session. Bob's login also purges stale
     // key packages so Alice's join handler uses fresh ones.
     bob = await createUserContext(browser, 'bob-md', USERS.bob.username, USERS.bob.password)
     await login(bob)
@@ -85,7 +85,7 @@ test.describe('P1: Multi-device encrypted message access', () => {
     await createServer(alice1.page, 'MultiDev Server')
     const code = await getInviteCode(alice1.page)
 
-    // Bob logs in after Alice to join her MLS groups
+    // Bob logs in after Alice to join her encrypted sessions
     bob = await createUserContext(browser, 'bob-md-ch', USERS.bob.username, USERS.bob.password)
     await login(bob)
     await joinServerWithCode(bob.page, code)
@@ -93,11 +93,11 @@ test.describe('P1: Multi-device encrypted message access', () => {
     await createChannel(alice1.page, 'multidev-test')
     await createChannel(alice1.page, 'parking-lot')
     await selectChannel(alice1.page, 'multidev-test')
-    // Let Alice's MLS group bootstrap before Bob joins
+    // Let Alice's session bootstrap before Bob joins
     await alice1.page.waitForTimeout(1_000)
     await selectServer(bob.page, 'MultiDev Server')
     await selectChannel(bob.page, 'multidev-test')
-    // Allow MLS welcome to propagate to Bob
+    // Allow session setup to propagate to Bob
     await alice1.page.waitForTimeout(2_000)
 
     await sendChannelMessage(alice1.page, 'Channel from dev1 — multidev delta')
@@ -139,7 +139,7 @@ test.describe('P1: Multi-device encrypted message access', () => {
   test('New device can send and receive messages after approval (R-E2EE-3)', async ({ browser }) => {
     const recoveryKey = getRecoveryKey(USERS.alice.username)
 
-    // --- Device 1: Establish the DM MLS group between Alice and Bob ---
+    // --- Device 1: Establish the DM encrypted session between Alice and Bob ---
     alice1 = await createUserContext(browser, 'alice-md-send-dev1', USERS.alice.username, USERS.alice.password)
     await login(alice1)
     await selectDm(alice1.page, USERS.bob.username)
@@ -165,7 +165,7 @@ test.describe('P1: Multi-device encrypted message access', () => {
     await selectDm(alice2.page, USERS.bob.username)
 
     // Send from the new device. The encryption retry mechanism in
-    // sendDmMessage handles MLS join timing — if encryption isn't ready
+    // sendDmMessage handles session join timing — if encryption isn't ready
     // on the first attempt, it retries until the welcome arrives.
     await sendDmMessage(alice2.page, 'From device 2 — send golf')
 

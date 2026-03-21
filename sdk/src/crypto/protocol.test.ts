@@ -573,6 +573,155 @@ await test('complete session lifecycle', async () => {
 
 // ==========================================================================
 
+console.log('\n=== Additional Edge Cases ===')
+
+await test('sender key skips forward correctly', async () => {
+  let senderState = generateSenderKey()
+  let receiver = createSenderKeyReceiver(
+    senderState.chainKey,
+    senderState.signingKey.publicKey
+  )
+
+  // Send 5 messages
+  const results: Awaited<ReturnType<typeof senderKeyEncrypt>>[] = []
+  for (let i = 0; i < 5; i++) {
+    const result = await senderKeyEncrypt(senderState, encoder.encode(`msg ${i}`))
+    senderState = result.state
+    results.push(result)
+  }
+
+  // Skip msg 0 and 1, receive msg 2 directly (chain skips forward)
+  const d2 = await senderKeyDecrypt(receiver, results[2].ciphertext, results[2].signature, results[2].iteration)
+  assert(d2 !== null, 'msg 2 decrypted (skipped 0 and 1)')
+  assertEq(decoder.decode(d2!.plaintext), 'msg 2', 'msg 2 content')
+  receiver = d2!.receiver
+
+  // msg 0 and 1 are now unreachable (chain has advanced past them)
+  const d0 = await senderKeyDecrypt(receiver, results[0].ciphertext, results[0].signature, results[0].iteration)
+  assertEq(d0, null, 'msg 0 unreachable after chain advanced')
+
+  // msg 3 should still work (next in sequence)
+  const d3 = await senderKeyDecrypt(receiver, results[3].ciphertext, results[3].signature, results[3].iteration)
+  assert(d3 !== null, 'msg 3 decrypted')
+  assertEq(decoder.decode(d3!.plaintext), 'msg 3', 'msg 3 content')
+  receiver = d3!.receiver
+})
+
+await test('multiple DH ratchet steps', async () => {
+  const alice = generateIdentityKeyPair()
+  const bob = generateIdentityKeyPair()
+  const bobSpk = generateSignedPreKey(bob.signing, 1)
+  const bobBundle = buildPreKeyBundle(bob, bobSpk, [])
+
+  const aliceX3dh = performX3DH(alice, bobBundle)
+  const bobSecret = respondX3DH(bob, bobSpk, null, alice.dh.publicKey, aliceX3dh.ephemeralPublicKey)
+
+  let aliceSession = initSessionAsInitiator(aliceX3dh.sharedSecret, bobSpk.keyPair.publicKey)
+  let bobSession = initSessionAsResponder(bobSecret, bobSpk.keyPair)
+
+  // Rapidly alternate directions to force many DH ratchet steps
+  for (let i = 0; i < 20; i++) {
+    if (i % 2 === 0) {
+      const e = await ratchetEncrypt(aliceSession, encoder.encode(`a${i}`))
+      aliceSession = e.session
+      const d = await ratchetDecrypt(bobSession, e.message)
+      assert(d !== null, `a${i} decrypted`)
+      assertEq(decoder.decode(d!.plaintext), `a${i}`, `a${i} content`)
+      bobSession = d!.session
+    } else {
+      const e = await ratchetEncrypt(bobSession, encoder.encode(`b${i}`))
+      bobSession = e.session
+      const d = await ratchetDecrypt(aliceSession, e.message)
+      assert(d !== null, `b${i} decrypted`)
+      assertEq(decoder.decode(d!.plaintext), `b${i}`, `b${i} content`)
+      aliceSession = d!.session
+    }
+  }
+})
+
+await test('session survives serialize/deserialize across many messages', async () => {
+  const alice = generateIdentityKeyPair()
+  const bob = generateIdentityKeyPair()
+  const bobSpk = generateSignedPreKey(bob.signing, 1)
+  const bobBundle = buildPreKeyBundle(bob, bobSpk, [])
+
+  const aliceX3dh = performX3DH(alice, bobBundle)
+  const bobSecret = respondX3DH(bob, bobSpk, null, alice.dh.publicKey, aliceX3dh.ephemeralPublicKey)
+
+  let aliceSession = initSessionAsInitiator(aliceX3dh.sharedSecret, bobSpk.keyPair.publicKey)
+  let bobSession = initSessionAsResponder(bobSecret, bobSpk.keyPair)
+
+  for (let i = 0; i < 10; i++) {
+    // Alice sends
+    const e = await ratchetEncrypt(aliceSession, encoder.encode(`msg ${i}`))
+    aliceSession = e.session
+
+    // Simulate persistence: serialize and deserialize both sessions
+    aliceSession = deserializeSession(serializeSession(aliceSession))
+    bobSession = deserializeSession(serializeSession(bobSession))
+
+    // Bob receives
+    const d = await ratchetDecrypt(bobSession, e.message)
+    assert(d !== null, `msg ${i} decrypted after round-trip`)
+    assertEq(decoder.decode(d!.plaintext), `msg ${i}`, `msg ${i} content`)
+    bobSession = d!.session
+
+    // Bob replies
+    const e2 = await ratchetEncrypt(bobSession, encoder.encode(`re: ${i}`))
+    bobSession = e2.session
+
+    // Serialize again
+    aliceSession = deserializeSession(serializeSession(aliceSession))
+    bobSession = deserializeSession(serializeSession(bobSession))
+
+    const d2 = await ratchetDecrypt(aliceSession, e2.message)
+    assert(d2 !== null, `re: ${i} decrypted after round-trip`)
+    assertEq(decoder.decode(d2!.plaintext), `re: ${i}`, `re: ${i} content`)
+    aliceSession = d2!.session
+  }
+})
+
+await test('different X3DH sessions produce different shared secrets', async () => {
+  const alice = generateIdentityKeyPair()
+  const bob = generateIdentityKeyPair()
+
+  const bobSpk = generateSignedPreKey(bob.signing, 1)
+  const bobOtpks = generateOneTimePreKeys(1, 2)
+  const bobBundle = buildPreKeyBundle(bob, bobSpk, bobOtpks)
+
+  // Two separate X3DH exchanges with different one-time pre-keys
+  const result1 = performX3DH(alice, bobBundle, bobBundle.oneTimePreKeys[0])
+  const result2 = performX3DH(alice, bobBundle, bobBundle.oneTimePreKeys[1])
+
+  assert(!arraysEqual(result1.sharedSecret, result2.sharedSecret), 'different OPKs produce different secrets')
+  assert(!arraysEqual(result1.ephemeralPublicKey, result2.ephemeralPublicKey), 'different ephemeral keys')
+})
+
+await test('tampered ciphertext fails decryption', async () => {
+  const alice = generateIdentityKeyPair()
+  const bob = generateIdentityKeyPair()
+  const bobSpk = generateSignedPreKey(bob.signing, 1)
+  const bobBundle = buildPreKeyBundle(bob, bobSpk, [])
+
+  const aliceX3dh = performX3DH(alice, bobBundle)
+  const bobSecret = respondX3DH(bob, bobSpk, null, alice.dh.publicKey, aliceX3dh.ephemeralPublicKey)
+
+  let aliceSession = initSessionAsInitiator(aliceX3dh.sharedSecret, bobSpk.keyPair.publicKey)
+  const bobSession = initSessionAsResponder(bobSecret, bobSpk.keyPair)
+
+  const e = await ratchetEncrypt(aliceSession, encoder.encode('secret'))
+  aliceSession = e.session
+
+  // Tamper with ciphertext
+  const tampered = { ...e.message, ciphertext: new Uint8Array(e.message.ciphertext) }
+  tampered.ciphertext[0] ^= 0xff
+
+  const d = await ratchetDecrypt(bobSession, tampered)
+  assertEq(d, null, 'tampered message fails decryption')
+})
+
+// ==========================================================================
+
 console.log('\n' + '='.repeat(50))
 console.log(`Results: ${passed} passed, ${failed} failed`)
 if (failed > 0) {

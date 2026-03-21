@@ -38,8 +38,8 @@ const IGNORED_PATTERNS = [
   'Download the React DevTools',
   '[HMR]',
   'ERR_BLOCKED_BY_CLIENT',
-  'epoch too old', // Expected after context restart / MLS group re-sync
-  'Commit processing failed', // Expected during MLS recovery flows
+  'epoch too old', // Expected after context restart / encrypted session re-sync
+  'Commit processing failed', // Expected during session recovery flows
 ]
 
 export class ConsoleMonitor {

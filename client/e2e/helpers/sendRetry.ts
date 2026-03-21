@@ -17,7 +17,7 @@ interface SendOptions {
 }
 
 /**
- * Send a message and retry if MLS encryption isn't ready yet.
+ * Send a message and retry if E2EE encryption isn't ready yet.
  *
  * The encryption handshake can lag behind the UI, so the composer may show an
  * error banner on the first attempt. This helper wraps the fill-send-check

@@ -312,8 +312,8 @@ test.describe('P0 Smoke — full continuous run', () => {
     await selectChannel(bob.page, CHANNELS.general)
     await selectChannel(charlie.page, CHANNELS.general)
 
-    // Alice sends first — her sendPayload creates the MLS group and
-    // broadcasts mls_request_join_all. Bob and Charlie's scope watchers
+    // Alice sends first — her sendPayload creates the encrypted session and
+    // broadcasts session_established. Bob and Charlie's scope watchers
     // pick up the broadcast and join via the welcome flow.
     await sendChannelMessage(alice.page, CHANNEL_MESSAGES.alice1)
 
@@ -440,7 +440,7 @@ test.describe('P0 Smoke — full continuous run', () => {
   // --- Step 22: No P0 crypto/sync failure (R-E2EE-1, R-ASSERT-3) ---
   test('Step 22: no P0 crypto or sync failure surfaced', async () => {
     // Check no decryption failures on channel view (everyone should be
-    // in the same MLS group after the fixes)
+    // in the same encrypted session after the fixes)
     for (const page of [alice.page, bob.page, charlie.page]) {
       await assertNoDecryptionFailures(page)
     }
