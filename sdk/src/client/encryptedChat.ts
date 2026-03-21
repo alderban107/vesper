@@ -196,6 +196,7 @@ export class VesperEncryptedChat {
   private readonly yieldedDmScopes = new Set<string>()
   private readonly pendingGroupCreations = new Map<string, Promise<void>>()
   private readonly diagnostics = new MLSDiagnostics()
+  private readonly welcomeInProgress = new Set<string>()
   private restoreConnectionsPromise: Promise<void> | null = null
 
   constructor(client: VesperClient) {
@@ -660,6 +661,7 @@ export class VesperEncryptedChat {
       this.scopeMessages.delete(scopeId)
       this.welcomeAppliedAtByScope.delete(scopeId)
       this.pendingGroupCreations.delete(scopeId)
+      this.welcomeInProgress.delete(scopeId)
       this.notifyMembershipWaiters(scopeId, false)
       this.membershipWaiters.delete(scopeId)
       await this.storage.deleteGroupState(scopeId)
@@ -1656,6 +1658,29 @@ export class VesperEncryptedChat {
       return false
     }
 
+    // If we already have a valid group for this scope, skip the welcome.
+    // The same welcome arrives via two parallel paths (live WebSocket
+    // broadcast AND server-side pending_welcomes table), and without this
+    // guard both paths process it successfully, each consuming a key
+    // package unnecessarily. The only case where we'd want to process a
+    // welcome with an existing group is after resetScope, which clears
+    // the group state — so hasGroup returns false and the guard doesn't fire.
+    if (this.hasGroup(scopeId)) {
+      return false
+    }
+
+    // Prevent concurrent welcome processing for the same scope. Multiple
+    // async paths (WebSocket handler, ensureMembership polling, pending
+    // welcome fetch) can all enter handleWelcome before any completes —
+    // the hasGroup check above passes for all of them because none has
+    // called setGroupState yet. This synchronous flag blocks the second
+    // caller before the first await.
+    if (this.welcomeInProgress.has(scopeId)) {
+      return false
+    }
+    this.welcomeInProgress.add(scopeId)
+
+    try {
     await initCipherSuite()
     const orderedPackages = await this.loadOrderedWelcomeKeyPackages(keyPackageRef)
     if (orderedPackages.length === 0) {
@@ -1686,6 +1711,10 @@ export class VesperEncryptedChat {
     }
 
     this.diagnostics.recordWelcome(scopeId, false)
+    return false
+    } finally {
+      this.welcomeInProgress.delete(scopeId)
+    }
     return false
   }
 

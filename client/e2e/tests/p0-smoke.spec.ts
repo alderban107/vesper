@@ -373,9 +373,7 @@ test.describe('P0 Smoke — full continuous run', () => {
           if (diag) {
             assertMlsBudget(diag, {
               maxEpoch: 2,
-              // Welcomes may be re-processed via pending welcome polling
-              // in ensureChannelGroupReady. Epoch is the critical metric.
-              maxWelcomesProcessed: 5,
+              maxWelcomesProcessed: 1,
               maxKeyPackagesConsumed: 1,
             }, `${name} channel epoch budget`)
           }
