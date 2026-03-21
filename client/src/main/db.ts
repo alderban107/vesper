@@ -343,7 +343,7 @@ export function deleteIdentityKeys(userId: string): void {
   getDb().prepare('DELETE FROM identity_keys WHERE user_id = ?').run(userId)
 }
 
-// --- MLS Groups ---
+// --- Session Storage ---
 
 export function getGroupState(
   groupId: string

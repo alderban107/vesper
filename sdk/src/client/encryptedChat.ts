@@ -206,7 +206,7 @@ export class VesperEncryptedChat {
   // Scope readiness tracking (has a session/sender key been established?)
   private readonly scopeReady = new Set<string>()
 
-  // Topic subscription management (same pattern as MLS version)
+  // Topic subscription management (same pattern as previous implementation)
   private readonly joinedTopics = new Set<string>()
   private readonly scopeDisposers = new Map<string, () => void>()
   private readonly scopeWatchRefs = new Map<string, number>()
@@ -623,7 +623,9 @@ export class VesperEncryptedChat {
   }
 
   // =========================================================================
-  //  Public API — Legacy MLS stubs (no-ops, removed in Phase 4)
+  //  Public API — Deprecated (kept for client compatibility during migration)
+  //  These methods existed in the MLS implementation and are called by client
+  //  code that hasn't been fully cleaned up. They are safe no-ops.
   // =========================================================================
 
   async replayScopeEvents(_scopeId: string): Promise<void> {

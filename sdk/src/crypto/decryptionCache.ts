@@ -53,9 +53,9 @@ class LRUCache<K, V> {
 const decryptionCache = new LRUCache<string, string>(2000)
 
 // Cache for messages we sent — keyed by ciphertext base64.
-// MLS senders can't decrypt their own messages (the ratchet advances on
+// Senders in some protocols can't decrypt their own messages (the ratchet advances on
 // encrypt, consuming the key). When the server echoes the message back,
-// we look up the plaintext here instead of attempting MLS decryption.
+// we look up the plaintext here instead of attempting decryption.
 const sentMessageCache = new LRUCache<string, string>(100)
 
 export function getCachedDecryption(messageId: string): string | undefined {

@@ -21,7 +21,7 @@ interface CryptoDbApi {
   ): Promise<void>
   deleteIdentityKeys(userId: string): Promise<void>
 
-  // MLS groups
+  // Encrypted session storage
   getGroupState(groupId: string): Promise<{
     state: ArrayBuffer
     epoch: number

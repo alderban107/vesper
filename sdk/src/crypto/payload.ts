@@ -1,4 +1,4 @@
-/** Version 1 structured message payload — encrypted as JSON inside MLS ciphertext */
+/** Version 1 structured message payload — encrypted as JSON inside the encrypted payload */
 
 export interface TextPayload {
   v: 1
@@ -38,13 +38,13 @@ export interface FilePayload {
 
 export type MessagePayload = TextPayload | FilePayload
 
-/** Encode a payload to the string that will be MLS-encrypted */
+/** Encode a payload to the string that will be encrypted */
 export function encodePayload(payload: MessagePayload): string {
   return JSON.stringify(payload)
 }
 
 /**
- * Decode a payload from the decrypted MLS plaintext.
+ * Decode a payload from the decrypted plaintext.
  * Handles backward compat:
  *  - v1 payloads (have `v` field) are returned as-is
  *  - v0 legacy JSON file envelopes (have `type: 'file'` but no `v`) are upgraded to v1

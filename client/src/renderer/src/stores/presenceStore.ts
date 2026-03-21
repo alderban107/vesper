@@ -471,18 +471,6 @@ function handleUserFeedEvent(topic: string, event: string, payload: unknown): vo
     return
   }
 
-  if (event === 'mls_history_request_pending' || event === 'mls_history_bundle_pending') {
-    import('./messageStore').then(({ processPendingHistoryScope }) => {
-      const data = payload as {
-        scope_id: string
-        topic: string
-      }
-
-      fireAndForget(processPendingHistoryScope(data.scope_id, data.topic))
-    })
-    return
-  }
-
   if (event === 'unread_update') {
     const data = payload as {
       channel_id: string

@@ -38,7 +38,6 @@ async function applyVoiceKeyIfAvailable(topic: string): Promise<boolean> {
   }
 
   voiceEncryption?.setKey(voiceKey)
-  await processPendingVoiceMlsResyncRequests(topic).catch(() => {})
   return true
 }
 
@@ -63,13 +62,10 @@ async function ensureVoiceGroupReady(
   if (creatorId === userId) {
     await encryptedChat.createScopeState(topic)
     if (encryptedChat.hasGroup(topic)) {
-      pushTopicEvent(topic, 'mls_request_join_all', {})
       return
     }
   }
 
-  maybeRequestVoiceMlsJoin(topic)
-  maybeRequestVoiceMlsResync(topic, 'missing_state')
 }
 
 function readString(key: string): string | null {
@@ -1390,74 +1386,14 @@ async function initVoice(
           }
         })
       }
-    } else if (event === 'mls_request_join_all') {
-      if (!getRendererEncryptedChat().hasGroup(topic)) {
-        fireAndForget(recoverVoiceMlsState(topic, 'missing_state', preferredCreatorId))
-      }
-    } else if (event === 'mls_request_join') {
-      handleVoiceMlsJoinRequest(roomId, data, topic)
-    } else if (event === 'mls_resync_request') {
-      await processVoiceMlsResyncRequest(topic, {
-        id: data.id as string | undefined,
-        requester_id: data.user_id as string,
-        requester_username: (data.username as string | undefined) ?? undefined,
-        requester_client_id: (data.device_id as string | undefined) ?? undefined,
-        request_id: data.request_id as string | undefined,
-        last_known_epoch: (data.last_known_epoch as number | null | undefined) ?? null,
-        reason: (data.reason as string | null | undefined) ?? null
-      })
-    } else if (event === 'mls_commit') {
-      const senderId = data.sender_id as string
-      const senderDeviceId =
-        typeof data.sender_device_id === 'string' ? data.sender_device_id : null
-      const userId = useAuthStore.getState().user?.id
-      const localDeviceId = getLocalDeviceIdentity().id
-      if (senderId !== userId || senderDeviceId !== localDeviceId) {
+
+
+
+
+
+    } else if (!isLocalSender && data.commit_data) {
         await getRendererEncryptedChat().applyScopeCommit(topic, data.commit_data as string)
-        if (!(await applyVoiceKeyIfAvailable(topic))) {
-          fireAndForget(recoverVoiceMlsState(topic, 'voice_key_missing', preferredCreatorId))
-        }
-      }
-    } else if (event === 'mls_welcome') {
-      const recipientId = data.recipient_id as string
-      const recipientDeviceId =
-        typeof data.recipient_device_id === 'string' ? data.recipient_device_id : null
-      const userId = useAuthStore.getState().user?.id
-      if (
-        recipientId === userId &&
-        (!recipientDeviceId || recipientDeviceId === getLocalDeviceIdentity().id)
-      ) {
-        const welcomeId = typeof data.id === 'string' ? data.id : null
-        const processed = await getRendererEncryptedChat().applyScopeWelcome(
-          topic,
-          data.welcome_data as string,
-          (data.key_package_ref as string | undefined) ?? null
-        )
-        if (processed) {
-          if (welcomeId) {
-            await getRendererClient().ackPendingWelcome(welcomeId).catch(() => {})
-          }
-          if (!(await applyVoiceKeyIfAvailable(topic))) {
-            fireAndForget(recoverVoiceMlsState(topic, 'voice_key_missing', preferredCreatorId))
-          }
-        }
-      }
-    } else if (event === 'mls_remove') {
-      const userId = useAuthStore.getState().user?.id
-      const removedId = data.removed_user_id as string
-      const senderId = data.sender_id as string
-      const senderDeviceId =
-        typeof data.sender_device_id === 'string' ? data.sender_device_id : null
-      const localDeviceId = getLocalDeviceIdentity().id
-      const isLocalSender = senderId === userId && senderDeviceId === localDeviceId
-      if (removedId === userId && !isLocalSender) {
-        await getRendererEncryptedChat().resetScope(topic)
-        fireAndForget(recoverVoiceMlsState(topic, 'removed_from_group', preferredCreatorId))
-      } else if (!isLocalSender && data.commit_data) {
-        await getRendererEncryptedChat().applyScopeCommit(topic, data.commit_data as string)
-        if (!(await applyVoiceKeyIfAvailable(topic))) {
-          fireAndForget(recoverVoiceMlsState(topic, 'voice_key_missing', preferredCreatorId))
-        }
+        await applyVoiceKeyIfAvailable(topic)
       }
     } else if (event === 'join_error' || event === 'error') {
       const reason =
@@ -1500,17 +1436,4 @@ async function setupVoiceE2EE(
     return
   }
 
-  await recoverVoiceMlsState(topic, 'voice_key_missing', preferredCreatorId)
 }
-
-// ---------------------------------------------------------------------------
-// Legacy MLS stubs — no-ops for backward compatibility
-// TODO: Remove these and their call sites in a follow-up cleanup pass.
-// ---------------------------------------------------------------------------
-
-function maybeRequestVoiceMlsJoin(_topic: string): void {}
-function maybeRequestVoiceMlsResync(_topic: string, _reason: string): void {}
-async function processVoiceMlsResyncRequest(_topic: string, _request: unknown): Promise<void> {}
-async function processPendingVoiceMlsResyncRequests(_topic: string): Promise<void> {}
-async function recoverVoiceMlsState(_topic: string, _reason: string, _preferredCreatorId?: string): Promise<void> {}
-async function handleVoiceMlsJoinRequest(_roomId: string, _data: unknown, _topic: string): Promise<void> {}

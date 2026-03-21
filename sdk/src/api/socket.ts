@@ -3,8 +3,7 @@ import { getServerUrl, getAccessToken } from './client.js'
 
 const CHAT_EVENTS = [
   'new_message', 'typing_start', 'typing_stop', 'disappearing_ttl_updated',
-  'mls_request_join_all', 'mls_request_join', 'mls_resync_request', 'mls_eviction_request', 'mls_commit', 'mls_welcome', 'mls_remove',
-  'mls_history_request', 'mls_history_bundle',
+  'sender_key_distribution',
   'incoming_call',
   'call_rejected',
   'presence_state', 'presence_diff',
@@ -17,7 +16,6 @@ const CHAT_EVENTS = [
   'dm_typing_start', 'dm_typing_stop',
   'scope_summary_updated',
   'scope_mutation',
-  'mls_history_request_pending', 'mls_history_bundle_pending',
   'unread_update', 'dm_unread_update',
   'server_membership_revoked',
   'server_members_updated',
@@ -34,13 +32,7 @@ const VOICE_EVENTS = [
   'incoming_call',
   'call_timeout',
   'call_rejected',
-  'error',
-  'mls_request_join_all',
-  'mls_request_join',
-  'mls_resync_request',
-  'mls_commit',
-  'mls_welcome',
-  'mls_remove'
+  'error'
 ] as const
 
 export interface VesperSocketClientOptions {

@@ -27,7 +27,7 @@ const cryptoDbApi = {
   deleteIdentityKeys: (userId: string) =>
     ipcRenderer.invoke('cryptoDb:deleteIdentityKeys', userId),
 
-  // MLS groups
+  // Encrypted session storage
   getGroupState: (groupId: string) =>
     ipcRenderer.invoke('cryptoDb:getGroupState', groupId),
   setGroupState: (groupId: string, state: Uint8Array, epoch: number) =>

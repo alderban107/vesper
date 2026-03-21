@@ -183,14 +183,7 @@ const FIRE_AND_FORGET_SCOPE_EVENTS = new Set([
   'typing_start',
   'typing_stop',
   'new_message',
-  'mls_request_join',
-  'mls_request_join_all',
-  'mls_resync_request',
-  'mls_commit',
-  'mls_remove',
-  'mls_welcome',
-  'mls_history_request',
-  'mls_history_bundle'
+  'sender_key_distribution'
 ])
 
 function defaultState(): VesperClientState {

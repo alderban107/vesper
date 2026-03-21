@@ -251,7 +251,7 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
       await req(tx(db, STORES.identityKeys, 'readwrite').delete(userId))
     },
 
-    // --- MLS Groups ---
+    // --- Session Storage ---
 
     async getGroupState(groupId: string) {
       const db = await getDb()

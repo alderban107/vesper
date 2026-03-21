@@ -176,7 +176,7 @@ function registerIpcHandlers(): void {
     deleteIdentityKeys(userId)
   )
 
-  // MLS groups
+  // Encrypted session storage
   ipcMain.handle('cryptoDb:getGroupState', (_, groupId: string) =>
     getGroupState(groupId)
   )

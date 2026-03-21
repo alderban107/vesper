@@ -1,7 +1,7 @@
 /**
  * AES-256-GCM file encryption for E2EE file sharing.
  * Files are always encrypted client-side before upload.
- * The AES key/IV is embedded in the message content (inside MLS ciphertext when available).
+ * The AES key/IV is embedded in the message content (inside the encrypted payload when available).
  */
 
 export interface EncryptedFile {

@@ -32,7 +32,7 @@ export function getMockScript(): string {
           identityStore.delete(userId);
         },
 
-        // MLS groups
+        // Encrypted session storage
         async getGroupState(groupId) {
           return groupStore.get(groupId) || null;
         },
