@@ -37,25 +37,10 @@ function getStorageRuntime() {
   return getRendererStorageRuntime()
 }
 
-const MLS_JOIN_REQUEST_COOLDOWN_MS = 2000
-const recentMlsJoinRequests = new Map<string, number>()
-const recentMlsJoinDeviceIds = new Map<string, string>()
-const MLS_RESYNC_REQUEST_COOLDOWN_MS = 3_000
-const recentMlsResyncRequests = new Map<string, number>()
-const MLS_EVICTION_REQUEST_COOLDOWN_MS = 3_000
-const recentMlsEvictionRequests = new Map<string, number>()
-const inFlightMlsEvictionRequests = new Map<string, Promise<boolean>>()
-const MLS_RECOVERY_BACKOFF_MS = [150, 500, 1500] as const
 const DM_JOIN_WAIT_TIMEOUT_MS = 10_000
 const ENCRYPTED_MESSAGE_SYNCING_PLACEHOLDER = 'Encrypted message is syncing...'
 const ENCRYPTED_MESSAGE_APPROVAL_PLACEHOLDER = 'Approve this device to read encrypted messages.'
 const ENCRYPTED_MESSAGE_UNAVAILABLE_PLACEHOLDER = 'Message unavailable - decryption failed'
-const inFlightScopeRecoveries = new Map<string, Promise<void>>()
-// After processing a Welcome, suppress recovery for this scope. The Welcome
-// handler already marks pre-join messages as unavailable and requests a history
-// bundle, so recovery would be destructive (resync resets epoch state).
-const recentWelcomeProcessed = new Map<string, number>()
-const WELCOME_RECOVERY_SUPPRESSION_MS = 30_000
 const scopeMessageRefreshTokens = new Map<string, number>()
 const threadReplyRefreshTokens = new Map<string, number>()
 const historySyncRetryTimers = new Map<string, number>()
@@ -633,11 +618,8 @@ async function handleSdkScopeEvent(
   const payload = scopeEvent.payload ?? {}
 
   if (scopeEvent.event === 'mls_request_join') {
-    const requesterId = typeof payload.user_id === 'string' ? payload.user_id : null
-    const requesterDeviceId = typeof payload.device_id === 'string' ? payload.device_id : null
-    if (requesterId) {
-      rememberMlsJoinDeviceId(scope.topic, requesterId, requesterDeviceId)
-    }
+    // No-op: Signal Protocol doesn't use MLS join requests
+    return
   }
 
   if (scopeEvent.event === 'new_message' && scopeEvent.message) {
@@ -721,81 +703,27 @@ async function handleSdkScopeEvent(
   }
 
   if (scopeEvent.event === 'mls_commit') {
-    rememberScopeMutationSeq(scope.scopeId, getRoomSeq(payload.room_seq))
-    if (scope.kind === 'channel') {
-      void useMessageStore.getState().fetchMessages(scope.scopeId)
-    } else {
-      void useMessageStore.getState().fetchDmMessages(scope.scopeId)
-    }
+    // No-op: Signal Protocol doesn't use MLS commits
     return
   }
 
   if (scopeEvent.event === 'mls_welcome') {
-    const recipientId = payload.recipient_id as string
-    const recipientDeviceId =
-      typeof payload.recipient_device_id === 'string' ? payload.recipient_device_id : null
-    const currentUserId = useAuthStore.getState().user?.id
-    if (
-      recipientId === currentUserId &&
-      (!recipientDeviceId || recipientDeviceId === getLocalDeviceIdentity().id)
-    ) {
-      recentWelcomeProcessed.set(scope.scopeId, Date.now())
-      if (scope.kind === 'channel') {
-        void useMessageStore.getState().fetchMessages(scope.scopeId)
-      } else {
-        void useMessageStore.getState().fetchDmMessages(scope.scopeId)
-      }
-      requestHistorySync(scope.scopeId, scope.topic, 0, true)
-    }
-    rememberScopeMutationSeq(scope.scopeId, getRoomSeq(payload.room_seq))
+    // No-op: Signal Protocol doesn't use MLS welcomes
     return
   }
 
   if (scopeEvent.event === 'mls_history_request') {
-    const requesterId = payload.user_id as string
-    const requesterDeviceId =
-      typeof payload.device_id === 'string' ? payload.device_id : null
-    const currentUserId = useAuthStore.getState().user?.id
-    const localDeviceId = getLocalDeviceIdentity().id
-    if (
-      requesterDeviceId &&
-      !(requesterId === currentUserId && requesterDeviceId === localDeviceId)
-    ) {
-      fireAndForget(sendHistoryBundle(
-        scope.scopeId,
-        scope.topic,
-        requesterId,
-        requesterDeviceId,
-        typeof payload.id === 'string' ? payload.id : undefined
-      ))
-    }
+    // No-op: Signal Protocol doesn't use MLS history requests
     return
   }
 
   if (scopeEvent.event === 'mls_history_bundle') {
-    const recipientId = payload.recipient_id as string
-    const recipientDeviceId =
-      typeof payload.recipient_device_id === 'string' ? payload.recipient_device_id : null
-    const currentUserId = useAuthStore.getState().user?.id
-    if (
-      recipientId === currentUserId &&
-      recipientDeviceId === getLocalDeviceIdentity().id
-    ) {
-      fireAndForget(processHistoryBundle(scope.scopeId, payload, set))
-    }
+    // No-op: Signal Protocol doesn't use MLS history bundles
     return
   }
 
   if (scopeEvent.event === 'mls_resync_request') {
-    fireAndForget(processMlsResyncRequest(scope.scopeId, scope.topic, {
-      id: payload.id as string | undefined,
-      requester_id: payload.user_id as string,
-      requester_username: (payload.username as string | undefined) ?? undefined,
-      requester_client_id: (payload.device_id as string | undefined) ?? undefined,
-      request_id: payload.request_id as string | undefined,
-      last_known_epoch: (payload.last_known_epoch as number | null | undefined) ?? null,
-      reason: (payload.reason as string | null | undefined) ?? null
-    }))
+    // No-op: Signal Protocol doesn't use MLS resync
     return
   }
 
@@ -1124,47 +1052,6 @@ function hasFailedEncryptedMessages(messages: Message[] | undefined): boolean {
   return (messages || []).some((message) => message.encrypted && message.decryptionFailed)
 }
 
-async function maybeRequestMlsJoin(targetId: string, topic: string): Promise<void> {
-  const encryptedChat = getRendererEncryptedChat()
-  if (encryptedChat.hasGroup(targetId)) {
-    return
-  }
-
-  await ensureLocalJoinKeyPackagesReady()
-
-  const now = Date.now()
-  const lastRequestAt = recentMlsJoinRequests.get(topic) ?? 0
-  if (now - lastRequestAt < MLS_JOIN_REQUEST_COOLDOWN_MS) {
-    return
-  }
-
-  recentMlsJoinRequests.set(topic, now)
-  await encryptedChat.requestJoin(scopeFromTopic(targetId, topic)).catch(() => {})
-}
-
-function getMlsJoinDeviceKey(topic: string, userId: string): string {
-  return `${topic}:${userId}`
-}
-
-function rememberMlsJoinDeviceId(
-  topic: string,
-  userId: string,
-  deviceId?: string | null
-): void {
-  if (!deviceId) {
-    return
-  }
-
-  recentMlsJoinDeviceIds.set(getMlsJoinDeviceKey(topic, userId), deviceId)
-}
-
-export function getPreferredMlsJoinDeviceId(
-  topic: string,
-  userId: string
-): string | undefined {
-  return recentMlsJoinDeviceIds.get(getMlsJoinDeviceKey(topic, userId))
-}
-
 interface PendingMlsResyncRequest {
   id?: string
   requester_id: string
@@ -1209,114 +1096,6 @@ function scopeForId(scopeId: string): { kind: 'channel' | 'dm'; id: string } {
   }
 }
 
-function maybeRequestMlsResync(
-  _targetId: string,
-  scopeId: string,
-  topic: string,
-  lastKnownEpoch: number | null,
-  reason: string
-): void {
-  const user = useAuthStore.getState().user
-  if (!user) {
-    return
-  }
-
-  const now = Date.now()
-  const lastRequestAt = recentMlsResyncRequests.get(scopeId) ?? 0
-  if (now - lastRequestAt < MLS_RESYNC_REQUEST_COOLDOWN_MS) {
-    return
-  }
-
-  recentMlsResyncRequests.set(scopeId, now)
-  pushToChannel(topic, 'mls_resync_request', {
-    device_id: getLocalDeviceIdentity().id,
-    request_id: crypto.randomUUID(),
-    last_known_epoch: lastKnownEpoch,
-    reason,
-    username: user.username
-  })
-}
-
-async function processMlsResyncRequest(
-  targetId: string,
-  topic: string,
-  request: PendingMlsResyncRequest
-): Promise<boolean> {
-  const requesterId = request.requester_id
-  const requesterDeviceId = request.requester_client_id ?? undefined
-  const localUser = useAuthStore.getState().user
-  const localDeviceId = getLocalDeviceIdentity().id
-  const encryptedChat = getRendererEncryptedChat()
-
-  if (!requesterId || !encryptedChat.hasGroup(targetId)) {
-    return false
-  }
-
-  if (localUser?.id === requesterId && requesterDeviceId === localDeviceId) {
-    return false
-  }
-
-  // Any member who holds the group can process resync requests. The SDK-level
-  // handleResyncRequest already restricts this to the first member in the
-  // ratchet tree (the MLS group creator). Gating on server ownership here
-  // caused deadlocks when the server owner was offline or had a forked group.
-
-  const isSameUserResync = localUser?.id === requesterId
-  const requesterAlreadyJoined =
-    requesterDeviceId != null &&
-    encryptedChat.hasMemberDevice(targetId, requesterId, requesterDeviceId)
-
-  if (requesterAlreadyJoined) {
-    if (isSameUserResync && requesterDeviceId) {
-      fireAndForget(sendHistoryBundle(targetId, topic, requesterId, requesterDeviceId, request.id))
-    } else if (request.id) {
-      await getRendererClient().ackPendingResyncRequest(request.id)
-    }
-
-    return true
-  }
-
-  const result = await encryptedChat.handleExternalResyncRequest(
-    scopeFromTopic(targetId, topic),
-    requesterId,
-    requesterDeviceId ?? null
-  )
-  if (!result) {
-    return false
-  }
-
-  if (result.removeCommitBytes) {
-    pushToChannel(topic, 'mls_remove', {
-      removed_user_id: requesterId,
-      removed_device_id: requesterDeviceId ?? null,
-      commit_data: result.removeCommitBytes
-    })
-  }
-
-  pushToChannel(topic, 'mls_commit', {
-    commit_data: result.commitBytes
-  })
-
-  if (result.welcomeBytes) {
-    pushToChannel(topic, 'mls_welcome', {
-      recipient_id: requesterId,
-      recipient_device_id: requesterDeviceId,
-      welcome_data: result.welcomeBytes,
-      key_package_ref: result.keyPackageRef
-    })
-
-    if (isSameUserResync && requesterDeviceId) {
-      fireAndForget(sendHistoryBundle(targetId, topic, requesterId, requesterDeviceId))
-    }
-  }
-
-  if (request.id) {
-    await getRendererClient().ackPendingResyncRequest(request.id)
-  }
-
-  return true
-}
-
 function isLocalRemovalTarget(
   targetUserId: string | null,
   targetDeviceId: string | null,
@@ -1332,105 +1111,6 @@ function isLocalRemovalTarget(
   }
 
   return targetDeviceId == null || targetDeviceId === localDeviceId
-}
-
-async function processMlsEvictionRequest(
-  targetId: string,
-  topic: string,
-  request: PendingMlsEvictionRequest
-): Promise<boolean> {
-  const evictionId =
-    request.eviction_id ?? request.request_id ?? request.id ?? null
-  const targetUserId =
-    request.target_user_id ?? request.removed_user_id ?? request.user_id ?? null
-  const targetDeviceId =
-    request.target_device_id ?? request.removed_device_id ?? request.device_id ?? null
-
-  if (!evictionId || !targetUserId) {
-    return false
-  }
-
-  const existing = inFlightMlsEvictionRequests.get(evictionId)
-  if (existing) {
-    return await existing
-  }
-
-  const lastHandledAt = recentMlsEvictionRequests.get(evictionId) ?? 0
-  if (Date.now() - lastHandledAt < MLS_EVICTION_REQUEST_COOLDOWN_MS) {
-    return false
-  }
-
-  const run = (async () => {
-    const localUserId = useAuthStore.getState().user?.id
-    const localDeviceId = getLocalDeviceIdentity().id
-
-    if (isLocalRemovalTarget(targetUserId, targetDeviceId, localUserId, localDeviceId)) {
-      return false
-    }
-
-    const encryptedChat = getRendererEncryptedChat()
-    if (!encryptedChat.hasGroup(targetId)) {
-      return false
-    }
-
-    const claimed = await pushToChannelWithAck(topic, 'mls_eviction_claim', {
-      id: evictionId
-    })
-    if (!claimed) {
-      return false
-    }
-
-    const handled = await encryptedChat.handleExternalEvictionRequest(
-      scopeFromTopic(targetId, topic),
-      {
-        eviction_id: evictionId,
-        target_user_id: targetUserId,
-        ...(targetDeviceId ? { target_device_id: targetDeviceId } : {})
-      }
-    )
-    if (!handled) {
-      return false
-    }
-
-    recentMlsEvictionRequests.set(evictionId, Date.now())
-    return true
-  })().finally(() => {
-    inFlightMlsEvictionRequests.delete(evictionId)
-  })
-
-  inFlightMlsEvictionRequests.set(evictionId, run)
-  return await run
-}
-
-async function processPendingMlsResyncRequests(
-  targetId: string,
-  scopeId: string,
-  topic: string,
-  force = false
-): Promise<void> {
-  const existing = inFlightPendingResyncFetches.get(scopeId)
-  if (existing) {
-    await existing
-    return
-  }
-
-  const lastFetchAt = lastPendingResyncFetchAt.get(scopeId) ?? 0
-  if (!force && Date.now() - lastFetchAt < PENDING_MLS_FETCH_COOLDOWN_MS) {
-    return
-  }
-
-  const run = (async () => {
-    lastPendingResyncFetchAt.set(scopeId, Date.now())
-    const requests = await getRendererClient().fetchPendingResyncRequests(scopeId)
-    for (const request of requests) {
-      await processMlsResyncRequest(targetId, topic, request)
-    }
-  })().finally(() => {
-    inFlightPendingResyncFetches.delete(scopeId)
-  })
-
-  inFlightPendingResyncFetches.set(scopeId, run)
-  await run
 }
 
 async function processPendingHistoryRequests(
@@ -5191,7 +4871,6 @@ function buildProvisionalMessage(msg: VesperMessage): Message {
 }
 
 // Per-group lock to serialize MLS join requests — concurrent commits cause epoch conflicts
-const mlsJoinLocks = new Map<string, Promise<void>>()
 
 /**
  * Send a history bundle to an authorized member device that joined after the
@@ -5481,71 +5160,6 @@ async function processHistoryBundle(
 /**
  * Handle an MLS join request from another user.
  */
-async function handleMlsJoinRequest(
-  targetId: string,
-  msg: Record<string, unknown>,
-  topic: string
-): Promise<void> {
-  const userId = msg.user_id as string
-  const deviceId = (msg.device_id as string | undefined) ?? undefined
-  const joinRequestKey = `${targetId}:${userId}:${deviceId ?? 'unknown'}`
-  rememberMlsJoinDeviceId(topic, userId, deviceId)
-  const encryptedChat = getRendererEncryptedChat()
-
-  if (!encryptedChat.hasGroup(targetId)) return
-  // Any member who holds the group can process join requests. The SDK-level
-  // handler restricts this to the first member in the ratchet tree. Gating on
-  // server ownership caused deadlocks during fork recovery when the owner had
-  // reset their group state.
-  if (inFlightJoinRequests.has(joinRequestKey)) return
-
-  const lastHandledAt = recentHandledJoinRequests.get(joinRequestKey) ?? 0
-  if (Date.now() - lastHandledAt < RECENT_JOIN_REQUEST_TTL_MS) {
-    return
-  }
-
-  // Serialize join requests per group to avoid concurrent epoch commits
-  const prev = mlsJoinLocks.get(targetId) ?? Promise.resolve()
-  const current = prev.then(async () => {
-    inFlightJoinRequests.add(joinRequestKey)
-
-    try {
-      const result = await encryptedChat.handleExternalJoinRequest(
-        scopeFromTopic(targetId, topic),
-        userId,
-        deviceId ?? null
-      )
-
-      if (result) {
-        if (result.removeCommitBytes) {
-          pushToChannel(topic, 'mls_remove', {
-            removed_user_id: userId,
-            ...(deviceId ? { removed_device_id: deviceId } : {}),
-            commit_data: result.removeCommitBytes
-          })
-        }
-        pushToChannel(topic, 'mls_commit', { commit_data: result.commitBytes })
-        if (result.welcomeBytes) {
-          pushToChannel(topic, 'mls_welcome', {
-            recipient_id: userId,
-            recipient_device_id: deviceId,
-            welcome_data: result.welcomeBytes,
-            key_package_ref: result.keyPackageRef
-          })
-
-          if (deviceId) {
-            fireAndForget(sendHistoryBundle(targetId, topic, userId, deviceId))
-          }
-        }
-      }
-    } finally {
-      inFlightJoinRequests.delete(joinRequestKey)
-      recentHandledJoinRequests.set(joinRequestKey, Date.now())
-    }
-  }).catch(() => {})
-  mlsJoinLocks.set(targetId, current)
-  await current
-}
 
 /**
  * Handle a message_edited event — decrypt if encrypted, update local state.
@@ -5831,3 +5445,22 @@ async function applyScopeSyncEvent(
       : { ...(syncEvent.payload ?? {}), room_seq: roomSeq }
   await applyScopeMutationEvent(targetId, syncEvent.event_type, payload, set)
 }
+
+// ---------------------------------------------------------------------------
+// Legacy MLS stubs — these are no-ops kept for backward compatibility
+// with code paths that haven't been cleaned up yet.
+// TODO: Remove these and their call sites in a follow-up cleanup pass.
+// ---------------------------------------------------------------------------
+
+const recentWelcomeProcessed = new Map<string, number>()
+const WELCOME_RECOVERY_SUPPRESSION_MS = 30_000
+const inFlightScopeRecoveries = new Map<string, Promise<void>>()
+const MLS_RECOVERY_BACKOFF_MS = [150, 500, 1500] as const
+const recentMlsJoinRequests = new Map<string, number>()
+
+function rememberMlsJoinDeviceId(_topic: string, _userId: string, _deviceId: string | null): void {}
+export function getPreferredMlsJoinDeviceId(_topic: string, _userId: string): string | null { return null }
+async function maybeRequestMlsJoin(_targetId: string, _topic: string): Promise<void> {}
+function maybeRequestMlsResync(..._args: unknown[]): void {}
+async function processPendingMlsResyncRequests(..._args: unknown[]): Promise<void> {}
+async function handleMlsJoinRequest(..._args: unknown[]): Promise<void> {}

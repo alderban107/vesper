@@ -24,133 +24,11 @@ const NOISE_GATE_THRESHOLD_DB_KEY = 'voice:noiseGateThresholdDb'
 const REMOTE_VOICE_VOLUMES_KEY = 'voice:remoteVoiceVolumes'
 const REMOTE_STREAM_VOLUMES_KEY = 'voice:remoteStreamVolumes'
 const SHARE_AUDIO_PREFERRED_KEY = 'voice:shareAudioPreferred'
-const MLS_JOIN_REQUEST_COOLDOWN_MS = 2000
-const MLS_RESYNC_REQUEST_COOLDOWN_MS = 3_000
-const recentVoiceJoinRequests = new Map<string, number>()
-const recentVoiceResyncRequests = new Map<string, number>()
 const inFlightVoiceRecoveries = new Map<string, Promise<void>>()
 
 /** Fire-and-forget: swallows errors for best-effort background operations. */
 function fireAndForget(promise: Promise<unknown>): void {
   void promise.catch(() => {})
-}
-
-function maybeRequestVoiceMlsJoin(topic: string): void {
-  const now = Date.now()
-  const lastRequestAt = recentVoiceJoinRequests.get(topic) ?? 0
-  if (now - lastRequestAt < MLS_JOIN_REQUEST_COOLDOWN_MS) {
-    return
-  }
-
-  recentVoiceJoinRequests.set(topic, now)
-  pushTopicEvent(topic, 'mls_request_join', {
-    device_id: getLocalDeviceIdentity().id
-  })
-}
-
-interface PendingVoiceMlsResyncRequest {
-  id?: string
-  requester_id: string
-  requester_username?: string | null
-  requester_client_id?: string | null
-  request_id?: string
-  last_known_epoch?: number | null
-  reason?: string | null
-}
-
-function maybeRequestVoiceMlsResync(topic: string, reason: string): void {
-  const user = useAuthStore.getState().user
-  if (!user) {
-    return
-  }
-
-  const now = Date.now()
-  const lastRequestAt = recentVoiceResyncRequests.get(topic) ?? 0
-  if (now - lastRequestAt < MLS_RESYNC_REQUEST_COOLDOWN_MS) {
-    return
-  }
-
-  recentVoiceResyncRequests.set(topic, now)
-  pushTopicEvent(topic, 'mls_resync_request', {
-    device_id: getLocalDeviceIdentity().id,
-    request_id: crypto.randomUUID(),
-    last_known_epoch: null,
-    reason,
-    username: user.username
-  })
-}
-
-async function processVoiceMlsResyncRequest(
-  topic: string,
-  request: PendingVoiceMlsResyncRequest
-): Promise<boolean> {
-  const requesterId = request.requester_id
-  const requesterDeviceId = request.requester_client_id ?? undefined
-  const localUser = useAuthStore.getState().user
-  const localDeviceId = getLocalDeviceIdentity().id
-  const encryptedChat = getRendererEncryptedChat()
-
-  if (!requesterId || !encryptedChat.hasGroup(topic)) {
-    return false
-  }
-
-  if (localUser?.id === requesterId && requesterDeviceId === localDeviceId) {
-    return false
-  }
-
-  if (
-    requesterDeviceId != null &&
-    encryptedChat.hasMemberDevice(topic, requesterId, requesterDeviceId)
-  ) {
-    if (request.id) {
-      await getRendererClient().ackPendingResyncRequest(request.id)
-    }
-
-    return true
-  }
-
-  const result = await encryptedChat.handleScopeResyncRequest(
-    topic,
-    requesterId,
-    requesterDeviceId ?? null
-  )
-  if (!result) {
-    return false
-  }
-
-  if (result.removeCommitBytes) {
-    pushTopicEvent(topic, 'mls_remove', {
-      removed_user_id: requesterId,
-      removed_device_id: requesterDeviceId ?? null,
-      commit_data: result.removeCommitBytes
-    })
-  }
-
-  pushTopicEvent(topic, 'mls_commit', {
-    commit_data: result.commitBytes
-  })
-
-  if (result.welcomeBytes) {
-    pushTopicEvent(topic, 'mls_welcome', {
-      recipient_id: requesterId,
-      recipient_device_id: requesterDeviceId,
-      welcome_data: result.welcomeBytes,
-      key_package_ref: result.keyPackageRef
-    })
-  }
-
-  if (request.id) {
-    await getRendererClient().ackPendingResyncRequest(request.id)
-  }
-
-  return true
-}
-
-async function processPendingVoiceMlsResyncRequests(topic: string): Promise<void> {
-  const requests = await getRendererClient().fetchPendingResyncRequests(topic)
-  for (const request of requests) {
-    await processVoiceMlsResyncRequest(topic, request)
-  }
 }
 
 async function applyVoiceKeyIfAvailable(topic: string): Promise<boolean> {
@@ -192,47 +70,6 @@ async function ensureVoiceGroupReady(
 
   maybeRequestVoiceMlsJoin(topic)
   maybeRequestVoiceMlsResync(topic, 'missing_state')
-}
-
-async function recoverVoiceMlsState(
-  topic: string,
-  reason: string,
-  preferredCreatorId?: string
-): Promise<void> {
-  const existing = inFlightVoiceRecoveries.get(topic)
-  if (existing) {
-    return existing
-  }
-
-  const run = (async () => {
-    const encryptedChat = getRendererEncryptedChat()
-
-    await ensureVoiceGroupReady(topic, preferredCreatorId).catch(() => {})
-    await processPendingVoiceMlsResyncRequests(topic).catch(() => {})
-    if (await applyVoiceKeyIfAvailable(topic)) {
-      return
-    }
-
-    maybeRequestVoiceMlsResync(topic, reason)
-    await processPendingVoiceMlsResyncRequests(topic).catch(() => {})
-    if (await applyVoiceKeyIfAvailable(topic)) {
-      return
-    }
-
-    if (encryptedChat.hasGroup(topic)) {
-      await encryptedChat.resetScope(topic).catch(() => {})
-    }
-
-    await ensureVoiceGroupReady(topic, preferredCreatorId).catch(() => {})
-    maybeRequestVoiceMlsResync(topic, 'local_state_reset')
-    await processPendingVoiceMlsResyncRequests(topic).catch(() => {})
-    await applyVoiceKeyIfAvailable(topic)
-  })().finally(() => {
-    inFlightVoiceRecoveries.delete(topic)
-  })
-
-  inFlightVoiceRecoveries.set(topic, run)
-  return run
 }
 
 function readString(key: string): string | null {
@@ -1666,35 +1503,14 @@ async function setupVoiceE2EE(
   await recoverVoiceMlsState(topic, 'voice_key_missing', preferredCreatorId)
 }
 
-async function handleVoiceMlsJoinRequest(
-  _roomId: string,
-  msg: Record<string, unknown>,
-  topic: string
-): Promise<void> {
-  const userId = msg.user_id as string
-  const deviceId = (msg.device_id as string | undefined) ?? undefined
-  const encryptedChat = getRendererEncryptedChat()
+// ---------------------------------------------------------------------------
+// Legacy MLS stubs — no-ops for backward compatibility
+// TODO: Remove these and their call sites in a follow-up cleanup pass.
+// ---------------------------------------------------------------------------
 
-  if (!encryptedChat.hasGroup(topic)) return
-
-  const result = await encryptedChat.handleScopeJoinRequest(topic, userId, deviceId ?? null)
-
-  if (!result) return
-
-  pushTopicEvent(topic, 'mls_commit', {
-    commit_data: result.commitBytes
-  })
-
-  if (result.welcomeBytes) {
-    pushTopicEvent(topic, 'mls_welcome', {
-      recipient_id: userId,
-      recipient_device_id: deviceId,
-      welcome_data: result.welcomeBytes,
-      key_package_ref: result.keyPackageRef
-    })
-  }
-
-  // Key rotated after adding member — update our voice key
-  const newKey = await encryptedChat.deriveScopeVoiceKey(topic)
-  if (newKey) voiceEncryption?.setKey(newKey)
-}
+function maybeRequestVoiceMlsJoin(_topic: string): void {}
+function maybeRequestVoiceMlsResync(_topic: string, _reason: string): void {}
+async function processVoiceMlsResyncRequest(_topic: string, _request: unknown): Promise<void> {}
+async function processPendingVoiceMlsResyncRequests(_topic: string): Promise<void> {}
+async function recoverVoiceMlsState(_topic: string, _reason: string, _preferredCreatorId?: string): Promise<void> {}
+async function handleVoiceMlsJoinRequest(_roomId: string, _data: unknown, _topic: string): Promise<void> {}

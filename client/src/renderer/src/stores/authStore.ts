@@ -138,12 +138,12 @@ async function refreshActiveEncryptedViews(): Promise<void> {
   const messageStore = useMessageStore.getState()
   const encryptedChat = getRendererEncryptedChat()
 
-  // For active DMs, re-join the channel to trigger MLS group setup now that
+  // For active DMs, re-join the channel to trigger encryption setup now that
   // E2EE may have become available (e.g. after device approval). Simply
   // re-fetching messages without the group ready will leave them as "syncing".
   if (selectedConversationId) {
     if (!encryptedChat.hasGroup(selectedConversationId)) {
-      // Leave and rejoin to re-trigger the MLS bootstrap flow
+      // Leave and rejoin to re-trigger the encryption bootstrap flow
       messageStore.leaveDmChat(selectedConversationId)
       messageStore.joinDmChat(selectedConversationId)
       // joinDmChat handles fetching messages internally, so skip manual fetch
