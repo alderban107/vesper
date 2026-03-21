@@ -1,5 +1,5 @@
 /**
- * Signal Protocol implementation for Vesper.
+ * Vesper encryption protocol implementation.
  *
  * Implements X3DH key agreement, Double Ratchet, and Sender Keys
  * from the published Signal specifications:

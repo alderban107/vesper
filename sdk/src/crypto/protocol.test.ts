@@ -32,7 +32,7 @@ import {
   type SessionState,
   type SenderKeyState,
   type SenderKeyReceiver,
-} from './signal.js'
+} from './protocol.js'
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
