@@ -17,7 +17,7 @@ function openmlsWasmPlugin(): Plugin {
     name: 'openmls-wasm',
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
-        if (req.url?.endsWith(wasmFileName)) {
+        if (req.url && req.url.includes(wasmFileName)) {
           const wasmPath = resolve(wasmPkgDir, wasmFileName)
           res.setHeader('Content-Type', 'application/wasm')
           res.end(readFileSync(wasmPath))
@@ -41,6 +41,12 @@ function openmlsWasmPlugin(): Plugin {
 
 export default defineConfig({
   root: 'src/renderer',
+  server: {
+    fs: {
+      // Allow serving the WASM binary from the SDK package
+      allow: ['..', resolve(__dirname, '../sdk')]
+    }
+  },
   plugins: [react(), openmlsWasmPlugin()],
   resolve: {
     alias: {
