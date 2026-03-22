@@ -21,7 +21,8 @@ export default defineConfig({
         '@vesper/sdk/transport': resolve(__dirname, '../sdk/src/transport/index.ts'),
         '@vesper/sdk/types': resolve(__dirname, '../sdk/src/types/index.ts'),
         '@vesper/sdk/voice': resolve(__dirname, '../sdk/src/voice/index.ts'),
-        '@vesper/sdk': resolve(__dirname, '../sdk/src/index.ts')
+        '@vesper/sdk': resolve(__dirname, '../sdk/src/index.ts'),
+        'vesper-openmls-wasm': resolve(__dirname, '../sdk/wasm/pkg/vesper_openmls_wasm.js')
       }
     }
   }

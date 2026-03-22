@@ -1039,7 +1039,8 @@ export class SdkChatHarness extends EventEmitter {
         const identityName = buildClientCredentialIdentity(session.user.id, this.device.deviceIdentity.id)
         const state = await processWelcome(
           Buffer.from(welcomeData, 'base64'),
-          identityName
+          identityName,
+          new Uint8Array(localPackage.privateData)
         )
 
         await this.setGroupState(scopeId, state)

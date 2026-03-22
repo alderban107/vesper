@@ -22,6 +22,7 @@ export default defineConfig({
       '@vesper/sdk/types': resolve(__dirname, '../sdk/src/types/index.ts'),
       '@vesper/sdk/voice': resolve(__dirname, '../sdk/src/voice/index.ts'),
       '@vesper/sdk': resolve(__dirname, '../sdk/src/index.ts'),
+      'vesper-openmls-wasm': resolve(__dirname, '../sdk/wasm/pkg/vesper_openmls_wasm.js'),
       '@': resolve(__dirname, 'src/renderer/src'),
       // music-metadata-browser uses Node.js Buffer internally
       buffer: 'buffer/'

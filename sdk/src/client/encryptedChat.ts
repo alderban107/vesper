@@ -1742,7 +1742,8 @@ export class VesperEncryptedChat {
         const identityName = buildClientCredentialIdentity(session.user.id, localDeviceId)
         const state = await processWelcome(
           Buffer.from(welcomeData, 'base64'),
-          identityName
+          identityName,
+          new Uint8Array(localPackage.privateData)
         )
 
         await this.setGroupState(scopeId, state)

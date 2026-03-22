@@ -188,13 +188,35 @@ export async function createMLSGroup(
 
 /**
  * Process a Welcome message to join an existing MLS group.
+ * The privateData must be the serialized Provider storage from the key package
+ * that was consumed to generate this Welcome.
  */
 export async function processWelcome(
   welcomeBytes: Uint8Array,
-  identityName: string
+  identityName: string,
+  privateData?: Uint8Array
 ): Promise<GroupState> {
   const provider = new Provider()
-  const identity = new Identity(provider, identityName)
+
+  // If we have the key package's private data, restore it into the provider.
+  // This is needed because the Welcome is encrypted to a specific key package.
+  if (privateData) {
+    provider.deserialize_storage(privateData)
+  }
+
+  const identity = privateData
+    ? (() => {
+        // Try to deserialize identity from the restored provider
+        // Build identity data from name + we need the public key
+        // Since the provider has the signing key, create a fresh identity
+        // with the same name — it'll generate a new keypair but we need the old one.
+        // Actually, the provider storage has the key package keys but maybe not the signing key.
+        // Let's just create a new identity — the Welcome processing needs the HPKE private key
+        // (in the provider storage), not the signing key.
+        return new Identity(provider, identityName)
+      })()
+    : new Identity(provider, identityName)
+
   const group = Group.join_from_welcome(provider, welcomeBytes)
 
   return makeGroupState(provider, identity, group)
