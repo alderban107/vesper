@@ -129,15 +129,14 @@ test.describe('P0 Smoke — full continuous run', () => {
 
   // --- Steps 5-6: DM between alice and bob (R-DM-1) ---
   test('Steps 5-6: alice and bob exchange encrypted DMs', async () => {
-    // Capture browser console for E2EE debugging
+    // Capture browser console and network for E2EE debugging
     const aliceConsole: string[] = []
     const bobConsole: string[] = []
-    alice.page.on('console', msg => {
-      aliceConsole.push(`[${msg.type()}] ${msg.text()}`)
-    })
-    bob.page.on('console', msg => {
-      bobConsole.push(`[${msg.type()}] ${msg.text()}`)
-    })
+    const netFails: string[] = []
+    alice.page.on('console', msg => { aliceConsole.push(`[${msg.type()}] ${msg.text()}`) })
+    bob.page.on('console', msg => { bobConsole.push(`[${msg.type()}] ${msg.text()}`) })
+    alice.page.on('response', res => { if (res.status() >= 400) netFails.push(`ALICE ${res.status()} ${res.request().method()} ${res.url()}`) })
+    bob.page.on('response', res => { if (res.status() >= 400) netFails.push(`BOB ${res.status()} ${res.request().method()} ${res.url()}`) })
 
     // Alice creates a DM with bob
     await createDm(alice.page, USERS.bob.username)
@@ -149,21 +148,18 @@ test.describe('P0 Smoke — full continuous run', () => {
     // Bob selects the DM
     await selectDm(bob.page, USERS.alice.username)
 
-    // Dump console before waiting
+    // Dump debug info
     console.log('[E2E DEBUG] Alice console:', JSON.stringify(aliceConsole.slice(-20)))
     console.log('[E2E DEBUG] Bob console:', JSON.stringify(bobConsole.slice(-20)))
-
-    // Capture network failures
-    const aliceNetFails: string[] = []
-    alice.page.on('response', res => { if (res.status() >= 400) aliceNetFails.push(`ALICE ${res.status()} ${res.request().method()} ${res.url()}`) })
-    bob.page.on('response', res => { if (res.status() >= 400) aliceNetFails.push(`BOB ${res.status()} ${res.request().method()} ${res.url()}`) })
+    console.log('[E2E DEBUG] Network failures:', JSON.stringify(netFails))
 
     // Wait for alice's messages to appear on bob's side
-    console.log('[E2E DEBUG] Network failures so far:', JSON.stringify(aliceNetFails.slice(-15)))
     try {
       await waitForMessage(bob.page, DM_MESSAGES.aliceToBob1)
     } catch (e) {
-      console.log('[E2E DEBUG] TIMEOUT - all network fails:', JSON.stringify(aliceNetFails))
+      console.log('[E2E DEBUG] TIMEOUT - net fails:', JSON.stringify(netFails))
+      console.log('[E2E DEBUG] TIMEOUT - alice:', JSON.stringify(aliceConsole.slice(-30)))
+      console.log('[E2E DEBUG] TIMEOUT - bob:', JSON.stringify(bobConsole.slice(-30)))
       throw e
     }
     await waitForMessage(bob.page, DM_MESSAGES.aliceToBob2)
