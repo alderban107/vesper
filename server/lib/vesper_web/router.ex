@@ -156,6 +156,10 @@ defmodule VesperWeb.Router do
     get("/pending-resync-requests/:channel_id", PendingResyncRequestController, :index)
     delete("/pending-resync-requests/:id", PendingResyncRequestController, :delete)
 
+    # MLS GroupInfo for External Commits (RFC 9420 §12.4)
+    get("/group-info/:scope_id", GroupInfoController, :show)
+    put("/group-info/:scope_id", GroupInfoController, :upsert)
+
     # Pending same-user MLS history recovery
     get("/pending-history-requests/:channel_id", PendingHistoryRequestController, :index)
     delete("/pending-history-requests/:id", PendingHistoryRequestController, :delete)

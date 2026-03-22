@@ -10,6 +10,7 @@ defmodule Vesper.Encryption do
   alias Vesper.Encryption.{
     KeyPackage,
     MlsEvent,
+    MlsGroupInfo,
     PendingCryptoEviction,
     PendingHistoryBundle,
     PendingHistoryRequest,
@@ -961,5 +962,67 @@ defmodule Vesper.Encryption do
       end
 
     Repo.delete_all(query)
+  end
+
+  # --- MLS GroupInfo (for External Commits) ---
+
+  @doc """
+  Publish (upsert) MLS GroupInfo for a scope.
+  Only stores the latest — each publish replaces the previous.
+  Only accepts the update if the epoch is >= the currently stored epoch
+  (prevents stale GroupInfo from overwriting newer state).
+  """
+  def publish_group_info(attrs) do
+    group_id = Map.get(attrs, :group_id) || Map.get(attrs, "group_id")
+    new_epoch = Map.get(attrs, :epoch) || Map.get(attrs, "epoch") || 0
+
+    Repo.transaction(fn ->
+      existing =
+        from(gi in MlsGroupInfo,
+          where: gi.group_id == ^group_id,
+          lock: "FOR UPDATE"
+        )
+        |> Repo.one()
+
+      cond do
+        is_nil(existing) ->
+          %MlsGroupInfo{}
+          |> MlsGroupInfo.changeset(attrs)
+          |> Repo.insert!()
+
+        new_epoch >= existing.epoch ->
+          existing
+          |> MlsGroupInfo.changeset(attrs)
+          |> Repo.update!()
+
+        true ->
+          # Stale epoch — silently keep the newer one
+          existing
+      end
+    end)
+    |> case do
+      {:ok, group_info} -> {:ok, group_info}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Fetch the latest MLS GroupInfo for a scope by group_id.
+  """
+  def get_group_info(group_id) do
+    from(gi in MlsGroupInfo,
+      where: gi.group_id == ^group_id
+    )
+    |> Repo.one()
+  end
+
+  @doc """
+  Delete MLS GroupInfo for a scope (e.g., when the group is dissolved).
+  """
+  def delete_group_info(group_id) do
+    from(gi in MlsGroupInfo,
+      where: gi.group_id == ^group_id
+    )
+    |> Repo.delete_all()
   end
 end
