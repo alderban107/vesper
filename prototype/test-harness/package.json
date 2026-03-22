@@ -1,0 +1,12 @@
+{
+  "name": "openmls-wasm-test",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-wasm-modules test-harness.mjs"
+  },
+  "dependencies": {
+    "vesper-openmls-wasm": "file:../openmls-wasm/pkg"
+  }
+}
