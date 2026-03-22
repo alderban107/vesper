@@ -13,10 +13,10 @@ import './index.css'
 
 initWebNotifications()
 
-// Initialize WASM for MLS E2EE — pass the WASM binary URL explicitly
-// so Vite's module bundling doesn't break the default import.meta.url loader.
-const wasmUrl = new URL('../../../../sdk/wasm/pkg/vesper_openmls_wasm_bg.wasm', import.meta.url).href
-initCipherSuite(wasmUrl).catch((err) => {
+// Initialize WASM for MLS E2EE
+// The WASM binary URL is provided by the Vite plugin's dev middleware
+// and emitted as an asset in production builds.
+initCipherSuite('/assets/vesper_openmls_wasm_bg.wasm').catch((err) => {
   console.error('[E2EE] Failed to initialize WASM:', err)
 })
 
