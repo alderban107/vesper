@@ -66,7 +66,25 @@ let wasmInitialized = false
  */
 export async function initCipherSuite(): Promise<void> {
   if (wasmInitialized) return
-  await initWasm()
+
+  // In Node.js, we need to load the WASM file from disk since fetch() won't work
+  // with file:// URLs. In browsers/Electron, the default import.meta.url loader works.
+  if (typeof process !== 'undefined' && process.versions?.node) {
+    const { readFile } = await import('fs/promises')
+    const { fileURLToPath } = await import('url')
+    const { dirname, join } = await import('path')
+
+    // Resolve the WASM file relative to the JS module
+    const jsPath = fileURLToPath(import.meta.resolve('vesper-openmls-wasm'))
+    const pkgDir = dirname(jsPath)
+    const wasmPath = join(pkgDir, 'vesper_openmls_wasm_bg.wasm')
+    const wasmBytes = await readFile(wasmPath)
+
+    await initWasm(wasmBytes)
+  } else {
+    await initWasm()
+  }
+
   wasmInitialized = true
 }
 
