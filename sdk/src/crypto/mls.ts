@@ -63,18 +63,23 @@ let wasmInitialized = false
 /**
  * Initialize the MLS cipher suite. Must be called before any MLS operations.
  * With OpenMLS, this loads the WASM module.
+ *
+ * @param wasmSource Optional WASM module source. Can be:
+ *   - URL or string: fetched via the default loader
+ *   - BufferSource: raw WASM bytes
+ *   - undefined: auto-detected (fs in Node.js, import.meta.url in browser)
  */
-export async function initCipherSuite(): Promise<void> {
+export async function initCipherSuite(wasmSource?: string | URL | BufferSource): Promise<void> {
   if (wasmInitialized) return
 
-  // In Node.js, we need to load the WASM file from disk since fetch() won't work
-  // with file:// URLs. In browsers/Electron, the default import.meta.url loader works.
-  if (typeof process !== 'undefined' && process.versions?.node) {
+  if (wasmSource) {
+    await initWasm(wasmSource)
+  } else if (typeof process !== 'undefined' && process.versions?.node) {
+    // Node.js: load from disk
     const { readFile } = await import('fs/promises')
     const { fileURLToPath } = await import('url')
     const { dirname, join } = await import('path')
 
-    // Resolve the WASM file relative to the JS module
     const jsPath = fileURLToPath(import.meta.resolve('vesper-openmls-wasm'))
     const pkgDir = dirname(jsPath)
     const wasmPath = join(pkgDir, 'vesper_openmls_wasm_bg.wasm')
@@ -82,6 +87,7 @@ export async function initCipherSuite(): Promise<void> {
 
     await initWasm(wasmBytes)
   } else {
+    // Browser/Electron: default loader uses import.meta.url
     await initWasm()
   }
 

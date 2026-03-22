@@ -2,9 +2,11 @@ import { EventEmitter } from 'node:events'
 
 import {
   ackPendingWelcome,
+  fetchGroupInfo,
   fetchKeyPackage,
   fetchMlsEvents,
   fetchPendingWelcomes,
+  publishGroupInfo,
   uint8ToBase64
 } from '../api/crypto.js'
 import {
@@ -17,10 +19,13 @@ import {
   deserializeGroupState,
   encodePayload,
   encryptMessage,
+  exportGroupInfo,
+  exportRatchetTree,
   getDisplayText,
   getGroupLeafIdentities,
   groupHasMember,
   initCipherSuite,
+  joinViaExternalCommit,
   findMemberLeafIndex,
   processCommitMessage,
   processWelcome,
@@ -767,7 +772,39 @@ export class SdkChatHarness extends EventEmitter {
       }
     }
 
+    // Try External Commit as fallback — no online member needed
+    if (await this.tryJoinViaExternalCommit(scopeId)) {
+      return true
+    }
+
     return false
+  }
+
+  private async tryJoinViaExternalCommit(scopeId: string): Promise<boolean> {
+    try {
+      await initCipherSuite()
+
+      const groupInfo = await fetchGroupInfo(scopeId, this.device.httpClient)
+      if (!groupInfo) return false
+
+      const session = this.device.requireSession()
+      const identityName = buildClientCredentialIdentity(
+        session.user.id,
+        this.device.deviceIdentity.id
+      )
+
+      const { state, commitBytes } = await joinViaExternalCommit(
+        groupInfo.groupInfoData,
+        groupInfo.ratchetTreeData,
+        identityName
+      )
+
+      await this.setGroupState(scopeId, state)
+      this.notifyMembershipWaiters(scopeId, true)
+      return true
+    } catch {
+      return false
+    }
   }
 
   async replayDurableEvents(scope: EncryptedScope): Promise<void> {
@@ -1316,6 +1353,20 @@ export class SdkChatHarness extends EventEmitter {
       epoch
     )
     this.notifyMembershipWaiters(scopeId, true)
+
+    // Publish GroupInfo for External Commits (best-effort)
+    this.publishGroupInfoForScope(scopeId, state).catch(() => {})
+  }
+
+  private async publishGroupInfoForScope(scopeId: string, state: GroupState): Promise<void> {
+    try {
+      const groupInfoData = exportGroupInfo(state)
+      const ratchetTreeData = exportRatchetTree(state)
+      const epoch = Number(state.groupContext.epoch)
+      await publishGroupInfo(scopeId, groupInfoData, ratchetTreeData, epoch, this.device.httpClient)
+    } catch {
+      // Best-effort
+    }
   }
 
   private cloneGroupState(state: GroupState): GroupState {
