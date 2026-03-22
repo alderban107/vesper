@@ -178,6 +178,12 @@ impl Identity {
         String::from_utf8(basic.identity().to_vec()).unwrap()
     }
 
+    /// Get the raw Ed25519 signature public key bytes.
+    /// Used for registration (sent to server for identity verification).
+    pub fn signature_public_key(&self) -> Vec<u8> {
+        self.keypair.to_public_vec()
+    }
+
     /// Serialize the identity to bytes for persistence.
     /// Only stores the name and public key — the private key is in the Provider's storage.
     /// Format: name_len(u32-be) name pub_key_len(u32-be) pub_key

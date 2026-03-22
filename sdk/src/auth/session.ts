@@ -19,7 +19,6 @@ import {
   decryptEncryptedKeyBundle,
   decryptWithRecoveryKey,
   recoveryKeyToBytes,
-  serializePrivatePackage
 } from '../crypto/index.js'
 import {
   createCryptoStorageRuntime,
@@ -28,8 +27,9 @@ import {
 } from '../crypto/storage.js'
 import {
   buildClientCredentialIdentity,
+  buildIdentityData,
   createKeyPackageBatch,
-  encodeKeyPackageBytes,
+  createSigningIdentity,
   initCipherSuite
 } from '../crypto/mls.js'
 import type { VesperTransport } from '../transport/context.js'
@@ -136,9 +136,11 @@ export class VesperAuthClient {
     return await this.withStorageContext(null, async () => {
       await initCipherSuite()
 
-      const keyPackages = await createKeyPackageBatch(username, 1)
-      const signaturePrivateKey = keyPackages[0].privatePackage.signaturePrivateKey
-      const signaturePublicKey = keyPackages[0].publicPackage.leafNode.signaturePublicKey
+      // Create the signing identity — generates Ed25519 keypair inside OpenMLS
+      const signingIdentity = await createSigningIdentity(username)
+      const signaturePublicKey = signingIdentity.signaturePublicKey
+      // The "private key" is the serialized Provider storage containing the Ed25519 private key
+      const signaturePrivateKey = signingIdentity.privateKeyBundle
       const encryptedBundle = await createEncryptedKeyBundle(signaturePrivateKey, password)
       const recoveryData = await createRecoveryData(signaturePrivateKey)
 
@@ -179,22 +181,19 @@ export class VesperAuthClient {
       )
 
       const batchPairs = await createKeyPackageBatch(
-        this.getCurrentMlsCredentialIdentity(data.user.id),
+        signingIdentity.identityData,
+        signingIdentity.privateKeyBundle,
         KEY_PACKAGE_TARGET,
-        {
-          signKey: signaturePrivateKey,
-          publicKey: signaturePublicKey
-        }
       )
 
       await this.storage.saveKeyPackages(
         batchPairs.map((pair) => ({
-          publicData: encodeKeyPackageBytes(pair.publicPackage),
-          privateData: serializePrivatePackage(pair.privatePackage)
+          publicData: pair.publicData,
+          privateData: pair.privateData
         }))
       )
 
-      const publicPackageBytes = batchPairs.map((pair) => encodeKeyPackageBytes(pair.publicPackage))
+      const publicPackageBytes = batchPairs.map((pair) => pair.publicData)
       await uploadKeyPackages(publicPackageBytes, this.resolveDeviceIdentity().id, this.httpClient)
 
       void this.registerCurrentDeviceNotificationCapability()
@@ -619,23 +618,25 @@ export class VesperAuthClient {
         return
       }
 
-      const pairs = await createKeyPackageBatch(
+      const identityData = buildIdentityData(
         this.getCurrentMlsCredentialIdentity(user.id),
+        identity.publicIdentityKey
+      )
+
+      const pairs = await createKeyPackageBatch(
+        identityData,
+        identity.signaturePrivateKey,
         KEY_PACKAGE_TARGET - count,
-        {
-          signKey: identity.signaturePrivateKey,
-          publicKey: identity.publicIdentityKey
-        }
       )
 
       await this.storage.saveKeyPackages(
         pairs.map((pair) => ({
-          publicData: encodeKeyPackageBytes(pair.publicPackage),
-          privateData: serializePrivatePackage(pair.privatePackage)
+          publicData: pair.publicData,
+          privateData: pair.privateData
         }))
       )
 
-      const publicPackageBytes = pairs.map((pair) => encodeKeyPackageBytes(pair.publicPackage))
+      const publicPackageBytes = pairs.map((pair) => pair.publicData)
       await uploadKeyPackages(publicPackageBytes, this.resolveDeviceIdentity().id, this.httpClient)
     }).finally(() => {
       this.keyPackageReplenishPromise = null
@@ -673,13 +674,11 @@ export class VesperAuthClient {
   private async createFreshLocalDeviceIdentity(userId: string): Promise<boolean> {
     await initCipherSuite()
 
-    const pairs = await createKeyPackageBatch(this.getCurrentMlsCredentialIdentity(userId), 1)
-    const signaturePrivateKey = pairs[0]?.privatePackage.signaturePrivateKey
-    const signaturePublicKey = pairs[0]?.publicPackage.leafNode.signaturePublicKey
-
-    if (!signaturePrivateKey || !signaturePublicKey) {
-      return false
-    }
+    const signingIdentity = await createSigningIdentity(
+      this.getCurrentMlsCredentialIdentity(userId)
+    )
+    const signaturePrivateKey = signingIdentity.privateKeyBundle
+    const signaturePublicKey = signingIdentity.signaturePublicKey
 
     await this.storage.saveIdentity(
       userId,

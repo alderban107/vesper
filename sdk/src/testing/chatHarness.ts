@@ -10,13 +10,11 @@ import {
 import {
   addMemberToGroup,
   buildClientCredentialIdentity,
-  createKeyPackageBatch,
   createMLSGroup,
   decodeKeyPackageBytes,
   decodePayload,
   decryptMessage,
   deserializeGroupState,
-  deserializePrivatePackage,
   encodePayload,
   encryptMessage,
   getDisplayText,
@@ -945,25 +943,15 @@ export class SdkChatHarness extends EventEmitter {
     await this.device.replenishKeyPackages()
 
     const session = this.device.requireSession()
+    const identityName = buildClientCredentialIdentity(session.user.id, this.device.deviceIdentity.id)
     const localPackages = await this.storage.loadKeyPackages()
-    let publicPackage = null
-    let privatePackage = null
 
     if (localPackages.length > 0) {
       const localPackage = localPackages[0]
       await this.storage.consumeKeyPackage(localPackage.id)
-      publicPackage = decodeKeyPackageBytes(new Uint8Array(localPackage.publicData))
-      privatePackage = deserializePrivatePackage(new Uint8Array(localPackage.privateData))
-    } else {
-      const pairs = await createKeyPackageBatch(
-        buildClientCredentialIdentity(session.user.id, this.device.deviceIdentity.id),
-        1
-      )
-      publicPackage = pairs[0].publicPackage
-      privatePackage = pairs[0].privatePackage
     }
 
-    const state = await createMLSGroup(scopeId, publicPackage, privatePackage)
+    const state = await createMLSGroup(scopeId, identityName)
     await this.setGroupState(scopeId, state)
     await this.device.replenishKeyPackages()
   }
@@ -1002,11 +990,11 @@ export class SdkChatHarness extends EventEmitter {
     }
 
     const memberKeyPackage = decodeKeyPackageBytes(keyPackageBytes)
-    const credential = memberKeyPackage.leafNode.credential
-    const requestedIdentity =
-      credential.credentialType === 'basic'
-        ? new TextDecoder().decode(credential.identity)
-        : null
+
+    // Infer identity from userId/deviceId rather than parsing the opaque key package
+    const requestedIdentity = deviceId
+      ? buildClientCredentialIdentity(userId, deviceId)
+      : userId
 
     if (
       requestedIdentity &&
@@ -1018,7 +1006,7 @@ export class SdkChatHarness extends EventEmitter {
 
     const result = await addMemberToGroup(
       this.cloneGroupState(state),
-      memberKeyPackage
+      keyPackageBytes
     )
     await this.setGroupState(scopeId, result.newState)
 
@@ -1047,12 +1035,11 @@ export class SdkChatHarness extends EventEmitter {
 
     for (const localPackage of orderedPackages) {
       try {
-        const publicPackage = decodeKeyPackageBytes(new Uint8Array(localPackage.publicData))
-        const privatePackage = deserializePrivatePackage(new Uint8Array(localPackage.privateData))
+        const session = this.device.requireSession()
+        const identityName = buildClientCredentialIdentity(session.user.id, this.device.deviceIdentity.id)
         const state = await processWelcome(
           Buffer.from(welcomeData, 'base64'),
-          publicPackage,
-          privatePackage
+          identityName
         )
 
         await this.setGroupState(scopeId, state)

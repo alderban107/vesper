@@ -24,6 +24,7 @@ import initWasm, {
 
 // Re-export WASM types that the orchestration layer needs
 export type { ExternalCommitResult, CommitBundle, ProcessResult }
+export { Provider, Identity, WasmKeyPackage as KeyPackage }
 
 // ============================================================
 // Types (replaces ts-mls type imports)
@@ -87,25 +88,52 @@ export function buildClientCredentialIdentity(userId: string, deviceId: string):
 // ============================================================
 
 /**
- * Generate a batch of key packages for a user.
- * Each key package gets its own Provider (for independent key lifecycle).
+ * Create a signing identity for registration/login.
+ * Returns everything needed for the registration flow.
+ */
+export async function createSigningIdentity(identityName: string): Promise<{
+  signaturePublicKey: Uint8Array
+  /** The serialized provider storage — contains the Ed25519 private key. Encrypt with password. */
+  privateKeyBundle: Uint8Array
+  /** The serialized identity — small blob (name + public key ref). Store alongside the bundle. */
+  identityData: Uint8Array
+}> {
+  const provider = new Provider()
+  const identity = new Identity(provider, identityName)
+
+  return {
+    signaturePublicKey: new Uint8Array(identity.signature_public_key()),
+    privateKeyBundle: new Uint8Array(provider.serialize_storage()),
+    identityData: new Uint8Array(identity.serialize())
+  }
+}
+
+/**
+ * Generate a batch of key packages using a previously created signing identity.
+ * Each key package gets its own Provider copy (for independent key lifecycle).
  */
 export async function createKeyPackageBatch(
-  identity: string,
+  identityData: Uint8Array,
+  privateKeyBundle: Uint8Array,
   count: number
-): Promise<KeyPackagePair[]> {
-  const pairs: KeyPackagePair[] = []
-  for (let i = 0; i < count; i++) {
-    const provider = new Provider()
-    const id = new Identity(provider, identity)
-    const kp = id.key_package(provider)
+): Promise<Array<{ publicData: Uint8Array; privateData: Uint8Array }>> {
+  const results: Array<{ publicData: Uint8Array; privateData: Uint8Array }> = []
 
-    pairs.push({
-      publicPackage: kp,
-      privatePackage: provider.serialize_storage()
+  for (let i = 0; i < count; i++) {
+    // Each key package gets its own Provider (independent lifecycle)
+    const provider = new Provider()
+    provider.deserialize_storage(privateKeyBundle)
+    const identity = Identity.deserialize(provider, identityData)
+    const kp = identity.key_package(provider)
+
+    results.push({
+      publicData: new Uint8Array(kp.to_bytes()),
+      // Save the provider storage which now includes the new key package's keys
+      privateData: new Uint8Array(provider.serialize_storage())
     })
   }
-  return pairs
+
+  return results
 }
 
 /**
@@ -489,4 +517,27 @@ function makeGroupState(provider: Provider, identity: Identity, group: Group): G
       }
     }
   }
+}
+
+/**
+ * Build an identity data blob from a name and public key.
+ * This matches the format produced by Identity.serialize() in the WASM bindings.
+ * Used to reconstruct identity data from persisted storage without having the
+ * original Identity object.
+ */
+export function buildIdentityData(identityName: string, signaturePublicKey: Uint8Array): Uint8Array {
+  const nameBytes = new TextEncoder().encode(identityName)
+  const buf = new Uint8Array(4 + nameBytes.length + 4 + signaturePublicKey.length)
+  const view = new DataView(buf.buffer)
+
+  let offset = 0
+  view.setUint32(offset, nameBytes.length)
+  offset += 4
+  buf.set(nameBytes, offset)
+  offset += nameBytes.length
+  view.setUint32(offset, signaturePublicKey.length)
+  offset += 4
+  buf.set(signaturePublicKey, offset)
+
+  return buf
 }

@@ -14,13 +14,11 @@ import type {
 import {
   addMemberToGroup,
   buildClientCredentialIdentity,
-  createKeyPackageBatch,
   createMLSGroup,
-  decodePayload,
   decodeKeyPackageBytes,
+  decodePayload,
   decryptMessage,
   deserializeGroupState,
-  deserializePrivatePackage,
   deriveVoiceKey,
   encodePayload,
   encryptMessage,
@@ -1544,36 +1542,24 @@ export class VesperEncryptedChat {
 
     const session = this.requireSession()
     const localDeviceId = this.requireDeviceId()
+    const identityName = buildClientCredentialIdentity(session.user.id, localDeviceId)
+
+    // With OpenMLS, createMLSGroup handles identity + key generation internally.
+    // We just need a locally stored key package for consumeOwnKeyPackage.
     const localPackages = await this.storage.loadKeyPackages()
-    let publicPackage: Awaited<ReturnType<typeof createKeyPackageBatch>>[number]['publicPackage']
-    let privatePackage: Awaited<ReturnType<typeof createKeyPackageBatch>>[number]['privatePackage']
 
     if (localPackages.length > 0) {
       const localPackage = localPackages[0]
       await this.storage.consumeKeyPackage(localPackage.id)
       this.diagnostics.recordKeyPackageConsumed(scopeId)
-      publicPackage = decodeKeyPackageBytes(new Uint8Array(localPackage.publicData))
-      privatePackage = deserializePrivatePackage(new Uint8Array(localPackage.privateData))
-      // Also mark consumed on the server so it won't be handed out to other
-      // clients via fetchKeyPackage. Without this, the server may return a
-      // stale package whose private key we no longer hold, causing Welcome
-      // decryption failures during DM group convergence.
-      // This must complete before the group is considered ready — otherwise
-      // another client may race and fetch the stale package.
+      // Mark consumed on the server so it won't be handed out to other clients
       await consumeOwnKeyPackage(
         new Uint8Array(localPackage.publicData),
         this.client.getHttpClient()
       ).catch(() => {})
-    } else {
-      const pairs = await createKeyPackageBatch(
-        buildClientCredentialIdentity(session.user.id, localDeviceId),
-        1
-      )
-      publicPackage = pairs[0].publicPackage
-      privatePackage = pairs[0].privatePackage
     }
 
-    const state = await createMLSGroup(scopeId, publicPackage, privatePackage)
+    const state = await createMLSGroup(scopeId, identityName)
     await this.setGroupState(scopeId, state)
     this.diagnostics.recordGroupCreated(scopeId)
     await this.client.replenishKeyPackages()
@@ -1610,11 +1596,12 @@ export class VesperEncryptedChat {
     }
 
     const memberKeyPackage = decodeKeyPackageBytes(keyPackageBytes)
-    const credential = memberKeyPackage.leafNode.credential
-    const requestedIdentity =
-      credential.credentialType === 'basic'
-        ? new TextDecoder().decode(credential.identity)
-        : null
+
+    // With OpenMLS, key packages are opaque WASM objects. We infer the requested
+    // identity from the userId/deviceId parameters rather than parsing the credential.
+    const requestedIdentity = deviceId
+      ? buildClientCredentialIdentity(userId, deviceId)
+      : userId
 
     let workingState = this.cloneGroupState(state)
     let removeCommitBytes: string | null = null
@@ -1638,7 +1625,7 @@ export class VesperEncryptedChat {
       return null
     }
 
-    const result = await addMemberToGroup(workingState, memberKeyPackage)
+    const result = await addMemberToGroup(workingState, keyPackageBytes)
     await this.setGroupState(scopeId, result.newState)
 
     return {
@@ -1689,12 +1676,12 @@ export class VesperEncryptedChat {
 
     for (const localPackage of orderedPackages) {
       try {
-        const publicPackage = decodeKeyPackageBytes(new Uint8Array(localPackage.publicData))
-        const privatePackage = deserializePrivatePackage(new Uint8Array(localPackage.privateData))
+        const session = this.requireSession()
+        const localDeviceId = this.requireDeviceId()
+        const identityName = buildClientCredentialIdentity(session.user.id, localDeviceId)
         const state = await processWelcome(
           Buffer.from(welcomeData, 'base64'),
-          publicPackage,
-          privatePackage
+          identityName
         )
 
         await this.setGroupState(scopeId, state)
@@ -1789,11 +1776,11 @@ export class VesperEncryptedChat {
       }
 
       const memberKeyPackage = decodeKeyPackageBytes(keyPackageBytes)
-      const requestedCredential = memberKeyPackage.leafNode.credential
-      const requestedIdentity =
-        requestedCredential.credentialType === 'basic'
-          ? new TextDecoder().decode(requestedCredential.identity)
-          : null
+
+      // Infer identity from userId/deviceId rather than parsing the opaque key package
+      const requestedIdentity = deviceId
+        ? buildClientCredentialIdentity(userId, deviceId)
+        : userId
 
       let workingState = this.cloneGroupState(state)
       let removeCommitBytes: string | null = null
@@ -1813,7 +1800,7 @@ export class VesperEncryptedChat {
         return null
       }
 
-      const added = await addMemberToGroup(workingState, memberKeyPackage)
+      const added = await addMemberToGroup(workingState, keyPackageBytes)
       await this.setGroupState(scopeId, added.newState)
 
       return {
