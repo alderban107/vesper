@@ -314,3 +314,81 @@ function base64ToUint8(b64: string): Uint8Array {
 }
 
 export { uint8ToBase64, base64ToUint8 }
+
+// --- GroupInfo (for External Commits) ---
+
+/**
+ * Publish MLS GroupInfo to the server for External Commit joins.
+ * Should be called after every epoch change (add, remove, update, external commit).
+ */
+export async function publishGroupInfo(
+  scopeId: string,
+  groupInfoData: Uint8Array,
+  ratchetTreeData: Uint8Array | null,
+  epoch: number,
+  httpClient: VesperHttpClient = getDefaultHttpClient()
+): Promise<void> {
+  const body: Record<string, unknown> = {
+    group_info_data: uint8ToBase64(groupInfoData),
+    epoch
+  }
+  if (ratchetTreeData) {
+    body.ratchet_tree_data = uint8ToBase64(ratchetTreeData)
+  }
+
+  const res = await httpClient.apiFetch(
+    `/api/v1/group-info/${encodeURIComponent(scopeId)}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(body)
+    }
+  )
+  if (!res.ok) {
+    // Non-critical: stale epoch publishes are silently ignored by the server.
+    // Only throw on actual errors.
+    const data = await res.json().catch(() => ({}))
+    throw new Error(`Failed to publish GroupInfo: ${res.status} ${data.error || ''}`)
+  }
+}
+
+/**
+ * Fetch the latest MLS GroupInfo from the server for External Commit joins.
+ * Returns null if no GroupInfo has been published yet.
+ */
+export async function fetchGroupInfo(
+  scopeId: string,
+  httpClient: VesperHttpClient = getDefaultHttpClient()
+): Promise<{
+  groupInfoData: Uint8Array
+  ratchetTreeData: Uint8Array | null
+  epoch: number
+  publisherId: string
+} | null> {
+  const res = await httpClient.apiFetch(
+    `/api/v1/group-info/${encodeURIComponent(scopeId)}`
+  )
+
+  if (res.status === 404) {
+    return null
+  }
+
+  if (!res.ok) {
+    throw new Error(`Failed to fetch GroupInfo: ${res.status}`)
+  }
+
+  const data = (await res.json()) as { group_info: {
+    group_info_data: string
+    ratchet_tree_data: string | null
+    epoch: number
+    publisher_id: string
+  }}
+
+  return {
+    groupInfoData: base64ToUint8(data.group_info.group_info_data),
+    ratchetTreeData: data.group_info.ratchet_tree_data
+      ? base64ToUint8(data.group_info.ratchet_tree_data)
+      : null,
+    epoch: data.group_info.epoch,
+    publisherId: data.group_info.publisher_id
+  }
+}

@@ -1,9 +1,11 @@
 import {
   ackPendingWelcome,
   consumeOwnKeyPackage,
+  fetchGroupInfo,
   fetchKeyPackage,
   fetchMlsEvents,
   fetchPendingWelcomes,
+  publishGroupInfo,
   uint8ToBase64
 } from '../api/crypto.js'
 import type {
@@ -22,6 +24,8 @@ import {
   deriveVoiceKey,
   encodePayload,
   encryptMessage,
+  exportGroupInfo,
+  exportRatchetTree,
   findExactMemberLeafIndex,
   findMemberLeafIndex,
   getDisplayText,
@@ -29,6 +33,7 @@ import {
   getGroupMemberIdentities,
   groupHasMember,
   initCipherSuite,
+  joinViaExternalCommit,
   processCommitMessage,
   processWelcome,
   removeMemberFromGroup,
@@ -191,6 +196,7 @@ export class VesperEncryptedChat {
   private readonly membershipWaiters = new Map<string, Set<(ready: boolean) => void>>()
   private readonly welcomeAppliedAtByScope = new Map<string, number>()
   private readonly recentDmJoinProcessed = new Map<string, number>()
+  private readonly scopeKinds = new Map<string, 'channel' | 'dm'>()
   private readonly yieldedDmScopes = new Set<string>()
   private readonly pendingGroupCreations = new Map<string, Promise<void>>()
   private readonly diagnostics = new MLSDiagnostics()
@@ -256,6 +262,7 @@ export class VesperEncryptedChat {
         }
 
         try {
+          this.scopeKinds.set(scope.id, scope.kind)
           const dispose = await this.client.watchScope(scope.kind, scope.id, async ({ event, payload }) => {
             const nextEvent = await withGroupLock(scope.id, async () => {
               return await this.withStorageContext(async () => {
@@ -333,6 +340,7 @@ export class VesperEncryptedChat {
       }
 
       if (!this.joinedTopics.has(topic)) {
+        this.scopeKinds.set(scope.id, scope.kind)
         const dispose = await this.client.watchScope(scope.kind, scope.id, async ({ event, payload }) => {
           const nextEvent = await withGroupLock(scope.id, async () => {
             return await this.withStorageContext(async () => {
@@ -1295,7 +1303,7 @@ export class VesperEncryptedChat {
     return this.hasGroup(conversationId)
   }
 
-  /** Core private impl: checks in-memory group state, falls back to persisted storage, then tries pending welcomes. Does not create new groups. */
+  /** Core private impl: checks in-memory group state, falls back to persisted storage, then tries External Commit, then Welcome. */
   private async ensureGroupMembership(scopeId: string): Promise<boolean> {
     if (this.hasGroup(scopeId)) {
       await this.processPendingCommits(scopeId)
@@ -1315,6 +1323,12 @@ export class VesperEncryptedChat {
       }
     }
 
+    // Try External Commit first — no online member needed (RFC 9420 §12.4)
+    if (await this.tryJoinViaExternalCommit(scopeId)) {
+      return true
+    }
+
+    // Fall back to Welcome-based join
     let welcomes: Awaited<ReturnType<typeof fetchPendingWelcomes>> = []
     try {
       welcomes = await fetchPendingWelcomes(scopeId, this.client.getHttpClient())
@@ -1338,6 +1352,53 @@ export class VesperEncryptedChat {
     }
 
     return false
+  }
+
+  /**
+   * Try to join a group via External Commit using published GroupInfo.
+   * This is the primary join path — no existing member needs to be online.
+   */
+  private async tryJoinViaExternalCommit(scopeId: string): Promise<boolean> {
+    try {
+      await initCipherSuite()
+
+      const groupInfo = await fetchGroupInfo(scopeId, this.client.getHttpClient())
+      if (!groupInfo) {
+        return false // No GroupInfo published yet
+      }
+
+      const session = this.requireSession()
+      const localDeviceId = this.requireDeviceId()
+      const identityName = buildClientCredentialIdentity(session.user.id, localDeviceId)
+
+      const { state, commitBytes } = await joinViaExternalCommit(
+        groupInfo.groupInfoData,
+        groupInfo.ratchetTreeData,
+        identityName
+      )
+
+      // Fan out the external commit to other members via MLS event
+      await this.broadcastExternalCommit(scopeId, commitBytes)
+
+      await this.setGroupState(scopeId, state)
+      this.notifyMembershipWaiters(scopeId, true)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * Broadcast an external commit to the group via the scope event system.
+   */
+  private async broadcastExternalCommit(scopeId: string, commitBytes: Uint8Array): Promise<void> {
+    // Determine scope kind from scopeId format
+    // DM conversations use the 'dm' kind; everything else is 'channel'
+    const kind = this.scopeKinds.get(scopeId) ?? 'channel'
+
+    await this.client.pushScopeEvent(kind, scopeId, 'mls_commit', {
+      commit_data: uint8ToBase64(commitBytes)
+    })
   }
 
   private async replayDurableEvents(scopeId: string): Promise<void> {
@@ -2043,6 +2104,32 @@ export class VesperEncryptedChat {
     this.diagnostics.updateEpoch(scopeId, epoch)
     await this.storage.saveGroupState(scopeId, serializedState, epoch)
     this.notifyMembershipWaiters(scopeId, true)
+
+    // Publish GroupInfo for External Commits (non-blocking, best-effort)
+    this.publishGroupInfoForScope(scopeId, state).catch(() => {})
+  }
+
+  /**
+   * Publish GroupInfo + ratchet tree to the server so new members
+   * can join via External Commit without any online member's help.
+   */
+  private async publishGroupInfoForScope(scopeId: string, state: GroupState): Promise<void> {
+    try {
+      const groupInfoData = exportGroupInfo(state)
+      const ratchetTreeData = exportRatchetTree(state)
+      const epoch = Number(state.groupContext.epoch)
+
+      await publishGroupInfo(
+        scopeId,
+        groupInfoData,
+        ratchetTreeData,
+        epoch,
+        this.client.getHttpClient()
+      )
+    } catch {
+      // Best-effort: GroupInfo publish failure shouldn't block MLS operations.
+      // The next epoch change will try again.
+    }
   }
 
   private cloneGroupState(state: GroupState): GroupState {
