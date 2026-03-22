@@ -155,14 +155,17 @@ test.describe('P0 Smoke — full continuous run', () => {
 
     // Capture network failures
     const aliceNetFails: string[] = []
-    alice.page.on('requestfailed', req => aliceNetFails.push(`${req.method()} ${req.url()} - ${req.failure()?.errorText}`))
-    alice.page.on('response', res => { if (res.status() >= 400) aliceNetFails.push(`${res.status()} ${res.url()}`) })
-    bob.page.on('requestfailed', req => aliceNetFails.push(`BOB: ${req.method()} ${req.url()} - ${req.failure()?.errorText}`))
-    bob.page.on('response', res => { if (res.status() >= 400) aliceNetFails.push(`BOB: ${res.status()} ${res.url()}`) })
+    alice.page.on('response', res => { if (res.status() >= 400) aliceNetFails.push(`ALICE ${res.status()} ${res.request().method()} ${res.url()}`) })
+    bob.page.on('response', res => { if (res.status() >= 400) aliceNetFails.push(`BOB ${res.status()} ${res.request().method()} ${res.url()}`) })
 
     // Wait for alice's messages to appear on bob's side
-    console.log('[E2E DEBUG] Network failures so far:', JSON.stringify(aliceNetFails.slice(-10)))
-    await waitForMessage(bob.page, DM_MESSAGES.aliceToBob1)
+    console.log('[E2E DEBUG] Network failures so far:', JSON.stringify(aliceNetFails.slice(-15)))
+    try {
+      await waitForMessage(bob.page, DM_MESSAGES.aliceToBob1)
+    } catch (e) {
+      console.log('[E2E DEBUG] TIMEOUT - all network fails:', JSON.stringify(aliceNetFails))
+      throw e
+    }
     await waitForMessage(bob.page, DM_MESSAGES.aliceToBob2)
 
     // Bob replies
