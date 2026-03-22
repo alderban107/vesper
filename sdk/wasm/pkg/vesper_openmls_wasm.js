@@ -358,7 +358,7 @@ export class Group {
         return ProcessResult.__wrap(ret[0]);
     }
     /**
-     * Remove a member by leaf index
+     * Remove a member by leaf index using inline remove proposals.
      * @param {Provider} provider
      * @param {Identity} sender
      * @param {number} leaf_index

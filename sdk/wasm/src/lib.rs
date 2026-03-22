@@ -400,6 +400,7 @@ impl Group {
             .ciphersuite(CIPHERSUITE)
             .with_group_id(GroupId::from_slice(&group_id_bytes))
             .use_ratchet_tree_extension(true)
+            .max_past_epochs(RETAIN_KEYS_FOR_EPOCHS)
             .build(
                 &provider.0,
                 &founder.keypair,
@@ -424,7 +425,7 @@ impl Group {
             ))),
         }?;
 
-        let config = MlsGroupJoinConfig::builder().use_ratchet_tree_extension(true).build();
+        let config = MlsGroupJoinConfig::builder().use_ratchet_tree_extension(true).max_past_epochs(RETAIN_KEYS_FOR_EPOCHS).build();
         let tree = ratchet_tree.map(|rt| rt.0);
         let mls_group =
             StagedWelcome::new_from_welcome(&provider.0, &config, welcome, tree)?
@@ -457,7 +458,7 @@ impl Group {
             }
         };
 
-        let config = MlsGroupJoinConfig::builder().use_ratchet_tree_extension(true).build();
+        let config = MlsGroupJoinConfig::builder().use_ratchet_tree_extension(true).max_past_epochs(RETAIN_KEYS_FOR_EPOCHS).build();
 
         let mut builder = MlsGroup::external_commit_builder()
             .with_config(config);
@@ -553,7 +554,7 @@ impl Group {
         })
     }
 
-    /// Remove a member by leaf index
+    /// Remove a member by leaf index using inline remove proposals.
     pub fn remove_member(
         &mut self,
         provider: &Provider,
@@ -565,12 +566,9 @@ impl Group {
             .member_at(LeafNodeIndex::new(leaf_index))
             .ok_or_else(|| JsError::new(&format!("No member at leaf index {leaf_index}")))?;
 
-        self.mls_group
-            .propose_remove_member(&provider.0, &sender.keypair, member.index)?;
-
         let (commit_msg, welcome_msg, group_info_opt) = self
             .mls_group
-            .commit_to_pending_proposals(&provider.0, &sender.keypair)?;
+            .remove_members(&provider.0, &sender.keypair, &[member.index])?;
 
         let mut commit_bytes = vec![];
         commit_msg.tls_serialize(&mut commit_bytes)?;

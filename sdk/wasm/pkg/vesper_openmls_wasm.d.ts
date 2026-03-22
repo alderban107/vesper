@@ -98,7 +98,7 @@ export class Group {
      */
     process_message(provider: Provider, msg: Uint8Array): ProcessResult;
     /**
-     * Remove a member by leaf index
+     * Remove a member by leaf index using inline remove proposals.
      */
     remove_member(provider: Provider, sender: Identity, leaf_index: number): CommitBundle;
 }
