@@ -87,8 +87,21 @@ export async function initCipherSuite(wasmSource?: string | URL | BufferSource):
 
     await initWasm(wasmBytes)
   } else {
-    // Browser/Electron: default loader uses import.meta.url
-    await initWasm()
+    // Browser/Electron: try well-known URL first, fall back to default loader
+    try {
+      // Try loading from a well-known path (set up by the Vite WASM plugin)
+      const wasmUrl = new URL('/assets/vesper_openmls_wasm_bg.wasm', window.location.origin)
+      const response = await fetch(wasmUrl)
+      if (response.ok) {
+        await initWasm(await response.arrayBuffer())
+      } else {
+        // Fall back to default import.meta.url-based loader
+        await initWasm()
+      }
+    } catch {
+      // Last resort: default loader
+      await initWasm()
+    }
   }
 
   wasmInitialized = true

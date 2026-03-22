@@ -17,7 +17,11 @@ function openmlsWasmPlugin(): Plugin {
     name: 'openmls-wasm',
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
-        if (req.url && req.url.includes(wasmFileName)) {
+        // Serve WASM at the well-known path and any path containing the filename
+        if (req.url && (
+          req.url === `/assets/${wasmFileName}` ||
+          req.url.includes(wasmFileName)
+        )) {
           const wasmPath = resolve(wasmPkgDir, wasmFileName)
           res.setHeader('Content-Type', 'application/wasm')
           res.end(readFileSync(wasmPath))
