@@ -29,7 +29,9 @@ export class Group {
     free(): void;
     [Symbol.dispose](): void;
     /**
-     * Add a member to the group (traditional Welcome-based flow)
+     * Add a member to the group using inline add proposals.
+     * The commit is self-contained — other members can process it without
+     * having received a separate proposal first.
      */
     add_member(provider: Provider, sender: Identity, new_member: KeyPackage): CommitBundle;
     /**

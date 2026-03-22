@@ -113,7 +113,9 @@ export class Group {
         wasm.__wbg_group_free(ptr, 0);
     }
     /**
-     * Add a member to the group (traditional Welcome-based flow)
+     * Add a member to the group using inline add proposals.
+     * The commit is self-contained — other members can process it without
+     * having received a separate proposal first.
      * @param {Provider} provider
      * @param {Identity} sender
      * @param {KeyPackage} new_member

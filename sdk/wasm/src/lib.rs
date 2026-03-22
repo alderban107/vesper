@@ -518,29 +518,27 @@ impl Group {
         RatchetTree(self.mls_group.export_ratchet_tree().into())
     }
 
-    /// Add a member to the group (traditional Welcome-based flow)
+    /// Add a member to the group using inline add proposals.
+    /// The commit is self-contained — other members can process it without
+    /// having received a separate proposal first.
     pub fn add_member(
         &mut self,
         provider: &Provider,
         sender: &Identity,
         new_member: &KeyPackage,
     ) -> Result<CommitBundle, JsError> {
-        let (proposal_msg, _proposal_ref) =
-            self.mls_group
-                .propose_add_member(&provider.0, &sender.keypair, &new_member.0)?;
-
         let (commit_msg, welcome_msg, group_info_opt) = self
             .mls_group
-            .commit_to_pending_proposals(&provider.0, &sender.keypair)?;
+            .add_members_without_update(&provider.0, &sender.keypair, &[new_member.0.clone()])?;
 
         let mut commit_bytes = vec![];
         commit_msg.tls_serialize(&mut commit_bytes)?;
 
-        let welcome_bytes = welcome_msg.map(|w| {
+        let welcome_bytes = {
             let mut b = vec![];
-            w.tls_serialize(&mut b).unwrap();
-            b
-        });
+            welcome_msg.tls_serialize(&mut b)?;
+            Some(b)
+        };
 
         let group_info_bytes = group_info_opt.map(|gi| {
             let mut b = vec![];
