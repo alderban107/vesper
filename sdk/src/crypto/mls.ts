@@ -198,26 +198,22 @@ export async function processWelcome(
 ): Promise<GroupState> {
   const provider = new Provider()
 
-  // If we have the key package's private data, restore it into the provider.
-  // This is needed because the Welcome is encrypted to a specific key package.
+  // Restore the key package's private keys into the provider.
+  // The Welcome is encrypted to a specific key package's HPKE init key,
+  // which lives in the provider storage.
   if (privateData) {
     provider.deserialize_storage(privateData)
   }
 
-  const identity = privateData
-    ? (() => {
-        // Try to deserialize identity from the restored provider
-        // Build identity data from name + we need the public key
-        // Since the provider has the signing key, create a fresh identity
-        // with the same name — it'll generate a new keypair but we need the old one.
-        // Actually, the provider storage has the key package keys but maybe not the signing key.
-        // Let's just create a new identity — the Welcome processing needs the HPKE private key
-        // (in the provider storage), not the signing key.
-        return new Identity(provider, identityName)
-      })()
-    : new Identity(provider, identityName)
-
+  // Join the group. The provider must contain the key package's private keys.
   const group = Group.join_from_welcome(provider, welcomeBytes)
+
+  // Now create an Identity for subsequent operations (sending messages).
+  // We create a fresh one because join_from_welcome doesn't need it —
+  // it only needs the key package keys in the provider.
+  // IMPORTANT: create this AFTER joining, so the new signing keypair
+  // doesn't interfere with the join process.
+  const identity = new Identity(provider, identityName)
 
   return makeGroupState(provider, identity, group)
 }

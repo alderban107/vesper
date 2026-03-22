@@ -399,6 +399,7 @@ impl Group {
         let mls_group = MlsGroup::builder()
             .ciphersuite(CIPHERSUITE)
             .with_group_id(GroupId::from_slice(&group_id_bytes))
+            .use_ratchet_tree_extension(true)
             .build(
                 &provider.0,
                 &founder.keypair,
@@ -423,7 +424,7 @@ impl Group {
             ))),
         }?;
 
-        let config = MlsGroupJoinConfig::builder().build();
+        let config = MlsGroupJoinConfig::builder().use_ratchet_tree_extension(true).build();
         let tree = ratchet_tree.map(|rt| rt.0);
         let mls_group =
             StagedWelcome::new_from_welcome(&provider.0, &config, welcome, tree)?
@@ -456,7 +457,7 @@ impl Group {
             }
         };
 
-        let config = MlsGroupJoinConfig::builder().build();
+        let config = MlsGroupJoinConfig::builder().use_ratchet_tree_extension(true).build();
 
         let mut builder = MlsGroup::external_commit_builder()
             .with_config(config);
