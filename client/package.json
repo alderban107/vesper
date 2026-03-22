@@ -75,7 +75,6 @@
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
     "tailwindcss": "^4.2.1",
-    "ts-mls": "^1.6.1",
     "zustand": "^5.0.11"
   }
 }

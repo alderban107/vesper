@@ -1,0 +1,29 @@
+[package]
+name = "vesper-openmls-wasm"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["console_error_panic_hook"]
+
+[dependencies]
+wasm-bindgen = "0.2.100"
+openmls = { git = "https://github.com/openmls/openmls", branch = "main", features = ["js"] }
+openmls_traits = { git = "https://github.com/openmls/openmls", branch = "main" }
+openmls_rust_crypto = { git = "https://github.com/openmls/openmls", branch = "main" }
+openmls_basic_credential = { git = "https://github.com/openmls/openmls", branch = "main" }
+openmls_memory_storage = { git = "https://github.com/openmls/openmls", branch = "main" }
+tls_codec = { version = "0.4.2", features = ["derive", "serde", "mls"] }
+console_error_panic_hook = { version = "0.1.7", optional = true }
+js-sys = "0.3.68"
+getrandom_old = { package = "getrandom", version = "0.2.15", features = ["js"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3.50"
