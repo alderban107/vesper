@@ -129,6 +129,20 @@ test.describe('P0 Smoke — full continuous run', () => {
 
   // --- Steps 5-6: DM between alice and bob (R-DM-1) ---
   test('Steps 5-6: alice and bob exchange encrypted DMs', async () => {
+    // Capture browser console for E2EE debugging
+    const aliceConsole: string[] = []
+    const bobConsole: string[] = []
+    alice.page.on('console', msg => {
+      if (msg.text().includes('E2EE') || msg.text().includes('WASM') || msg.text().includes('MLS') || msg.type() === 'error') {
+        aliceConsole.push(`[${msg.type()}] ${msg.text()}`)
+      }
+    })
+    bob.page.on('console', msg => {
+      if (msg.text().includes('E2EE') || msg.text().includes('WASM') || msg.text().includes('MLS') || msg.type() === 'error') {
+        bobConsole.push(`[${msg.type()}] ${msg.text()}`)
+      }
+    })
+
     // Alice creates a DM with bob
     await createDm(alice.page, USERS.bob.username)
 
@@ -138,6 +152,10 @@ test.describe('P0 Smoke — full continuous run', () => {
 
     // Bob selects the DM
     await selectDm(bob.page, USERS.alice.username)
+
+    // Dump console before waiting
+    console.log('[E2E DEBUG] Alice console:', JSON.stringify(aliceConsole))
+    console.log('[E2E DEBUG] Bob console:', JSON.stringify(bobConsole))
 
     // Wait for alice's messages to appear on bob's side
     await waitForMessage(bob.page, DM_MESSAGES.aliceToBob1)

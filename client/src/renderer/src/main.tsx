@@ -14,8 +14,6 @@ import './index.css'
 initWebNotifications()
 
 // Initialize WASM for MLS E2EE
-// The WASM binary URL is provided by the Vite plugin's dev middleware
-// and emitted as an asset in production builds.
 initCipherSuite('/assets/vesper_openmls_wasm_bg.wasm').catch((err) => {
   console.error('[E2EE] Failed to initialize WASM:', err)
 })
