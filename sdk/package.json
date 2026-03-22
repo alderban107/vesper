@@ -7,7 +7,7 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "npm run build:wasm && tsc -p tsconfig.json --noCheck",
+    "build": "tsc -p tsconfig.json --noCheck",
     "build:wasm": "cd wasm && wasm-pack build --target web --release && rm -f pkg/.gitignore",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:db:start": "sh ./scripts/start-test-postgres.sh",

@@ -1,0 +1,16 @@
+{
+  "name": "vesper-openmls-wasm",
+  "type": "module",
+  "version": "0.1.0",
+  "license": "MIT",
+  "files": [
+    "vesper_openmls_wasm_bg.wasm",
+    "vesper_openmls_wasm.js",
+    "vesper_openmls_wasm.d.ts"
+  ],
+  "main": "vesper_openmls_wasm.js",
+  "types": "vesper_openmls_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
