@@ -133,14 +133,10 @@ test.describe('P0 Smoke — full continuous run', () => {
     const aliceConsole: string[] = []
     const bobConsole: string[] = []
     alice.page.on('console', msg => {
-      if (msg.text().includes('E2EE') || msg.text().includes('WASM') || msg.text().includes('MLS') || msg.type() === 'error') {
-        aliceConsole.push(`[${msg.type()}] ${msg.text()}`)
-      }
+      aliceConsole.push(`[${msg.type()}] ${msg.text()}`)
     })
     bob.page.on('console', msg => {
-      if (msg.text().includes('E2EE') || msg.text().includes('WASM') || msg.text().includes('MLS') || msg.type() === 'error') {
-        bobConsole.push(`[${msg.type()}] ${msg.text()}`)
-      }
+      bobConsole.push(`[${msg.type()}] ${msg.text()}`)
     })
 
     // Alice creates a DM with bob
@@ -154,10 +150,18 @@ test.describe('P0 Smoke — full continuous run', () => {
     await selectDm(bob.page, USERS.alice.username)
 
     // Dump console before waiting
-    console.log('[E2E DEBUG] Alice console:', JSON.stringify(aliceConsole))
-    console.log('[E2E DEBUG] Bob console:', JSON.stringify(bobConsole))
+    console.log('[E2E DEBUG] Alice console:', JSON.stringify(aliceConsole.slice(-20)))
+    console.log('[E2E DEBUG] Bob console:', JSON.stringify(bobConsole.slice(-20)))
+
+    // Capture network failures
+    const aliceNetFails: string[] = []
+    alice.page.on('requestfailed', req => aliceNetFails.push(`${req.method()} ${req.url()} - ${req.failure()?.errorText}`))
+    alice.page.on('response', res => { if (res.status() >= 400) aliceNetFails.push(`${res.status()} ${res.url()}`) })
+    bob.page.on('requestfailed', req => aliceNetFails.push(`BOB: ${req.method()} ${req.url()} - ${req.failure()?.errorText}`))
+    bob.page.on('response', res => { if (res.status() >= 400) aliceNetFails.push(`BOB: ${res.status()} ${res.url()}`) })
 
     // Wait for alice's messages to appear on bob's side
+    console.log('[E2E DEBUG] Network failures so far:', JSON.stringify(aliceNetFails.slice(-10)))
     await waitForMessage(bob.page, DM_MESSAGES.aliceToBob1)
     await waitForMessage(bob.page, DM_MESSAGES.aliceToBob2)
 
