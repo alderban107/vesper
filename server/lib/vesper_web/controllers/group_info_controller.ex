@@ -163,8 +163,11 @@ defmodule VesperWeb.GroupInfoController do
 
   defp parse_optional_epoch(params, field) do
     case Map.get(params, field) do
-      nil -> nil
-      value when is_integer(value) and value >= 0 -> value
+      nil ->
+        nil
+
+      value when is_integer(value) and value >= 0 ->
+        value
 
       value when is_binary(value) ->
         case Integer.parse(value) do
@@ -172,7 +175,8 @@ defmodule VesperWeb.GroupInfoController do
           _ -> nil
         end
 
-      _ -> nil
+      _ ->
+        nil
     end
   end
 
