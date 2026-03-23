@@ -29,6 +29,9 @@ defmodule VesperWeb.ChatChannel do
             |> assign(:server_id, channel.server_id)
             |> assign(:disappearing_ttl, channel.disappearing_ttl)
 
+          # Schedule replay of missed mls_request_join_all events after join completes
+          send(self(), :replay_mls_join_broadcasts)
+
           {:ok, socket}
         else
           {:error, %{reason: "insufficient permissions"}}
@@ -503,12 +506,23 @@ defmodule VesperWeb.ChatChannel do
       device_id: Map.get(payload, "device_id") || socket.assigns.device_client_id
     })
 
-    {:noreply, socket}
+    {:reply, :ok, socket}
   end
 
   def handle_in("mls_request_join_all", _payload, socket) do
+    # Store durably so late-joining participants receive the broadcast.
+    # The join handler replays these events to new arrivals.
+    Encryption.store_mls_event(%{
+      group_id: socket.assigns.channel_id,
+      channel_id: socket.assigns.channel_id,
+      event_type: "mls_request_join_all",
+      payload: %{user_id: socket.assigns.user_id},
+      sender_id: socket.assigns.user_id,
+      sender_device_id: socket.assigns.device_client_id
+    })
+
     broadcast_from!(socket, "mls_request_join_all", %{user_id: socket.assigns.user_id})
-    {:noreply, socket}
+    {:reply, :ok, socket}
   end
 
   def handle_in("mls_resync_request", payload, socket) when is_map(payload) do
@@ -835,6 +849,27 @@ defmodule VesperWeb.ChatChannel do
   def handle_info({:member_left, server_id, user_id}, socket)
       when server_id == socket.assigns.server_id and user_id == socket.assigns.user_id do
     {:stop, {:shutdown, :membership_revoked}, socket}
+  end
+
+  def handle_info(:replay_mls_join_broadcasts, socket) do
+    channel_id = socket.assigns.channel_id
+    user_id = socket.assigns.user_id
+
+    # Replay recent mls_request_join_all events from OTHER participants so that
+    # a late-joining client can discover an existing MLS group and converge onto it
+    # rather than creating a competing independent group.
+    Encryption.list_mls_events_after(channel_id, 0, 50)
+    |> Enum.filter(fn event ->
+      event.event_type == "mls_request_join_all" and event.sender_id != user_id
+    end)
+    |> Enum.uniq_by(& &1.sender_id)
+    |> Enum.each(fn event ->
+      push(socket, "mls_request_join_all", %{
+        user_id: event.sender_id
+      })
+    end)
+
+    {:noreply, socket}
   end
 
   def handle_info(_msg, socket), do: {:noreply, socket}

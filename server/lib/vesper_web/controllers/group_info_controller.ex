@@ -59,12 +59,14 @@ defmodule VesperWeb.GroupInfoController do
          {:ok, ratchet_tree_data} <- decode_optional_base64(params, "ratchet_tree_data"),
          epoch when is_integer(epoch) <- parse_epoch(params) do
       {channel_id, conversation_id} = scope_ids(scope_id)
+      previous_epoch = parse_optional_epoch(params, "previous_epoch")
 
       case Encryption.publish_group_info(%{
              group_id: authorized_group_id,
              group_info_data: group_info_data,
              ratchet_tree_data: ratchet_tree_data,
              epoch: epoch,
+             previous_epoch: previous_epoch,
              publisher_id: user.id,
              publisher_client_id: device.client_id,
              channel_id: channel_id,
@@ -78,6 +80,9 @@ defmodule VesperWeb.GroupInfoController do
               updated_at: group_info.updated_at
             }
           })
+
+        {:error, :epoch_conflict} ->
+          conn |> put_status(:conflict) |> json(%{error: "epoch_conflict"})
 
         {:error, reason} ->
           conn |> put_status(:unprocessable_entity) |> json(%{error: inspect(reason)})
@@ -107,44 +112,75 @@ defmodule VesperWeb.GroupInfoController do
 
   defp decode_required_base64(params, field) do
     case Map.get(params, field) do
-      nil -> {:error, :missing_field, field}
+      nil ->
+        {:error, :missing_field, field}
+
       value when is_binary(value) ->
         case Base.decode64(value) do
           {:ok, data} -> {:ok, data}
           :error -> {:error, :invalid_base64, field}
         end
-      _ -> {:error, :missing_field, field}
+
+      _ ->
+        {:error, :missing_field, field}
     end
   end
 
   defp decode_optional_base64(params, field) do
     case Map.get(params, field) do
-      nil -> {:ok, nil}
+      nil ->
+        {:ok, nil}
+
       value when is_binary(value) ->
         case Base.decode64(value) do
           {:ok, data} -> {:ok, data}
           :error -> {:error, :invalid_base64, field}
         end
-      _ -> {:ok, nil}
+
+      _ ->
+        {:ok, nil}
     end
   end
 
   defp parse_epoch(params) do
     case Map.get(params, "epoch") do
-      nil -> {:error, :invalid_epoch}
-      value when is_integer(value) and value >= 0 -> value
+      nil ->
+        {:error, :invalid_epoch}
+
+      value when is_integer(value) and value >= 0 ->
+        value
+
       value when is_binary(value) ->
         case Integer.parse(value) do
           {parsed, ""} when parsed >= 0 -> parsed
           _ -> {:error, :invalid_epoch}
         end
-      _ -> {:error, :invalid_epoch}
+
+      _ ->
+        {:error, :invalid_epoch}
+    end
+  end
+
+  defp parse_optional_epoch(params, field) do
+    case Map.get(params, field) do
+      nil -> nil
+      value when is_integer(value) and value >= 0 -> value
+
+      value when is_binary(value) ->
+        case Integer.parse(value) do
+          {parsed, ""} when parsed >= 0 -> parsed
+          _ -> nil
+        end
+
+      _ -> nil
     end
   end
 
   defp scope_ids(scope_id) do
     cond do
-      String.starts_with?(scope_id, "voice:") -> {nil, nil}
+      String.starts_with?(scope_id, "voice:") ->
+        {nil, nil}
+
       true ->
         case Ecto.UUID.cast(scope_id) do
           {:ok, uuid} ->
@@ -155,7 +191,9 @@ defmodule VesperWeb.GroupInfoController do
               Chat.get_conversation(uuid) != nil -> {nil, uuid}
               true -> {nil, nil}
             end
-          :error -> {nil, nil}
+
+          :error ->
+            {nil, nil}
         end
     end
   end

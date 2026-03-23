@@ -132,7 +132,7 @@ defmodule VesperWeb.VoiceChannel do
       device_id: Map.get(payload, "device_id") || socket.assigns.device_client_id
     })
 
-    {:noreply, socket}
+    {:reply, :ok, socket}
   end
 
   def handle_in("mls_request_join_all", _payload, socket) do
@@ -140,7 +140,7 @@ defmodule VesperWeb.VoiceChannel do
       user_id: socket.assigns.user_id
     })
 
-    {:noreply, socket}
+    {:reply, :ok, socket}
   end
 
   def handle_in("mls_resync_request", payload, socket) when is_map(payload) do

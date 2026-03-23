@@ -153,11 +153,25 @@ async function fetchServerChannels(serverId: string): Promise<Channel[] | null> 
   }
 }
 
+function resolveEmojiUrls(emojis: CustomEmoji[]): CustomEmoji[] {
+  if (emojis.length === 0) return emojis
+  try {
+    const client = getRendererClient()
+    return emojis.map((emoji) =>
+      emoji.url.startsWith('/')
+        ? { ...emoji, url: client.resolveUrl(emoji.url) }
+        : emoji
+    )
+  } catch {
+    return emojis
+  }
+}
+
 function normalizeServer(server: Server, existing?: Server): Server {
   return {
     ...server,
     channels: mergeServerChannels(existing?.channels ?? [], server.channels ?? []),
-    emojis: server.emojis ?? []
+    emojis: resolveEmojiUrls(server.emojis ?? [])
   }
 }
 

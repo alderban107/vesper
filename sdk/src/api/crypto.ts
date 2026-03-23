@@ -320,20 +320,28 @@ export { uint8ToBase64, base64ToUint8 }
 /**
  * Publish MLS GroupInfo to the server for External Commit joins.
  * Should be called after every epoch change (add, remove, update, external commit).
+ *
+ * When `previousEpoch` is provided, uses compare-and-swap (CAS) semantics:
+ * the server only accepts the update if the stored epoch matches previousEpoch.
+ * Returns 'conflict' on mismatch (another joiner claimed the epoch first).
  */
 export async function publishGroupInfo(
   scopeId: string,
   groupInfoData: Uint8Array,
   ratchetTreeData: Uint8Array | null,
   epoch: number,
-  httpClient: VesperHttpClient = getDefaultHttpClient()
-): Promise<void> {
+  httpClient: VesperHttpClient = getDefaultHttpClient(),
+  previousEpoch?: number
+): Promise<'ok' | 'conflict'> {
   const body: Record<string, unknown> = {
     group_info_data: uint8ToBase64(groupInfoData),
     epoch
   }
   if (ratchetTreeData) {
     body.ratchet_tree_data = uint8ToBase64(ratchetTreeData)
+  }
+  if (previousEpoch !== undefined) {
+    body.previous_epoch = previousEpoch
   }
 
   const res = await httpClient.apiFetch(
@@ -343,12 +351,17 @@ export async function publishGroupInfo(
       body: JSON.stringify(body)
     }
   )
+
+  if (res.status === 409) {
+    return 'conflict'
+  }
+
   if (!res.ok) {
-    // Non-critical: stale epoch publishes are silently ignored by the server.
-    // Only throw on actual errors.
     const data = await res.json().catch(() => ({}))
     throw new Error(`Failed to publish GroupInfo: ${res.status} ${data.error || ''}`)
   }
+
+  return 'ok'
 }
 
 /**

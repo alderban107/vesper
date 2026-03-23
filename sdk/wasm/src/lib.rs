@@ -328,6 +328,31 @@ impl GroupInfo {
 }
 
 // ============================================================
+// OwnLeafIdentity — returned from Group::own_leaf_identity
+// ============================================================
+
+#[wasm_bindgen]
+pub struct OwnLeafIdentity {
+    name: String,
+    signature_public_key: Vec<u8>,
+}
+
+#[wasm_bindgen]
+impl OwnLeafIdentity {
+    /// The credential identity name from the own leaf node
+    #[wasm_bindgen(getter)]
+    pub fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    /// The Ed25519 signature public key from the own leaf node
+    #[wasm_bindgen(getter)]
+    pub fn signature_public_key(&self) -> Vec<u8> {
+        self.signature_public_key.clone()
+    }
+}
+
+// ============================================================
 // CommitBundle — returned from add/remove/external-commit operations
 // ============================================================
 
@@ -707,6 +732,28 @@ impl Group {
     /// Get the number of members in the group
     pub fn member_count(&self) -> usize {
         self.mls_group.members().count()
+    }
+
+    /// Get the own leaf's credential identity name and signature public key.
+    /// Used after join_from_welcome to reconstruct the correct Identity
+    /// (instead of creating a fresh one with a mismatched keypair).
+    pub fn own_leaf_identity(&self) -> Result<OwnLeafIdentity, JsError> {
+        let own_leaf = self
+            .mls_group
+            .own_leaf_node()
+            .ok_or_else(|| JsError::new("no own leaf node in group"))?;
+
+        let credential = own_leaf.credential();
+        let basic = BasicCredential::try_from(credential.clone())
+            .map_err(|e| JsError::new(&format!("non-basic credential: {e}")))?;
+        let name = String::from_utf8(basic.identity().to_vec())
+            .map_err(|e| JsError::new(&format!("invalid utf8 in credential: {e}")))?;
+        let sig_key = own_leaf.signature_key().as_slice().to_vec();
+
+        Ok(OwnLeafIdentity {
+            name,
+            signature_public_key: sig_key,
+        })
     }
 
     /// Load a group from the provider's storage (after Provider.deserialize_storage()).

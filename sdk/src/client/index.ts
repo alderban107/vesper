@@ -183,8 +183,6 @@ const FIRE_AND_FORGET_SCOPE_EVENTS = new Set([
   'typing_start',
   'typing_stop',
   'new_message',
-  'mls_request_join',
-  'mls_request_join_all',
   'mls_resync_request',
   'mls_commit',
   'mls_remove',
@@ -966,9 +964,8 @@ export class VesperClient {
   async listServers(): Promise<VesperServer[]> {
     const servers = await listServers(this.httpClient)
     for (const server of servers) {
-      const raw = server as Record<string, unknown>
-      if (Array.isArray(raw.emojis)) {
-        raw.emojis = this.resolveEmojiUrls(raw.emojis as VesperCustomEmoji[])
+      if (Array.isArray(server.emojis)) {
+        server.emojis = this.resolveEmojiUrls(server.emojis)
       }
     }
     this.setState({
@@ -1772,11 +1769,9 @@ export class VesperClient {
     await this.socketClient.joinChannelWithAck(topic, noopListener)
 
     try {
-      if (fireAndForget) {
-        this.socketClient.pushToChannel(topic, event, payload)
-        return true
-      }
-
+      // Always use ack when we're about to leave the channel — fire-and-forget
+      // pushes race with the channel.leave() in the finally block and may not
+      // reach the server before the channel is torn down.
       return await this.socketClient.pushToChannelWithAck(topic, event, payload)
     } finally {
       this.socketClient.leaveChannelListener(topic, noopListener)

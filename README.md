@@ -187,6 +187,7 @@ scripts/                 repo-level tooling
 
 doc/
   DESIGN.md                architecture overview
+  PROTOCOL.md              HTTP + WebSocket protocol reference
   sdk/                     SDK developer guides (quickstart, auth, messaging, etc.)
   e2ee/                    end-to-end encryption documentation
     REQUIREMENTS-E2EE.md          requirements & design analysis

@@ -342,6 +342,19 @@ export class Group {
         }
     }
     /**
+     * Get the own leaf's credential identity name and signature public key.
+     * Used after join_from_welcome to reconstruct the correct Identity
+     * (instead of creating a fresh one with a mismatched keypair).
+     * @returns {OwnLeafIdentity}
+     */
+    own_leaf_identity() {
+        const ret = wasm.group_own_leaf_identity(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return OwnLeafIdentity.__wrap(ret[0]);
+    }
+    /**
      * Process an incoming MLS message (commit, proposal, or application message)
      * @param {Provider} provider
      * @param {Uint8Array} msg
@@ -566,6 +579,53 @@ export class KeyPackage {
     }
 }
 if (Symbol.dispose) KeyPackage.prototype[Symbol.dispose] = KeyPackage.prototype.free;
+
+export class OwnLeafIdentity {
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(OwnLeafIdentity.prototype);
+        obj.__wbg_ptr = ptr;
+        OwnLeafIdentityFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        OwnLeafIdentityFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_ownleafidentity_free(ptr, 0);
+    }
+    /**
+     * The credential identity name from the own leaf node
+     * @returns {string}
+     */
+    get name() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.ownleafidentity_name(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * The Ed25519 signature public key from the own leaf node
+     * @returns {Uint8Array}
+     */
+    get signature_public_key() {
+        const ret = wasm.ownleafidentity_signature_public_key(this.__wbg_ptr);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+}
+if (Symbol.dispose) OwnLeafIdentity.prototype[Symbol.dispose] = OwnLeafIdentity.prototype.free;
 
 export class ProcessResult {
     static __wrap(ptr) {
@@ -866,6 +926,9 @@ const IdentityFinalization = (typeof FinalizationRegistry === 'undefined')
 const KeyPackageFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_keypackage_free(ptr >>> 0, 1));
+const OwnLeafIdentityFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_ownleafidentity_free(ptr >>> 0, 1));
 const ProcessResultFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_processresult_free(ptr >>> 0, 1));

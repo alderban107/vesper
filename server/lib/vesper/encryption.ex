@@ -969,12 +969,20 @@ defmodule Vesper.Encryption do
   @doc """
   Publish (upsert) MLS GroupInfo for a scope.
   Only stores the latest — each publish replaces the previous.
-  Only accepts the update if the epoch is >= the currently stored epoch
-  (prevents stale GroupInfo from overwriting newer state).
+
+  When `previous_epoch` is provided, uses compare-and-swap (CAS) semantics:
+  the update only succeeds if the stored epoch matches `previous_epoch`.
+  Returns `{:error, :epoch_conflict}` on mismatch. This serializes
+  concurrent External Commit joins — only one joiner can claim a given
+  epoch transition.
+
+  Without `previous_epoch`, uses the original `>=` semantics for backward
+  compatibility (regular post-commit GroupInfo publishes).
   """
   def publish_group_info(attrs) do
     group_id = Map.get(attrs, :group_id) || Map.get(attrs, "group_id")
     new_epoch = Map.get(attrs, :epoch) || Map.get(attrs, "epoch") || 0
+    previous_epoch = Map.get(attrs, :previous_epoch) || Map.get(attrs, "previous_epoch")
 
     Repo.transaction(fn ->
       existing =
@@ -984,24 +992,43 @@ defmodule Vesper.Encryption do
         )
         |> Repo.one()
 
-      cond do
-        is_nil(existing) ->
+      case {existing, previous_epoch} do
+        # CAS mode: previous_epoch provided
+        {nil, prev} when is_integer(prev) and prev == 0 ->
           %MlsGroupInfo{}
           |> MlsGroupInfo.changeset(attrs)
           |> Repo.insert!()
 
-        new_epoch >= existing.epoch ->
+        {nil, prev} when is_integer(prev) ->
+          Repo.rollback(:epoch_conflict)
+
+        {%{epoch: stored}, prev} when is_integer(prev) and stored == prev ->
           existing
           |> MlsGroupInfo.changeset(attrs)
           |> Repo.update!()
 
-        true ->
+        {%{}, prev} when is_integer(prev) ->
+          Repo.rollback(:epoch_conflict)
+
+        # Non-CAS mode: previous_epoch absent — use >= semantics
+        {nil, _} ->
+          %MlsGroupInfo{}
+          |> MlsGroupInfo.changeset(attrs)
+          |> Repo.insert!()
+
+        {%{epoch: stored}, _} when new_epoch >= stored ->
+          existing
+          |> MlsGroupInfo.changeset(attrs)
+          |> Repo.update!()
+
+        _ ->
           # Stale epoch — silently keep the newer one
           existing
       end
     end)
     |> case do
       {:ok, group_info} -> {:ok, group_info}
+      {:error, :epoch_conflict} -> {:error, :epoch_conflict}
       {:error, reason} -> {:error, reason}
     end
   end

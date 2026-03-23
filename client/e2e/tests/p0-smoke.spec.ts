@@ -175,8 +175,8 @@ test.describe('P0 Smoke — full continuous run', () => {
     await recordSnapshot(alice.page, 'dm-convergence', 'alice')
     await recordSnapshot(bob.page, 'dm-convergence', 'bob')
 
-    // MLS epoch budget: 2-user DM creates group (epoch 0), adds one member (epoch 1).
-    // Both users should see epoch 1, with at most 1 join handled and 1 group created.
+    // MLS epoch budget: 2-user DM. Leader creates group (epoch 0), non-leader
+    // External Commits in (epoch 1). Both users should see epoch 1.
     const dmScopes = await findDiagnosticScopes(alice.page, { hasGroupCreations: true })
     if (dmScopes.length > 0) {
       const dmId = dmScopes[0]
@@ -186,8 +186,6 @@ test.describe('P0 Smoke — full continuous run', () => {
           assertMlsBudget(diag, {
             maxEpoch: 1,
             maxGroupCreations: 1,
-            maxJoinRequestsHandled: 1,
-            maxKeyPackagesConsumed: 1,
           }, `${name} DM epoch budget`)
         }
       }
@@ -388,17 +386,16 @@ test.describe('P0 Smoke — full continuous run', () => {
     }
 
     // MLS epoch budget: 3-user channel. Alice creates group (epoch 0),
-    // adds Bob (epoch 1), adds Charlie (epoch 2). All users at epoch 2.
+    // Bob External Commits (epoch 1), Charlie External Commits (epoch 2).
     const channelScopes = await findDiagnosticScopes(alice.page, { hasGroupCreations: true })
-    // Filter to the channel scope (not the DM from Steps 5-6)
+    // Filter to the channel scope (not the DM from Steps 5-6) by epoch >= 2
     for (const scopeId of channelScopes) {
       const aliceDiag = await getMlsDiagnostics(alice.page, scopeId)
-      if (aliceDiag && aliceDiag.joinRequestsHandled >= 2) {
-        // This is the channel scope (Alice handled 2 join requests: Bob + Charlie)
+      if (aliceDiag && aliceDiag.epoch >= 2) {
+        // This is the channel scope (epoch 2 from two External Commits)
         assertMlsBudget(aliceDiag, {
           maxEpoch: 2,
           maxGroupCreations: 1,
-          maxJoinRequestsHandled: 2,
         }, 'alice channel epoch budget')
 
         for (const [name, user] of [['bob', bob], ['charlie', charlie]] as const) {
@@ -406,8 +403,6 @@ test.describe('P0 Smoke — full continuous run', () => {
           if (diag) {
             assertMlsBudget(diag, {
               maxEpoch: 2,
-              maxWelcomesProcessed: 1,
-              maxKeyPackagesConsumed: 1,
             }, `${name} channel epoch budget`)
           }
         }
@@ -452,14 +447,12 @@ test.describe('P0 Smoke — full continuous run', () => {
   })
 
   // --- Step 18: Upload custom emoji (R-EMOJI-1) ---
-  // TODO(#65): Custom emoji upload test needs UI selector fixes — see issue
-  test.skip('Step 18: custom emoji upload works', async () => {
+  test('Step 18: custom emoji upload works', async () => {
     await uploadCustomEmoji(alice.page, CUSTOM_EMOJI.name, CUSTOM_EMOJI.base64)
   })
 
   // --- Step 19: Use custom emoji in chat (R-EMOJI-1) ---
-  // TODO(#65): Depends on Step 18
-  test.skip('Step 19: custom emoji used in visible chat', async () => {
+  test('Step 19: custom emoji used in visible chat', async () => {
     test.setTimeout(30_000)
 
     await selectChannel(alice.page, CHANNELS.general)

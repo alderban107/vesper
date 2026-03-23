@@ -68,8 +68,6 @@ const inFlightPendingHistoryBundleFetches = new Map<string, Promise<void>>()
 const lastPendingResyncFetchAt = new Map<string, number>()
 const lastPendingHistoryRequestFetchAt = new Map<string, number>()
 const lastPendingHistoryBundleFetchAt = new Map<string, number>()
-const recentHandledJoinRequests = new Map<string, number>()
-const inFlightJoinRequests = new Set<string>()
 const inFlightScopeMessageFetches = new Map<string, Promise<void>>()
 const inFlightOlderScopeMessageFetches = new Set<string>()
 const inFlightNewerScopeMessageFetches = new Set<string>()
@@ -78,7 +76,6 @@ const liveScopeWatchTokens = new Map<string, symbol>()
 const RECENT_NOTIFICATION_TTL_MS = 30_000
 const RECENT_MUTATION_SEQ_WINDOW = 256
 const PENDING_MLS_FETCH_COOLDOWN_MS = 1_000
-const RECENT_JOIN_REQUEST_TTL_MS = 3_000
 const MESSAGE_PAGE_SIZE = 50
 const MAX_RESIDENT_MESSAGES_PER_SCOPE = 400
 const MAX_WARM_SCOPES = 3
@@ -1784,7 +1781,7 @@ function isDmBootstrapLeader(conversationId: string, userId: string): boolean {
 
 async function bootstrapDmGroupIfLeader(
   conversationId: string,
-  topic: string
+  _topic: string
 ): Promise<boolean> {
   const encryptedChat = getRendererEncryptedChat()
   if (encryptedChat.hasGroup(conversationId)) {
@@ -1803,51 +1800,9 @@ async function bootstrapDmGroupIfLeader(
     return false
   }
 
-  for (const participant of conversation.participants) {
-    if (participant.user_id === userId) {
-      continue
-    }
-
-    // Skip if this participant was already added by a concurrent bootstrap
-    if (encryptedChat.isMemberOfGroup(conversationId, participant.user_id)) {
-      continue
-    }
-
-    const preferredDeviceId = getPreferredMlsJoinDeviceId(topic, participant.user_id) ?? null
-
-    const result = await encryptedChat.handleExternalJoinRequest(
-      { kind: 'dm', id: conversationId },
-      participant.user_id,
-      preferredDeviceId
-    )
-
-    if (!result) {
-      continue
-    }
-
-    if (result.removeCommitBytes) {
-      await getRendererClient().pushScopeEvent('dm', conversationId, 'mls_remove', {
-        removed_user_id: participant.user_id,
-        removed_device_id: preferredDeviceId,
-        commit_data: result.removeCommitBytes
-      })
-    }
-
-    await getRendererClient().pushScopeEvent('dm', conversationId, 'mls_commit', {
-      commit_data: result.commitBytes
-    })
-
-    if (result.welcomeBytes) {
-      await getRendererClient().pushScopeEvent('dm', conversationId, 'mls_welcome', {
-        recipient_id: participant.user_id,
-        recipient_device_id: preferredDeviceId,
-        welcome_data: result.welcomeBytes,
-        key_package_ref: result.keyPackageRef
-      })
-    }
-  }
-
-  return encryptedChat.hasGroup(conversationId)
+  // Group created and GroupInfo published (via setGroupState). The other
+  // participant will External Commit in when they receive mls_request_join_all.
+  return true
 }
 
 async function waitForDmBootstrap(
@@ -1881,7 +1836,7 @@ async function waitForDmBootstrap(
  */
 async function forceBootstrapDmGroup(
   conversationId: string,
-  topic: string
+  _topic: string
 ): Promise<boolean> {
   const encryptedChat = getRendererEncryptedChat()
   if (encryptedChat.hasGroup(conversationId)) return true
@@ -1893,34 +1848,9 @@ async function forceBootstrapDmGroup(
   await encryptedChat.createScopeGroup({ kind: 'dm', id: conversationId })
   if (!encryptedChat.hasGroup(conversationId)) return false
 
-  for (const participant of conversation.participants) {
-    if (participant.user_id === userId) continue
-
-    const preferredDeviceId = getPreferredMlsJoinDeviceId(topic, participant.user_id) ?? null
-
-    const result = await encryptedChat.handleExternalJoinRequest(
-      { kind: 'dm', id: conversationId },
-      participant.user_id,
-      preferredDeviceId
-    )
-
-    if (!result) continue
-
-    await getRendererClient().pushScopeEvent('dm', conversationId, 'mls_commit', {
-      commit_data: result.commitBytes
-    })
-
-    if (result.welcomeBytes) {
-      await getRendererClient().pushScopeEvent('dm', conversationId, 'mls_welcome', {
-        recipient_id: participant.user_id,
-        recipient_device_id: preferredDeviceId,
-        welcome_data: result.welcomeBytes,
-        key_package_ref: result.keyPackageRef
-      })
-    }
-  }
-
-  return encryptedChat.hasGroup(conversationId)
+  // Group created and GroupInfo published (via setGroupState). The other
+  // participant will External Commit in when they receive mls_request_join_all.
+  return true
 }
 
 export async function ensureChannelGroupReady(
@@ -3440,27 +3370,11 @@ export const useMessageStore = create<MessageState>((set, get) => ({
           }
 
           if (isExistingConversation) {
-            // Existing conversation — request to join the existing group rather
-            // than creating a local solo branch that cannot decrypt shared
-            // ciphertext and can diverge from the real DM state.
-            recentMlsJoinRequests.delete(topic)
-            await maybeRequestMlsJoin(conversationId, topic)
-
-            // Wait for the other participant to respond with a Welcome
+            // Existing conversation — try External Commit into the other
+            // participant's group via waitForDmBootstrap. If that fails,
+            // fall back to bootstrapping as leader.
             const joined = await waitForDmBootstrap(conversationId, 5000)
             if (joined) {
-              return
-            }
-
-            // Re-send the join request after the newly approved device has had
-            // a moment to publish key packages instead of forcing a resync.
-            recentMlsJoinRequests.delete(topic)
-            await maybeRequestMlsJoin(conversationId, topic)
-            await getRendererEncryptedChat()
-              .ensureMembership({ kind: 'dm', id: conversationId })
-              .catch(() => {})
-
-            if (getRendererEncryptedChat().hasGroup(conversationId)) {
               return
             }
 
@@ -3469,9 +3383,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
               return
             }
 
-            // Don't force-create a competing group for existing conversations
-            // where the other side already has an active group. Instead, request
-            // a resync so the other side re-sends a Welcome.
+            // Last resort: request resync so the other side re-adds us.
             maybeRequestMlsResync(
               conversationId,
               conversationId,
@@ -3480,29 +3392,21 @@ export const useMessageStore = create<MessageState>((set, get) => ({
               'missing_state'
             )
           } else {
-            // New conversation — create the group immediately
+            // New conversation — leader creates the group, non-leader
+            // joins via External Commit.
             const bootstrapped = await bootstrapDmGroupIfLeader(conversationId, topic)
             if (bootstrapped || getRendererEncryptedChat().hasGroup(conversationId)) {
-              // Group created — broadcast so the other participant can join
-              // via the mls_request_join → welcome flow. Without this, both
-              // sides silently create independent groups and never converge.
+              // Group created — broadcast so the other participant can
+              // External Commit into our group.
               getRendererEncryptedChat()
                 .requestJoinAll({ kind: 'dm', id: conversationId })
                 .catch(() => {})
               return
             }
 
-            // Non-leader: wait for the leader's Welcome instead of force-creating
-            // a competing group. Force-create would produce two independent MLS
-            // groups that can never decrypt each other's messages.
-            await maybeRequestMlsJoin(conversationId, topic)
-            maybeRequestMlsResync(
-              conversationId,
-              conversationId,
-              topic,
-              null,
-              'missing_state'
-            )
+            // Non-leader: wait for the leader to create the group and
+            // publish GroupInfo, then External Commit in.
+            await waitForDmBootstrap(conversationId)
           }
         })
         .catch(() => {
@@ -5188,8 +5092,6 @@ function buildProvisionalMessage(msg: VesperMessage): Message {
   }
 }
 
-// Per-group lock to serialize MLS join requests — concurrent commits cause epoch conflicts
-const mlsJoinLocks = new Map<string, Promise<void>>()
 
 /**
  * Send a history bundle to an authorized member device that joined after the
@@ -5478,6 +5380,9 @@ async function processHistoryBundle(
 
 /**
  * Handle an MLS join request from another user.
+ * With External Commit as the canonical join path, we no longer generate
+ * Welcomes — joiners self-join via published GroupInfo. We just record
+ * the device ID for presence tracking.
  */
 async function handleMlsJoinRequest(
   targetId: string,
@@ -5486,63 +5391,7 @@ async function handleMlsJoinRequest(
 ): Promise<void> {
   const userId = msg.user_id as string
   const deviceId = (msg.device_id as string | undefined) ?? undefined
-  const joinRequestKey = `${targetId}:${userId}:${deviceId ?? 'unknown'}`
   rememberMlsJoinDeviceId(topic, userId, deviceId)
-  const encryptedChat = getRendererEncryptedChat()
-
-  if (!encryptedChat.hasGroup(targetId)) return
-  // Any member who holds the group can process join requests. The SDK-level
-  // handler restricts this to the first member in the ratchet tree. Gating on
-  // server ownership caused deadlocks during fork recovery when the owner had
-  // reset their group state.
-  if (inFlightJoinRequests.has(joinRequestKey)) return
-
-  const lastHandledAt = recentHandledJoinRequests.get(joinRequestKey) ?? 0
-  if (Date.now() - lastHandledAt < RECENT_JOIN_REQUEST_TTL_MS) {
-    return
-  }
-
-  // Serialize join requests per group to avoid concurrent epoch commits
-  const prev = mlsJoinLocks.get(targetId) ?? Promise.resolve()
-  const current = prev.then(async () => {
-    inFlightJoinRequests.add(joinRequestKey)
-
-    try {
-      const result = await encryptedChat.handleExternalJoinRequest(
-        scopeFromTopic(targetId, topic),
-        userId,
-        deviceId ?? null
-      )
-
-      if (result) {
-        if (result.removeCommitBytes) {
-          pushToChannel(topic, 'mls_remove', {
-            removed_user_id: userId,
-            ...(deviceId ? { removed_device_id: deviceId } : {}),
-            commit_data: result.removeCommitBytes
-          })
-        }
-        pushToChannel(topic, 'mls_commit', { commit_data: result.commitBytes })
-        if (result.welcomeBytes) {
-          pushToChannel(topic, 'mls_welcome', {
-            recipient_id: userId,
-            recipient_device_id: deviceId,
-            welcome_data: result.welcomeBytes,
-            key_package_ref: result.keyPackageRef
-          })
-
-          if (deviceId) {
-            fireAndForget(sendHistoryBundle(targetId, topic, userId, deviceId))
-          }
-        }
-      }
-    } finally {
-      inFlightJoinRequests.delete(joinRequestKey)
-      recentHandledJoinRequests.set(joinRequestKey, Date.now())
-    }
-  }).catch(() => {})
-  mlsJoinLocks.set(targetId, current)
-  await current
 }
 
 /**

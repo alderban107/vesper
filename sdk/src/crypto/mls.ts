@@ -19,7 +19,8 @@ import initWasm, {
   RatchetTree,
   type ExternalCommitResult,
   type CommitBundle,
-  type ProcessResult
+  type ProcessResult,
+  type OwnLeafIdentity
 } from 'vesper-openmls-wasm'
 
 // Re-export WASM types that the orchestration layer needs
@@ -227,12 +228,20 @@ export async function processWelcome(
   // Join the group. The provider must contain the key package's private keys.
   const group = Group.join_from_welcome(provider, welcomeBytes)
 
-  // Now create an Identity for subsequent operations (sending messages).
-  // We create a fresh one because join_from_welcome doesn't need it —
-  // it only needs the key package keys in the provider.
-  // IMPORTANT: create this AFTER joining, so the new signing keypair
-  // doesn't interfere with the join process.
-  const identity = new Identity(provider, identityName)
+  // Recover the signing identity that matches our leaf node in the group.
+  // The key package was created with a specific credential name and signing
+  // keypair. We must use that same keypair for subsequent operations
+  // (encrypting messages, exporting GroupInfo, etc.), otherwise the
+  // signature won't match our leaf node's signature key.
+  //
+  // DO NOT create a fresh Identity here — `new Identity(provider, name)`
+  // generates a new Ed25519 keypair that won't match the leaf node.
+  const ownLeaf = group.own_leaf_identity()
+  const identityData = buildIdentityData(
+    ownLeaf.name,
+    new Uint8Array(ownLeaf.signature_public_key)
+  )
+  const identity = Identity.deserialize(provider, identityData)
 
   return makeGroupState(provider, identity, group)
 }
@@ -377,8 +386,9 @@ export async function decryptMessage(
     }
 
     return null
-  } catch {
+  } catch (err) {
     // Decryption failed — message from before we joined, or corrupted
+    console.error('[MLS] decryptMessage failed:', err instanceof Error ? err.message : String(err))
     return null
   }
 }

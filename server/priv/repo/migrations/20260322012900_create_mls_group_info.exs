@@ -11,7 +11,9 @@ defmodule Vesper.Repo.Migrations.CreateMlsGroupInfo do
       add :publisher_id, references(:users, type: :binary_id, on_delete: :delete_all), null: false
       add :publisher_client_id, :string
       add :channel_id, references(:channels, type: :binary_id, on_delete: :delete_all)
-      add :conversation_id, references(:dm_conversations, type: :binary_id, on_delete: :delete_all)
+
+      add :conversation_id,
+          references(:dm_conversations, type: :binary_id, on_delete: :delete_all)
 
       timestamps(type: :utc_datetime, updated_at: :updated_at)
     end

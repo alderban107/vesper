@@ -50,6 +50,7 @@ export default function EmojiUploadModal({ file, serverId, onClose }: Props): Re
         <div className="relative mt-1">
           <input
             type="text"
+            data-testid="emoji-name-input"
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="emoji_name"

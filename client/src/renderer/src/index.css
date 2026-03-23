@@ -4195,7 +4195,11 @@ body,
 }
 
 .vesper-composer-token-emoji {
-  vertical-align: text-bottom;
+  display: inline-block;
+  width: 1.35rem;
+  height: 1.35rem;
+  margin: 0 0.08rem;
+  vertical-align: -0.28rem;
 }
 
 .vesper-composer-autocomplete {

@@ -5,6 +5,7 @@
 
 Companion docs:
 
+- [Protocol spec](./PROTOCOL.md)
 - [E2EE implementation guide](./e2ee/E2EE-IMPLEMENTATION.md)
 - [E2EE requirements](./e2ee/REQUIREMENTS-E2EE.md)
 - [E2EE audit](./e2ee/REQUIREMENTS-E2EE-AUDIT.md)

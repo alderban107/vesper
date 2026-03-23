@@ -198,6 +198,7 @@ export class VesperEncryptedChat {
   private readonly scopeKinds = new Map<string, 'channel' | 'dm'>()
   private readonly yieldedDmScopes = new Set<string>()
   private readonly pendingGroupCreations = new Map<string, Promise<void>>()
+  private readonly pendingExternalCommits = new Map<string, Promise<boolean>>()
   private readonly pendingBootstraps = new Map<string, Promise<boolean>>()
   private readonly diagnostics = new MLSDiagnostics()
   private readonly welcomeInProgress = new Set<string>()
@@ -662,7 +663,16 @@ export class VesperEncryptedChat {
   async createScopeGroup(scope: EncryptedScope): Promise<boolean> {
     return await this.withStorageContext(async () => {
       await this.createGroup(scope.id)
-      return this.hasGroup(scope.id)
+      if (!this.hasGroup(scope.id)) {
+        return false
+      }
+      // Ensure GroupInfo is published before returning so callers that
+      // broadcast mls_request_join_all won't race with the HTTP POST.
+      const state = this.groupStates.get(scope.id)
+      if (state) {
+        await this.publishGroupInfoForScope(scope.id, state)
+      }
+      return true
     })
   }
 
@@ -743,46 +753,6 @@ export class VesperEncryptedChat {
 
       await initCipherSuite()
       return await deriveVoiceKey(state)
-    })
-  }
-
-  async handleExternalJoinRequest(
-    scope: EncryptedScope,
-    userId: string,
-    deviceId: string | null = null
-  ): Promise<{
-    removeCommitBytes: string | null
-    commitBytes: string
-    welcomeBytes: string | null
-    keyPackageRef: string
-  } | null> {
-    return await this.withStorageContext(async () => {
-      return await withGroupLock(scope.id, async () => {
-        // Re-check membership inside the lock — a concurrent bootstrap may
-        // have already added this user while we were waiting for the lock.
-        const state = this.groupStates.get(scope.id)
-        if (!state) {
-          return null
-        }
-        if (groupHasMember(state, userId)) {
-          return null
-        }
-
-        // For channels, only the first member in the ratchet tree handles
-        // join requests to avoid concurrent epoch commits from multiple members.
-        if (scope.kind === 'channel') {
-          const localUserId = this.client.getAuthSession()?.user.id ?? this.client.getState().user?.id
-          const memberIdentities = getGroupMemberIdentities(state)
-          if (
-            memberIdentities[0] !== localUserId &&
-            memberIdentities[0] !== (this.client.getAuthSession()?.user?.username ?? null)
-          ) {
-            return null
-          }
-        }
-
-        return await this.handleJoinRequest(scope.id, userId, deviceId)
-      })
     })
   }
 
@@ -941,69 +911,45 @@ export class VesperEncryptedChat {
         if (!this.hasGroup(scope.id)) {
           // No group yet — the messageStore will create one and send its own
           // requestJoinAll. Leader election happens once both sides have groups.
-          // Don't send mls_request_join here; it would race with group creation.
           return { scope, event, payload }
         }
 
         // Both sides independently created MLS groups for this DM.
         // Use deterministic leader election (lower user ID wins) to break
-        // the symmetry — otherwise both sides try to add each other
-        // simultaneously, creating a cascading epoch storm.
+        // the symmetry — the loser drops their group and External Commits
+        // into the leader's group.
         if (localUserId < senderId) {
-          // We're the leader — add the sender to our group directly.
-          // The stale-key-package problem is mitigated by the server-side
-          // consume endpoint: clients mark consumed packages on the server
-          // during group creation, so fetchKeyPackage returns valid ones.
-          const key = `${scope.id}:${senderId}`
-          const now = Date.now()
-          const last = this.recentDmJoinProcessed.get(key)
-          if (!last || now - last >= 10_000) {
-            const response = await this.handleJoinRequest(scope.id, senderId, null)
-            if (response) {
-              // Only set the dedup key after a successful join — if the
-              // request fails (e.g. no key packages available), we must
-              // allow the subsequent mls_request_join to retry.
-              this.recentDmJoinProcessed.set(key, now)
-              this.diagnostics.recordJoinRequestHandled(scope.id)
-              if (response.removeCommitBytes) {
-                await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_remove', {
-                  removed_user_id: senderId,
-                  commit_data: response.removeCommitBytes
-                })
-              }
-              await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_commit', {
-                commit_data: response.commitBytes
-              })
-              if (response.welcomeBytes) {
-                await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_welcome', {
-                  recipient_id: senderId,
-                  welcome_data: response.welcomeBytes,
-                  key_package_ref: response.keyPackageRef
-                })
-              }
-            }
+          // We're the leader — keep our group. Ensure GroupInfo is published
+          // so the sender can External Commit in.
+          const state = this.groupStates.get(scope.id)
+          if (state) {
+            await this.publishGroupInfoForScope(scope.id, state)
           }
           return { scope, event, payload }
         }
 
-        // We're not the leader — but if we received this group via a
-        // Welcome, we've already converged onto the leader's group.
+        // We're not the leader — but if we already joined the leader's group
+        // via External Commit or Welcome, we're done.
         if (this.welcomeReceivedScopes.has(scope.id)) {
           return { scope, event, payload }
         }
 
-        // We independently created this group — drop it and request
-        // to join the leader's group instead. Mark as yielded so that
-        // concurrent code paths (e.g. forceBootstrapDmGroup) don't
-        // immediately recreate the group we just dropped.
+        // We independently created this group — drop it and External Commit
+        // into the leader's group. Mark as yielded so concurrent code paths
+        // (e.g. forceBootstrapDmGroup) don't immediately recreate it.
         this.yieldedDmScopes.add(scope.id)
         await this.resetScope(scope.id)
-        await this.requestMlsJoin(scope)
+        await this.tryJoinViaExternalCommit(scope.id)
         return { scope, event, payload }
       }
 
-      // Non-DM scope — respond with a join request so the sender can add us.
-      await this.requestMlsJoin(scope)
+      // Non-DM scope (channel) — External Commit into the sender's group.
+      // Retry once after a short delay if the first attempt fails — the
+      // GroupInfo publish may still be in flight when this event arrives.
+      if (!await this.tryJoinViaExternalCommit(scope.id)) {
+        await new Promise(r => setTimeout(r, 500))
+        await this.tryJoinViaExternalCommit(scope.id)
+      }
       return { scope, event, payload }
     }
 
@@ -1203,86 +1149,20 @@ export class VesperEncryptedChat {
     return handled
   }
 
+  /**
+   * Handle an incoming mls_request_join event. With External Commit as the
+   * canonical join path, existing members no longer generate Welcomes —
+   * joiners self-join via published GroupInfo. We only track the device ID
+   * for presence awareness.
+   */
   private async handleJoinRequestEvent(
     scope: EncryptedScope,
     payload: Record<string, unknown> | null
   ): Promise<void> {
-    if (!this.hasGroup(scope.id)) {
-      return
-    }
-
     const requesterId = this.getString(payload, 'user_id')
     const requesterDeviceId = this.getString(payload, 'device_id')
-    const localUserId = this.client.getAuthSession()?.user.id ?? this.client.getState().user?.id
-    const localDeviceId = this.client.deviceIdentity?.id ?? null
-
-    if (!requesterId) {
-      return
-    }
-
-    this.rememberJoinDeviceId(scope, requesterId, requesterDeviceId)
-
-    if (requesterId === localUserId && requesterDeviceId === localDeviceId) {
-      return
-    }
-
-    // Deduplicate join request processing. Multiple join requests
-    // can arrive for the same user from different code paths (server replay,
-    // live broadcast, messageStore retry, ensureChannelGroupReady polling).
-    // Without this guard, each one triggers a full remove+add+commit+welcome
-    // cycle that burns through key packages and churns the epoch.
-    const dedupeKey = `${scope.id}:${requesterId}`
-    const now = Date.now()
-    const lastProcessed = this.recentDmJoinProcessed.get(dedupeKey)
-    if (lastProcessed && now - lastProcessed < 10_000) {
-      return
-    }
-
-    // Only the first member in the ratchet tree handles join requests to avoid
-    // concurrent epoch commits from multiple members. This replaces an earlier
-    // server-ownership gate that caused deadlocks during fork recovery.
-    if (scope.kind === 'channel') {
-      const state = this.groupStates.get(scope.id)
-      if (state) {
-        const memberIdentities = getGroupMemberIdentities(state)
-        if (
-          memberIdentities[0] !== localUserId &&
-          memberIdentities[0] !== (this.client.getAuthSession()?.user?.username ?? null)
-        ) {
-          return
-        }
-      }
-    }
-
-    const response = await this.handleJoinRequest(scope.id, requesterId, requesterDeviceId)
-    if (!response) {
-      return
-    }
-
-    // Only set the dedup key after a successful join — if the request fails
-    // (e.g. no key packages available), we must allow retries.
-    this.recentDmJoinProcessed.set(dedupeKey, now)
-    this.diagnostics.recordJoinRequestHandled(scope.id)
-
-    if (response.removeCommitBytes) {
-      await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_remove', {
-        removed_user_id: requesterId,
-        ...(requesterDeviceId ? { removed_device_id: requesterDeviceId } : {}),
-        commit_data: response.removeCommitBytes
-      })
-    }
-
-    await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_commit', {
-      commit_data: response.commitBytes
-    })
-
-    if (response.welcomeBytes) {
-      await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_welcome', {
-        recipient_id: requesterId,
-        recipient_device_id: requesterDeviceId,
-        welcome_data: response.welcomeBytes,
-        key_package_ref: response.keyPackageRef
-      })
+    if (requesterId) {
+      this.rememberJoinDeviceId(scope, requesterId, requesterDeviceId)
     }
   }
 
@@ -1292,13 +1172,8 @@ export class VesperEncryptedChat {
       return this.hasGroup(channelId)
     }
 
-    const scope: EncryptedScope = { kind: 'channel', id: channelId }
-    await this.requestMlsJoin(scope)
-    if (await this.awaitGroupMembership(channelId, JOIN_WAIT_MS)) {
-      await this.replayDurableEvents(channelId)
-      return this.hasGroup(channelId)
-    }
-
+    // ensureGroupMembership already tried External Commit. If it failed,
+    // there may be no GroupInfo published yet (no group exists).
     if (!allowCreate) {
       return this.hasGroup(channelId)
     }
@@ -1318,17 +1193,28 @@ export class VesperEncryptedChat {
       return false
     }
 
-    await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_request_join_all', {})
+    // setGroupState (called by createGroup) publishes GroupInfo as
+    // fire-and-forget. We must await it explicitly here so the GroupInfo is
+    // available on the server BEFORE we broadcast mls_request_join_all —
+    // otherwise recipients try to External Commit and find no GroupInfo.
+    const freshState = this.groupStates.get(channelId)
+    if (freshState) {
+      await this.publishGroupInfoForScope(channelId, freshState)
+    }
 
-    // Wait for at least one member to respond before returning.
+    await this.client.pushScopeEvent('channel', channelId, 'mls_request_join_all', {})
+
+    // Wait for at least one member to External Commit before returning.
     // Without this, the caller encrypts at epoch 0 (only the creator in the
     // group) and other members can never decrypt those messages. Live channel
-    // subscribers respond to mls_request_join_all with mls_request_join, which
-    // the scope event handler processes asynchronously — advancing the epoch.
+    // subscribers respond to mls_request_join_all by External Committing from
+    // the published GroupInfo, which advances the epoch via mls_commit.
     // Uses a notification from setGroupState rather than polling.
-    await this.awaitEpochAdvance(channelId, 5_000)
-
-    return true
+    //
+    // If nobody joins within the timeout, return false so the caller
+    // (sendPayload) retries rather than encrypting to an empty group.
+    const advanced = await this.awaitEpochAdvance(channelId, 5_000)
+    return advanced || this.getGroupEpoch(channelId) !== 0
   }
 
   private async ensureDmGroupReady(conversationId: string, allowForce = false): Promise<boolean> {
@@ -1342,13 +1228,8 @@ export class VesperEncryptedChat {
       return this.hasGroup(conversationId)
     }
 
-    const scope: EncryptedScope = { kind: 'dm', id: conversationId }
-    await this.requestMlsJoin(scope)
-    if (await this.awaitGroupMembership(conversationId, JOIN_WAIT_MS)) {
-      await this.replayDurableEvents(conversationId)
-      return this.hasGroup(conversationId)
-    }
-
+    // ensureGroupMembership already tried External Commit. If it failed
+    // and we can't bootstrap, the other participant may be offline.
     if (!allowForce) {
       return this.hasGroup(conversationId)
     }
@@ -1382,15 +1263,13 @@ export class VesperEncryptedChat {
       }
     }
 
-    // External Commit (RFC 9420 §12.4) is disabled for live join flows.
-    // It races with Welcome-based adds: the leader processes mls_request_join
-    // and adds the user via Welcome, while the user concurrently External
-    // Commits from published GroupInfo, producing conflicting commits that
-    // diverge the ratchet tree. The Welcome-based join with leader coordination
-    // is the canonical path for both channels and DMs. External Commit remains
-    // available via tryJoinViaExternalCommit() for explicit recovery paths.
+    // External Commit (RFC 9420 §12.4) — canonical live join path.
+    // Uses CAS on GroupInfo publish to serialize concurrent joiners.
+    if (await this.tryJoinViaExternalCommit(scopeId)) {
+      return true
+    }
 
-    // Fall back to Welcome-based join
+    // Fall back to Welcome-based join (offline scenarios, backward compat)
     let welcomes: Awaited<ReturnType<typeof fetchPendingWelcomes>> = []
     try {
       welcomes = await fetchPendingWelcomes(scopeId, this.client.getHttpClient())
@@ -1419,36 +1298,101 @@ export class VesperEncryptedChat {
 
   /**
    * Try to join a group via External Commit using published GroupInfo.
-   * This is the primary join path — no existing member needs to be online.
+   * This is the canonical live join path (RFC 9420 §12.4).
+   *
+   * Uses compare-and-swap on the server's GroupInfo publish to serialize
+   * concurrent joiners: only one External Commit per epoch transition
+   * succeeds. Losers retry with fresh GroupInfo.
    */
   private async tryJoinViaExternalCommit(scopeId: string): Promise<boolean> {
-    try {
-      await initCipherSuite()
+    // Already in this group — skip.
+    if (this.hasGroup(scopeId)) {
+      return true
+    }
 
-      const groupInfo = await fetchGroupInfo(scopeId, this.client.getHttpClient())
-      if (!groupInfo) {
-        return false // No GroupInfo published yet
+    // Serialize concurrent EC attempts for the same scope. Without this,
+    // two callers (e.g. ensureMembership and mls_request_join_all handler)
+    // can both CAS-publish successfully on consecutive epochs, inflating
+    // the epoch count.
+    const inflight = this.pendingExternalCommits.get(scopeId)
+    if (inflight) {
+      return await inflight
+    }
+
+    const promise = this.doExternalCommit(scopeId)
+    this.pendingExternalCommits.set(scopeId, promise)
+    try {
+      return await promise
+    } finally {
+      this.pendingExternalCommits.delete(scopeId)
+    }
+  }
+
+  private async doExternalCommit(scopeId: string): Promise<boolean> {
+    const MAX_RETRIES = 5
+
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      // Another code path may have joined while we were retrying.
+      if (this.hasGroup(scopeId)) {
+        return true
       }
 
-      const session = this.requireSession()
-      const localDeviceId = this.requireDeviceId()
-      const identityName = buildClientCredentialIdentity(session.user.id, localDeviceId)
+      try {
+        await initCipherSuite()
 
-      const { state, commitBytes } = await joinViaExternalCommit(
-        groupInfo.groupInfoData,
-        groupInfo.ratchetTreeData,
-        identityName
-      )
+        const groupInfo = await fetchGroupInfo(scopeId, this.client.getHttpClient())
+        if (!groupInfo) {
+          return false // No GroupInfo published yet
+        }
 
-      // Fan out the external commit to other members via MLS event
-      await this.broadcastExternalCommit(scopeId, commitBytes)
+        const session = this.requireSession()
+        const localDeviceId = this.requireDeviceId()
+        const identityName = buildClientCredentialIdentity(session.user.id, localDeviceId)
 
-      await this.setGroupState(scopeId, state)
-      this.notifyMembershipWaiters(scopeId, true)
-      return true
-    } catch {
-      return false
+        const { state, commitBytes } = await joinViaExternalCommit(
+          groupInfo.groupInfoData,
+          groupInfo.ratchetTreeData,
+          identityName
+        )
+
+        const newEpoch = Number(state.groupContext.epoch)
+
+        // CAS publish: claim this epoch transition. Only succeeds if the
+        // server's stored epoch still matches the one we built on.
+        const result = await publishGroupInfo(
+          scopeId,
+          exportGroupInfo(state),
+          exportRatchetTree(state),
+          newEpoch,
+          this.client.getHttpClient(),
+          groupInfo.epoch // previousEpoch — the epoch we External Committed from
+        )
+
+        if (result === 'conflict') {
+          if (attempt < MAX_RETRIES - 1) {
+            // Another joiner won this epoch. Jitter and retry with fresh GroupInfo.
+            await new Promise(r => setTimeout(r, 50 + Math.floor(Math.random() * 300 * (attempt + 1))))
+            continue
+          }
+          return false
+        }
+
+        // CAS succeeded — broadcast the commit and save state
+        await this.broadcastExternalCommit(scopeId, commitBytes)
+        await this.setGroupState(scopeId, state)
+        // Mark as joined so the mls_request_join_all handler won't reset and re-EC.
+        this.welcomeReceivedScopes.add(scopeId)
+        this.notifyMembershipWaiters(scopeId, true)
+        return true
+      } catch (err) {
+        if (attempt < MAX_RETRIES - 1) {
+          await new Promise(r => setTimeout(r, 50 + Math.floor(Math.random() * 300 * (attempt + 1))))
+          continue
+        }
+        return false
+      }
     }
+    return false
   }
 
   /**
@@ -1840,7 +1784,7 @@ export class VesperEncryptedChat {
       this.diagnostics.recordCommit(scopeId, true)
       this.notifyMembershipWaiters(scopeId, true)
       return true
-    } catch {
+    } catch (err) {
       this.diagnostics.recordCommit(scopeId, false)
       return false
     }
@@ -2385,44 +2329,14 @@ export class VesperEncryptedChat {
       return false
     }
 
-    const scope: EncryptedScope = { kind: 'dm', id: conversationId }
-    for (const participant of conversation.participants) {
-      if (participant.user_id === session.user.id) {
-        continue
-      }
-
-      // Skip if this participant was already added by a concurrent bootstrap
-      const currentState = this.groupStates.get(conversationId)
-      if (currentState && groupHasMember(currentState, participant.user_id)) {
-        continue
-      }
-
-      const preferredDeviceId = this.getPreferredJoinDeviceId(scope, participant.user_id)
-
-      const response = await this.handleJoinRequest(
-        conversationId,
-        participant.user_id,
-        preferredDeviceId
-      )
-      if (!response) {
-        continue
-      }
-
-      await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_commit', {
-        commit_data: response.commitBytes
-      })
-
-      if (response.welcomeBytes) {
-        await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_welcome', {
-          recipient_id: participant.user_id,
-          recipient_device_id: preferredDeviceId,
-          welcome_data: response.welcomeBytes,
-          key_package_ref: response.keyPackageRef
-        })
-      }
+    // Await GroupInfo publish so the non-leader can External Commit immediately.
+    const freshState = this.groupStates.get(conversationId)
+    if (freshState) {
+      await this.publishGroupInfoForScope(conversationId, freshState)
     }
 
-    return this.hasGroup(conversationId)
+    // The other participant will self-join via External Commit.
+    return true
   }
 
   /** Like bootstrapDmGroupIfLeader but skips the leader check — used as the
@@ -2467,44 +2381,14 @@ export class VesperEncryptedChat {
       return false
     }
 
-    const scope: EncryptedScope = { kind: 'dm', id: conversationId }
-    for (const participant of conversation.participants) {
-      if (participant.user_id === session.user.id) {
-        continue
-      }
-
-      // Skip if this participant was already added by a concurrent bootstrap
-      const currentState = this.groupStates.get(conversationId)
-      if (currentState && groupHasMember(currentState, participant.user_id)) {
-        continue
-      }
-
-      const preferredDeviceId = this.getPreferredJoinDeviceId(scope, participant.user_id)
-
-      const response = await this.handleJoinRequest(
-        conversationId,
-        participant.user_id,
-        preferredDeviceId
-      )
-      if (!response) {
-        continue
-      }
-
-      await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_commit', {
-        commit_data: response.commitBytes
-      })
-
-      if (response.welcomeBytes) {
-        await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_welcome', {
-          recipient_id: participant.user_id,
-          recipient_device_id: preferredDeviceId,
-          welcome_data: response.welcomeBytes,
-          key_package_ref: response.keyPackageRef
-        })
-      }
+    // Await GroupInfo publish so the other participant can External Commit immediately.
+    const freshState = this.groupStates.get(conversationId)
+    if (freshState) {
+      await this.publishGroupInfoForScope(conversationId, freshState)
     }
 
-    return this.hasGroup(conversationId)
+    // The other participant will self-join via External Commit.
+    return true
   }
 
   private async loadOrderedWelcomeKeyPackages(
