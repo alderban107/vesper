@@ -1,6 +1,5 @@
 import {
   ackPendingWelcome,
-  consumeOwnKeyPackage,
   fetchGroupInfo,
   fetchKeyPackage,
   fetchMlsEvents,
@@ -17,7 +16,6 @@ import {
   addMemberToGroup,
   buildClientCredentialIdentity,
   createMLSGroup,
-  decodeKeyPackageBytes,
   decodePayload,
   decryptMessage,
   deserializeGroupState,
@@ -194,13 +192,16 @@ export class VesperEncryptedChat {
   private readonly evictionLocks = new Map<string, Promise<void>>()
   private readonly scopeMessages = new Map<string, ProcessedScopeMessage[]>()
   private readonly membershipWaiters = new Map<string, Set<(ready: boolean) => void>>()
+  private readonly epochWaiters = new Map<string, Set<(epoch: number) => void>>()
   private readonly welcomeAppliedAtByScope = new Map<string, number>()
   private readonly recentDmJoinProcessed = new Map<string, number>()
   private readonly scopeKinds = new Map<string, 'channel' | 'dm'>()
   private readonly yieldedDmScopes = new Set<string>()
   private readonly pendingGroupCreations = new Map<string, Promise<void>>()
+  private readonly pendingBootstraps = new Map<string, Promise<boolean>>()
   private readonly diagnostics = new MLSDiagnostics()
   private readonly welcomeInProgress = new Set<string>()
+  private readonly welcomeReceivedScopes = new Set<string>()
   private restoreConnectionsPromise: Promise<void> | null = null
 
   constructor(client: VesperClient) {
@@ -321,6 +322,7 @@ export class VesperEncryptedChat {
       }
     }
     this.membershipWaiters.clear()
+    this.epochWaiters.clear()
     this.scopeListeners.clear()
     this.scopeWatchRefs.clear()
   }
@@ -406,6 +408,14 @@ export class VesperEncryptedChat {
     return this.groupStates.has(scopeId)
   }
 
+  isMemberOfGroup(scopeId: string, userId: string): boolean {
+    const state = this.groupStates.get(scopeId)
+    if (!state) {
+      return false
+    }
+    return groupHasMember(state, userId)
+  }
+
   getDiagnostics(): MLSDiagnostics {
     return this.diagnostics
   }
@@ -457,6 +467,9 @@ export class VesperEncryptedChat {
 
         await this.ensureGroupMembership(scope.id)
         await this.replayDurableEvents(scope.id)
+
+        const hasGroup = this.hasGroup(scope.id)
+        const epoch = this.getGroupEpoch(scope.id)
 
         const cached = await this.loadProcessedCachedMessages(scope.id)
         const existing = this.scopeMessages.get(scope.id) ?? cached
@@ -666,7 +679,9 @@ export class VesperEncryptedChat {
       this.pendingCommits.delete(scopeId)
       this.scopeMessages.delete(scopeId)
       this.welcomeAppliedAtByScope.delete(scopeId)
+      this.welcomeReceivedScopes.delete(scopeId)
       this.pendingGroupCreations.delete(scopeId)
+      this.pendingBootstraps.delete(scopeId)
       this.welcomeInProgress.delete(scopeId)
       this.notifyMembershipWaiters(scopeId, false)
       this.membershipWaiters.delete(scopeId)
@@ -676,7 +691,7 @@ export class VesperEncryptedChat {
 
   async applyScopeCommit(scopeId: string, commitData: string | null): Promise<boolean> {
     return await this.withStorageContext(async () => {
-      return await this.handleCommit(scopeId, commitData)
+      return await this.handleCommit(scopeId, commitData, 'applyScopeCommit')
     })
   }
 
@@ -742,7 +757,32 @@ export class VesperEncryptedChat {
     keyPackageRef: string
   } | null> {
     return await this.withStorageContext(async () => {
-      return await this.handleJoinRequest(scope.id, userId, deviceId)
+      return await withGroupLock(scope.id, async () => {
+        // Re-check membership inside the lock — a concurrent bootstrap may
+        // have already added this user while we were waiting for the lock.
+        const state = this.groupStates.get(scope.id)
+        if (!state) {
+          return null
+        }
+        if (groupHasMember(state, userId)) {
+          return null
+        }
+
+        // For channels, only the first member in the ratchet tree handles
+        // join requests to avoid concurrent epoch commits from multiple members.
+        if (scope.kind === 'channel') {
+          const localUserId = this.client.getAuthSession()?.user.id ?? this.client.getState().user?.id
+          const memberIdentities = getGroupMemberIdentities(state)
+          if (
+            memberIdentities[0] !== localUserId &&
+            memberIdentities[0] !== (this.client.getAuthSession()?.user?.username ?? null)
+          ) {
+            return null
+          }
+        }
+
+        return await this.handleJoinRequest(scope.id, userId, deviceId)
+      })
     })
   }
 
@@ -918,9 +958,12 @@ export class VesperEncryptedChat {
           const now = Date.now()
           const last = this.recentDmJoinProcessed.get(key)
           if (!last || now - last >= 10_000) {
-            this.recentDmJoinProcessed.set(key, now)
             const response = await this.handleJoinRequest(scope.id, senderId, null)
             if (response) {
+              // Only set the dedup key after a successful join — if the
+              // request fails (e.g. no key packages available), we must
+              // allow the subsequent mls_request_join to retry.
+              this.recentDmJoinProcessed.set(key, now)
               this.diagnostics.recordJoinRequestHandled(scope.id)
               if (response.removeCommitBytes) {
                 await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_remove', {
@@ -945,7 +988,7 @@ export class VesperEncryptedChat {
 
         // We're not the leader — but if we received this group via a
         // Welcome, we've already converged onto the leader's group.
-        if (this.welcomeAppliedAtByScope.has(scope.id)) {
+        if (this.welcomeReceivedScopes.has(scope.id)) {
           return { scope, event, payload }
         }
 
@@ -976,7 +1019,7 @@ export class VesperEncryptedChat {
       const localDeviceId = this.client.deviceIdentity?.id ?? null
 
         if (senderId !== localUserId || senderDeviceId !== localDeviceId) {
-          await this.handleCommit(scope.id, this.getString(payload, 'commit_data'))
+          await this.handleCommit(scope.id, this.getString(payload, 'commit_data'), 'liveEvent')
         }
 
       return { scope, event, payload }
@@ -1043,7 +1086,7 @@ export class VesperEncryptedChat {
     }
 
     if (!isLocalSender) {
-      await this.handleCommit(scope.id, this.getString(payload, 'commit_data'))
+      await this.handleCommit(scope.id, this.getString(payload, 'commit_data'), 'removeEvent')
     }
   }
 
@@ -1194,7 +1237,6 @@ export class VesperEncryptedChat {
     if (lastProcessed && now - lastProcessed < 10_000) {
       return
     }
-    this.recentDmJoinProcessed.set(dedupeKey, now)
 
     // Only the first member in the ratchet tree handles join requests to avoid
     // concurrent epoch commits from multiple members. This replaces an earlier
@@ -1217,6 +1259,9 @@ export class VesperEncryptedChat {
       return
     }
 
+    // Only set the dedup key after a successful join — if the request fails
+    // (e.g. no key packages available), we must allow retries.
+    this.recentDmJoinProcessed.set(dedupeKey, now)
     this.diagnostics.recordJoinRequestHandled(scope.id)
 
     if (response.removeCommitBytes) {
@@ -1274,6 +1319,15 @@ export class VesperEncryptedChat {
     }
 
     await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_request_join_all', {})
+
+    // Wait for at least one member to respond before returning.
+    // Without this, the caller encrypts at epoch 0 (only the creator in the
+    // group) and other members can never decrypt those messages. Live channel
+    // subscribers respond to mls_request_join_all with mls_request_join, which
+    // the scope event handler processes asynchronously — advancing the epoch.
+    // Uses a notification from setGroupState rather than polling.
+    await this.awaitEpochAdvance(channelId, 5_000)
+
     return true
   }
 
@@ -1299,7 +1353,12 @@ export class VesperEncryptedChat {
       return this.hasGroup(conversationId)
     }
 
-    await this.createGroup(conversationId)
+    // Force-create: bootstrap the group with ALL participants (not just a solo
+    // group).  `bootstrapDmGroupIfLeader` gates on leader election, but when we
+    // reach here the leader isn't online and nobody responded to our join
+    // request.  Creating a solo group would encrypt at epoch 0 with only the
+    // local user — the remote participant could never decrypt those messages.
+    await this.bootstrapDmGroup(conversationId)
     return this.hasGroup(conversationId)
   }
 
@@ -1323,10 +1382,13 @@ export class VesperEncryptedChat {
       }
     }
 
-    // Try External Commit first — no online member needed (RFC 9420 §12.4)
-    if (await this.tryJoinViaExternalCommit(scopeId)) {
-      return true
-    }
+    // External Commit (RFC 9420 §12.4) is disabled for live join flows.
+    // It races with Welcome-based adds: the leader processes mls_request_join
+    // and adds the user via Welcome, while the user concurrently External
+    // Commits from published GroupInfo, producing conflicting commits that
+    // diverge the ratchet tree. The Welcome-based join with leader coordination
+    // is the canonical path for both channels and DMs. External Commit remains
+    // available via tryJoinViaExternalCommit() for explicit recovery paths.
 
     // Fall back to Welcome-based join
     let welcomes: Awaited<ReturnType<typeof fetchPendingWelcomes>> = []
@@ -1346,6 +1408,7 @@ export class VesperEncryptedChat {
       if (processed) {
         await ackPendingWelcome(welcome.id, this.client.getHttpClient()).catch((e) => this.logIgnoredError('ack welcome', e))
         this.welcomeAppliedAtByScope.set(scopeId, Date.now())
+        this.welcomeReceivedScopes.add(scopeId)
         this.notifyMembershipWaiters(scopeId, true)
         return true
       }
@@ -1426,7 +1489,7 @@ export class VesperEncryptedChat {
           event.sender_device_id === localDeviceId
         )
       ) {
-        await this.handleCommit(scopeId, event.payload.commit_data)
+        await this.handleCommit(scopeId, event.payload.commit_data, 'replayDurable')
       }
 
       if (event.event_type === 'mls_remove') {
@@ -1485,6 +1548,7 @@ export class VesperEncryptedChat {
         plaintext = decrypted
         content = coerceDisplayText(decrypted)
       } else {
+        console.warn(`[E2EE] processIncomingMessage: DECRYPT FAILED msgId=${rawMessage.id} msgEpoch=${rawMessage.mls_epoch} scope=${scopeId} hasSent=${!!sentPlaintext} hasCached=${!!cachedMessagePlaintext}`)
         content = DECRYPTION_PLACEHOLDER
         decryptionFailed = true
       }
@@ -1605,21 +1669,6 @@ export class VesperEncryptedChat {
     const localDeviceId = this.requireDeviceId()
     const identityName = buildClientCredentialIdentity(session.user.id, localDeviceId)
 
-    // With OpenMLS, createMLSGroup handles identity + key generation internally.
-    // We just need a locally stored key package for consumeOwnKeyPackage.
-    const localPackages = await this.storage.loadKeyPackages()
-
-    if (localPackages.length > 0) {
-      const localPackage = localPackages[0]
-      await this.storage.consumeKeyPackage(localPackage.id)
-      this.diagnostics.recordKeyPackageConsumed(scopeId)
-      // Mark consumed on the server so it won't be handed out to other clients
-      await consumeOwnKeyPackage(
-        new Uint8Array(localPackage.publicData),
-        this.client.getHttpClient()
-      ).catch(() => {})
-    }
-
     const state = await createMLSGroup(scopeId, identityName)
     await this.setGroupState(scopeId, state)
     this.diagnostics.recordGroupCreated(scopeId)
@@ -1656,8 +1705,6 @@ export class VesperEncryptedChat {
       return null
     }
 
-    const memberKeyPackage = decodeKeyPackageBytes(keyPackageBytes)
-
     // With OpenMLS, key packages are opaque WASM objects. We infer the requested
     // identity from the userId/deviceId parameters rather than parsing the credential.
     const requestedIdentity = deviceId
@@ -1686,8 +1733,10 @@ export class VesperEncryptedChat {
       return null
     }
 
+    const beforeEpoch = this.getGroupEpoch(scopeId)
     const result = await addMemberToGroup(workingState, keyPackageBytes)
     await this.setGroupState(scopeId, result.newState)
+    const afterEpoch = this.getGroupEpoch(scopeId)
 
     return {
       removeCommitBytes,
@@ -1749,6 +1798,7 @@ export class VesperEncryptedChat {
         await this.setGroupState(scopeId, state)
         this.yieldedDmScopes.delete(scopeId)
         this.welcomeAppliedAtByScope.set(scopeId, Date.now())
+        this.welcomeReceivedScopes.add(scopeId)
         await this.storage.consumeKeyPackage(localPackage.id)
         await this.processPendingCommits(scopeId)
         await this.client.replenishKeyPackages()
@@ -1767,7 +1817,7 @@ export class VesperEncryptedChat {
     return false
   }
 
-  private async handleCommit(scopeId: string, commitData: string | null): Promise<boolean> {
+  private async handleCommit(scopeId: string, commitData: string | null, source = 'unknown'): Promise<boolean> {
     if (!commitData) {
       return false
     }
@@ -1837,8 +1887,6 @@ export class VesperEncryptedChat {
         return null
       }
 
-      const memberKeyPackage = decodeKeyPackageBytes(keyPackageBytes)
-
       // Infer identity from userId/deviceId rather than parsing the opaque key package
       const requestedIdentity = deviceId
         ? buildClientCredentialIdentity(userId, deviceId)
@@ -1888,7 +1936,7 @@ export class VesperEncryptedChat {
 
     this.pendingCommits.set(scopeId, [])
     for (const commitData of pending) {
-      await this.handleCommit(scopeId, commitData)
+      await this.handleCommit(scopeId, commitData, 'pendingCommit')
     }
   }
 
@@ -1912,14 +1960,18 @@ export class VesperEncryptedChat {
   private async decryptForScope(scopeId: string, ciphertext: string): Promise<string | null> {
     const state = this.groupStates.get(scopeId)
     if (!state) {
+      console.warn(`[E2EE] decryptForScope: no group state for ${scopeId}`)
       return null
     }
+
+    const epoch = this.getGroupEpoch(scopeId)
 
     const decrypted = await decryptMessage(
       this.cloneGroupState(state),
       Buffer.from(ciphertext, 'base64')
     )
     if (!decrypted) {
+      console.warn(`[E2EE] decryptForScope: decryption returned null for ${scopeId} at epoch=${epoch}`)
       return null
     }
 
@@ -2105,6 +2157,7 @@ export class VesperEncryptedChat {
     this.diagnostics.updateEpoch(scopeId, epoch)
     await this.storage.saveGroupState(scopeId, serializedState, epoch)
     this.notifyMembershipWaiters(scopeId, true)
+    this.notifyEpochWaiters(scopeId, epoch)
 
     // Publish GroupInfo for External Commits (non-blocking, best-effort)
     this.publishGroupInfoForScope(scopeId, state).catch(() => {})
@@ -2287,6 +2340,24 @@ export class VesperEncryptedChat {
   }
 
   private async bootstrapDmGroupIfLeader(conversationId: string): Promise<boolean> {
+    // Prevent concurrent bootstraps — the messageStore and SDK can both
+    // attempt to bootstrap the same DM simultaneously, causing a
+    // remove+re-add cycle that burns through epochs.
+    const inflight = this.pendingBootstraps.get(conversationId)
+    if (inflight) {
+      return await inflight
+    }
+
+    const promise = this.doBootstrapDmGroupIfLeader(conversationId)
+    this.pendingBootstraps.set(conversationId, promise)
+    try {
+      return await promise
+    } finally {
+      this.pendingBootstraps.delete(conversationId)
+    }
+  }
+
+  private async doBootstrapDmGroupIfLeader(conversationId: string): Promise<boolean> {
     const session = this.client.getAuthSession()
     let conversation =
       this.client.getState().conversations.find((entry) => entry.id === conversationId) ?? null
@@ -2320,10 +2391,95 @@ export class VesperEncryptedChat {
         continue
       }
 
-      const preferredDeviceId = this.getPreferredJoinDeviceId(scope, participant.user_id)
-      if (!preferredDeviceId) {
+      // Skip if this participant was already added by a concurrent bootstrap
+      const currentState = this.groupStates.get(conversationId)
+      if (currentState && groupHasMember(currentState, participant.user_id)) {
         continue
       }
+
+      const preferredDeviceId = this.getPreferredJoinDeviceId(scope, participant.user_id)
+
+      const response = await this.handleJoinRequest(
+        conversationId,
+        participant.user_id,
+        preferredDeviceId
+      )
+      if (!response) {
+        continue
+      }
+
+      await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_commit', {
+        commit_data: response.commitBytes
+      })
+
+      if (response.welcomeBytes) {
+        await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_welcome', {
+          recipient_id: participant.user_id,
+          recipient_device_id: preferredDeviceId,
+          welcome_data: response.welcomeBytes,
+          key_package_ref: response.keyPackageRef
+        })
+      }
+    }
+
+    return this.hasGroup(conversationId)
+  }
+
+  /** Like bootstrapDmGroupIfLeader but skips the leader check — used as the
+   *  last-resort path when the leader isn't online. */
+  private async bootstrapDmGroup(conversationId: string): Promise<boolean> {
+    // Same inflight guard as bootstrapDmGroupIfLeader
+    const inflight = this.pendingBootstraps.get(conversationId)
+    if (inflight) {
+      return await inflight
+    }
+
+    if (this.hasGroup(conversationId)) {
+      return true
+    }
+
+    const promise = this.doBootstrapDmGroup(conversationId)
+    this.pendingBootstraps.set(conversationId, promise)
+    try {
+      return await promise
+    } finally {
+      this.pendingBootstraps.delete(conversationId)
+    }
+  }
+
+  private async doBootstrapDmGroup(conversationId: string): Promise<boolean> {
+    const session = this.client.getAuthSession()
+    let conversation =
+      this.client.getState().conversations.find((entry) => entry.id === conversationId) ?? null
+
+    if (!conversation || !session) {
+      await this.client.syncNow(false).catch((e) => this.logIgnoredError('background sync failed', e))
+      conversation =
+        this.client.getState().conversations.find((entry) => entry.id === conversationId) ?? null
+    }
+
+    if (!conversation || !session) {
+      return false
+    }
+
+    await this.createGroup(conversationId)
+    if (!this.hasGroup(conversationId)) {
+      return false
+    }
+
+    const scope: EncryptedScope = { kind: 'dm', id: conversationId }
+    for (const participant of conversation.participants) {
+      if (participant.user_id === session.user.id) {
+        continue
+      }
+
+      // Skip if this participant was already added by a concurrent bootstrap
+      const currentState = this.groupStates.get(conversationId)
+      if (currentState && groupHasMember(currentState, participant.user_id)) {
+        continue
+      }
+
+      const preferredDeviceId = this.getPreferredJoinDeviceId(scope, participant.user_id)
 
       const response = await this.handleJoinRequest(
         conversationId,
@@ -2480,6 +2636,55 @@ export class VesperEncryptedChat {
     if (waiters.size === 0) {
       this.membershipWaiters.delete(scopeId)
     }
+  }
+
+  private notifyEpochWaiters(scopeId: string, epoch: number): void {
+    const waiters = this.epochWaiters.get(scopeId)
+    if (!waiters || waiters.size === 0) {
+      return
+    }
+
+    for (const waiter of [...waiters]) {
+      waiter(epoch)
+    }
+  }
+
+  private awaitEpochAdvance(scopeId: string, timeoutMs: number): Promise<boolean> {
+    const currentEpoch = this.getGroupEpoch(scopeId)
+    if (currentEpoch !== null && currentEpoch > 0) {
+      return Promise.resolve(true)
+    }
+
+    return new Promise<boolean>((resolve) => {
+      const timeout = setTimeout(() => {
+        const waiters = this.epochWaiters.get(scopeId)
+        if (waiters) {
+          waiters.delete(onEpoch)
+          if (waiters.size === 0) {
+            this.epochWaiters.delete(scopeId)
+          }
+        }
+        resolve(false)
+      }, timeoutMs)
+
+      const onEpoch = (epoch: number) => {
+        if (epoch > 0) {
+          clearTimeout(timeout)
+          const waiters = this.epochWaiters.get(scopeId)
+          if (waiters) {
+            waiters.delete(onEpoch)
+            if (waiters.size === 0) {
+              this.epochWaiters.delete(scopeId)
+            }
+          }
+          resolve(true)
+        }
+      }
+
+      const waiters = this.epochWaiters.get(scopeId) ?? new Set()
+      waiters.add(onEpoch)
+      this.epochWaiters.set(scopeId, waiters)
+    })
   }
 
   private async notifyScopeListeners(

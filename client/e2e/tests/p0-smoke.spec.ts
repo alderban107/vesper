@@ -128,11 +128,18 @@ test.describe('P0 Smoke — full continuous run', () => {
   })
 
   // --- Steps 5-6: DM between alice and bob (R-DM-1) ---
-  // DM E2EE convergence is timing-sensitive and needs separate debugging
-  // after the OpenMLS migration. The MLS library swap changed the DM bootstrap
-  // flow (leader election + handleJoinRequest), and the convergence timing
-  // may need adjustment. Skip this test for now to unblock the branch merge.
-  test.skip('Steps 5-6: alice and bob exchange encrypted DMs', async () => {
+  test('Steps 5-6: alice and bob exchange encrypted DMs', async () => {
+    // Capture E2EE diagnostic logs from both pages
+    const e2eeLogs: string[] = []
+    const logCapture = (prefix: string) => (msg: { type: () => string; text: () => string }) => {
+      const text = msg.text()
+      if (text.includes('[E2EE]') || text.includes('[MLS]')) {
+        e2eeLogs.push(`[${prefix}] ${text}`)
+      }
+    }
+    alice.page.on('console', logCapture('alice'))
+    bob.page.on('console', logCapture('bob'))
+
     // Alice creates a DM with bob
     await createDm(alice.page, USERS.bob.username)
 
@@ -142,7 +149,14 @@ test.describe('P0 Smoke — full continuous run', () => {
 
     // Bob selects the DM
     await selectDm(bob.page, USERS.alice.username)
-    await waitForMessage(bob.page, DM_MESSAGES.aliceToBob2)
+    try {
+      await waitForMessage(bob.page, DM_MESSAGES.aliceToBob2)
+    } catch (err) {
+      console.error('=== E2EE DIAGNOSTIC LOGS ===')
+      for (const log of e2eeLogs) console.error(log)
+      console.error('=== END E2EE LOGS ===')
+      throw err
+    }
 
     // Bob replies
     await sendDmMessage(bob.page, DM_MESSAGES.bobToAlice1)
@@ -181,7 +195,7 @@ test.describe('P0 Smoke — full continuous run', () => {
   })
 
   // --- Step 7: DM reaction (R-DM-3) ---
-  test.skip('Step 7: DM reaction converges', async () => {
+  test('Step 7: DM reaction converges', async () => {
     await addReaction(alice.page, DM_MESSAGES.bobToAlice1, REACTIONS.thumbsUp)
 
     // Wait for reaction to appear on bob's side
@@ -195,7 +209,7 @@ test.describe('P0 Smoke — full continuous run', () => {
   })
 
   // --- Step 8: DM thread (R-DM-3) ---
-  test.skip('Step 8: DM thread and threaded replies converge', async () => {
+  test('Step 8: DM thread and threaded replies converge', async () => {
     await openThread(alice.page, DM_MESSAGES.aliceToBob1)
     await sendThreadReply(alice.page, DM_MESSAGES.threadReply1)
 
@@ -215,7 +229,7 @@ test.describe('P0 Smoke — full continuous run', () => {
   })
 
   // --- Step 9: Refresh alice, verify DM state (R-DM-2, R-SYNC-1) ---
-  test.skip('Step 9: alice refresh preserves DM state', async () => {
+  test('Step 9: alice refresh preserves DM state', async () => {
     await hardRefresh(alice.page)
 
     // DM should still be visible after refresh
@@ -228,7 +242,7 @@ test.describe('P0 Smoke — full continuous run', () => {
   })
 
   // --- Step 10: Refresh bob, verify DM state (R-DM-2) ---
-  test.skip('Step 10: bob refresh preserves DM state', async () => {
+  test('Step 10: bob refresh preserves DM state', async () => {
     await hardRefresh(bob.page)
 
     await selectDm(bob.page, USERS.alice.username)
@@ -240,7 +254,7 @@ test.describe('P0 Smoke — full continuous run', () => {
   })
 
   // --- Step 11: Restart one DM client context (R-DM-2, R-HARNESS-5) ---
-  test.skip('Step 11: browser context restart preserves DM state', async () => {
+  test('Step 11: browser context restart preserves DM state', async () => {
     test.setTimeout(60_000) // context restart + IndexedDB restore is inherently slower
 
     const result = await restartBrowserContext(
@@ -327,6 +341,17 @@ test.describe('P0 Smoke — full continuous run', () => {
 
   // --- Step 16: Channel messages from all three (R-CHANNEL-1) ---
   test('Step 16: three users chat in channels', async () => {
+    const e2eeLogs: string[] = []
+    const logCapture = (prefix: string) => (msg: { type: () => string; text: () => string }) => {
+      const text = msg.text()
+      if (text.includes('[E2EE]') || text.includes('[MLS]')) {
+        e2eeLogs.push(`[${prefix}] ${text}`)
+      }
+    }
+    alice.page.on('console', logCapture('alice'))
+    bob.page.on('console', logCapture('bob'))
+    charlie.page.on('console', logCapture('charlie'))
+
     // All users open the channel
     await selectChannel(alice.page, CHANNELS.general)
     await selectChannel(bob.page, CHANNELS.general)
@@ -341,8 +366,15 @@ test.describe('P0 Smoke — full continuous run', () => {
     // has joined the group and can decrypt. On CI runners, the history
     // bundle flow (Alice sends at epoch 0, joiners decrypt via re-encrypted
     // bundle) can take longer than local, so use a generous timeout.
-    for (const page of [alice.page, bob.page, charlie.page]) {
-      await waitForMessage(page, CHANNEL_MESSAGES.alice1, 30_000)
+    try {
+      for (const page of [alice.page, bob.page, charlie.page]) {
+        await waitForMessage(page, CHANNEL_MESSAGES.alice1, 30_000)
+      }
+    } catch (err) {
+      console.log('=== Step 16 E2EE logs ===')
+      for (const log of e2eeLogs) console.log(log)
+      console.log('=== End E2EE logs ===')
+      throw err
     }
 
     // Group is confirmed ready — Bob and Charlie send

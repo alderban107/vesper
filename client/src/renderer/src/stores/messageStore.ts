@@ -740,6 +740,10 @@ async function handleSdkScopeEvent(
       (!recipientDeviceId || recipientDeviceId === getLocalDeviceIdentity().id)
     ) {
       recentWelcomeProcessed.set(scope.scopeId, Date.now())
+      // Consume the flag so joinChannelChat's .finally block doesn't also
+      // trigger handleWelcomeProcessedForScope, which marks messages as
+      // permanently unavailable before the history bundle can arrive.
+      getRendererEncryptedChat().consumeWelcomeApplied(scope.scopeId)
       if (scope.kind === 'channel') {
         void useMessageStore.getState().fetchMessages(scope.scopeId)
       } else {
@@ -1804,10 +1808,12 @@ async function bootstrapDmGroupIfLeader(
       continue
     }
 
-    const preferredDeviceId = getPreferredMlsJoinDeviceId(topic, participant.user_id)
-    if (!preferredDeviceId) {
+    // Skip if this participant was already added by a concurrent bootstrap
+    if (encryptedChat.isMemberOfGroup(conversationId, participant.user_id)) {
       continue
     }
+
+    const preferredDeviceId = getPreferredMlsJoinDeviceId(topic, participant.user_id) ?? null
 
     const result = await encryptedChat.handleExternalJoinRequest(
       { kind: 'dm', id: conversationId },
@@ -1820,19 +1826,19 @@ async function bootstrapDmGroupIfLeader(
     }
 
     if (result.removeCommitBytes) {
-      pushToChannel(topic, 'mls_remove', {
+      await getRendererClient().pushScopeEvent('dm', conversationId, 'mls_remove', {
         removed_user_id: participant.user_id,
         removed_device_id: preferredDeviceId,
         commit_data: result.removeCommitBytes
       })
     }
 
-    pushToChannel(topic, 'mls_commit', {
+    await getRendererClient().pushScopeEvent('dm', conversationId, 'mls_commit', {
       commit_data: result.commitBytes
     })
 
     if (result.welcomeBytes) {
-      pushToChannel(topic, 'mls_welcome', {
+      await getRendererClient().pushScopeEvent('dm', conversationId, 'mls_welcome', {
         recipient_id: participant.user_id,
         recipient_device_id: preferredDeviceId,
         welcome_data: result.welcomeBytes,
@@ -1890,8 +1896,7 @@ async function forceBootstrapDmGroup(
   for (const participant of conversation.participants) {
     if (participant.user_id === userId) continue
 
-    const preferredDeviceId = getPreferredMlsJoinDeviceId(topic, participant.user_id)
-    if (!preferredDeviceId) continue
+    const preferredDeviceId = getPreferredMlsJoinDeviceId(topic, participant.user_id) ?? null
 
     const result = await encryptedChat.handleExternalJoinRequest(
       { kind: 'dm', id: conversationId },
@@ -1901,12 +1906,12 @@ async function forceBootstrapDmGroup(
 
     if (!result) continue
 
-    pushToChannel(topic, 'mls_commit', {
+    await getRendererClient().pushScopeEvent('dm', conversationId, 'mls_commit', {
       commit_data: result.commitBytes
     })
 
     if (result.welcomeBytes) {
-      pushToChannel(topic, 'mls_welcome', {
+      await getRendererClient().pushScopeEvent('dm', conversationId, 'mls_welcome', {
         recipient_id: participant.user_id,
         recipient_device_id: preferredDeviceId,
         welcome_data: result.welcomeBytes,
@@ -2322,15 +2327,15 @@ async function refreshScopeAfterCryptoUpdate(
   await processPendingHistoryBundles(scope.targetId, scope.scopeId, setState).catch(() => {})
 
   if (hasFailedMessagesInScope(scope, getState)) {
-    if (afterWelcome) {
-      // After joining via Welcome, failed messages are from before this device
-      // joined the group and can't be decrypted (MLS forward secrecy). Mark
-      // them as permanently unavailable instead of triggering recovery which
-      // would resync the epoch and break messages that ARE decryptable.
-      markFailedMessagesUnavailable(scope, getState)
-    } else {
+    if (!afterWelcome) {
       fireAndForget(recoverEncryptedScope(scope, getState, null, 'post_crypto_update'))
     }
+    // After joining via Welcome, failed messages are from before this device
+    // joined the group and can't be decrypted directly (MLS forward secrecy).
+    // Don't mark them as permanently unavailable here — the history bundle
+    // flow (requestHistorySync, called after this function returns) will
+    // re-encrypt and deliver them. Messages stay as "syncing" until the
+    // bundle arrives and processHistoryBundle replaces their content.
   }
 
   if (!afterWelcome) {
@@ -3442,7 +3447,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
             await maybeRequestMlsJoin(conversationId, topic)
 
             // Wait for the other participant to respond with a Welcome
-            const joined = await waitForDmBootstrap(conversationId, 2000)
+            const joined = await waitForDmBootstrap(conversationId, 5000)
             if (joined) {
               return
             }
@@ -3464,11 +3469,9 @@ export const useMessageStore = create<MessageState>((set, get) => ({
               return
             }
 
-            const forced = await forceBootstrapDmGroup(conversationId, topic)
-            if (forced || getRendererEncryptedChat().hasGroup(conversationId)) {
-              return
-            }
-
+            // Don't force-create a competing group for existing conversations
+            // where the other side already has an active group. Instead, request
+            // a resync so the other side re-sends a Welcome.
             maybeRequestMlsResync(
               conversationId,
               conversationId,
@@ -3489,14 +3492,9 @@ export const useMessageStore = create<MessageState>((set, get) => ({
               return
             }
 
-            const forced = await forceBootstrapDmGroup(conversationId, topic)
-            if (forced || getRendererEncryptedChat().hasGroup(conversationId)) {
-              getRendererEncryptedChat()
-                .requestJoinAll({ kind: 'dm', id: conversationId })
-                .catch(() => {})
-              return
-            }
-
+            // Non-leader: wait for the leader's Welcome instead of force-creating
+            // a competing group. Force-create would produce two independent MLS
+            // groups that can never decrypt each other's messages.
             await maybeRequestMlsJoin(conversationId, topic)
             maybeRequestMlsResync(
               conversationId,
