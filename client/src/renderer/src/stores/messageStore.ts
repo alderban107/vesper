@@ -1277,38 +1277,20 @@ async function processMlsResyncRequest(
     return true
   }
 
-  const result = await encryptedChat.handleExternalResyncRequest(
-    scopeFromTopic(targetId, topic),
+  const sponsored = await encryptedChat.sponsorScopeResync(
+    targetId,
     requesterId,
-    requesterDeviceId ?? null
+    requesterDeviceId ?? null,
+    {
+      topic
+    }
   )
-  if (!result) {
+  if (!sponsored) {
     return false
   }
 
-  if (result.removeCommitBytes) {
-    pushToChannel(topic, 'mls_remove', {
-      removed_user_id: requesterId,
-      removed_device_id: requesterDeviceId ?? null,
-      commit_data: result.removeCommitBytes
-    })
-  }
-
-  pushToChannel(topic, 'mls_commit', {
-    commit_data: result.commitBytes
-  })
-
-  if (result.welcomeBytes) {
-    pushToChannel(topic, 'mls_welcome', {
-      recipient_id: requesterId,
-      recipient_device_id: requesterDeviceId,
-      welcome_data: result.welcomeBytes,
-      key_package_ref: result.keyPackageRef
-    })
-
-    if (isSameUserResync && requesterDeviceId) {
-      fireAndForget(sendHistoryBundle(targetId, topic, requesterId, requesterDeviceId))
-    }
+  if (isSameUserResync && requesterDeviceId) {
+    fireAndForget(sendHistoryBundle(targetId, topic, requesterId, requesterDeviceId))
   }
 
   if (request.id) {

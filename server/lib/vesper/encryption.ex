@@ -491,6 +491,26 @@ defmodule Vesper.Encryption do
   end
 
   @doc """
+  Store a replayable MLS commit event.
+
+  When `idempotency_key` is present, repeated requests with the same
+  group/sender/device/key tuple return the original durable event instead of
+  inserting a duplicate row.
+  """
+  def store_mls_commit_event(attrs) do
+    case normalize_mls_commit_idempotency_key(attrs) do
+      nil ->
+        insert_mls_event(attrs)
+
+      {:error, reason} ->
+        {:error, reason}
+
+      idempotency_key ->
+        store_idempotent_mls_commit_event(attrs, idempotency_key)
+    end
+  end
+
+  @doc """
   Store a replayable MLS remove event and atomically complete any linked crypto eviction.
   """
   def store_mls_remove_event(attrs, crypto_eviction \\ nil) do
@@ -518,6 +538,100 @@ defmodule Vesper.Encryption do
     |> Repo.insert()
   end
 
+  defp store_idempotent_mls_commit_event(attrs, idempotency_key) do
+    with {:ok, normalized_attrs} <- normalize_mls_commit_event_attrs(attrs, idempotency_key),
+         {:ok, event} <- insert_idempotent_mls_commit_event(normalized_attrs) do
+      {:ok, event}
+    end
+  end
+
+  defp normalize_mls_commit_event_attrs(attrs, idempotency_key) do
+    group_id = Map.get(attrs, :group_id) || Map.get(attrs, "group_id")
+    sender_id = Map.get(attrs, :sender_id) || Map.get(attrs, "sender_id")
+    sender_device_id = Map.get(attrs, :sender_device_id) || Map.get(attrs, "sender_device_id")
+    payload = Map.get(attrs, :payload) || Map.get(attrs, "payload")
+
+    cond do
+      not (is_binary(group_id) and group_id != "") ->
+        {:error, :invalid_commit_scope}
+
+      not (is_binary(sender_id) and sender_id != "") ->
+        {:error, :invalid_commit_scope}
+
+      not (is_binary(sender_device_id) and sender_device_id != "") ->
+        {:error, :invalid_commit_scope}
+
+      not is_map(payload) ->
+        {:error, :invalid_commit_scope}
+
+      true ->
+        {:ok,
+         attrs
+         |> Map.put(:idempotency_key, idempotency_key)
+         |> Map.put(:payload, stringify_map_keys(payload))}
+    end
+  end
+
+  defp insert_idempotent_mls_commit_event(attrs) do
+    expected_payload = Map.fetch!(attrs, :payload)
+
+    unique_target =
+      {:unsafe_fragment,
+       "(group_id, event_type, sender_id, sender_device_id, idempotency_key) WHERE event_type = 'mls_commit' AND idempotency_key IS NOT NULL"}
+
+    case Repo.insert(%MlsEvent{} |> MlsEvent.changeset(attrs),
+           on_conflict: :nothing,
+           conflict_target: unique_target,
+           returning: true
+         ) do
+      {:ok, %MlsEvent{id: nil}} ->
+        case fetch_mls_commit_event_by_idempotency_key(attrs) do
+          nil -> {:error, :idempotency_conflict}
+          %MlsEvent{payload: payload} = event when payload == expected_payload -> {:ok, event}
+          %MlsEvent{} -> {:error, :idempotency_conflict}
+        end
+
+      {:ok, event} ->
+        {:ok, event}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:error, changeset}
+    end
+  end
+
+  defp fetch_mls_commit_event_by_idempotency_key(attrs) do
+    group_id = Map.fetch!(attrs, :group_id)
+    sender_id = Map.fetch!(attrs, :sender_id)
+    sender_device_id = Map.fetch!(attrs, :sender_device_id)
+    idempotency_key = Map.fetch!(attrs, :idempotency_key)
+
+    from(event in MlsEvent,
+      where:
+        event.group_id == ^group_id and
+          event.event_type == "mls_commit" and
+          event.sender_id == ^sender_id and
+          event.sender_device_id == ^sender_device_id and
+          event.idempotency_key == ^idempotency_key
+    )
+    |> Repo.one()
+  end
+
+  defp normalize_mls_commit_idempotency_key(attrs) do
+    case Map.get(attrs, :idempotency_key) || Map.get(attrs, "idempotency_key") do
+      value when is_binary(value) and value != "" -> value
+      nil -> nil
+      _ -> {:error, :invalid_idempotency_key}
+    end
+  end
+
+  defp stringify_map_keys(map) when is_map(map) do
+    Enum.reduce(map, %{}, fn {key, value}, acc ->
+      Map.put(acc, to_string(key), value)
+    end)
+  end
+
+  defp stringify_map_keys(value), do: value
+
   @doc """
   List replayable MLS control-plane events for a scope after the given local cursor.
   """
@@ -528,6 +642,27 @@ defmodule Vesper.Encryption do
       limit: ^limit
     )
     |> Repo.all()
+  end
+
+  @doc """
+  List the most recent replayable MLS control-plane events for a scope.
+  """
+  def list_recent_mls_events(group_id, limit \\ 50, event_type \\ nil) do
+    query =
+      from(event in MlsEvent,
+        where: event.group_id == ^group_id,
+        order_by: [desc: event.id],
+        limit: ^limit
+      )
+
+    query =
+      if is_binary(event_type) and byte_size(event_type) > 0 do
+        from(event in query, where: event.event_type == ^event_type)
+      else
+        query
+      end
+
+    Repo.all(query)
   end
 
   # --- Pending Crypto Evictions ---
@@ -985,6 +1120,8 @@ defmodule Vesper.Encryption do
     previous_epoch = Map.get(attrs, :previous_epoch) || Map.get(attrs, "previous_epoch")
 
     Repo.transaction(fn ->
+      lock_group_info_publish(group_id)
+
       existing =
         from(gi in MlsGroupInfo,
           where: gi.group_id == ^group_id,
@@ -1032,6 +1169,13 @@ defmodule Vesper.Encryption do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp lock_group_info_publish(group_id) when is_binary(group_id) do
+    Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1)::bigint)", [group_id])
+    :ok
+  end
+
+  defp lock_group_info_publish(_group_id), do: :ok
 
   @doc """
   Fetch the latest MLS GroupInfo for a scope by group_id.

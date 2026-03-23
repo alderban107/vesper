@@ -131,6 +131,85 @@ defmodule Vesper.EncryptionTest do
       assert Enum.map(events, & &1.event_type) == ["mls_remove"]
       assert Enum.map(events, & &1.payload["commit_data"]) == ["commit-b"]
     end
+
+    test "lists the newest replayable MLS events first" do
+      sender = insert_user()
+      group_id = Ecto.UUID.generate()
+
+      assert {:ok, old_event} =
+               Encryption.store_mls_event(%{
+                 group_id: group_id,
+                 event_type: "mls_request_join_all",
+                 payload: %{user_id: sender.id},
+                 sender_id: sender.id,
+                 sender_device_id: "device-a"
+               })
+
+      assert {:ok, new_event} =
+               Encryption.store_mls_event(%{
+                 group_id: group_id,
+                 event_type: "mls_request_join_all",
+                 payload: %{user_id: sender.id},
+                 sender_id: sender.id,
+                 sender_device_id: "device-b"
+               })
+
+      assert Enum.map(Encryption.list_recent_mls_events(group_id, 1), & &1.id) == [new_event.id]
+
+      assert Enum.map(Encryption.list_recent_mls_events(group_id, 2), & &1.id) == [
+               new_event.id,
+               old_event.id
+             ]
+    end
+  end
+
+  describe "group info publishing" do
+    test "serializes concurrent first CAS publishes into one success and conflicts" do
+      publisher = insert_user()
+      group_id = Ecto.UUID.generate()
+      parent = self()
+      start_ref = make_ref()
+
+      base_attrs = %{
+        group_id: group_id,
+        group_info_data: <<1, 2, 3>>,
+        ratchet_tree_data: <<4, 5, 6>>,
+        epoch: 1,
+        previous_epoch: 0,
+        publisher_id: publisher.id
+      }
+
+      tasks =
+        1..8
+        |> Enum.map(fn index ->
+          Task.async(fn ->
+            Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
+            send(parent, {:ready, self()})
+
+            receive do
+              {:go, ^start_ref} -> :ok
+            end
+
+            Encryption.publish_group_info(
+              Map.put(base_attrs, :publisher_client_id, "client-#{index}")
+            )
+          end)
+        end)
+
+      for _ <- tasks do
+        assert_receive {:ready, _pid}, 1_000
+      end
+
+      Enum.each(tasks, fn task ->
+        send(task.pid, {:go, start_ref})
+      end)
+
+      results = Enum.map(tasks, &Task.await(&1, 5_000))
+
+      assert Enum.count(results, &match?({:ok, _group_info}, &1)) == 1
+      assert Enum.count(results, &(&1 == {:error, :epoch_conflict})) == 7
+      assert %{epoch: 1} = Encryption.get_group_info(group_id)
+    end
   end
 
   describe "pending crypto evictions" do

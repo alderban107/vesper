@@ -140,7 +140,9 @@ export class VesperSocketClient {
   }
 
   disconnect(): void {
-    this.channels.forEach((channel) => channel.leave())
+    // Closing the transport tears server channels down for us. Issuing
+    // graceful leave pushes here creates Phoenix timeout timers that can
+    // outlive shutdown and pin Node test processes open.
     this.channels.clear()
     this.channelListeners.clear()
     this.socket?.disconnect()

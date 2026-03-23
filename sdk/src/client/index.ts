@@ -184,9 +184,6 @@ const FIRE_AND_FORGET_SCOPE_EVENTS = new Set([
   'typing_stop',
   'new_message',
   'mls_resync_request',
-  'mls_commit',
-  'mls_remove',
-  'mls_welcome',
   'mls_history_request',
   'mls_history_bundle'
 ])

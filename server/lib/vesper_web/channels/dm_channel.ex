@@ -459,19 +459,21 @@ defmodule VesperWeb.DmChannel do
   end
 
   def handle_in("mls_request_join_all", _payload, socket) do
-    # Store durably so late-joining participants receive the broadcast.
-    # The join handler replays these events to new arrivals.
-    Encryption.store_mls_event(%{
-      group_id: socket.assigns.conversation_id,
-      conversation_id: socket.assigns.conversation_id,
-      event_type: "mls_request_join_all",
-      payload: %{user_id: socket.assigns.user_id},
-      sender_id: socket.assigns.user_id,
-      sender_device_id: socket.assigns.device_client_id
-    })
+    case Encryption.store_mls_event(%{
+           group_id: socket.assigns.conversation_id,
+           conversation_id: socket.assigns.conversation_id,
+           event_type: "mls_request_join_all",
+           payload: %{user_id: socket.assigns.user_id},
+           sender_id: socket.assigns.user_id,
+           sender_device_id: socket.assigns.device_client_id
+         }) do
+      {:ok, event} ->
+        broadcast_from!(socket, "mls_request_join_all", %{user_id: socket.assigns.user_id})
+        {:reply, {:ok, %{seq: event.id}}, socket}
 
-    broadcast_from!(socket, "mls_request_join_all", %{user_id: socket.assigns.user_id})
-    {:reply, :ok, socket}
+      {:error, _changeset} ->
+        {:reply, {:error, %{reason: "could not store join request"}}, socket}
+    end
   end
 
   def handle_in("mls_resync_request", payload, socket) when is_map(payload) do
@@ -512,16 +514,23 @@ defmodule VesperWeb.DmChannel do
     end
   end
 
-  def handle_in("mls_commit", %{"commit_data" => commit_data}, socket)
+  def handle_in("mls_commit", %{"commit_data" => commit_data} = payload, socket)
       when is_binary(commit_data) do
-    case Encryption.store_mls_event(%{
-           group_id: socket.assigns.conversation_id,
-           conversation_id: socket.assigns.conversation_id,
-           event_type: "mls_commit",
-           payload: %{commit_data: commit_data},
-           sender_id: socket.assigns.user_id,
-           sender_device_id: socket.assigns.device_client_id
-         }) do
+    idempotency_key =
+      optional_binary(Map.get(payload, "idempotency_key")) ||
+        optional_binary(Map.get(payload, "commit_id"))
+
+    case Encryption.store_mls_commit_event(
+           %{
+             group_id: socket.assigns.conversation_id,
+             conversation_id: socket.assigns.conversation_id,
+             event_type: "mls_commit",
+             payload: %{commit_data: commit_data},
+             sender_id: socket.assigns.user_id,
+             sender_device_id: socket.assigns.device_client_id
+           }
+           |> maybe_put(:idempotency_key, idempotency_key)
+         ) do
       {:ok, event} ->
         broadcast!(socket, "mls_commit", %{
           seq: event.id,
@@ -530,7 +539,7 @@ defmodule VesperWeb.DmChannel do
           sender_device_id: socket.assigns.device_client_id
         })
 
-        {:noreply, socket}
+        {:reply, {:ok, %{seq: event.id}}, socket}
 
       {:error, _changeset} ->
         {:reply, {:error, %{reason: "could not store commit"}}, socket}
@@ -655,7 +664,7 @@ defmodule VesperWeb.DmChannel do
           request_next_crypto_eviction("dm", socket.assigns.conversation_id)
         end
 
-        {:noreply, socket}
+        {:reply, {:ok, %{seq: event.id}}, socket}
 
       {:error, reason} when is_atom(reason) ->
         {:reply, {:error, %{reason: eviction_error_reason(reason)}}, socket}
@@ -695,7 +704,7 @@ defmodule VesperWeb.DmChannel do
               sender_id: sender_id
             })
 
-            {:noreply, socket}
+            {:reply, {:ok, %{id: welcome.id}}, socket}
 
           {:error, _changeset} ->
             {:reply, {:error, %{reason: "could not store welcome"}}, socket}
@@ -797,9 +806,9 @@ defmodule VesperWeb.DmChannel do
     # Replay recent mls_request_join_all events from OTHER participants so that
     # a late-joining client can discover an existing MLS group and converge onto it
     # rather than creating a competing independent group.
-    Encryption.list_mls_events_after(conversation_id, 0, 50)
+    Encryption.list_recent_mls_events(conversation_id, 50, "mls_request_join_all")
     |> Enum.filter(fn event ->
-      event.event_type == "mls_request_join_all" and event.sender_id != user_id
+      event.sender_id != user_id
     end)
     |> Enum.uniq_by(& &1.sender_id)
     |> Enum.each(fn event ->

@@ -83,6 +83,21 @@ const SCHEMA_SQL = `
     last_event_seq INTEGER NOT NULL DEFAULT 0
   );
 
+  CREATE TABLE IF NOT EXISTS pending_group_info_publishes (
+    group_id TEXT PRIMARY KEY,
+    group_info_data BLOB NOT NULL,
+    ratchet_tree_data BLOB,
+    epoch INTEGER NOT NULL,
+    inserted_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS pending_external_commit_broadcasts (
+    group_id TEXT PRIMARY KEY,
+    commit_data TEXT NOT NULL,
+    commit_id TEXT NOT NULL,
+    inserted_at TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS local_key_packages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     key_package_public BLOB NOT NULL,
@@ -153,6 +168,21 @@ function isUnencryptedDb(dbPath: string): boolean {
 
 interface TableRow {
   name: string
+}
+
+interface PendingGroupInfoPublishRow {
+  group_id: string
+  group_info_data: Buffer
+  ratchet_tree_data: Buffer | null
+  epoch: number
+  inserted_at: string
+}
+
+interface PendingExternalCommitBroadcastRow {
+  group_id: string
+  commit_data: string
+  commit_id: string
+  inserted_at: string
 }
 
 /**
@@ -362,8 +392,18 @@ export function setGroupState(groupId: string, state: Buffer, epoch: number): vo
 }
 
 export function deleteGroupState(groupId: string): void {
-  getDb().prepare('DELETE FROM mls_groups WHERE group_id = ?').run(groupId)
-  getDb().prepare('DELETE FROM mls_group_sync_state WHERE group_id = ?').run(groupId)
+  const database = getDb()
+  const cleanup = database.transaction((id: string) => {
+    database.prepare('DELETE FROM mls_groups WHERE group_id = ?').run(id)
+    database.prepare('DELETE FROM mls_group_sync_state WHERE group_id = ?').run(id)
+    database
+      .prepare('DELETE FROM pending_group_info_publishes WHERE group_id = ?')
+      .run(id)
+    database
+      .prepare('DELETE FROM pending_external_commit_broadcasts WHERE group_id = ?')
+      .run(id)
+  })
+  cleanup(groupId)
 }
 
 export function getGroupSyncCursor(groupId: string): number {
@@ -383,6 +423,94 @@ export function setGroupSyncCursor(groupId: string, lastEventSeq: number): void 
          last_event_seq = MAX(mls_group_sync_state.last_event_seq, excluded.last_event_seq)`
     )
     .run(groupId, lastEventSeq)
+}
+
+// --- MLS Control Outbox ---
+
+export function getPendingGroupInfoPublishes(): PendingGroupInfoPublishRow[] {
+  return getDb()
+    .prepare(
+      `SELECT
+         group_id,
+         group_info_data,
+         ratchet_tree_data,
+         epoch,
+         inserted_at
+       FROM pending_group_info_publishes
+       ORDER BY inserted_at ASC, group_id ASC`
+    )
+    .all() as PendingGroupInfoPublishRow[]
+}
+
+export function setPendingGroupInfoPublish(
+  groupId: string,
+  groupInfoData: Buffer,
+  ratchetTreeData: Buffer | null,
+  epoch: number
+): void {
+  getDb()
+    .prepare(
+      `INSERT INTO pending_group_info_publishes (
+        group_id,
+        group_info_data,
+        ratchet_tree_data,
+        epoch,
+        inserted_at
+      ) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(group_id) DO UPDATE SET
+        group_info_data = excluded.group_info_data,
+        ratchet_tree_data = excluded.ratchet_tree_data,
+        epoch = excluded.epoch,
+        inserted_at = excluded.inserted_at`
+    )
+    .run(groupId, groupInfoData, ratchetTreeData, epoch, new Date().toISOString())
+}
+
+export function deletePendingGroupInfoPublish(groupId: string): void {
+  getDb()
+    .prepare('DELETE FROM pending_group_info_publishes WHERE group_id = ?')
+    .run(groupId)
+}
+
+export function getPendingExternalCommitBroadcasts(): PendingExternalCommitBroadcastRow[] {
+  return getDb()
+    .prepare(
+      `SELECT
+         group_id,
+         commit_data,
+         commit_id,
+         inserted_at
+       FROM pending_external_commit_broadcasts
+       ORDER BY inserted_at ASC, group_id ASC`
+    )
+    .all() as PendingExternalCommitBroadcastRow[]
+}
+
+export function setPendingExternalCommitBroadcast(
+  groupId: string,
+  commitData: string,
+  commitId: string
+): void {
+  getDb()
+    .prepare(
+      `INSERT INTO pending_external_commit_broadcasts (
+        group_id,
+        commit_data,
+        commit_id,
+        inserted_at
+      ) VALUES (?, ?, ?, ?)
+      ON CONFLICT(group_id) DO UPDATE SET
+        commit_data = excluded.commit_data,
+        commit_id = excluded.commit_id,
+        inserted_at = excluded.inserted_at`
+    )
+    .run(groupId, commitData, commitId, new Date().toISOString())
+}
+
+export function deletePendingExternalCommitBroadcast(groupId: string): void {
+  getDb()
+    .prepare('DELETE FROM pending_external_commit_broadcasts WHERE group_id = ?')
+    .run(groupId)
 }
 
 // --- Local Key Packages ---

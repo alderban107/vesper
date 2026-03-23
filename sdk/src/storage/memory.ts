@@ -58,6 +58,21 @@ export class MemoryStorage implements CryptoDbApi {
 
   private readonly groupStates = new Map<string, { state: Uint8Array; epoch: number }>()
   private readonly groupSyncCursors = new Map<string, number>()
+  private readonly pendingGroupInfoPublishes = new Map<
+    string,
+    {
+      group_info_data: Uint8Array
+      ratchet_tree_data: Uint8Array | null
+      epoch: number
+    }
+  >()
+  private readonly pendingExternalCommitBroadcasts = new Map<
+    string,
+    {
+      commit_data: string
+      commit_id: string
+    }
+  >()
   private readonly keyPackages = new Map<
     number,
     {
@@ -141,6 +156,8 @@ export class MemoryStorage implements CryptoDbApi {
   async deleteGroupState(groupId: string): Promise<void> {
     this.groupStates.delete(groupId)
     this.groupSyncCursors.delete(groupId)
+    this.pendingGroupInfoPublishes.delete(groupId)
+    this.pendingExternalCommitBroadcasts.delete(groupId)
   }
 
   async getGroupSyncCursor(groupId: string): Promise<number> {
@@ -149,6 +166,70 @@ export class MemoryStorage implements CryptoDbApi {
 
   async setGroupSyncCursor(groupId: string, lastEventSeq: number): Promise<void> {
     this.groupSyncCursors.set(groupId, lastEventSeq)
+  }
+
+  async getPendingGroupInfoPublishes(): Promise<
+    Array<{
+      group_id: string
+      group_info_data: ArrayBuffer
+      ratchet_tree_data: ArrayBuffer | null
+      epoch: number
+    }>
+  > {
+    return [...this.pendingGroupInfoPublishes.entries()].map(([group_id, record]) => ({
+      group_id,
+      group_info_data: cloneArrayBuffer(record.group_info_data),
+      ratchet_tree_data: record.ratchet_tree_data
+        ? cloneArrayBuffer(record.ratchet_tree_data)
+        : null,
+      epoch: record.epoch
+    }))
+  }
+
+  async setPendingGroupInfoPublish(
+    groupId: string,
+    groupInfoData: Uint8Array,
+    ratchetTreeData: Uint8Array | null,
+    epoch: number
+  ): Promise<void> {
+    this.pendingGroupInfoPublishes.set(groupId, {
+      group_info_data: new Uint8Array(groupInfoData),
+      ratchet_tree_data: ratchetTreeData ? new Uint8Array(ratchetTreeData) : null,
+      epoch
+    })
+  }
+
+  async deletePendingGroupInfoPublish(groupId: string): Promise<void> {
+    this.pendingGroupInfoPublishes.delete(groupId)
+  }
+
+  async getPendingExternalCommitBroadcasts(): Promise<
+    Array<{
+      group_id: string
+      commit_data: string
+      commit_id: string
+    }>
+  > {
+    return [...this.pendingExternalCommitBroadcasts.entries()].map(([group_id, record]) => ({
+      group_id,
+      commit_data: record.commit_data,
+      commit_id: record.commit_id
+    }))
+  }
+
+  async setPendingExternalCommitBroadcast(
+    groupId: string,
+    commitData: string,
+    commitId: string
+  ): Promise<void> {
+    this.pendingExternalCommitBroadcasts.set(groupId, {
+      commit_data: commitData,
+      commit_id: commitId
+    })
+  }
+
+  async deletePendingExternalCommitBroadcast(groupId: string): Promise<void> {
+    this.pendingExternalCommitBroadcasts.delete(groupId)
   }
 
   async getLocalKeyPackages(): Promise<

@@ -25,6 +25,34 @@ interface CryptoDbApi {
   deleteGroupState(groupId: string): Promise<void>
   getGroupSyncCursor(groupId: string): Promise<number>
   setGroupSyncCursor(groupId: string, lastEventSeq: number): Promise<void>
+  getPendingGroupInfoPublishes(): Promise<
+    Array<{
+      group_id: string
+      group_info_data: ArrayBuffer
+      ratchet_tree_data: ArrayBuffer | null
+      epoch: number
+    }>
+  >
+  setPendingGroupInfoPublish(
+    groupId: string,
+    groupInfoData: Uint8Array,
+    ratchetTreeData: Uint8Array | null,
+    epoch: number
+  ): Promise<void>
+  deletePendingGroupInfoPublish(groupId: string): Promise<void>
+  getPendingExternalCommitBroadcasts(): Promise<
+    Array<{
+      group_id: string
+      commit_data: string
+      commit_id: string
+    }>
+  >
+  setPendingExternalCommitBroadcast(
+    groupId: string,
+    commitData: string,
+    commitId: string
+  ): Promise<void>
+  deletePendingExternalCommitBroadcast(groupId: string): Promise<void>
   getLocalKeyPackages(): Promise<
     Array<{
       id: number

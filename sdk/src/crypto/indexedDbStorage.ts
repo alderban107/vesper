@@ -10,12 +10,14 @@
  */
 
 const DB_NAME_PREFIX = 'vesper-crypto'
-const DB_VERSION = 5
+const DB_VERSION = 6
 
 const STORES = {
   identityKeys: 'identity_keys',
   mlsGroups: 'mls_groups',
   mlsGroupSyncState: 'mls_group_sync_state',
+  mlsPendingGroupInfoPublishes: 'mls_pending_group_info_publishes',
+  mlsPendingExternalCommitBroadcasts: 'mls_pending_external_commit_broadcasts',
   localKeyPackages: 'local_key_packages',
   messageCache: 'message_cache',
   sentMessageCache: 'sent_message_cache'
@@ -102,6 +104,14 @@ function openDb(userId: string): Promise<IDBDatabase> {
 
       if (!db.objectStoreNames.contains(STORES.mlsGroupSyncState)) {
         db.createObjectStore(STORES.mlsGroupSyncState, { keyPath: 'group_id' })
+      }
+
+      if (!db.objectStoreNames.contains(STORES.mlsPendingGroupInfoPublishes)) {
+        db.createObjectStore(STORES.mlsPendingGroupInfoPublishes, { keyPath: 'group_id' })
+      }
+
+      if (!db.objectStoreNames.contains(STORES.mlsPendingExternalCommitBroadcasts)) {
+        db.createObjectStore(STORES.mlsPendingExternalCommitBroadcasts, { keyPath: 'group_id' })
       }
 
       if (!db.objectStoreNames.contains(STORES.localKeyPackages)) {
@@ -278,6 +288,8 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
       const db = await getDb()
       await req(tx(db, STORES.mlsGroups, 'readwrite').delete(groupId))
       await req(tx(db, STORES.mlsGroupSyncState, 'readwrite').delete(groupId))
+      await req(tx(db, STORES.mlsPendingGroupInfoPublishes, 'readwrite').delete(groupId))
+      await req(tx(db, STORES.mlsPendingExternalCommitBroadcasts, 'readwrite').delete(groupId))
     },
 
     async getGroupSyncCursor(groupId: string) {
@@ -296,6 +308,54 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
           last_event_seq: Math.max(existing?.last_event_seq ?? 0, lastEventSeq)
         })
       )
+    },
+
+    async getPendingGroupInfoPublishes() {
+      const db = await getDb()
+      return await req(tx(db, STORES.mlsPendingGroupInfoPublishes, 'readonly').getAll())
+    },
+
+    async setPendingGroupInfoPublish(
+      groupId: string,
+      groupInfoData: Uint8Array,
+      ratchetTreeData: Uint8Array | null,
+      epoch: number
+    ) {
+      const db = await getDb()
+      await req(
+        tx(db, STORES.mlsPendingGroupInfoPublishes, 'readwrite').put({
+          group_id: groupId,
+          group_info_data: groupInfoData,
+          ratchet_tree_data: ratchetTreeData,
+          epoch: epoch
+        })
+      )
+    },
+
+    async deletePendingGroupInfoPublish(groupId: string) {
+      const db = await getDb()
+      await req(tx(db, STORES.mlsPendingGroupInfoPublishes, 'readwrite').delete(groupId))
+    },
+
+    async getPendingExternalCommitBroadcasts() {
+      const db = await getDb()
+      return await req(tx(db, STORES.mlsPendingExternalCommitBroadcasts, 'readonly').getAll())
+    },
+
+    async setPendingExternalCommitBroadcast(groupId: string, commitData: string, commitId: string) {
+      const db = await getDb()
+      await req(
+        tx(db, STORES.mlsPendingExternalCommitBroadcasts, 'readwrite').put({
+          group_id: groupId,
+          commit_data: commitData,
+          commit_id: commitId
+        })
+      )
+    },
+
+    async deletePendingExternalCommitBroadcast(groupId: string) {
+      const db = await getDb()
+      await req(tx(db, STORES.mlsPendingExternalCommitBroadcasts, 'readwrite').delete(groupId))
     },
 
     // --- Key Packages ---

@@ -109,34 +109,16 @@ async function processVoiceMlsResyncRequest(
     return true
   }
 
-  const result = await encryptedChat.handleScopeResyncRequest(
+  const sponsored = await encryptedChat.sponsorScopeResync(
     topic,
     requesterId,
-    requesterDeviceId ?? null
+    requesterDeviceId ?? null,
+    {
+      topic
+    }
   )
-  if (!result) {
+  if (!sponsored) {
     return false
-  }
-
-  if (result.removeCommitBytes) {
-    pushTopicEvent(topic, 'mls_remove', {
-      removed_user_id: requesterId,
-      removed_device_id: requesterDeviceId ?? null,
-      commit_data: result.removeCommitBytes
-    })
-  }
-
-  pushTopicEvent(topic, 'mls_commit', {
-    commit_data: result.commitBytes
-  })
-
-  if (result.welcomeBytes) {
-    pushTopicEvent(topic, 'mls_welcome', {
-      recipient_id: requesterId,
-      recipient_device_id: requesterDeviceId,
-      welcome_data: result.welcomeBytes,
-      key_package_ref: result.keyPackageRef
-    })
   }
 
   if (request.id) {
@@ -1677,22 +1659,11 @@ async function handleVoiceMlsJoinRequest(
 
   if (!encryptedChat.hasGroup(topic)) return
 
-  const result = await encryptedChat.handleScopeJoinRequest(topic, userId, deviceId ?? null)
-
-  if (!result) return
-
-  pushTopicEvent(topic, 'mls_commit', {
-    commit_data: result.commitBytes
+  const sponsored = await encryptedChat.sponsorScopeJoin(topic, userId, deviceId ?? null, {
+    topic
   })
 
-  if (result.welcomeBytes) {
-    pushTopicEvent(topic, 'mls_welcome', {
-      recipient_id: userId,
-      recipient_device_id: deviceId,
-      welcome_data: result.welcomeBytes,
-      key_package_ref: result.keyPackageRef
-    })
-  }
+  if (!sponsored) return
 
   // Key rotated after adding member — update our voice key
   const newKey = await encryptedChat.deriveScopeVoiceKey(topic)

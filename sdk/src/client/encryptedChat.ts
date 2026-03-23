@@ -108,6 +108,15 @@ export interface SendPayloadOptions extends SendTextOptions {
 
 type GroupState = Awaited<ReturnType<typeof createMLSGroup>>
 type ScopeListener = (event: EncryptedScopeWatchEvent) => void | Promise<void>
+type PendingGroupInfoPublish = {
+  groupInfoData: Uint8Array
+  ratchetTreeData: Uint8Array | null
+  epoch: number
+}
+type PendingExternalCommitBroadcast = {
+  commitData: string
+  commitId: string
+}
 
 function scopeTopic(scope: EncryptedScope): string {
   return scope.kind === 'channel' ? `chat:channel:${scope.id}` : `dm:${scope.id}`
@@ -116,6 +125,52 @@ function scopeTopic(scope: EncryptedScope): string {
 function parseTimestamp(value: string): number {
   const parsed = Date.parse(value)
   return Number.isNaN(parsed) ? 0 : parsed
+}
+
+function bytesToHex(value: Uint8Array): string {
+  return [...value].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+function uint8ArraysEqual(left: Uint8Array | null, right: Uint8Array | null): boolean {
+  if (left === right) {
+    return true
+  }
+
+  if (!left || !right || left.byteLength !== right.byteLength) {
+    return left === right
+  }
+
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) {
+      return false
+    }
+  }
+
+  return true
+}
+
+function samePendingGroupInfoPublish(
+  left: PendingGroupInfoPublish,
+  right: PendingGroupInfoPublish
+): boolean {
+  return (
+    left.epoch === right.epoch &&
+    uint8ArraysEqual(left.groupInfoData, right.groupInfoData) &&
+    uint8ArraysEqual(left.ratchetTreeData, right.ratchetTreeData)
+  )
+}
+
+function samePendingExternalCommitBroadcast(
+  left: PendingExternalCommitBroadcast,
+  right: PendingExternalCommitBroadcast
+): boolean {
+  return left.commitId === right.commitId && left.commitData === right.commitData
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const encoded = new TextEncoder().encode(value)
+  const digest = await crypto.subtle.digest('SHA-256', encoded)
+  return bytesToHex(new Uint8Array(digest))
 }
 
 function sortMessages(messages: ProcessedScopeMessage[]): ProcessedScopeMessage[] {
@@ -200,6 +255,12 @@ export class VesperEncryptedChat {
   private readonly pendingGroupCreations = new Map<string, Promise<void>>()
   private readonly pendingExternalCommits = new Map<string, Promise<boolean>>()
   private readonly pendingBootstraps = new Map<string, Promise<boolean>>()
+  private readonly pendingGroupInfoPublishes = new Map<string, PendingGroupInfoPublish>()
+  private readonly groupInfoPublishRetryAttempts = new Map<string, number>()
+  private readonly groupInfoPublishRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly pendingExternalCommitBroadcasts = new Map<string, PendingExternalCommitBroadcast>()
+  private readonly externalCommitBroadcastRetryAttempts = new Map<string, number>()
+  private readonly externalCommitBroadcastRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly diagnostics = new MLSDiagnostics()
   private readonly welcomeInProgress = new Set<string>()
   private readonly welcomeReceivedScopes = new Set<string>()
@@ -210,7 +271,7 @@ export class VesperEncryptedChat {
     this.storage = client.getStorageRuntime()
 
     this.client.on('connected', () => {
-      void this.restoreConnections()
+      void this.handleConnected()
     })
     this.client.on('disconnected', () => {
       this.clearConnections()
@@ -220,6 +281,17 @@ export class VesperEncryptedChat {
         this.reset()
       }
     })
+  }
+
+  private async handleConnected(): Promise<void> {
+    try {
+      await this.restoreConnections()
+      await this.loadPendingControlOutbox()
+      await this.flushPendingGroupInfoPublishes()
+      await this.flushPendingExternalCommitBroadcasts()
+    } catch (error) {
+      this.logIgnoredError('restore connections', error)
+    }
   }
 
   private parseScopeTopic(topic: string): EncryptedScope | null {
@@ -303,6 +375,16 @@ export class VesperEncryptedChat {
     return await this.client.runWithStorageContext(operation)
   }
 
+  private async withLockedScopeOperation<T>(
+    scopeId: string,
+    operation: () => Promise<T>,
+    priority: Parameters<typeof withGroupLock>[2] = 'normal'
+  ): Promise<T> {
+    return await withGroupLock(scopeId, async () => {
+      return await this.withStorageContext(operation)
+    }, priority)
+  }
+
   reset(): void {
     this.clearConnections()
     this.groupStates.clear()
@@ -316,6 +398,18 @@ export class VesperEncryptedChat {
     this.welcomeAppliedAtByScope.clear()
     this.recentDmJoinProcessed.clear()
     this.yieldedDmScopes.clear()
+    this.pendingGroupInfoPublishes.clear()
+    this.groupInfoPublishRetryAttempts.clear()
+    for (const timer of this.groupInfoPublishRetryTimers.values()) {
+      clearTimeout(timer)
+    }
+    this.groupInfoPublishRetryTimers.clear()
+    this.pendingExternalCommitBroadcasts.clear()
+    this.externalCommitBroadcastRetryAttempts.clear()
+    for (const timer of this.externalCommitBroadcastRetryTimers.values()) {
+      clearTimeout(timer)
+    }
+    this.externalCommitBroadcastRetryTimers.clear()
 
     for (const waiters of this.membershipWaiters.values()) {
       for (const waiter of waiters) {
@@ -462,6 +556,8 @@ export class VesperEncryptedChat {
     } = {}
   ): Promise<ScopeSyncResult> {
     return await this.withStorageContext(async () => {
+      this.scopeKinds.set(scope.id, scope.kind)
+
       return await withGroupLock(scope.id, async () => {
         const startedAt = performance.now()
         const limit = options.limit ?? 50
@@ -498,6 +594,8 @@ export class VesperEncryptedChat {
   /** Ensures the MLS group for a scope is ready, optionally creating it if missing. Routes to channel or DM-specific logic. */
   async ensureScopeReady(scope: EncryptedScope, allowCreate = false): Promise<boolean> {
     return await this.withStorageContext(async () => {
+      this.scopeKinds.set(scope.id, scope.kind)
+
       if (scope.kind === 'channel') {
         return await this.ensureChannelGroupReady(scope.id, allowCreate)
       }
@@ -519,7 +617,7 @@ export class VesperEncryptedChat {
     payload: MessagePayload,
     options: SendPayloadOptions = {}
   ): Promise<void> {
-    await this.withStorageContext(async () => {
+    await this.withLockedScopeOperation(scope.id, async () => {
       const release = await this.watchScope(scope)
 
       try {
@@ -564,7 +662,8 @@ export class VesperEncryptedChat {
     scope: EncryptedScope,
     plaintext: string
   ): Promise<{ ciphertext: string; epoch: number }> {
-    return await this.withStorageContext(async () => {
+    return await this.withLockedScopeOperation(scope.id, async () => {
+      this.scopeKinds.set(scope.id, scope.kind)
       const ready = await this.ensureGroupMembership(scope.id)
       if (!ready) {
         throw new Error(`${scope.kind} group is still syncing`)
@@ -579,7 +678,8 @@ export class VesperEncryptedChat {
     ciphertext: string,
     messageEpoch: number | null = null
   ): Promise<string | null> {
-    return await this.withStorageContext(async () => {
+    return await this.withLockedScopeOperation(scope.id, async () => {
+      this.scopeKinds.set(scope.id, scope.kind)
       return await this.decryptForScopeWithRecovery(scope, ciphertext, messageEpoch)
     })
   }
@@ -588,7 +688,8 @@ export class VesperEncryptedChat {
     scope: EncryptedScope,
     items: Array<{ ciphertext: string; messageEpoch?: number | null }>
   ): Promise<Array<string | null>> {
-    return await this.withStorageContext(async () => {
+    return await this.withLockedScopeOperation(scope.id, async () => {
+      this.scopeKinds.set(scope.id, scope.kind)
       const decrypted: Array<string | null> = []
 
       for (const item of items) {
@@ -603,20 +704,21 @@ export class VesperEncryptedChat {
 
   /** Public API: loads or restores MLS group membership for a scope from storage or pending welcomes. */
   async ensureMembership(scope: EncryptedScope): Promise<boolean> {
-    return await this.withStorageContext(async () => {
+    return await this.withLockedScopeOperation(scope.id, async () => {
+      this.scopeKinds.set(scope.id, scope.kind)
       return await this.ensureGroupMembership(scope.id)
     })
   }
 
   /** Convenience wrapper: ensures MLS group state is loaded for a raw scope ID. Equivalent to ensureMembership with a pre-resolved scope. */
   async ensureScopeState(scopeId: string): Promise<boolean> {
-    return await this.withStorageContext(async () => {
+    return await this.withLockedScopeOperation(scopeId, async () => {
       return await this.ensureGroupMembership(scopeId)
     })
   }
 
   async replayScopeEvents(scopeId: string): Promise<void> {
-    await this.withStorageContext(async () => {
+    await this.withLockedScopeOperation(scopeId, async () => {
       await this.replayDurableEvents(scopeId)
     })
   }
@@ -661,7 +763,8 @@ export class VesperEncryptedChat {
   }
 
   async createScopeGroup(scope: EncryptedScope): Promise<boolean> {
-    return await this.withStorageContext(async () => {
+    return await this.withLockedScopeOperation(scope.id, async () => {
+      this.scopeKinds.set(scope.id, scope.kind)
       await this.createGroup(scope.id)
       if (!this.hasGroup(scope.id)) {
         return false
@@ -669,22 +772,27 @@ export class VesperEncryptedChat {
       // Ensure GroupInfo is published before returning so callers that
       // broadcast mls_request_join_all won't race with the HTTP POST.
       const state = this.groupStates.get(scope.id)
-      if (state) {
-        await this.publishGroupInfoForScope(scope.id, state)
+      if (state && !await this.publishGroupInfoForScope(scope.id, state)) {
+        return false
       }
       return true
     })
   }
 
   async createScopeState(scopeId: string): Promise<boolean> {
-    return await this.withStorageContext(async () => {
+    return await this.withLockedScopeOperation(scopeId, async () => {
       await this.createGroup(scopeId)
       return this.hasGroup(scopeId)
     })
   }
 
   async resetScope(scopeId: string): Promise<void> {
-    await this.withStorageContext(async () => {
+    await this.withLockedScopeOperation(scopeId, async () => {
+      await this.resetScopeState(scopeId)
+    })
+  }
+
+  private async resetScopeState(scopeId: string): Promise<void> {
       this.groupStates.delete(scopeId)
       this.pendingCommits.delete(scopeId)
       this.scopeMessages.delete(scopeId)
@@ -693,14 +801,15 @@ export class VesperEncryptedChat {
       this.pendingGroupCreations.delete(scopeId)
       this.pendingBootstraps.delete(scopeId)
       this.welcomeInProgress.delete(scopeId)
+      await this.clearPendingGroupInfoPublish(scopeId)
+      await this.clearPendingExternalCommitBroadcast(scopeId)
       this.notifyMembershipWaiters(scopeId, false)
       this.membershipWaiters.delete(scopeId)
       await this.storage.deleteGroupState(scopeId)
-    })
   }
 
   async applyScopeCommit(scopeId: string, commitData: string | null): Promise<boolean> {
-    return await this.withStorageContext(async () => {
+    return await this.withLockedScopeOperation(scopeId, async () => {
       return await this.handleCommit(scopeId, commitData, 'applyScopeCommit')
     })
   }
@@ -710,7 +819,7 @@ export class VesperEncryptedChat {
     welcomeData: string | null,
     keyPackageRef: string | null = null
   ): Promise<boolean> {
-    return await this.withStorageContext(async () => {
+    return await this.withLockedScopeOperation(scopeId, async () => {
       return await this.handleWelcome(scopeId, welcomeData, keyPackageRef)
     })
   }
@@ -720,11 +829,12 @@ export class VesperEncryptedChat {
     userId: string,
     deviceId: string | null = null
   ): Promise<{
+    removeCommitBytes: string | null
     commitBytes: string
     welcomeBytes: string | null
     keyPackageRef: string
   } | null> {
-    return await this.withStorageContext(async () => {
+    return await this.withLockedScopeOperation(scopeId, async () => {
       return await this.handleJoinRequest(scopeId, userId, deviceId)
     })
   }
@@ -739,7 +849,7 @@ export class VesperEncryptedChat {
     welcomeBytes: string | null
     keyPackageRef: string
   } | null> {
-    return await this.withStorageContext(async () => {
+    return await this.withLockedScopeOperation(scopeId, async () => {
       return await this.handleResyncRequest(scopeId, userId, deviceId)
     })
   }
@@ -766,8 +876,44 @@ export class VesperEncryptedChat {
     welcomeBytes: string | null
     keyPackageRef: string
   } | null> {
-    return await this.withStorageContext(async () => {
+    return await this.withLockedScopeOperation(scope.id, async () => {
       return await this.handleResyncRequest(scope.id, userId, deviceId)
+    })
+  }
+
+  async sponsorScopeJoin(
+    scopeId: string,
+    userId: string,
+    deviceId: string | null = null,
+    options: {
+      topic?: string | null
+    } = {}
+  ): Promise<boolean> {
+    return await this.withLockedScopeOperation(scopeId, async () => {
+      const result = await this.handleJoinRequest(scopeId, userId, deviceId)
+      if (!result) {
+        return false
+      }
+
+      return await this.deliverSponsoredTransition(scopeId, userId, deviceId, result, options.topic ?? null)
+    })
+  }
+
+  async sponsorScopeResync(
+    scopeId: string,
+    userId: string,
+    deviceId: string | null = null,
+    options: {
+      topic?: string | null
+    } = {}
+  ): Promise<boolean> {
+    return await this.withLockedScopeOperation(scopeId, async () => {
+      const result = await this.handleResyncRequest(scopeId, userId, deviceId)
+      if (!result) {
+        return false
+      }
+
+      return await this.deliverSponsoredTransition(scopeId, userId, deviceId, result, options.topic ?? null)
     })
   }
 
@@ -775,13 +921,13 @@ export class VesperEncryptedChat {
     scope: EncryptedScope,
     payload: Record<string, unknown> | null
   ): Promise<boolean> {
-    return await this.withStorageContext(async () => {
+    return await this.withLockedScopeOperation(scope.id, async () => {
       return await this.handleEvictionRequestEvent(scope, payload)
     })
   }
 
   async editText(scope: EncryptedScope, messageId: string, text: string): Promise<void> {
-    await this.withStorageContext(async () => {
+    await this.withLockedScopeOperation(scope.id, async () => {
       const ready = await this.ensureScopeReady(scope)
       if (!ready) {
         throw new Error(`${scope.kind} group is still syncing`)
@@ -816,13 +962,13 @@ export class VesperEncryptedChat {
   }
 
   async addReaction(scope: EncryptedScope, messageId: string, emoji: string): Promise<void> {
-    await this.withStorageContext(async () => {
+    await this.withLockedScopeOperation(scope.id, async () => {
       await this.pushReaction(scope, 'add_reaction', messageId, emoji)
     })
   }
 
   async removeReaction(scope: EncryptedScope, messageId: string, emoji: string): Promise<void> {
-    await this.withStorageContext(async () => {
+    await this.withLockedScopeOperation(scope.id, async () => {
       await this.pushReaction(scope, 'remove_reaction', messageId, emoji)
     })
   }
@@ -938,7 +1084,7 @@ export class VesperEncryptedChat {
         // into the leader's group. Mark as yielded so concurrent code paths
         // (e.g. forceBootstrapDmGroup) don't immediately recreate it.
         this.yieldedDmScopes.add(scope.id)
-        await this.resetScope(scope.id)
+        await this.resetScopeState(scope.id)
         await this.tryJoinViaExternalCommit(scope.id)
         return { scope, event, payload }
       }
@@ -1027,7 +1173,7 @@ export class VesperEncryptedChat {
       (removedDeviceId == null || removedDeviceId === localDeviceId)
 
     if (isLocalTarget && !isLocalSender) {
-      await this.resetScope(scope.id)
+      await this.resetScopeState(scope.id)
       return
     }
 
@@ -1198,8 +1344,12 @@ export class VesperEncryptedChat {
     // available on the server BEFORE we broadcast mls_request_join_all —
     // otherwise recipients try to External Commit and find no GroupInfo.
     const freshState = this.groupStates.get(channelId)
-    if (freshState) {
-      await this.publishGroupInfoForScope(channelId, freshState)
+    if (freshState && !await this.publishGroupInfoForScope(channelId, freshState)) {
+      return false
+    }
+
+    if (!await this.channelRequiresExternalJoin(channelId, localUserId)) {
+      return true
     }
 
     await this.client.pushScopeEvent('channel', channelId, 'mls_request_join_all', {})
@@ -1355,6 +1505,8 @@ export class VesperEncryptedChat {
           identityName
         )
 
+        const commitData = uint8ToBase64(commitBytes)
+        const commitId = await this.computeMlsCommitId(scopeId, commitData)
         const newEpoch = Number(state.groupContext.epoch)
 
         // CAS publish: claim this epoch transition. Only succeeds if the
@@ -1377,12 +1529,21 @@ export class VesperEncryptedChat {
           return false
         }
 
-        // CAS succeeded — broadcast the commit and save state
-        await this.broadcastExternalCommit(scopeId, commitBytes)
-        await this.setGroupState(scopeId, state)
+        // CAS succeeded — persist the new epoch locally before advertising it
+        // to peers so retries never build on an epoch that no client has saved.
+        await this.setGroupState(scopeId, state, { publishGroupInfo: false })
         // Mark as joined so the mls_request_join_all handler won't reset and re-EC.
         this.welcomeReceivedScopes.add(scopeId)
-        this.notifyMembershipWaiters(scopeId, true)
+
+        try {
+          await this.queueExternalCommitBroadcast(scopeId, commitData, commitId)
+        } catch (error) {
+          this.logIgnoredError('queue external commit broadcast', error)
+        }
+
+        if (!await this.broadcastExternalCommit(scopeId, commitData, commitId)) {
+          this.scheduleExternalCommitBroadcastRetry(scopeId)
+        }
         return true
       } catch (err) {
         if (attempt < MAX_RETRIES - 1) {
@@ -1398,14 +1559,34 @@ export class VesperEncryptedChat {
   /**
    * Broadcast an external commit to the group via the scope event system.
    */
-  private async broadcastExternalCommit(scopeId: string, commitBytes: Uint8Array): Promise<void> {
-    // Determine scope kind from scopeId format
-    // DM conversations use the 'dm' kind; everything else is 'channel'
-    const kind = this.scopeKinds.get(scopeId) ?? 'channel'
+  private async broadcastExternalCommit(
+    scopeId: string,
+    commitData: string,
+    commitId: string
+  ): Promise<boolean> {
+    const pending = {
+      commitData,
+      commitId
+    } satisfies PendingExternalCommitBroadcast
 
-    await this.client.pushScopeEvent(kind, scopeId, 'mls_commit', {
-      commit_data: uint8ToBase64(commitBytes)
-    })
+    try {
+      const pushed = await this.pushMlsControlEvent(scopeId, 'mls_commit', {
+        commit_data: commitData,
+        idempotency_key: commitId,
+        commit_id: commitId
+      })
+      if (!pushed) {
+        return false
+      }
+
+      await this.clearPendingExternalCommitBroadcast(scopeId, pending)
+      return true
+    } catch (error) {
+      if (!this.externalCommitBroadcastRetryTimers.has(scopeId)) {
+        this.logIgnoredError('broadcast external commit', error)
+      }
+      return false
+    }
   }
 
   private async replayDurableEvents(scopeId: string): Promise<void> {
@@ -1415,47 +1596,68 @@ export class VesperEncryptedChat {
       return
     }
 
-    const cursor = await this.storage.loadGroupSyncCursor(scopeId)
-    let events: Awaited<ReturnType<typeof fetchMlsEvents>> = []
-    try {
-      events = await fetchMlsEvents(scopeId, cursor, 200, this.client.getHttpClient())
-    } catch {
-      return
-    }
-    let latestSeq = cursor
+    const pageSize = 200
+    let cursor = await this.storage.loadGroupSyncCursor(scopeId)
 
-    for (const event of events) {
-      if (
-        event.event_type === 'mls_commit' &&
-        typeof event.payload.commit_data === 'string' &&
-        !(
-          event.sender_id === session.user.id &&
-          event.sender_device_id === localDeviceId
-        )
-      ) {
-        await this.handleCommit(scopeId, event.payload.commit_data, 'replayDurable')
+    while (true) {
+      let events: Awaited<ReturnType<typeof fetchMlsEvents>> = []
+      try {
+        events = await fetchMlsEvents(scopeId, cursor, pageSize, this.client.getHttpClient())
+      } catch {
+        return
       }
 
-      if (event.event_type === 'mls_remove') {
-        const payload = event.payload as Record<string, unknown> | undefined
-        const removedUserId =
-          typeof payload?.removed_user_id === 'string' ? payload.removed_user_id : null
-        const removedDeviceId =
-          typeof payload?.removed_device_id === 'string' ? payload.removed_device_id : null
-        const isLocalTarget =
-          removedUserId === session.user.id &&
-          (removedDeviceId == null || removedDeviceId === localDeviceId)
+      if (events.length === 0) {
+        return
+      }
 
-        if (isLocalTarget) {
-          await this.resetScope(scopeId)
+      let latestSeq = cursor
+
+      for (const event of events) {
+        if (
+          event.event_type === 'mls_commit' &&
+          typeof event.payload.commit_data === 'string' &&
+          !(
+            event.sender_id === session.user.id &&
+            event.sender_device_id === localDeviceId
+          )
+        ) {
+          const applied = await this.handleCommit(scopeId, event.payload.commit_data, 'replayDurable')
+          if (!applied) {
+            if (latestSeq > cursor) {
+              await this.storage.saveGroupSyncCursor(scopeId, latestSeq)
+            }
+            return
+          }
         }
+
+        if (event.event_type === 'mls_remove') {
+          const payload = event.payload as Record<string, unknown> | undefined
+          const removedUserId =
+            typeof payload?.removed_user_id === 'string' ? payload.removed_user_id : null
+          const removedDeviceId =
+            typeof payload?.removed_device_id === 'string' ? payload.removed_device_id : null
+          const isLocalTarget =
+            removedUserId === session.user.id &&
+            (removedDeviceId == null || removedDeviceId === localDeviceId)
+
+          if (isLocalTarget) {
+            await this.resetScopeState(scopeId)
+            return
+          }
+        }
+
+        latestSeq = Math.max(latestSeq, event.seq)
       }
 
-      latestSeq = Math.max(latestSeq, event.seq)
-    }
+      if (latestSeq > cursor) {
+        await this.storage.saveGroupSyncCursor(scopeId, latestSeq)
+        cursor = latestSeq
+      }
 
-    if (latestSeq > cursor) {
-      await this.storage.saveGroupSyncCursor(scopeId, latestSeq)
+      if (events.length < pageSize) {
+        return
+      }
     }
   }
 
@@ -1878,10 +2080,98 @@ export class VesperEncryptedChat {
       return
     }
 
-    this.pendingCommits.set(scopeId, [])
+    const remaining: string[] = []
+    let blocked = false
+    this.pendingCommits.delete(scopeId)
+
     for (const commitData of pending) {
-      await this.handleCommit(scopeId, commitData, 'pendingCommit')
+      if (blocked) {
+        remaining.push(commitData)
+        continue
+      }
+
+      const applied = await this.handleCommit(scopeId, commitData, 'pendingCommit')
+      if (!applied) {
+        blocked = true
+        remaining.push(commitData)
+      }
     }
+
+    if (remaining.length > 0) {
+      this.pendingCommits.set(scopeId, remaining)
+    }
+  }
+
+  private async deliverSponsoredTransition(
+    scopeId: string,
+    userId: string,
+    deviceId: string | null,
+    result: {
+      removeCommitBytes: string | null
+      commitBytes: string
+      welcomeBytes: string | null
+      keyPackageRef: string
+    },
+    topic: string | null
+  ): Promise<boolean> {
+    if (result.removeCommitBytes) {
+      const removed = await this.pushMlsControlEvent(scopeId, 'mls_remove', {
+        removed_user_id: userId,
+        removed_device_id: deviceId,
+        commit_data: result.removeCommitBytes
+      }, topic)
+      if (!removed) {
+        return false
+      }
+    }
+
+    const committed = await this.pushMlsControlEvent(scopeId, 'mls_commit', {
+      commit_data: result.commitBytes
+    }, topic)
+    if (!committed) {
+      return false
+    }
+
+    if (!result.welcomeBytes) {
+      return true
+    }
+
+    return await this.pushMlsControlEvent(scopeId, 'mls_welcome', {
+      recipient_id: userId,
+      recipient_device_id: deviceId,
+      welcome_data: result.welcomeBytes,
+      key_package_ref: result.keyPackageRef
+    }, topic)
+  }
+
+  private async pushMlsControlEvent(
+    scopeId: string,
+    event: string,
+    payload: object,
+    topic: string | null = null
+  ): Promise<boolean> {
+    if (topic) {
+      return await this.client.pushTopicEventWithAck(topic, event, payload)
+    }
+
+    const kind = this.scopeKinds.get(scopeId)
+    if (kind) {
+      return await this.client.pushScopeEvent(kind, scopeId, event, payload)
+    }
+
+    if (scopeId.startsWith('voice:')) {
+      return await this.client.pushTopicEventWithAck(scopeId, event, payload)
+    }
+
+    return false
+  }
+
+  private unrefRetryTimer(timer: ReturnType<typeof setTimeout>): void {
+    const maybeTimer = timer as ReturnType<typeof setTimeout> & {
+      unref?: () => void
+    }
+
+    maybeTimer.unref?.()
   }
 
   private async encryptForScope(
@@ -2094,7 +2384,13 @@ export class VesperEncryptedChat {
     }
   }
 
-  private async setGroupState(scopeId: string, state: GroupState): Promise<void> {
+  private async setGroupState(
+    scopeId: string,
+    state: GroupState,
+    options: {
+      publishGroupInfo?: boolean
+    } = {}
+  ): Promise<void> {
     const serializedState = serializeGroupState(state)
     const epoch = Number(state.groupContext.epoch)
     this.groupStates.set(scopeId, state)
@@ -2103,31 +2399,266 @@ export class VesperEncryptedChat {
     this.notifyMembershipWaiters(scopeId, true)
     this.notifyEpochWaiters(scopeId, epoch)
 
-    // Publish GroupInfo for External Commits (non-blocking, best-effort)
-    this.publishGroupInfoForScope(scopeId, state).catch(() => {})
+    if (options.publishGroupInfo !== false) {
+      // Publish GroupInfo for External Commits in the background. Failures are
+      // retried so a transient network issue does not leave stale join state
+      // on the server.
+      void this.publishGroupInfoForScope(scopeId, state)
+    }
   }
 
   /**
    * Publish GroupInfo + ratchet tree to the server so new members
    * can join via External Commit without any online member's help.
    */
-  private async publishGroupInfoForScope(scopeId: string, state: GroupState): Promise<void> {
-    try {
-      const groupInfoData = exportGroupInfo(state)
-      const ratchetTreeData = exportRatchetTree(state)
-      const epoch = Number(state.groupContext.epoch)
+  private async publishGroupInfoForScope(scopeId: string, state: GroupState): Promise<boolean> {
+    const groupInfoData = exportGroupInfo(state)
+    const ratchetTreeData = exportRatchetTree(state)
+    const epoch = Number(state.groupContext.epoch)
+    const pending = {
+      groupInfoData,
+      ratchetTreeData,
+      epoch
+    } satisfies PendingGroupInfoPublish
 
-      await publishGroupInfo(
+    try {
+      await this.queuePendingGroupInfoPublish(scopeId, groupInfoData, ratchetTreeData, epoch)
+      const result = await publishGroupInfo(
         scopeId,
         groupInfoData,
         ratchetTreeData,
         epoch,
         this.client.getHttpClient()
       )
-    } catch {
-      // Best-effort: GroupInfo publish failure shouldn't block MLS operations.
-      // The next epoch change will try again.
+      if (result !== 'ok') {
+        this.scheduleGroupInfoPublishRetry(scopeId)
+        return false
+      }
+
+      await this.clearPendingGroupInfoPublish(scopeId, pending)
+      return true
+    } catch (error) {
+      const shouldReport = !this.groupInfoPublishRetryTimers.has(scopeId)
+      this.scheduleGroupInfoPublishRetry(scopeId)
+      if (shouldReport) {
+        this.logIgnoredError('publish group info', error)
+      }
+      return false
     }
+  }
+
+  private async loadPendingControlOutbox(): Promise<void> {
+    const [pendingGroupInfoPublishes, pendingExternalCommitBroadcasts] = await Promise.all([
+      this.storage.loadPendingGroupInfoPublishes(),
+      this.storage.loadPendingExternalCommitBroadcasts()
+    ])
+
+    for (const pending of pendingGroupInfoPublishes) {
+      this.pendingGroupInfoPublishes.set(pending.groupId, {
+        groupInfoData: pending.groupInfoData,
+        ratchetTreeData: pending.ratchetTreeData,
+        epoch: pending.epoch
+      })
+    }
+
+    for (const pending of pendingExternalCommitBroadcasts) {
+      this.pendingExternalCommitBroadcasts.set(pending.groupId, {
+        commitData: pending.commitData,
+        commitId: pending.commitId
+      })
+    }
+  }
+
+  private async flushPendingGroupInfoPublishes(): Promise<void> {
+    for (const scopeId of [...this.pendingGroupInfoPublishes.keys()]) {
+      await this.flushPendingGroupInfoPublish(scopeId)
+    }
+  }
+
+  private async flushPendingGroupInfoPublish(scopeId: string): Promise<void> {
+    const pending = this.pendingGroupInfoPublishes.get(scopeId)
+    if (!pending) {
+      return
+    }
+
+    try {
+      try {
+        await this.storage.savePendingGroupInfoPublish(
+          scopeId,
+          pending.groupInfoData,
+          pending.ratchetTreeData,
+          pending.epoch
+        )
+      } catch (error) {
+        if (!this.groupInfoPublishRetryTimers.has(scopeId)) {
+          this.logIgnoredError('persist group info publish', error)
+        }
+      }
+
+      const result = await publishGroupInfo(
+        scopeId,
+        pending.groupInfoData,
+        pending.ratchetTreeData,
+        pending.epoch,
+        this.client.getHttpClient()
+      )
+      if (result !== 'ok') {
+        this.scheduleGroupInfoPublishRetry(scopeId)
+        return
+      }
+
+      await this.clearPendingGroupInfoPublish(scopeId, pending)
+    } catch (error) {
+      if (!this.groupInfoPublishRetryTimers.has(scopeId)) {
+        this.logIgnoredError('flush group info publish', error)
+      }
+      this.scheduleGroupInfoPublishRetry(scopeId)
+    }
+  }
+
+  private async queuePendingGroupInfoPublish(
+    scopeId: string,
+    groupInfoData: Uint8Array,
+    ratchetTreeData: Uint8Array | null,
+    epoch: number
+  ): Promise<void> {
+    this.pendingGroupInfoPublishes.set(scopeId, {
+      groupInfoData,
+      ratchetTreeData,
+      epoch
+    })
+    await this.storage.savePendingGroupInfoPublish(scopeId, groupInfoData, ratchetTreeData, epoch)
+  }
+
+  private scheduleGroupInfoPublishRetry(scopeId: string): void {
+    if (this.groupInfoPublishRetryTimers.has(scopeId) || !this.pendingGroupInfoPublishes.has(scopeId)) {
+      return
+    }
+
+    const attempt = (this.groupInfoPublishRetryAttempts.get(scopeId) ?? 0) + 1
+    this.groupInfoPublishRetryAttempts.set(scopeId, attempt)
+    const delayMs = Math.min(30_000, 500 * 2 ** Math.min(attempt - 1, 6))
+
+    const timer = setTimeout(() => {
+      this.groupInfoPublishRetryTimers.delete(scopeId)
+      void this.flushPendingGroupInfoPublish(scopeId)
+    }, delayMs)
+    this.unrefRetryTimer(timer)
+
+    this.groupInfoPublishRetryTimers.set(scopeId, timer)
+  }
+
+  private async clearPendingGroupInfoPublish(
+    scopeId: string,
+    expected: PendingGroupInfoPublish | null = null
+  ): Promise<void> {
+    const current = this.pendingGroupInfoPublishes.get(scopeId)
+    if (!current) {
+      return
+    }
+
+    if (expected && !samePendingGroupInfoPublish(current, expected)) {
+      return
+    }
+
+    this.pendingGroupInfoPublishes.delete(scopeId)
+    this.groupInfoPublishRetryAttempts.delete(scopeId)
+
+    const timer = this.groupInfoPublishRetryTimers.get(scopeId)
+    if (timer) {
+      clearTimeout(timer)
+      this.groupInfoPublishRetryTimers.delete(scopeId)
+    }
+
+    await this.storage.deletePendingGroupInfoPublish(scopeId)
+  }
+
+  private async queueExternalCommitBroadcast(
+    scopeId: string,
+    commitData: string,
+    commitId: string
+  ): Promise<void> {
+    this.pendingExternalCommitBroadcasts.set(scopeId, {
+      commitData,
+      commitId
+    })
+    await this.storage.savePendingExternalCommitBroadcast(scopeId, commitData, commitId)
+  }
+
+  private async flushPendingExternalCommitBroadcasts(): Promise<void> {
+    for (const scopeId of [...this.pendingExternalCommitBroadcasts.keys()]) {
+      await this.flushPendingExternalCommitBroadcast(scopeId)
+    }
+  }
+
+  private async flushPendingExternalCommitBroadcast(scopeId: string): Promise<void> {
+    const pending = this.pendingExternalCommitBroadcasts.get(scopeId)
+    if (!pending) {
+      await this.clearPendingExternalCommitBroadcast(scopeId)
+      return
+    }
+
+    try {
+      await this.storage.savePendingExternalCommitBroadcast(scopeId, pending.commitData, pending.commitId)
+    } catch (error) {
+      if (!this.externalCommitBroadcastRetryTimers.has(scopeId)) {
+        this.logIgnoredError('persist external commit broadcast', error)
+      }
+    }
+
+    if (!await this.broadcastExternalCommit(scopeId, pending.commitData, pending.commitId)) {
+      this.scheduleExternalCommitBroadcastRetry(scopeId)
+    }
+  }
+
+  private scheduleExternalCommitBroadcastRetry(scopeId: string): void {
+    if (
+      this.externalCommitBroadcastRetryTimers.has(scopeId) ||
+      !this.pendingExternalCommitBroadcasts.has(scopeId)
+    ) {
+      return
+    }
+
+    const attempt = (this.externalCommitBroadcastRetryAttempts.get(scopeId) ?? 0) + 1
+    this.externalCommitBroadcastRetryAttempts.set(scopeId, attempt)
+    const delayMs = Math.min(30_000, 500 * 2 ** Math.min(attempt - 1, 6))
+
+    const timer = setTimeout(() => {
+      this.externalCommitBroadcastRetryTimers.delete(scopeId)
+      void this.flushPendingExternalCommitBroadcast(scopeId)
+    }, delayMs)
+    this.unrefRetryTimer(timer)
+
+    this.externalCommitBroadcastRetryTimers.set(scopeId, timer)
+  }
+
+  private async clearPendingExternalCommitBroadcast(
+    scopeId: string,
+    expected: PendingExternalCommitBroadcast | null = null
+  ): Promise<void> {
+    const current = this.pendingExternalCommitBroadcasts.get(scopeId)
+    if (!current) {
+      return
+    }
+
+    if (expected && !samePendingExternalCommitBroadcast(current, expected)) {
+      return
+    }
+
+    this.pendingExternalCommitBroadcasts.delete(scopeId)
+    this.externalCommitBroadcastRetryAttempts.delete(scopeId)
+
+    const timer = this.externalCommitBroadcastRetryTimers.get(scopeId)
+    if (timer) {
+      clearTimeout(timer)
+      this.externalCommitBroadcastRetryTimers.delete(scopeId)
+    }
+
+    await this.storage.deletePendingExternalCommitBroadcast(scopeId)
+  }
+
+  private async computeMlsCommitId(scopeId: string, commitData: string): Promise<string> {
+    return await sha256Hex(`${scopeId}\nmls_commit\n${commitData}`)
   }
 
   private cloneGroupState(state: GroupState): GroupState {
@@ -2238,6 +2769,49 @@ export class VesperEncryptedChat {
     return false
   }
 
+  private findChannelServerId(channelId: string): string | null {
+    for (const server of this.client.getState().servers) {
+      const channel = server.channels.find((entry) => entry.id === channelId)
+      if (channel) {
+        return channel.server_id ?? server.id
+      }
+    }
+
+    return null
+  }
+
+  private async resolveChannelServerId(channelId: string): Promise<string | null> {
+    const serverId = this.findChannelServerId(channelId)
+    if (serverId) {
+      return serverId
+    }
+
+    await this.client.syncNow(false).catch((e) => this.logIgnoredError('background sync failed', e))
+    return this.findChannelServerId(channelId)
+  }
+
+  private async channelRequiresExternalJoin(channelId: string, localUserId: string): Promise<boolean> {
+    const serverId = await this.resolveChannelServerId(channelId)
+    if (!serverId) {
+      return true
+    }
+
+    try {
+      const members = await this.client.fetchServerMembers(serverId)
+      if (members.some((member) => member.user_id !== localUserId)) {
+        return true
+      }
+    } catch (error) {
+      this.logIgnoredError('fetch server members', error)
+      return true
+    }
+
+    const localDeviceId = this.client.deviceIdentity?.id ?? null
+    return this.client.getState().devices.some((device) => {
+      return device.trust_state === 'trusted' && device.client_id !== localDeviceId
+    })
+  }
+
   private findChannelOwnerId(channelId: string): string | null {
     for (const server of this.client.getState().servers) {
       if (server.channels.some((channel) => channel.id === channelId)) {
@@ -2331,8 +2905,8 @@ export class VesperEncryptedChat {
 
     // Await GroupInfo publish so the non-leader can External Commit immediately.
     const freshState = this.groupStates.get(conversationId)
-    if (freshState) {
-      await this.publishGroupInfoForScope(conversationId, freshState)
+    if (freshState && !await this.publishGroupInfoForScope(conversationId, freshState)) {
+      return false
     }
 
     // The other participant will self-join via External Commit.
@@ -2383,8 +2957,8 @@ export class VesperEncryptedChat {
 
     // Await GroupInfo publish so the other participant can External Commit immediately.
     const freshState = this.groupStates.get(conversationId)
-    if (freshState) {
-      await this.publishGroupInfoForScope(conversationId, freshState)
+    if (freshState && !await this.publishGroupInfoForScope(conversationId, freshState)) {
+      return false
     }
 
     // The other participant will self-join via External Commit.

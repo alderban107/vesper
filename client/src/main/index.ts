@@ -11,6 +11,12 @@ import {
   deleteGroupState,
   getGroupSyncCursor,
   setGroupSyncCursor,
+  getPendingGroupInfoPublishes,
+  setPendingGroupInfoPublish,
+  deletePendingGroupInfoPublish,
+  getPendingExternalCommitBroadcasts,
+  setPendingExternalCommitBroadcast,
+  deletePendingExternalCommitBroadcast,
   getIdentityKeys,
   setIdentityKeys,
   deleteIdentityKeys,
@@ -195,6 +201,35 @@ function registerIpcHandlers(): void {
     'cryptoDb:setGroupSyncCursor',
     (_, groupId: string, lastEventSeq: number) =>
       setGroupSyncCursor(groupId, lastEventSeq)
+  )
+  ipcMain.handle('cryptoDb:getPendingGroupInfoPublishes', () =>
+    getPendingGroupInfoPublishes()
+  )
+  ipcMain.handle(
+    'cryptoDb:setPendingGroupInfoPublish',
+    (
+      _,
+      groupId: string,
+      groupInfoData: Buffer,
+      ratchetTreeData: Buffer | null,
+      epoch: number
+    ) => setPendingGroupInfoPublish(groupId, groupInfoData, ratchetTreeData, epoch)
+  )
+  ipcMain.handle(
+    'cryptoDb:deletePendingGroupInfoPublish',
+    (_, groupId: string) => deletePendingGroupInfoPublish(groupId)
+  )
+  ipcMain.handle('cryptoDb:getPendingExternalCommitBroadcasts', () =>
+    getPendingExternalCommitBroadcasts()
+  )
+  ipcMain.handle(
+    'cryptoDb:setPendingExternalCommitBroadcast',
+    (_, groupId: string, commitData: string, commitId: string) =>
+      setPendingExternalCommitBroadcast(groupId, commitData, commitId)
+  )
+  ipcMain.handle(
+    'cryptoDb:deletePendingExternalCommitBroadcast',
+    (_, groupId: string) => deletePendingExternalCommitBroadcast(groupId)
   )
 
   // Key packages

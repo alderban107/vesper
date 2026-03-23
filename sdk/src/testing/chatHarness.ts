@@ -199,6 +199,10 @@ export class SdkChatHarness extends EventEmitter {
   async createScopeGroup(scope: EncryptedScope): Promise<void> {
     await this.device.run(async () => {
       await this.createGroup(scope.id)
+      const state = this.groupStates.get(scope.id)
+      if (state && !await this.publishGroupInfoForScope(scope.id, state)) {
+        throw new Error(`Failed to publish GroupInfo for ${scope.id}`)
+      }
     })
   }
 
@@ -809,48 +813,69 @@ export class SdkChatHarness extends EventEmitter {
 
   async replayDurableEvents(scope: EncryptedScope): Promise<void> {
     const session = this.device.requireSession()
-    const cursor = await this.storage.loadGroupSyncCursor(scope.id)
-    let events: Awaited<ReturnType<typeof fetchMlsEvents>> = []
-    try {
-      events = await fetchMlsEvents(scope.id, cursor, 200, this.device.httpClient)
-    } catch {
-      return
-    }
-    let latestSeq = cursor
+    const pageSize = 200
+    let cursor = await this.storage.loadGroupSyncCursor(scope.id)
 
-    for (const event of events) {
-      if (
-        event.event_type === 'mls_commit' &&
-        typeof event.payload.commit_data === 'string' &&
-        !(
-          event.sender_id === session.user.id &&
-          event.sender_device_id === this.device.deviceIdentity.id
-        )
-      ) {
-        await this.handleCommit(scope.id, event.payload.commit_data)
+    while (true) {
+      let events: Awaited<ReturnType<typeof fetchMlsEvents>> = []
+      try {
+        events = await fetchMlsEvents(scope.id, cursor, pageSize, this.device.httpClient)
+      } catch {
+        return
       }
 
-      if (event.event_type === 'mls_remove') {
-        const payload = event.payload as Record<string, unknown> | undefined
-        const removedUserId =
-          typeof payload?.removed_user_id === 'string' ? payload.removed_user_id : null
-        const removedDeviceId =
-          typeof payload?.removed_device_id === 'string' ? payload.removed_device_id : null
-        const isLocalTarget =
-          removedUserId === session.user.id &&
-          (removedDeviceId == null || removedDeviceId === this.device.deviceIdentity.id)
+      if (events.length === 0) {
+        return
+      }
 
-        if (isLocalTarget) {
-          this.groupStates.delete(scope.id)
-          this.groupStateSnapshots.delete(scope.id)
+      let latestSeq = cursor
+
+      for (const event of events) {
+        if (
+          event.event_type === 'mls_commit' &&
+          typeof event.payload.commit_data === 'string' &&
+          !(
+            event.sender_id === session.user.id &&
+            event.sender_device_id === this.device.deviceIdentity.id
+          )
+        ) {
+          const applied = await this.handleCommit(scope.id, event.payload.commit_data)
+          if (!applied) {
+            if (latestSeq > cursor) {
+              await this.storage.saveGroupSyncCursor(scope.id, latestSeq)
+            }
+            return
+          }
         }
+
+        if (event.event_type === 'mls_remove') {
+          const payload = event.payload as Record<string, unknown> | undefined
+          const removedUserId =
+            typeof payload?.removed_user_id === 'string' ? payload.removed_user_id : null
+          const removedDeviceId =
+            typeof payload?.removed_device_id === 'string' ? payload.removed_device_id : null
+          const isLocalTarget =
+            removedUserId === session.user.id &&
+            (removedDeviceId == null || removedDeviceId === this.device.deviceIdentity.id)
+
+          if (isLocalTarget) {
+            this.groupStates.delete(scope.id)
+            this.groupStateSnapshots.delete(scope.id)
+            return
+          }
+        }
+
+        latestSeq = Math.max(latestSeq, event.seq)
       }
 
-      latestSeq = Math.max(latestSeq, event.seq)
-    }
+      if (latestSeq > cursor) {
+        await this.storage.saveGroupSyncCursor(scope.id, latestSeq)
+        cursor = latestSeq
+      }
 
-    if (latestSeq > cursor) {
-      await this.storage.saveGroupSyncCursor(scope.id, latestSeq)
+      if (events.length < pageSize) {
+        return
+      }
     }
   }
 
@@ -1130,9 +1155,25 @@ export class SdkChatHarness extends EventEmitter {
       return
     }
 
-    this.pendingCommits.set(scopeId, [])
+    const remaining: string[] = []
+    let blocked = false
+    this.pendingCommits.delete(scopeId)
+
     for (const commitData of pending) {
-      await this.handleCommit(scopeId, commitData)
+      if (blocked) {
+        remaining.push(commitData)
+        continue
+      }
+
+      const applied = await this.handleCommit(scopeId, commitData)
+      if (!applied) {
+        blocked = true
+        remaining.push(commitData)
+      }
+    }
+
+    if (remaining.length > 0) {
+      this.pendingCommits.set(scopeId, remaining)
     }
   }
 
@@ -1354,18 +1395,18 @@ export class SdkChatHarness extends EventEmitter {
     )
     this.notifyMembershipWaiters(scopeId, true)
 
-    // Publish GroupInfo for External Commits (best-effort)
-    this.publishGroupInfoForScope(scopeId, state).catch(() => {})
+    void this.publishGroupInfoForScope(scopeId, state)
   }
 
-  private async publishGroupInfoForScope(scopeId: string, state: GroupState): Promise<void> {
+  private async publishGroupInfoForScope(scopeId: string, state: GroupState): Promise<boolean> {
     try {
       const groupInfoData = exportGroupInfo(state)
       const ratchetTreeData = exportRatchetTree(state)
       const epoch = Number(state.groupContext.epoch)
       await publishGroupInfo(scopeId, groupInfoData, ratchetTreeData, epoch, this.device.httpClient)
+      return true
     } catch {
-      // Best-effort
+      return false
     }
   }
 

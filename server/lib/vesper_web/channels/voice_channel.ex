@@ -136,11 +136,29 @@ defmodule VesperWeb.VoiceChannel do
   end
 
   def handle_in("mls_request_join_all", _payload, socket) do
-    broadcast_from!(socket, "mls_request_join_all", %{
-      user_id: socket.assigns.user_id
-    })
+    room_id = socket.assigns.room_id
+    room_type = socket.assigns.room_type
 
-    {:reply, :ok, socket}
+    case Encryption.store_mls_event(
+           %{
+             group_id: voice_group_id(room_id, room_type),
+             event_type: "mls_request_join_all",
+             payload: %{user_id: socket.assigns.user_id},
+             sender_id: socket.assigns.user_id,
+             sender_device_id: socket.assigns.device_client_id
+           }
+           |> put_voice_scope(room_id, room_type)
+         ) do
+      {:ok, event} ->
+        broadcast_from!(socket, "mls_request_join_all", %{
+          user_id: socket.assigns.user_id
+        })
+
+        {:reply, {:ok, %{seq: event.id}}, socket}
+
+      {:error, _changeset} ->
+        {:reply, {:error, %{reason: "could not store join request"}}, socket}
+    end
   end
 
   def handle_in("mls_resync_request", payload, socket) when is_map(payload) do
@@ -185,15 +203,41 @@ defmodule VesperWeb.VoiceChannel do
     end
   end
 
-  def handle_in("mls_commit", %{"commit_data" => commit_data}, socket)
+  def handle_in("mls_commit", %{"commit_data" => commit_data} = payload, socket)
       when is_binary(commit_data) do
-    broadcast!(socket, "mls_commit", %{
-      commit_data: commit_data,
-      sender_id: socket.assigns.user_id,
-      sender_device_id: socket.assigns.device_client_id
-    })
+    room_id = socket.assigns.room_id
+    room_type = socket.assigns.room_type
 
-    {:noreply, socket}
+    idempotency_key =
+      case Map.get(payload, "idempotency_key") || Map.get(payload, "commit_id") do
+        value when is_binary(value) and value != "" -> value
+        _ -> nil
+      end
+
+    case Encryption.store_mls_commit_event(
+           %{
+             group_id: voice_group_id(room_id, room_type),
+             event_type: "mls_commit",
+             payload: %{commit_data: commit_data},
+             sender_id: socket.assigns.user_id,
+             sender_device_id: socket.assigns.device_client_id
+           }
+           |> put_voice_scope(room_id, room_type)
+           |> maybe_put(:idempotency_key, idempotency_key)
+         ) do
+      {:ok, event} ->
+        broadcast!(socket, "mls_commit", %{
+          seq: event.id,
+          commit_data: commit_data,
+          sender_id: socket.assigns.user_id,
+          sender_device_id: socket.assigns.device_client_id
+        })
+
+        {:reply, {:ok, %{seq: event.id}}, socket}
+
+      {:error, _changeset} ->
+        {:reply, {:error, %{reason: "could not store commit"}}, socket}
+    end
   end
 
   def handle_in(
@@ -202,14 +246,39 @@ defmodule VesperWeb.VoiceChannel do
         socket
       )
       when is_binary(removed_user_id) and is_binary(commit_data) do
-    broadcast!(socket, "mls_remove", %{
-      removed_user_id: removed_user_id,
-      commit_data: commit_data,
-      sender_id: socket.assigns.user_id,
-      sender_device_id: socket.assigns.device_client_id
-    })
+    room_id = socket.assigns.room_id
+    room_type = socket.assigns.room_type
 
-    {:noreply, socket}
+    case Encryption.store_mls_remove_event(
+           %{
+             group_id: voice_group_id(room_id, room_type),
+             event_type: "mls_remove",
+             payload: %{
+               removed_user_id: removed_user_id,
+               commit_data: commit_data
+             },
+             sender_id: socket.assigns.user_id,
+             sender_device_id: socket.assigns.device_client_id
+           }
+           |> put_voice_scope(room_id, room_type)
+         ) do
+      {:ok, event} ->
+        broadcast!(socket, "mls_remove", %{
+          seq: event.id,
+          removed_user_id: removed_user_id,
+          commit_data: commit_data,
+          sender_id: socket.assigns.user_id,
+          sender_device_id: socket.assigns.device_client_id
+        })
+
+        {:reply, {:ok, %{seq: event.id}}, socket}
+
+      {:error, reason} when is_atom(reason) ->
+        {:reply, {:error, %{reason: inspect(reason)}}, socket}
+
+      {:error, _changeset} ->
+        {:reply, {:error, %{reason: "could not store remove"}}, socket}
+    end
   end
 
   def handle_in(
@@ -246,7 +315,7 @@ defmodule VesperWeb.VoiceChannel do
               sender_id: sender_id
             })
 
-            {:noreply, socket}
+            {:reply, {:ok, %{id: welcome.id}}, socket}
 
           {:error, _changeset} ->
             {:reply, {:error, %{reason: "could not store welcome"}}, socket}
@@ -273,6 +342,8 @@ defmodule VesperWeb.VoiceChannel do
            Voice.join_room(room_id, user_id, self())
          end) do
       {:ok, offer_sdp, track_map, publish_map} ->
+        replay_recent_mls_join_broadcasts(socket)
+
         push(socket, "offer", %{
           sdp: offer_sdp,
           track_map: track_map,
@@ -325,6 +396,8 @@ defmodule VesperWeb.VoiceChannel do
     {:stop, {:shutdown, :membership_revoked}, socket}
   end
 
+  def handle_info(_msg, socket), do: {:noreply, socket}
+
   @impl true
   def terminate(_reason, socket) do
     try do
@@ -347,6 +420,9 @@ defmodule VesperWeb.VoiceChannel do
   defp put_voice_scope(attrs, room_id, :dm) do
     Map.put(attrs, :conversation_id, room_id)
   end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp normalize_resync_request(payload) do
     request_id = Map.get(payload, "request_id")
@@ -387,5 +463,21 @@ defmodule VesperWeb.VoiceChannel do
         |> Enum.map(& &1.user_id)
         |> Enum.min()
     end
+  end
+
+  defp replay_recent_mls_join_broadcasts(socket) do
+    group_id = voice_group_id(socket.assigns.room_id, socket.assigns.room_type)
+    user_id = socket.assigns.user_id
+
+    Encryption.list_recent_mls_events(group_id, 50, "mls_request_join_all")
+    |> Enum.filter(fn event ->
+      event.sender_id != user_id
+    end)
+    |> Enum.uniq_by(& &1.sender_id)
+    |> Enum.each(fn event ->
+      push(socket, "mls_request_join_all", %{
+        user_id: event.sender_id
+      })
+    end)
   end
 end

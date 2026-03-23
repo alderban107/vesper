@@ -65,6 +65,34 @@ export interface CryptoStorageRuntime {
   deleteGroupState(groupId: string): Promise<void>
   loadGroupSyncCursor(groupId: string): Promise<number>
   saveGroupSyncCursor(groupId: string, lastEventSeq: number): Promise<void>
+  loadPendingGroupInfoPublishes(): Promise<
+    Array<{
+      groupId: string
+      groupInfoData: Uint8Array
+      ratchetTreeData: Uint8Array | null
+      epoch: number
+    }>
+  >
+  savePendingGroupInfoPublish(
+    groupId: string,
+    groupInfoData: Uint8Array,
+    ratchetTreeData: Uint8Array | null,
+    epoch: number
+  ): Promise<void>
+  deletePendingGroupInfoPublish(groupId: string): Promise<void>
+  loadPendingExternalCommitBroadcasts(): Promise<
+    Array<{
+      groupId: string
+      commitData: string
+      commitId: string
+    }>
+  >
+  savePendingExternalCommitBroadcast(
+    groupId: string,
+    commitData: string,
+    commitId: string
+  ): Promise<void>
+  deletePendingExternalCommitBroadcast(groupId: string): Promise<void>
   saveKeyPackages(
     packages: Array<{ publicData: Uint8Array; privateData: Uint8Array }>
   ): Promise<void>
@@ -298,6 +326,65 @@ export class DefaultCryptoStorageRuntime implements CryptoStorageRuntime {
 
   async saveGroupSyncCursor(groupId: string, lastEventSeq: number): Promise<void> {
     await this.db().setGroupSyncCursor(groupId, lastEventSeq)
+  }
+
+  async loadPendingGroupInfoPublishes(): Promise<
+    Array<{
+      groupId: string
+      groupInfoData: Uint8Array
+      ratchetTreeData: Uint8Array | null
+      epoch: number
+    }>
+  > {
+    const results = await this.db().getPendingGroupInfoPublishes()
+    return results.map((result) => ({
+      groupId: result.group_id,
+      groupInfoData: new Uint8Array(result.group_info_data),
+      ratchetTreeData: result.ratchet_tree_data
+        ? new Uint8Array(result.ratchet_tree_data)
+        : null,
+      epoch: result.epoch
+    }))
+  }
+
+  async savePendingGroupInfoPublish(
+    groupId: string,
+    groupInfoData: Uint8Array,
+    ratchetTreeData: Uint8Array | null,
+    epoch: number
+  ): Promise<void> {
+    await this.db().setPendingGroupInfoPublish(groupId, groupInfoData, ratchetTreeData, epoch)
+  }
+
+  async deletePendingGroupInfoPublish(groupId: string): Promise<void> {
+    await this.db().deletePendingGroupInfoPublish(groupId)
+  }
+
+  async loadPendingExternalCommitBroadcasts(): Promise<
+    Array<{
+      groupId: string
+      commitData: string
+      commitId: string
+    }>
+  > {
+    const results = await this.db().getPendingExternalCommitBroadcasts()
+    return results.map((result) => ({
+      groupId: result.group_id,
+      commitData: result.commit_data,
+      commitId: result.commit_id
+    }))
+  }
+
+  async savePendingExternalCommitBroadcast(
+    groupId: string,
+    commitData: string,
+    commitId: string
+  ): Promise<void> {
+    await this.db().setPendingExternalCommitBroadcast(groupId, commitData, commitId)
+  }
+
+  async deletePendingExternalCommitBroadcast(groupId: string): Promise<void> {
+    await this.db().deletePendingExternalCommitBroadcast(groupId)
   }
 
   async saveKeyPackages(

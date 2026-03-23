@@ -38,6 +38,38 @@ const cryptoDbApi = {
     ipcRenderer.invoke('cryptoDb:getGroupSyncCursor', groupId),
   setGroupSyncCursor: (groupId: string, lastEventSeq: number) =>
     ipcRenderer.invoke('cryptoDb:setGroupSyncCursor', groupId, lastEventSeq),
+  getPendingGroupInfoPublishes: () =>
+    ipcRenderer.invoke('cryptoDb:getPendingGroupInfoPublishes'),
+  setPendingGroupInfoPublish: (
+    groupId: string,
+    groupInfoData: Uint8Array,
+    ratchetTreeData: Uint8Array | null,
+    epoch: number
+  ) =>
+    ipcRenderer.invoke(
+      'cryptoDb:setPendingGroupInfoPublish',
+      groupId,
+      groupInfoData,
+      ratchetTreeData,
+      epoch
+    ),
+  deletePendingGroupInfoPublish: (groupId: string) =>
+    ipcRenderer.invoke('cryptoDb:deletePendingGroupInfoPublish', groupId),
+  getPendingExternalCommitBroadcasts: () =>
+    ipcRenderer.invoke('cryptoDb:getPendingExternalCommitBroadcasts'),
+  setPendingExternalCommitBroadcast: (
+    groupId: string,
+    commitData: string,
+    commitId: string
+  ) =>
+    ipcRenderer.invoke(
+      'cryptoDb:setPendingExternalCommitBroadcast',
+      groupId,
+      commitData,
+      commitId
+    ),
+  deletePendingExternalCommitBroadcast: (groupId: string) =>
+    ipcRenderer.invoke('cryptoDb:deletePendingExternalCommitBroadcast', groupId),
 
   // Key packages
   getLocalKeyPackages: () =>
