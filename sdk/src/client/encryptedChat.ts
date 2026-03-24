@@ -2537,7 +2537,11 @@ export class VesperEncryptedChat {
             result.status !== 'applied' &&
             result.status !== 'already_applied'
           ) {
-            return
+            // Advance cursor past the failed commit so we don't retry it
+            // forever. The commit might be from a forked epoch or a removed
+            // member — retrying won't help and blocks all subsequent events.
+            await this.storage.saveGroupSyncCursor(scopeId, event.seq)
+            continue
           }
         } else {
           await this.storage.saveGroupSyncCursor(scopeId, event.seq)
@@ -3778,21 +3782,27 @@ export class VesperEncryptedChat {
     scopeId: string,
     plaintext: string
   ): Promise<{ ciphertext: string; epoch: number }> {
-    if (this.pendingSponsoredTransitions.has(scopeId)) {
-      throw new Error(`Membership update for ${scopeId} is still syncing`)
-    }
+    // Serialize encryptions per scope to prevent concurrent ratchet divergence.
+    // Two parallel sends would both clone the same state, encrypt independently,
+    // and the second setGroupState would overwrite the first — orphaning one
+    // message's encryption keys.
+    return await this.withLockedScopeOperation(scopeId, async () => {
+      if (this.pendingSponsoredTransitions.has(scopeId)) {
+        throw new Error(`Membership update for ${scopeId} is still syncing`)
+      }
 
-    const state = this.groupStates.get(scopeId)
-    if (!state) {
-      throw new Error(`No local MLS state for ${scopeId}`)
-    }
+      const state = this.groupStates.get(scopeId)
+      if (!state) {
+        throw new Error(`No local MLS state for ${scopeId}`)
+      }
 
-    const encrypted = await encryptMessage(this.cloneGroupState(state), plaintext)
-    await this.setGroupState(scopeId, encrypted.newState)
-    return {
-      ciphertext: uint8ToBase64(encrypted.ciphertext),
-      epoch: encrypted.epoch
-    }
+      const encrypted = await encryptMessage(this.cloneGroupState(state), plaintext)
+      await this.setGroupState(scopeId, encrypted.newState)
+      return {
+        ciphertext: uint8ToBase64(encrypted.ciphertext),
+        epoch: encrypted.epoch
+      }
+    })
   }
 
   private async decryptForScope(scopeId: string, ciphertext: string): Promise<string | null> {
