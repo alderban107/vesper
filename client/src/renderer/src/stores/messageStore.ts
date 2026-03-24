@@ -3095,6 +3095,21 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       activeThreadParent: canonicalMessage.parent_message_id ? null : canonicalMessage,
       threadError: null
     })
+
+    // Ensure encryption scope is ready for thread replies.
+    // DM threads use the conversation scope; channel threads use the channel scope.
+    if (canUseEncryptedFeatures()) {
+      const scopeId = canonicalMessage.conversation_id ?? canonicalMessage.channel_id
+      const scopeKind = canonicalMessage.conversation_id ? 'dm' : 'channel'
+      if (scopeId) {
+        const topic = scopeKind === 'dm' ? `dm:${scopeId}` : `chat:channel:${scopeId}`
+        prepareEncryptedScope(
+          { kind: scopeKind, targetId: scopeId, scopeId, topic },
+          { reason: 'thread_open' }
+        )
+      }
+    }
+
     await get().fetchThreadReplies(parentId)
   },
   closeThread: () =>

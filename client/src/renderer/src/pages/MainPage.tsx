@@ -165,6 +165,7 @@ export default function MainPage(): React.JSX.Element {
   const sendThreadReply = useMessageStore((s) => s.sendThreadReply)
   const replyingTo = useMessageStore((s) => s.replyingTo)
   const setReplyingTo = useMessageStore((s) => s.setReplyingTo)
+  const encryptionError = useMessageStore((s) => s.encryptionError)
   const threadRepliesFromApi = useMessageStore((s) =>
     activeThreadParentId ? (s.threadRepliesByParent[activeThreadParentId] ?? EMPTY_MESSAGES) : EMPTY_MESSAGES
   )
@@ -381,6 +382,19 @@ export default function MainPage(): React.JSX.Element {
             )}
           </div>
         </div>
+
+        {encryptionError && (
+          <div className="vesper-composer-alert">
+            <span>{encryptionError}</span>
+            <button
+              type="button"
+              onClick={() => useMessageStore.setState({ encryptionError: null })}
+              className="vesper-composer-alert-close"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
 
         <form onSubmit={handleThreadSubmit} className="vesper-thread-composer">
           {replyingTo && (
