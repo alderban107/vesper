@@ -1407,25 +1407,33 @@ defmodule Vesper.Servers do
   end
 
   def get_user_permissions(user_id, server_id) do
-    membership = get_membership(user_id, server_id)
+    # Single query: fetch membership + all role permissions in one round-trip
+    result =
+      from(m in Membership,
+        where: m.user_id == ^user_id and m.server_id == ^server_id,
+        left_join: mr in MemberRole,
+        on: mr.membership_id == m.id,
+        left_join: r in Role,
+        on: r.id == mr.role_id,
+        select: {m.role, r.permissions}
+      )
+      |> Repo.all()
 
-    cond do
-      is_nil(membership) ->
+    case result do
+      [] ->
         0
 
-      true ->
-        base_permissions = default_permissions_for_membership_role(membership.role)
+      rows ->
+        {membership_role, _} = hd(rows)
+        base_permissions = default_permissions_for_membership_role(membership_role)
 
-        roles =
-          from(mr in MemberRole,
-            where: mr.membership_id == ^membership.id,
-            join: r in Role,
-            on: r.id == mr.role_id,
-            select: r
-          )
-          |> Repo.all()
+        role_permissions =
+          rows
+          |> Enum.map(fn {_, perms} -> perms end)
+          |> Enum.reject(&is_nil/1)
+          |> Enum.reduce(0, fn perms, acc -> Bitwise.bor(acc, perms) end)
 
-        base_permissions ||| Permissions.compute_permissions(roles)
+        Bitwise.bor(base_permissions, role_permissions)
     end
   end
 
