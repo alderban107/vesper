@@ -226,10 +226,11 @@ defmodule Vesper.Chat do
     last_messages =
       if conv_ids != [] do
         from(m in Message,
+          join: sender in assoc(m, :sender),
           where: m.conversation_id in ^conv_ids,
           distinct: m.conversation_id,
           order_by: [m.conversation_id, desc: m.inserted_at],
-          preload: [:sender]
+          preload: [sender: sender]
         )
         |> Repo.all()
         |> Map.new(&{&1.conversation_id, &1})
