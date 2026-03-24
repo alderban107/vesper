@@ -215,6 +215,7 @@ defmodule VesperWeb.SyncController do
       id: conversation.id,
       type: conversation.type,
       name: conversation.name,
+      channel_id: conversation.channel_id,
       disappearing_ttl: conversation.disappearing_ttl,
       inserted_at: conversation.inserted_at,
       participants:

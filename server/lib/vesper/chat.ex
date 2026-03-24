@@ -14,6 +14,8 @@ defmodule Vesper.Chat do
     PinnedMessage
   }
 
+  alias Vesper.Servers.{Channel, Membership}
+
   alias Vesper.Runtime
   alias Vesper.Runtime.{Room, RoomEvent}
   alias Vesper.Sync
@@ -67,8 +69,45 @@ defmodule Vesper.Chat do
         |> Repo.insert!()
       end
 
-      Repo.preload(conversation, participants: :user)
+      # Create backing DM channel for unified MLS path
+      channel = create_backing_dm_channel!(conversation, type, user_ids, now)
+
+      conversation
+      |> Ecto.Changeset.change(%{channel_id: channel.id})
+      |> Repo.update!()
+      |> Repo.preload(participants: :user)
     end)
+  end
+
+  defp create_backing_dm_channel!(conversation, type, user_ids, now) do
+    channel_type = if type == "direct", do: "dm", else: "group_dm"
+
+    channel =
+      %Channel{}
+      |> Channel.dm_changeset(%{
+        type: channel_type,
+        disappearing_ttl: conversation.disappearing_ttl
+      })
+      |> Repo.insert!()
+
+    # Create Room for the channel (MLS uses the channel room, not the conversation room)
+    case Runtime.ensure_room_for_channel(channel) do
+      {:ok, _room} -> :ok
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+
+    # Create channel-direct memberships for all participants
+    for user_id <- user_ids do
+      %Membership{
+        user_id: user_id,
+        channel_id: channel.id,
+        role: "member",
+        joined_at: now
+      }
+      |> Repo.insert!()
+    end
+
+    channel
   end
 
   defp find_direct_conversation(user_a_id, user_b_id) do

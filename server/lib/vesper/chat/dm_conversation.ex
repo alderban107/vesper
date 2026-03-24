@@ -14,6 +14,8 @@ defmodule Vesper.Chat.DmConversation do
     has_many :users, through: [:participants, :user]
     has_many :messages, Vesper.Chat.Message, foreign_key: :conversation_id
 
+    belongs_to :channel, Vesper.Servers.Channel
+
     field :inserted_at, :utc_datetime
   end
 
