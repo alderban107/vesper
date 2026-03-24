@@ -184,7 +184,7 @@ export class MemoryStorage implements CryptoDbApi {
 
   async deleteGroupState(groupId: string): Promise<void> {
     this.groupStates.delete(groupId)
-    this.groupSyncCursors.delete(groupId)
+    // NOTE: intentionally NOT deleting groupSyncCursors — see indexedDbStorage.ts
     this.scopeMetadata.delete(groupId)
     this.pendingGroupInfoPublishes.delete(groupId)
     this.pendingExternalCommitBroadcasts.delete(groupId)

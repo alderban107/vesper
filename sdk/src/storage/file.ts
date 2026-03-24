@@ -250,7 +250,7 @@ export class FileCryptoStorage implements CryptoDbApi {
 
   async deleteGroupState(groupId: string): Promise<void> {
     delete this.state.groupStates[groupId]
-    delete this.state.groupSyncCursors[groupId]
+    // NOTE: intentionally NOT deleting groupSyncCursors — see indexedDbStorage.ts
     delete this.state.scopeMetadata[groupId]
     delete this.state.pendingGroupInfoPublishes[groupId]
     delete this.state.pendingExternalCommitBroadcasts[groupId]

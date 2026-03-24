@@ -297,7 +297,10 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
     async deleteGroupState(groupId: string) {
       const db = await getDb()
       await req(tx(db, STORES.mlsGroups, 'readwrite').delete(groupId))
-      await req(tx(db, STORES.mlsGroupSyncState, 'readwrite').delete(groupId))
+      // NOTE: intentionally NOT deleting mlsGroupSyncState (cursor).
+      // The cursor tracks which durable events have been seen — it must
+      // survive group reset to prevent replaying stale mls_remove events
+      // that would re-delete the group in an infinite loop.
       await req(tx(db, STORES.mlsScopeMetadata, 'readwrite').delete(groupId))
       await req(tx(db, STORES.mlsPendingGroupInfoPublishes, 'readwrite').delete(groupId))
       await req(tx(db, STORES.mlsPendingExternalCommitBroadcasts, 'readwrite').delete(groupId))
