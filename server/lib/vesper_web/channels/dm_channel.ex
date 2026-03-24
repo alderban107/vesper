@@ -875,12 +875,9 @@ defmodule VesperWeb.DmChannel do
     }
 
     for uid <- participant_ids, uid != sender_id do
+      # Single combined event instead of separate dm_message + dm_unread_update.
+      # Client handles both notification display and unread increment from this.
       VesperWeb.Endpoint.broadcast("user:#{uid}", "dm_message", notification)
-
-      VesperWeb.Endpoint.broadcast("user:#{uid}", "dm_unread_update", %{
-        conversation_id: conversation_id,
-        message_id: message.id
-      })
     end
   end
 
