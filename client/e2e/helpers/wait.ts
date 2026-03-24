@@ -270,6 +270,29 @@ export async function waitForThreadPanel(page: Page): Promise<void> {
   await page.waitForSelector('.vesper-thread-panel', { timeout: 10_000 })
 }
 
+export async function waitForDmEncryptionReady(
+  page: Page,
+  timeout = 30_000
+): Promise<void> {
+  await waitForSocketConnected(page).catch(() => {})
+
+  const deadline = Date.now() + timeout
+
+  while (Date.now() < deadline) {
+    // Check if the encryption error alert is gone (encryption is ready)
+    const alertVisible = await page.locator('.vesper-composer-alert').isVisible().catch(() => false)
+    if (!alertVisible) return
+
+    // Dismiss the alert and wait for recovery
+    const dismissBtn = page.locator('.vesper-composer-alert button')
+    if (await dismissBtn.first().isVisible().catch(() => false)) {
+      await dismissBtn.first().click().catch(() => {})
+    }
+
+    await page.waitForTimeout(500)
+  }
+}
+
 export async function waitForThreadReplyCount(
   page: Page,
   count: number

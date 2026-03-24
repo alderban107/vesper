@@ -56,7 +56,7 @@ import {
 } from '../helpers/assertions'
 import { getMlsDiagnostics, assertMlsBudget, findDiagnosticScopes } from '../helpers/mls-diagnostics'
 import { recordSnapshot, writeSnapshots } from '../helpers/snapshots'
-import { waitForMessage, waitForServerInSidebar, waitForChannel } from '../helpers/wait'
+import { waitForMessage, waitForServerInSidebar, waitForChannel, waitForDmEncryptionReady } from '../helpers/wait'
 import {
   USERS,
   SERVER,
@@ -226,10 +226,12 @@ test.describe('P0 Smoke — full continuous run', () => {
     bob.page.on('console', logCapture('bob-thread'))
 
     await openThread(alice.page, DM_MESSAGES.aliceToBob1)
+    await waitForDmEncryptionReady(alice.page)
     await sendThreadReply(alice.page, DM_MESSAGES.threadReply1)
 
     // Bob opens the same thread
     await openThread(bob.page, DM_MESSAGES.aliceToBob1)
+    await waitForDmEncryptionReady(bob.page)
     await bob.page.waitForSelector(`.vesper-thread-feed :text("${DM_MESSAGES.threadReply1}")`, {
       timeout: 10_000,
     })
