@@ -95,11 +95,18 @@ defmodule Vesper.Servers do
   end
 
   def list_user_servers(user) do
+    # Custom preload: join emojis + creator in a single query
+    emojis_with_creator =
+      from(e in Emoji,
+        join: c in assoc(e, :creator),
+        preload: [creator: c]
+      )
+
     from(s in Server,
       join: m in Membership,
       on: m.server_id == s.id,
       where: m.user_id == ^user.id,
-      preload: [:channels, [emojis: :creator]]
+      preload: [:channels, [emojis: ^emojis_with_creator]]
     )
     |> Repo.all()
   end
