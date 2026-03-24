@@ -3,6 +3,15 @@ defmodule VesperWeb.Plugs.RateLimitTest do
 
   alias VesperWeb.Plugs.RateLimit
 
+  # Re-enable rate limiting for these tests (disabled in test config)
+  setup do
+    Application.put_env(:vesper, :disable_rate_limiting, false)
+
+    on_exit(fn ->
+      Application.put_env(:vesper, :disable_rate_limiting, true)
+    end)
+  end
+
   defp build_conn(ip, params \\ %{}) do
     :post
     |> Plug.Test.conn("/api/v1/auth/login")

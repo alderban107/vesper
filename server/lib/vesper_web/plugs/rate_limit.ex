@@ -24,6 +24,14 @@ defmodule VesperWeb.Plugs.RateLimit do
   end
 
   def call(conn, %{action: action, limit: limit, window: window}) do
+    if Application.get_env(:vesper, :disable_rate_limiting, false) do
+      conn
+    else
+      do_rate_limit(conn, action, limit, window)
+    end
+  end
+
+  defp do_rate_limit(conn, action, limit, window) do
     key = rate_limit_key(conn, action)
 
     case Hammer.check_rate(key, window, limit) do
