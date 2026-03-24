@@ -1343,6 +1343,7 @@ export class VesperEncryptedChat {
   }
 
   private async resetScopeState(scopeId: string): Promise<void> {
+      console.debug(`[E2EE-DBG] resetScopeState(${scopeId.slice(0, 8)}) called`, new Error().stack?.split('\n').slice(1, 4).join(' <- '))
       this.groupStates.delete(scopeId)
       this.pendingCommits.delete(scopeId)
       this.scopeMessages.delete(scopeId)
@@ -5619,12 +5620,14 @@ export class VesperEncryptedChat {
 
   private async ensureDmParticipantCoverage(conversationId: string): Promise<boolean> {
     if (!this.hasGroup(conversationId)) {
+      console.debug(`[E2EE-DBG] ensureDmParticipantCoverage(${conversationId.slice(0, 8)}): no group`)
       return false
     }
 
     const session = this.client.getAuthSession()
     const conversation = await this.loadConversation(conversationId)
     if (!session || !conversation) {
+      console.debug(`[E2EE-DBG] ensureDmParticipantCoverage: no session/conversation`)
       return this.hasGroup(conversationId)
     }
 
@@ -5632,6 +5635,9 @@ export class VesperEncryptedChat {
     if (participantIds.length === 0) {
       return true
     }
+
+    const memberStatus = participantIds.map(pid => `${pid.slice(0, 8)}:${this.isMemberOfGroup(conversationId, pid)}`)
+    console.debug(`[E2EE-DBG] ensureDmParticipantCoverage: participants=${memberStatus.join(',')}`)
 
     if (participantIds.every((participantId) => this.isMemberOfGroup(conversationId, participantId))) {
       return true
