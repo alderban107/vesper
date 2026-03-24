@@ -370,7 +370,59 @@ function handleUserFeedEvent(topic: string, event: string, payload: unknown): vo
     return
   }
 
+  if (event === 'dm_activity') {
+    // Combined event: replaces separate dm_message + scope_summary_updated
+    const data = payload as {
+      conversation_id: string
+      message_id: string
+      sender_id: string | null
+      sender?: { id: string; username: string; display_name?: string | null; avatar_url?: string | null } | null
+      inserted_at: string
+      scope_summary?: {
+        kind: 'dm'
+        scope_id: string
+        room_seq?: number | null
+        conversation_reset?: { conversation_id: string; last_message?: unknown } | null
+      } | null
+    }
+
+    Promise.all([
+      import('./dmStore'),
+      import('./unreadStore')
+    ]).then(([{ useDmStore }, { useUnreadStore }]) => {
+      // dm_message functionality: update conversation activity + unread
+      const applied = useDmStore.getState().applyConversationActivity({
+        conversationId: data.conversation_id,
+        messageId: data.message_id,
+        senderId: data.sender_id,
+        sender: data.sender ?? null,
+        insertedAt: data.inserted_at
+      })
+
+      if (!applied) {
+        void useDmStore.getState().fetchConversations()
+      }
+
+      if (
+        useDmStore.getState().selectedConversationId !== data.conversation_id &&
+        claimUnreadMessageKey('dm', data.conversation_id, data.message_id)
+      ) {
+        useUnreadStore.getState().incrementDm(data.conversation_id)
+      }
+
+      // scope_summary_updated functionality: update sidebar last message
+      if (data.scope_summary?.conversation_reset?.conversation_id) {
+        useDmStore.getState().syncConversationLastMessage({
+          conversationId: data.scope_summary.conversation_reset.conversation_id,
+          lastMessage: (data.scope_summary.conversation_reset as Record<string, unknown>).last_message ?? null
+        })
+      }
+    })
+    return
+  }
+
   if (event === 'dm_message') {
+    // Legacy handler: kept for backward compatibility with older servers
     Promise.all([
       import('./dmStore'),
       import('./unreadStore')

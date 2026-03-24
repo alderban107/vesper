@@ -96,15 +96,16 @@ defmodule VesperWeb.DmChannel do
           sender_id = socket.assigns.user_id
           sender_info = socket.assigns.sender_info
 
-          notify_participants(
+          # Combined per-user broadcast: merges dm_message notification +
+          # scope_summary_updated into a single WS event per participant.
+          # Client handles both unread increment and sidebar update from this.
+          notify_dm_activity(
             conversation_id,
             sender_id,
             participant_ids,
             sender_info,
             message
           )
-
-          ScopeSummary.broadcast_dm_update(conversation_id, message, participant_ids)
 
           {:reply, :ok, socket}
 
@@ -865,19 +866,24 @@ defmodule VesperWeb.DmChannel do
     end
   end
 
-  defp notify_participants(conversation_id, sender_id, participant_ids, sender_info, message) do
-    notification = %{
+  defp notify_dm_activity(conversation_id, sender_id, participant_ids, sender_info, message) do
+    payload = %{
       conversation_id: conversation_id,
       message_id: message.id,
       sender_id: sender_id,
       sender: sender_info,
-      inserted_at: message.inserted_at
+      inserted_at: message.inserted_at,
+      # Scope summary data (previously a separate scope_summary_updated event)
+      scope_summary: %{
+        kind: "dm",
+        scope_id: conversation_id,
+        room_seq: message.room_seq,
+        conversation_reset: ScopeSummary.conversation_reset_json(conversation_id, message)
+      }
     }
 
     for uid <- participant_ids, uid != sender_id do
-      # Single combined event instead of separate dm_message + dm_unread_update.
-      # Client handles both notification display and unread increment from this.
-      VesperWeb.Endpoint.broadcast("user:#{uid}", "dm_message", notification)
+      VesperWeb.Endpoint.broadcast("user:#{uid}", "dm_activity", payload)
     end
   end
 
