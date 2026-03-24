@@ -620,12 +620,8 @@ defmodule Vesper.Servers do
   end
 
   def user_is_member?(user_id, server_id) do
-    # Use permissions cache when available — avoids separate membership query
-    # since get_user_permissions returns 0 for non-members
-    case PermissionsCache.get(user_id, server_id) do
-      perms when perms > 0 -> true
-      _ -> false
-    end
+    from(m in Membership, where: m.user_id == ^user_id and m.server_id == ^server_id)
+    |> Repo.exists?()
   end
 
   def user_role(user_id, server_id) do
