@@ -125,9 +125,12 @@ end
 
 ```elixir
 insert_user(attrs \\ %{})
+insert_device(user, attrs \\ %{})
 insert_server(owner, attrs \\ %{})
 insert_channel(server, attrs \\ %{})
-insert_message(sender, channel, attrs \\ %{})
+insert_role(server, attrs \\ %{})
+insert_member_role(membership, role)
+insert_membership(user, server, attrs \\ %{})
 ```
 
 All factories generate UUIDs and timestamps automatically. Override any field by passing it in `attrs`.

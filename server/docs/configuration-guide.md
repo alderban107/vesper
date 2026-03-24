@@ -45,7 +45,7 @@ PORT=4000
 
 ### PHX_HOST
 
-The hostname for the server. Used in URL generation and WebSocket origin checks. Default: `example.com` in production.
+The hostname for the server. Used in URL generation and WebSocket origin checks. Defaults to `example.com` (a Phoenix placeholder that must be changed for production).
 
 ```
 PHX_HOST=chat.example.com

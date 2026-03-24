@@ -232,7 +232,7 @@ All authenticated.
 
 ## Other Endpoints
 
-**GET /api/v1/users/search?q=...** -- authenticated. User search.
+**GET /api/v1/users/search?username=...** -- authenticated. Exact username lookup.
 
 **GET /api/v1/voice/config** -- authenticated. Returns `{ ice_servers, ice_transport_policy }`.
 

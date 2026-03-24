@@ -11,7 +11,7 @@ For product context, see [project-overview-pdr.md](./project-overview-pdr.md).
 ```
 vesper/
   client/           Electron + React desktop app and web client
-  config/           Shared monorepo configuration (if any)
+  config/           Elixir environment configs (config.exs, dev.exs, prod.exs, runtime.exs, test.exs)
   doc/              Design documents, protocol spec, E2EE docs
   docker-compose.yml  Production deployment (app, db, web, coturn)
   landing/          Landing page / marketing site
@@ -77,7 +77,7 @@ Each context is a boundary module with internal schemas.
 | File | Description |
 |------|-------------|
 | `accounts.ex` | Boundary: user CRUD, auth, tokens, device management |
-| `accounts/user.ex` | User schema (username, password_hash, display_name, bio, avatar) |
+| `accounts/user.ex` | User schema (username, password_hash, display_name, avatar_url, banner_url, status, crypto fields) |
 | `accounts/device.ex` | Device schema (client_id, trust_level, notification prefs) |
 | `accounts/token.ex` | JWT access token generation via Joken |
 | `accounts/user_token.ex` | Refresh token schema (DB-backed, rotatable) |

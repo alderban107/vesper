@@ -73,7 +73,7 @@ graph TD
 
 ## Message Send Flow
 
-The hot path for sending a message. All DB operations are wrapped in a single `Repo.transaction` for all-or-nothing atomicity.
+Every message send wraps the insert, event projection, room update, and sync event in a single database transaction. If any step fails, the entire operation rolls back — no orphaned messages.
 
 ```mermaid
 sequenceDiagram
@@ -158,7 +158,7 @@ sequenceDiagram
 
 ## Sync Architecture
 
-Replaced per-user fan-out (O(N) writes) with shared event log (O(1) writes).
+Sync uses a shared event log to avoid writing one row per member on every message. A single `scope_sync_events` row covers all members of a channel or conversation.
 
 ```mermaid
 graph LR

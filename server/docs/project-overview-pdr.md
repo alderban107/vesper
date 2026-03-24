@@ -73,7 +73,7 @@ entirely on the client.
 
 | Component | Technology | Role |
 |-----------|-----------|------|
-| Server | Elixir 1.15+ / Phoenix 1.8 | API, WebSocket channels, SFU, background jobs |
+| Server | Elixir 1.18+ / Phoenix 1.8 | API, WebSocket channels, SFU, background jobs |
 | Database | PostgreSQL 17 | Persistent storage for all domain data |
 | Client | Electron 40 / React 19 / TypeScript | Desktop application with web build option |
 | SDK | TypeScript (`@vesper/sdk`) | API client, MLS crypto, transport, voice |
