@@ -3782,27 +3782,25 @@ export class VesperEncryptedChat {
     scopeId: string,
     plaintext: string
   ): Promise<{ ciphertext: string; epoch: number }> {
-    // Serialize encryptions per scope to prevent concurrent ratchet divergence.
-    // Two parallel sends would both clone the same state, encrypt independently,
-    // and the second setGroupState would overwrite the first — orphaning one
-    // message's encryption keys.
-    return await this.withLockedScopeOperation(scopeId, async () => {
-      if (this.pendingSponsoredTransitions.has(scopeId)) {
-        throw new Error(`Membership update for ${scopeId} is still syncing`)
-      }
+    // NOTE: This function is always called from within withLockedScopeOperation
+    // (via withReadyScopeOperation in sendPayload, or via pushReaction).
+    // Do NOT add withLockedScopeOperation here — it would deadlock because
+    // withGroupLock is a non-reentrant serializing queue.
+    if (this.pendingSponsoredTransitions.has(scopeId)) {
+      throw new Error(`Membership update for ${scopeId} is still syncing`)
+    }
 
-      const state = this.groupStates.get(scopeId)
-      if (!state) {
-        throw new Error(`No local MLS state for ${scopeId}`)
-      }
+    const state = this.groupStates.get(scopeId)
+    if (!state) {
+      throw new Error(`No local MLS state for ${scopeId}`)
+    }
 
-      const encrypted = await encryptMessage(this.cloneGroupState(state), plaintext)
-      await this.setGroupState(scopeId, encrypted.newState)
-      return {
-        ciphertext: uint8ToBase64(encrypted.ciphertext),
-        epoch: encrypted.epoch
-      }
-    })
+    const encrypted = await encryptMessage(this.cloneGroupState(state), plaintext)
+    await this.setGroupState(scopeId, encrypted.newState)
+    return {
+      ciphertext: uint8ToBase64(encrypted.ciphertext),
+      epoch: encrypted.epoch
+    }
   }
 
   private async decryptForScope(scopeId: string, ciphertext: string): Promise<string | null> {
