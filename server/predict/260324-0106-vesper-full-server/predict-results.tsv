@@ -1,0 +1,33 @@
+round	persona	findings_produced	findings_revised	challenges_issued	flip_count	status
+0	Architecture Reviewer	5	0	0	0	independent_analysis
+0	Security Analyst	5	0	0	0	independent_analysis
+0	Performance Engineer	5	0	0	0	independent_analysis
+0	Reliability Engineer	5	0	0	0	independent_analysis
+0	Elixir/OTP Specialist	5	0	0	0	independent_analysis
+0	Cryptography Reviewer	5	0	0	0	independent_analysis
+0	Data Integrity Analyst	5	0	0	0	independent_analysis
+0	Devil's Advocate	5	0	0	0	independent_analysis
+1	Architecture Reviewer	5	0	2	0	debate_round_1
+1	Security Analyst	5	1	2	1	debate_round_1
+1	Performance Engineer	5	0	0	0	debate_round_1
+1	Reliability Engineer	5	1	1	1	debate_round_1
+1	Elixir/OTP Specialist	5	0	1	0	debate_round_1
+1	Cryptography Reviewer	5	0	0	0	debate_round_1
+1	Data Integrity Analyst	5	1	0	1	debate_round_1
+1	Devil's Advocate	5	1	4	1	debate_round_1
+2	Architecture Reviewer	5	0	0	0	debate_round_2
+2	Security Analyst	5	1	0	0	debate_round_2
+2	Performance Engineer	5	1	0	1	debate_round_2
+2	Reliability Engineer	5	1	0	1	debate_round_2
+2	Elixir/OTP Specialist	5	1	0	1	debate_round_2
+2	Cryptography Reviewer	5	1	0	1	debate_round_2
+2	Data Integrity Analyst	5	0	0	0	debate_round_2
+2	Devil's Advocate	5	0	1	0	debate_round_2
+3	Architecture Reviewer	5	0	0	0	debate_round_3
+3	Security Analyst	5	0	0	0	debate_round_3
+3	Performance Engineer	5	0	0	0	debate_round_3
+3	Reliability Engineer	5	0	0	0	debate_round_3
+3	Elixir/OTP Specialist	5	0	0	0	debate_round_3
+3	Cryptography Reviewer	5	0	0	0	debate_round_3
+3	Data Integrity Analyst	5	0	0	0	debate_round_3
+3	Devil's Advocate	5	0	0	0	debate_round_3

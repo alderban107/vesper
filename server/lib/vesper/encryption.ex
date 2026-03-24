@@ -1521,32 +1521,58 @@ defmodule Vesper.Encryption do
          recipient_id,
          recipient_client_id
        ) do
-    if existing &&
-         existing.epoch == new_epoch &&
-         same_group_info_payload?(existing, attrs) do
-      expected_payload = Map.fetch!(commit_attrs, :payload)
+    cond do
+      # Exact match: same epoch + same payload = idempotent retry
+      existing && existing.epoch == new_epoch && same_group_info_payload?(existing, attrs) ->
+        expected_payload = Map.fetch!(commit_attrs, :payload)
 
-      case fetch_mls_commit_event_by_idempotency_key(commit_attrs) do
-        %MlsEvent{payload: payload} = commit_event when payload == expected_payload ->
-          {:ok,
-           %{
-             fresh: false,
-             commit_event: commit_event,
-             remove_event: nil,
-             welcome:
-               fetch_pending_welcome_for_scope(
-                 recipient_id,
-                 existing.group_id,
-                 recipient_client_id
-               )
-           }}
+        case fetch_mls_commit_event_by_idempotency_key(commit_attrs) do
+          %MlsEvent{payload: payload} = commit_event when payload == expected_payload ->
+            {:ok,
+             %{
+               fresh: false,
+               commit_event: commit_event,
+               remove_event: nil,
+               welcome:
+                 fetch_pending_welcome_for_scope(
+                   recipient_id,
+                   existing.group_id,
+                   recipient_client_id
+                 )
+             }}
 
-        %MlsEvent{} ->
-          :error
+          %MlsEvent{} ->
+            :error
 
-        nil ->
-          nil
-      end
+          nil ->
+            nil
+        end
+
+      # Epoch already advanced past our target: a prior attempt or concurrent
+      # operation already published at this epoch. Treat as success if the
+      # commit event exists (the sponsored transition was applied).
+      existing && existing.epoch >= new_epoch ->
+        case fetch_mls_commit_event_by_idempotency_key(commit_attrs) do
+          %MlsEvent{} = commit_event ->
+            {:ok,
+             %{
+               fresh: false,
+               commit_event: commit_event,
+               remove_event: nil,
+               welcome:
+                 fetch_pending_welcome_for_scope(
+                   recipient_id,
+                   existing.group_id,
+                   recipient_client_id
+                 )
+             }}
+
+          nil ->
+            nil
+        end
+
+      true ->
+        nil
     end
   end
 

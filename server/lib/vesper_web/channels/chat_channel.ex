@@ -21,7 +21,10 @@ defmodule VesperWeb.ChatChannel do
         if Servers.user_can_view_channel?(socket.assigns.user_id, channel) do
           # Subscribe to TTL changes so cached value stays in sync
           Phoenix.PubSub.subscribe(Vesper.PubSub, "channel:settings:#{channel_id}")
-          Phoenix.PubSub.subscribe(Vesper.PubSub, "server:members:#{channel.server_id}")
+
+          if channel.server_id do
+            Phoenix.PubSub.subscribe(Vesper.PubSub, "server:members:#{channel.server_id}")
+          end
 
           socket =
             socket

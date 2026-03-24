@@ -696,12 +696,28 @@ defmodule Vesper.Servers do
   Returns the channel or nil.
   """
   def get_channel_if_member(channel_id, user_id) do
-    from(c in Channel,
-      join: m in Membership,
-      on: m.server_id == c.server_id and m.user_id == ^user_id,
-      where: c.id == ^channel_id
-    )
-    |> Repo.one()
+    # Server-based channels: membership via server
+    server_result =
+      from(c in Channel,
+        join: m in Membership,
+        on: m.server_id == c.server_id and m.user_id == ^user_id,
+        where: c.id == ^channel_id and not is_nil(c.server_id)
+      )
+      |> Repo.one()
+
+    case server_result do
+      %Channel{} = channel ->
+        channel
+
+      nil ->
+        # DM channels: direct channel membership (no server)
+        from(c in Channel,
+          join: m in Membership,
+          on: m.channel_id == c.id and m.user_id == ^user_id,
+          where: c.id == ^channel_id and is_nil(c.server_id)
+        )
+        |> Repo.one()
+    end
   end
 
   def get_channel!(id) do
@@ -767,7 +783,12 @@ defmodule Vesper.Servers do
   end
 
   def user_can_view_channel?(user_id, %Channel{} = channel) do
-    user_can_channel_permission?(user_id, channel, @channel_override_view_channel)
+    # DM channels have no permission system — membership alone grants access
+    if Channel.dm_type?(channel.type) do
+      true
+    else
+      user_can_channel_permission?(user_id, channel, @channel_override_view_channel)
+    end
   end
 
   def user_can_send_messages_in_channel?(user_id, channel_id) when is_binary(channel_id) do
