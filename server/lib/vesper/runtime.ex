@@ -8,6 +8,14 @@ defmodule Vesper.Runtime do
   alias Vesper.Servers
   alias Vesper.Servers.Channel
 
+  @room_cache :vesper_room_cache
+
+  def init_room_cache do
+    if :ets.info(@room_cache) == :undefined do
+      :ets.new(@room_cache, [:set, :public, :named_table, read_concurrency: true])
+    end
+  end
+
   def get_room(id), do: Repo.get(Room, id)
 
   def get_room_for_channel(channel_id) do
@@ -16,6 +24,51 @@ defmodule Vesper.Runtime do
 
   def get_room_for_conversation(conversation_id) do
     Repo.get_by(Room, conversation_id: conversation_id)
+  end
+
+  @doc """
+  Cached room lookup for the message send hot path.
+  Only uses immutable fields (id, kind, server_id, channel_id, conversation_id).
+  Do NOT use for reads that need fresh last_message_* or current_seq fields.
+  """
+  def get_room_for_message_send(channel_id: channel_id) do
+    case lookup_room_cache(:channel, channel_id) do
+      {:ok, room} -> room
+      :miss -> cache_and_return(:channel, channel_id, Repo.get_by(Room, channel_id: channel_id))
+    end
+  end
+
+  def get_room_for_message_send(conversation_id: conversation_id) do
+    case lookup_room_cache(:dm, conversation_id) do
+      {:ok, room} ->
+        room
+
+      :miss ->
+        cache_and_return(
+          :dm,
+          conversation_id,
+          Repo.get_by(Room, conversation_id: conversation_id)
+        )
+    end
+  end
+
+  defp lookup_room_cache(kind, scope_id) do
+    if :ets.info(@room_cache) != :undefined do
+      case :ets.lookup(@room_cache, {kind, scope_id}) do
+        [{{^kind, ^scope_id}, room}] -> {:ok, room}
+        [] -> :miss
+      end
+    else
+      :miss
+    end
+  end
+
+  defp cache_and_return(kind, scope_id, room) do
+    if room && :ets.info(@room_cache) != :undefined do
+      :ets.insert(@room_cache, {{kind, scope_id}, room})
+    end
+
+    room
   end
 
   def ensure_room_for_channel(%Channel{} = channel) do
@@ -205,7 +258,7 @@ defmodule Vesper.Runtime do
   def refresh_room_last_message_for_scope(_scope_kind, _scope_id), do: :ok
 
   defp room_for_message(%Message{channel_id: channel_id}) when not is_nil(channel_id) do
-    case get_room_for_channel(channel_id) do
+    case get_room_for_message_send(channel_id: channel_id) do
       %Room{} = room -> {:ok, room}
       nil -> {:error, :room_not_found}
     end
@@ -213,7 +266,7 @@ defmodule Vesper.Runtime do
 
   defp room_for_message(%Message{conversation_id: conversation_id})
        when not is_nil(conversation_id) do
-    case get_room_for_conversation(conversation_id) do
+    case get_room_for_message_send(conversation_id: conversation_id) do
       %Room{} = room -> {:ok, room}
       nil -> {:error, :room_not_found}
     end
