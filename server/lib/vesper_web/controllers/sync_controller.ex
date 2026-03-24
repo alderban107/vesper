@@ -38,7 +38,9 @@ defmodule VesperWeb.SyncController do
       if full_sync do
         Servers.list_user_servers(user)
       else
-        Servers.list_user_servers_by_ids(user, scope_changes.server_ids)
+        # Delta sync: skip emoji preload — client already has them from full sync.
+        # Saves 2 queries (emojis + emoji creators) per delta sync.
+        Servers.list_user_servers_by_ids(user, scope_changes.server_ids, include_emojis: false)
       end
 
     conversations =

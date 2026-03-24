@@ -113,15 +113,24 @@ defmodule Vesper.Servers do
     |> Repo.all()
   end
 
-  def list_user_servers_by_ids(user, server_ids) when is_list(server_ids) do
+  def list_user_servers_by_ids(user, server_ids, opts \\ []) when is_list(server_ids) do
     if server_ids == [] do
       []
     else
+      include_emojis = Keyword.get(opts, :include_emojis, true)
+
+      preloads =
+        if include_emojis do
+          [:channels, [emojis: :creator]]
+        else
+          [:channels]
+        end
+
       from(s in Server,
         join: m in Membership,
         on: m.server_id == s.id,
         where: m.user_id == ^user.id and s.id in ^server_ids,
-        preload: [:channels, [emojis: :creator]]
+        preload: ^preloads
       )
       |> Repo.all()
     end
