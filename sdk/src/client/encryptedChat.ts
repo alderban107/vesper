@@ -1078,6 +1078,8 @@ export class VesperEncryptedChat {
     let pushed = false
     let pushError: unknown = null
 
+    console.debug(`[E2EE-DBG] sendPayload(${scope.id.slice(0, 8)}): acquired scope watch, starting operation`)
+
     try {
       try {
         pushed = await this.withReadyScopeOperation(scope, true, async () => {
@@ -1108,10 +1110,12 @@ export class VesperEncryptedChat {
 
           attemptedPush = true
           const sent = await this.client.pushScopeEvent(scope.kind, scope.id, 'new_message', messagePayload)
+          console.debug(`[E2EE-DBG] sendPayload: pushScopeEvent returned ${sent}`)
 
           return sent
         })
       } catch (error) {
+        console.debug(`[E2EE-DBG] sendPayload: operation threw`, error)
         pushError = error
       }
 

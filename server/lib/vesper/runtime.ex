@@ -316,7 +316,7 @@ defmodule Vesper.Runtime do
         # Combine next_room_seq + event insert into a single round-trip
         now = DateTime.utc_now() |> DateTime.truncate(:second)
         event_id = Ecto.UUID.generate()
-        content = message_content(message) |> Jason.encode!()
+        content = message_content(message)
         algo = if(message.ciphertext, do: "mls", else: nil)
 
         sql = """
