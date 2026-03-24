@@ -67,8 +67,8 @@ defmodule Vesper.QueryBenchmarkTest do
 
     # --- Measured operations ---
 
-    # 1. List user's servers
-    _servers = Servers.list_user_servers(user1)
+    # 1. List user's servers (skip emojis for sync — loaded on demand)
+    _servers = Servers.list_user_servers(user1, include_emojis: false)
 
     # 2. List channels for server
     _channels = Servers.list_channels(server.id)
