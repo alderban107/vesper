@@ -104,7 +104,7 @@ defmodule Vesper.Runtime do
   def project_message(%Message{parent_message_id: nil} = message) do
     with {:ok, room} <- room_for_message(message) do
       Repo.transaction(fn ->
-        with {:ok, event} <- ensure_message_event(room, message, skip_idempotency: true) do
+        with {:ok, event} <- ensure_message_event(room, message) do
           update_room_last_message(room.id, message.id, message.inserted_at, event.room_seq)
           append_user_sync_events(room, "message")
           {:ok, event}
@@ -123,7 +123,7 @@ defmodule Vesper.Runtime do
     # Threaded messages need the transaction for thread relation creation
     with {:ok, room} <- room_for_message(message) do
       Repo.transaction(fn ->
-        with {:ok, event} <- ensure_message_event(room, message, skip_idempotency: true) do
+        with {:ok, event} <- ensure_message_event(room, message) do
           case maybe_create_thread_relation(event, message) do
             {:ok, _event} = result ->
               update_room_last_message(room.id, message.id, message.inserted_at, event.room_seq)
@@ -308,17 +308,8 @@ defmodule Vesper.Runtime do
 
   defp room_for_scope(_scope_kind, _scope_id), do: {:error, :room_not_found}
 
-  defp ensure_message_event(%Room{} = room, %Message{} = message, opts) do
-    skip_idempotency = Keyword.get(opts, :skip_idempotency, false)
-
-    existing =
-      if skip_idempotency do
-        nil
-      else
-        Repo.get_by(RoomEvent, message_id: message.id)
-      end
-
-    case existing do
+  defp ensure_message_event(%Room{} = room, %Message{} = message) do
+    case Repo.get_by(RoomEvent, message_id: message.id) do
       %RoomEvent{} = event ->
         {:ok, event}
 
