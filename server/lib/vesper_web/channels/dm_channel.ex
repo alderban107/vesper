@@ -71,10 +71,10 @@ defmodule VesperWeb.DmChannel do
         {:ok, message} ->
           message = maybe_link_attachments(message, params)
 
-          # Defense in depth: fresh-fetch participant_ids for notifications
-          # to prevent leaking to removed participants even if PubSub invalidation is delayed
-          fresh_participant_ids = Chat.list_participant_ids(socket.assigns.conversation_id)
-          append_dm_urgent_events(message, socket.assigns.user_id, fresh_participant_ids)
+          # Use cached participant_ids (kept in sync via PubSub invalidation
+          # from :participants_changed handler). Saves 1 DB query per message.
+          participant_ids = socket.assigns.participant_ids
+          append_dm_urgent_events(message, socket.assigns.user_id, participant_ids)
 
           broadcast!(
             socket,
@@ -87,7 +87,7 @@ defmodule VesperWeb.DmChannel do
           )
 
           notify_scope_mutation(
-            fresh_participant_ids,
+            participant_ids,
             "dm",
             socket.assigns.conversation_id
           )
@@ -99,12 +99,12 @@ defmodule VesperWeb.DmChannel do
           notify_participants(
             conversation_id,
             sender_id,
-            fresh_participant_ids,
+            participant_ids,
             sender_info,
             message
           )
 
-          ScopeSummary.broadcast_dm_update(conversation_id, message, fresh_participant_ids)
+          ScopeSummary.broadcast_dm_update(conversation_id, message, participant_ids)
 
           {:reply, :ok, socket}
 
