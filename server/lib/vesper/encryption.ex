@@ -5,6 +5,7 @@ defmodule Vesper.Encryption do
   """
 
   import Ecto.Query
+  require Logger
   alias Vesper.Repo
 
   alias Vesper.Encryption.{
@@ -504,6 +505,13 @@ defmodule Vesper.Encryption do
     %MlsEvent{}
     |> MlsEvent.changeset(attrs)
     |> Repo.insert()
+  end
+
+  def get_group_info_epoch(group_id) do
+    case Repo.one(from(gi in MlsGroupInfo, where: gi.group_id == ^group_id, select: gi.epoch)) do
+      nil -> {:error, :not_found}
+      epoch -> {:ok, epoch}
+    end
   end
 
   @doc """
@@ -1428,8 +1436,12 @@ defmodule Vesper.Encryption do
      |> Repo.update!()}
   end
 
-  defp apply_group_info_publish(%MlsGroupInfo{}, _attrs, _new_epoch, previous_epoch)
+  defp apply_group_info_publish(%MlsGroupInfo{epoch: stored}, _attrs, new_epoch, previous_epoch)
        when is_integer(previous_epoch) do
+    Logger.warning(
+      "MLS epoch_conflict: stored=#{stored}, new=#{new_epoch}, previous=#{previous_epoch}"
+    )
+
     {:error, :epoch_conflict}
   end
 

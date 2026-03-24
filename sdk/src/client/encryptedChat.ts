@@ -58,7 +58,7 @@ import { MLSDiagnostics } from './mlsDiagnostics.js'
 
 const JOIN_WAIT_MS = 2_500
 const DM_PREPARE_WAIT_MS = 5_000
-const DM_PARTICIPANT_JOIN_WAIT_MS = 10_000
+const DM_PARTICIPANT_JOIN_WAIT_MS = 3_000
 const EVICTION_REQUEST_COOLDOWN_MS = 3_000
 const VOICE_JOIN_REQUEST_COOLDOWN_MS = 2_000
 const VOICE_RESYNC_REQUEST_COOLDOWN_MS = 3_000
@@ -4777,6 +4777,21 @@ export class VesperEncryptedChat {
       )
 
       if (result.status === 'conflict') {
+        // Check if the conflict is because a prior attempt already succeeded.
+        // The server has epoch N+1 (our target), but we're retrying with
+        // previous_epoch=N. Treat this as success — the commit was applied.
+        if (
+          result.currentEpoch != null &&
+          pendingGroupInfo.epoch != null &&
+          result.currentEpoch === pendingGroupInfo.epoch
+        ) {
+          console.debug(`[E2EE-DBG] sponsored transition conflict resolved: server already at target epoch ${result.currentEpoch}`)
+          await this.clearPendingSponsoredTransition(scopeId, pending)
+          await this.clearPendingGroupInfoPublish(scopeId)
+          this.lastSuccessfulGroupInfoPublishEpochs.set(scopeId, pendingGroupInfo.epoch)
+          return true
+        }
+
         await this.recoverFromSponsoredTransitionConflict(scopeId, pending)
         return false
       }

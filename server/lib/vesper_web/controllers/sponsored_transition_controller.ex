@@ -99,7 +99,17 @@ defmodule VesperWeb.SponsoredTransitionController do
           conn |> put_status(:conflict) |> json(%{error: "idempotency_conflict"})
 
         {:error, :epoch_conflict} ->
-          conn |> put_status(:conflict) |> json(%{error: "epoch_conflict"})
+          # Include current server epoch so the client can detect if its
+          # prior attempt actually succeeded (server at target epoch).
+          current_epoch =
+            case Vesper.Encryption.get_group_info_epoch(scope_id) do
+              {:ok, epoch} -> epoch
+              _ -> nil
+            end
+
+          conn
+          |> put_status(:conflict)
+          |> json(%{error: "epoch_conflict", current_epoch: current_epoch})
 
         {:error, %Ecto.Changeset{} = changeset} ->
           conn |> put_status(:unprocessable_entity) |> json(%{error: inspect(changeset.errors)})

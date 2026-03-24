@@ -436,6 +436,7 @@ export async function publishSponsoredTransition(
     }
   | {
       status: 'conflict'
+      currentEpoch: number | null
     }
 > {
   const body: Record<string, unknown> = {
@@ -476,8 +477,18 @@ export async function publishSponsoredTransition(
   )
 
   if (res.status === 409) {
+    let currentEpoch: number | null = null
+    try {
+      const body = await res.json()
+      if (typeof body.current_epoch === 'number') {
+        currentEpoch = body.current_epoch
+      }
+    } catch {
+      // ignore parse errors
+    }
     return {
-      status: 'conflict'
+      status: 'conflict',
+      currentEpoch
     }
   }
 
