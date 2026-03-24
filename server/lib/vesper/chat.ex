@@ -89,12 +89,19 @@ defmodule Vesper.Chat do
   def list_conversations(user_id, opts \\ []) do
     limit = Keyword.get(opts, :limit, 100)
 
+    # Custom preload: join participants + users in a single query
+    participants_with_users =
+      from(p in DmParticipant,
+        join: u in assoc(p, :user),
+        preload: [user: u]
+      )
+
     conversations =
       from(c in DmConversation,
         join: p in DmParticipant,
         on: p.conversation_id == c.id,
         where: p.user_id == ^user_id,
-        preload: [participants: :user],
+        preload: [participants: ^participants_with_users],
         order_by: [desc: c.inserted_at],
         limit: ^limit
       )
