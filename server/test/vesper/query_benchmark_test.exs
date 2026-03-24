@@ -56,9 +56,14 @@ defmodule Vesper.QueryBenchmarkTest do
     sync_counter = :counters.new(1, [:atomics])
     sync_handler = "sync-counter-#{System.unique_integer([:positive])}"
 
-    :telemetry.attach(sync_handler, [:vesper, :repo, :query], fn _, _, _, _ ->
-      :counters.add(sync_counter, 1, 1)
-    end, nil)
+    :telemetry.attach(
+      sync_handler,
+      [:vesper, :repo, :query],
+      fn _, _, _, _ ->
+        :counters.add(sync_counter, 1, 1)
+      end,
+      nil
+    )
 
     _servers = Servers.list_user_servers(user1, include_emojis: false)
     _channels = Servers.list_channels(server.id)
@@ -67,7 +72,10 @@ defmodule Vesper.QueryBenchmarkTest do
     _convos = Chat.list_conversations(user1.id)
     _dm_msgs = Chat.list_conversation_messages(convo.id, limit: 20, lean: true)
     _unreads = Chat.get_all_unread_counts(user1.id, [channel.id], [convo.id])
-    _changes = Sync.list_scope_changes_since(user1.id, baseline_scope, [channel.id, convo.id, server.id])
+
+    _changes =
+      Sync.list_scope_changes_since(user1.id, baseline_scope, [channel.id, convo.id, server.id])
+
     _member = Servers.user_is_member?(user1.id, server.id)
 
     :telemetry.detach(sync_handler)
@@ -79,19 +87,27 @@ defmodule Vesper.QueryBenchmarkTest do
     msg_counter = :counters.new(1, [:atomics])
     msg_handler = "msg-counter-#{System.unique_integer([:positive])}"
 
-    :telemetry.attach(msg_handler, [:vesper, :repo, :query], fn _, _, _, _ ->
-      :counters.add(msg_counter, 1, 1)
-    end, nil)
+    :telemetry.attach(
+      msg_handler,
+      [:vesper, :repo, :query],
+      fn _, _, _, _ ->
+        :counters.add(msg_counter, 1, 1)
+      end,
+      nil
+    )
 
     for i <- 1..10 do
       {:ok, _} =
-        Chat.create_message(%{
-          channel_id: channel.id,
-          sender_id: user1.id,
-          ciphertext: :crypto.strong_rand_bytes(64),
-          mls_epoch: 1,
-          client_nonce: "hot-#{i}"
-        })
+        Chat.create_message(
+          %{
+            channel_id: channel.id,
+            sender_id: user1.id,
+            ciphertext: :crypto.strong_rand_bytes(64),
+            mls_epoch: 1,
+            client_nonce: "hot-#{i}"
+          },
+          preload: []
+        )
     end
 
     :telemetry.detach(msg_handler)

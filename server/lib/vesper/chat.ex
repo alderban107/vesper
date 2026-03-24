@@ -371,8 +371,9 @@ defmodule Vesper.Chat do
     end
   end
 
-  def create_message(attrs) do
+  def create_message(attrs, opts \\ []) do
     attrs = maybe_set_expires_at(attrs)
+    preload = Keyword.get(opts, :preload, [:sender, :attachments])
 
     %Message{}
     |> Message.encrypted_changeset(attrs)
@@ -381,14 +382,24 @@ defmodule Vesper.Chat do
       {:ok, message} ->
         case Runtime.project_message(message) do
           {:ok, event} ->
-            {:ok, Repo.preload(%{message | room_seq: event.room_seq}, [:sender, :attachments])}
+            message = %{message | room_seq: event.room_seq}
+
+            if preload == [] do
+              {:ok, message}
+            else
+              {:ok, Repo.preload(message, preload)}
+            end
 
           {:error, reason} ->
             Logger.warning(
               "Failed to project message #{message.id} into room events: #{inspect(reason)}"
             )
 
-            {:ok, Repo.preload(message, [:sender, :attachments])}
+            if preload == [] do
+              {:ok, message}
+            else
+              {:ok, Repo.preload(message, preload)}
+            end
         end
 
       error ->
