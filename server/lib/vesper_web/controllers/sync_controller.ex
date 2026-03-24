@@ -93,7 +93,9 @@ defmodule VesperWeb.SyncController do
       case since do
         nil ->
           channel_ids = Servers.list_user_channel_ids(user.id)
-          conversation_ids = Chat.list_user_conversation_ids(user.id)
+
+          conversation_ids =
+            Enum.map(conversations, fn %{conversation: c} -> c.id end)
 
           unread_counts =
             Chat.get_combined_unread_counts(user.id, channel_ids, conversation_ids)
