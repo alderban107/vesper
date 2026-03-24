@@ -11,7 +11,7 @@ defmodule VesperWeb.VoiceChannel do
   @max_concurrent_voice_ops 10
 
   @impl true
-  def join("voice:channel:" <> channel_id, _payload, socket) do
+  def join("voice:channel:" <> channel_id, payload, socket) do
     case Servers.get_channel_if_member(channel_id, socket.assigns.user_id) do
       nil ->
         {:error, %{reason: "channel not found or not a member"}}
@@ -21,26 +21,31 @@ defmodule VesperWeb.VoiceChannel do
 
       channel ->
         Phoenix.PubSub.subscribe(Vesper.PubSub, "server:members:#{channel.server_id}")
+        transport = normalize_transport(Map.get(payload, "transport", "webrtc"))
 
         socket =
           socket
           |> assign(:room_id, channel_id)
           |> assign(:room_type, :channel)
           |> assign(:server_id, channel.server_id)
+          |> assign(:transport, transport)
 
         send(self(), :after_join)
         {:ok, socket}
     end
   end
 
-  def join("voice:dm:" <> conversation_id, _payload, socket) do
+  def join("voice:dm:" <> conversation_id, payload, socket) do
     user_id = socket.assigns.user_id
 
     if Chat.user_is_participant?(user_id, conversation_id) do
+      transport = normalize_transport(Map.get(payload, "transport", "webrtc"))
+
       socket =
         socket
         |> assign(:room_id, conversation_id)
         |> assign(:room_type, :dm)
+        |> assign(:transport, transport)
 
       send(self(), :after_join)
       {:ok, socket}
@@ -326,6 +331,14 @@ defmodule VesperWeb.VoiceChannel do
     end
   end
 
+  # WebSocket media relay — clients send encoded frames over the channel
+  def handle_in("media_frame", %{"slot" => slot, "data" => data} = payload, socket)
+      when is_binary(slot) and is_binary(data) do
+    seq = Map.get(payload, "seq", 0)
+    Voice.relay_media_frame(socket.assigns.room_id, socket.assigns.user_id, slot, data, seq)
+    {:noreply, socket}
+  end
+
   def handle_in(_event, _payload, socket),
     do: {:reply, {:error, %{reason: "unrecognized event"}}, socket}
 
@@ -334,13 +347,29 @@ defmodule VesperWeb.VoiceChannel do
     room_id = socket.assigns.room_id
     user_id = socket.assigns.user_id
     room_type = socket.assigns.room_type
+    transport = socket.assigns[:transport] || :webrtc
 
     Voice.ensure_room(room_id, room_type: room_type)
 
+    join_opts = [transport: transport]
+
     # Semaphore.call returns the function's result directly, or {:error, :max}
     case Semaphore.call({:voice_room, room_id}, @max_concurrent_voice_ops, fn ->
-           Voice.join_room(room_id, user_id, self())
+           Voice.join_room(room_id, user_id, self(), join_opts)
          end) do
+      {:ok, :websocket, _track_map, _publish_map} ->
+        # WebSocket transport — no SDP/ICE needed
+        replay_recent_mls_join_broadcasts(socket)
+
+        push(socket, "joined", %{
+          transport: "websocket",
+          e2ee_creator_id: preferred_creator_id(room_id, user_id)
+        })
+
+        broadcast!(socket, "voice_state_update", %{
+          participants: Voice.get_participants(room_id)
+        })
+
       {:ok, offer_sdp, track_map, publish_map} ->
         replay_recent_mls_join_broadcasts(socket)
 
@@ -394,6 +423,17 @@ defmodule VesperWeb.VoiceChannel do
              server_id == socket.assigns.server_id and
              user_id == socket.assigns.user_id do
     {:stop, {:shutdown, :membership_revoked}, socket}
+  end
+
+  def handle_info({:media_frame, sender_id, slot, data, seq}, socket) do
+    push(socket, "media_frame", %{
+      sender_id: sender_id,
+      slot: slot,
+      data: data,
+      seq: seq
+    })
+
+    {:noreply, socket}
   end
 
   def handle_info(_msg, socket), do: {:noreply, socket}
@@ -480,4 +520,8 @@ defmodule VesperWeb.VoiceChannel do
       })
     end)
   end
+
+  defp normalize_transport("websocket"), do: :websocket
+  defp normalize_transport("ws"), do: :websocket
+  defp normalize_transport(_), do: :webrtc
 end

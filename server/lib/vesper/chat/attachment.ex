@@ -14,6 +14,7 @@ defmodule Vesper.Chat.Attachment do
     field :encrypted, :boolean, default: false
 
     belongs_to :message, Vesper.Chat.Message
+    belongs_to :uploader, Vesper.Accounts.User
 
     field :inserted_at, :utc_datetime
   end
@@ -27,7 +28,8 @@ defmodule Vesper.Chat.Attachment do
       :storage_key,
       :message_id,
       :expires_at,
-      :encrypted
+      :encrypted,
+      :uploader_id
     ])
     |> validate_required([:filename, :storage_key])
   end

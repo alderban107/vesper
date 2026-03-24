@@ -13,19 +13,51 @@ defmodule VesperWeb.Router do
     plug(VesperWeb.Plugs.RequireTrustedDevice)
   end
 
+  pipeline :rate_limit_login do
+    plug(VesperWeb.Plugs.RateLimit, action: :login)
+  end
+
+  pipeline :rate_limit_register do
+    plug(VesperWeb.Plugs.RateLimit, action: :register)
+  end
+
+  pipeline :rate_limit_recover do
+    plug(VesperWeb.Plugs.RateLimit, action: :recover)
+  end
+
+  pipeline :rate_limit_refresh do
+    plug(VesperWeb.Plugs.RateLimit, action: :refresh)
+  end
+
   # Health check — no auth, no pipeline
   scope "/", VesperWeb do
     get("/health", HealthController, :check)
   end
 
-  # Public auth routes
+  # Public auth routes (rate-limited)
   scope "/api/v1/auth", VesperWeb do
     pipe_through(:api)
 
+    pipe_through(:rate_limit_register)
     post("/register", AuthController, :register)
+  end
+
+  scope "/api/v1/auth", VesperWeb do
+    pipe_through([:api, :rate_limit_login])
+
     post("/login", AuthController, :login)
+  end
+
+  scope "/api/v1/auth", VesperWeb do
+    pipe_through([:api, :rate_limit_refresh])
+
     post("/refresh", AuthController, :refresh)
     post("/logout", AuthController, :logout)
+  end
+
+  scope "/api/v1/auth", VesperWeb do
+    pipe_through([:api, :rate_limit_recover])
+
     post("/recover", AuthController, :recover)
     post("/recover/reset", AuthController, :recover_reset)
   end

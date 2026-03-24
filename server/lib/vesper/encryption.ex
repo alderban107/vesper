@@ -18,6 +18,10 @@ defmodule Vesper.Encryption do
     PendingWelcome
   }
 
+  # Maximum allowed epoch jump for non-CAS GroupInfo publishes.
+  # Prevents a compromised client from inflating the epoch to block others.
+  @max_epoch_delta 1000
+
   # --- Key Packages ---
 
   @doc """
@@ -1442,11 +1446,22 @@ defmodule Vesper.Encryption do
          new_epoch,
          _previous_epoch
        )
-       when new_epoch > stored do
+       when new_epoch > stored and new_epoch - stored <= @max_epoch_delta do
     {:ok,
      existing
      |> MlsGroupInfo.changeset(attrs)
      |> Repo.update!()}
+  end
+
+  # Epoch jump exceeds max delta — reject to prevent inflation attacks
+  defp apply_group_info_publish(
+         %MlsGroupInfo{epoch: stored},
+         _attrs,
+         new_epoch,
+         _previous_epoch
+       )
+       when new_epoch > stored do
+    {:error, :epoch_delta_exceeded}
   end
 
   defp apply_group_info_publish(

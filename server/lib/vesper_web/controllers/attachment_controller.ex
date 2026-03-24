@@ -6,6 +6,7 @@ defmodule VesperWeb.AttachmentController do
   alias Vesper.Repo
 
   def create(conn, %{"file" => upload} = params) do
+    user = conn.assigns.current_user
     max_size = FileStorage.max_upload_size()
 
     file_size =
@@ -32,7 +33,8 @@ defmodule VesperWeb.AttachmentController do
             size_bytes: file_size,
             storage_key: storage_key,
             encrypted: params["encrypted"] == "true",
-            expires_at: expires_at
+            expires_at: expires_at,
+            uploader_id: user.id
           }
 
           # Link to message if provided (optional now)
@@ -91,9 +93,13 @@ defmodule VesperWeb.AttachmentController do
     end
   end
 
-  # Attachment not yet linked to a message — allow the uploader
-  # (we can't verify uploader without tracking it, so allow any authed user
-  # for unlinked attachments since they're transient pre-send uploads)
+  # Attachment not yet linked to a message — only allow the original uploader
+  defp authorized_for_attachment?(user_id, %{message: nil, uploader_id: uploader_id})
+       when is_binary(uploader_id) do
+    user_id == uploader_id
+  end
+
+  # Legacy attachments without uploader_id — allow any authenticated user
   defp authorized_for_attachment?(_user_id, %{message: nil}), do: true
 
   defp authorized_for_attachment?(user_id, %{message: message}) do

@@ -60,7 +60,9 @@ defmodule Vesper.MixProject do
       {:cors_plug, "~> 3.0"},
       {:oban, "~> 2.18"},
       {:ex_webrtc, "~> 0.15.0"},
-      {:semaphore, "~> 1.3"}
+      {:semaphore, "~> 1.3"},
+      {:hammer, "~> 6.2"},
+      {:hammer_plug, "~> 3.0"}
     ]
   end
 
