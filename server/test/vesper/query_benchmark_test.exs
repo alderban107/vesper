@@ -76,14 +76,14 @@ defmodule Vesper.QueryBenchmarkTest do
     # 3. Check permissions for user in server
     _perms = Servers.get_user_permissions(user1.id, server.id)
 
-    # 4. List messages for channel (paginated)
-    _messages = Chat.list_channel_messages(channel.id, limit: 20)
+    # 4. List messages for channel (lean: initial sync, attachments load on demand)
+    _messages = Chat.list_channel_messages(channel.id, limit: 20, lean: true)
 
     # 5. List conversations
     _convos = Chat.list_conversations(user1.id)
 
-    # 6. List DM messages
-    _dm_msgs = Chat.list_conversation_messages(convo.id, limit: 20)
+    # 6. List DM messages (lean: initial sync)
+    _dm_msgs = Chat.list_conversation_messages(convo.id, limit: 20, lean: true)
 
     # 7. Get unread counts (combined — single UNION query)
     _unreads = Chat.get_all_unread_counts(user1.id, [channel.id], [convo.id])
