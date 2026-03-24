@@ -104,7 +104,8 @@ defmodule Vesper.QueryBenchmarkTest do
             sender_id: user1.id,
             ciphertext: :crypto.strong_rand_bytes(64),
             mls_epoch: 1,
-            client_nonce: "hot-#{i}"
+            client_nonce: "hot-#{i}",
+            disappearing_ttl: 0
           },
           preload: []
         )

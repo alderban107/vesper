@@ -1148,25 +1148,14 @@ defmodule Vesper.Chat do
   defp maybe_set_expires_at(%{expires_at: %DateTime{}} = attrs), do: attrs
 
   defp maybe_set_expires_at(attrs) do
-    channel_id = attrs[:channel_id] || attrs["channel_id"]
-    conversation_id = attrs[:conversation_id] || attrs["conversation_id"]
+    # If the caller provides disappearing_ttl directly, skip the DB lookup
+    ttl = attrs[:disappearing_ttl] || attrs["disappearing_ttl"]
 
     ttl =
-      cond do
-        channel_id ->
-          case Vesper.Repo.get(Vesper.Servers.Channel, channel_id) do
-            %{disappearing_ttl: ttl} when is_integer(ttl) and ttl > 0 -> ttl
-            _ -> nil
-          end
-
-        conversation_id ->
-          case Vesper.Repo.get(DmConversation, conversation_id) do
-            %{disappearing_ttl: ttl} when is_integer(ttl) and ttl > 0 -> ttl
-            _ -> nil
-          end
-
-        true ->
-          nil
+      if is_nil(ttl) do
+        lookup_scope_ttl(attrs)
+      else
+        if is_integer(ttl) and ttl > 0, do: ttl, else: nil
       end
 
     if ttl do
@@ -1175,9 +1164,33 @@ defmodule Vesper.Chat do
         |> DateTime.add(ttl, :second)
         |> DateTime.truncate(:second)
 
-      Map.put(attrs, :expires_at, expires_at)
-    else
       attrs
+      |> Map.put(:expires_at, expires_at)
+      |> Map.delete(:disappearing_ttl)
+    else
+      Map.delete(attrs, :disappearing_ttl)
+    end
+  end
+
+  defp lookup_scope_ttl(attrs) do
+    channel_id = attrs[:channel_id] || attrs["channel_id"]
+    conversation_id = attrs[:conversation_id] || attrs["conversation_id"]
+
+    cond do
+      channel_id ->
+        case Vesper.Repo.get(Vesper.Servers.Channel, channel_id) do
+          %{disappearing_ttl: ttl} when is_integer(ttl) and ttl > 0 -> ttl
+          _ -> nil
+        end
+
+      conversation_id ->
+        case Vesper.Repo.get(DmConversation, conversation_id) do
+          %{disappearing_ttl: ttl} when is_integer(ttl) and ttl > 0 -> ttl
+          _ -> nil
+        end
+
+      true ->
+        nil
     end
   end
 end

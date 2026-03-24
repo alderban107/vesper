@@ -101,7 +101,26 @@ defmodule Vesper.Runtime do
     end
   end
 
+  def project_message(%Message{parent_message_id: nil} = message) do
+    with {:ok, room} <- room_for_message(message) do
+      Repo.transaction(fn ->
+        with {:ok, event} <- ensure_message_event(room, message, skip_idempotency: true) do
+          update_room_last_message(room.id, message.id, message.inserted_at, event.room_seq)
+          append_user_sync_events(room, "message")
+          {:ok, event}
+        else
+          error -> Repo.rollback(error)
+        end
+      end)
+      |> case do
+        {:ok, {:ok, event}} -> {:ok, event}
+        {:error, error} -> {:error, error}
+      end
+    end
+  end
+
   def project_message(%Message{} = message) do
+    # Threaded messages need the transaction for thread relation creation
     with {:ok, room} <- room_for_message(message) do
       Repo.transaction(fn ->
         with {:ok, event} <- ensure_message_event(room, message, skip_idempotency: true) do
