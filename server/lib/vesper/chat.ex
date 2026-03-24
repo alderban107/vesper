@@ -456,21 +456,28 @@ defmodule Vesper.Chat do
         end
 
       true ->
-        query =
+        non_sender = non_sender_preloads(preload)
+
+        messages =
           from(m in Message,
             left_join: event in RoomEvent,
             on: event.message_id == m.id,
+            join: sender in assoc(m, :sender),
             where: m.channel_id == ^channel_id,
             order_by: [desc: m.inserted_at, desc: m.id],
             limit: ^limit,
             select_merge: %{room_seq: event.room_seq},
-            preload: ^preload
+            preload: [sender: sender]
           )
+          |> apply_before_cursor(before)
+          |> apply_after_cursor(after_cursor)
+          |> Repo.all()
 
-        query = apply_before_cursor(query, before)
-        query = apply_after_cursor(query, after_cursor)
-
-        Repo.all(query)
+        if non_sender == [] do
+          messages
+        else
+          Repo.preload(messages, non_sender)
+        end
     end
   end
 
@@ -488,21 +495,28 @@ defmodule Vesper.Chat do
         end
 
       true ->
-        query =
+        non_sender = non_sender_preloads(preload)
+
+        messages =
           from(m in Message,
             left_join: event in RoomEvent,
             on: event.message_id == m.id,
+            join: sender in assoc(m, :sender),
             where: m.conversation_id == ^conversation_id,
             order_by: [desc: m.inserted_at, desc: m.id],
             limit: ^limit,
             select_merge: %{room_seq: event.room_seq},
-            preload: ^preload
+            preload: [sender: sender]
           )
+          |> apply_before_cursor(before)
+          |> apply_after_cursor(after_cursor)
+          |> Repo.all()
 
-        query = apply_before_cursor(query, before)
-        query = apply_after_cursor(query, after_cursor)
-
-        Repo.all(query)
+        if non_sender == [] do
+          messages
+        else
+          Repo.preload(messages, non_sender)
+        end
     end
   end
 
@@ -675,6 +689,10 @@ defmodule Vesper.Chat do
     else
       [:sender, :attachments, :reactions]
     end
+  end
+
+  defp non_sender_preloads(preload) do
+    Enum.reject(preload, &(&1 == :sender))
   end
 
   defp maybe_preload_message(nil, _preload), do: nil
