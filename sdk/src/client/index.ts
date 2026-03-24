@@ -780,8 +780,14 @@ export class VesperClient {
 
     this.seenSocketOpen = false
     this.socketClient.connect()
-    await this.connectUserFeed(session.user.id)
-    await this.syncNow(forceFull)
+
+    // Parallelize: user feed join (WebSocket) and workspace sync (HTTP)
+    // are independent — no need to serialize them.
+    await Promise.all([
+      this.connectUserFeed(session.user.id),
+      this.syncNow(forceFull)
+    ])
+
     this.setState({ started: true })
     this.emitter.emit('ready', this.getState())
     return this.getState()
@@ -1807,10 +1813,14 @@ export class VesperClient {
       await this.connectUserFeed(userId)
     }
 
-    await this.restoreScopeWatchers()
+    // Parallelize: scope watcher restoration (WebSocket) and delta sync (HTTP)
+    await Promise.all([
+      this.restoreScopeWatchers(),
+      this.syncNow(false)
+    ])
+
     this.setState({ connected: true })
     this.emitter.emit('connected', this.getState())
-    await this.syncNow(false)
   }
 
   private async ensureScopeWatcher(kind: ScopeKind, scopeId: string): Promise<ScopeWatcher> {
