@@ -12,11 +12,25 @@ defmodule VesperWeb.SyncController do
     cursor = parse_since(params["since"])
     since = cursor && cursor.synced_at
     user_sync_event_id = cursor && cursor.user_sync_event_id
+    scope_sync_event_id = cursor && cursor[:scope_sync_event_id]
     full_sync = is_nil(since)
 
     scope_changes =
       cond do
+        is_integer(scope_sync_event_id) and is_integer(user_sync_event_id) ->
+          # Best path: separate cursors for scope and user events (1 query each)
+          Sync.list_scope_changes_with_cursors(
+            user.id,
+            scope_sync_event_id,
+            user_sync_event_id
+          )
+
+        is_integer(scope_sync_event_id) ->
+          # Scope cursor only (uses scope ID for both)
+          Sync.list_scope_changes_since(user.id, scope_sync_event_id)
+
         is_integer(user_sync_event_id) ->
+          # Legacy path: user event ID cursor only
           Sync.list_scope_changes_since(user.id, user_sync_event_id)
 
         is_nil(since) ->
@@ -139,7 +153,8 @@ defmodule VesperWeb.SyncController do
     token =
       SyncCursor.encode(%{
         synced_at: DateTime.utc_now(),
-        user_sync_event_id: Sync.latest_event_id_for_user(user.id)
+        user_sync_event_id: Sync.latest_event_id_for_user(user.id),
+        scope_sync_event_id: Sync.latest_scope_event_id()
       })
 
     json(conn, %{

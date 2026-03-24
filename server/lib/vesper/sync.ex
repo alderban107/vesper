@@ -193,20 +193,24 @@ defmodule Vesper.Sync do
   end
 
   @doc """
-  List scope changes since a cursor. Queries the shared scope event log.
-  For callers that don't have the user's scope IDs, this returns ALL scope events
-  after the cursor — callers must filter by relevant scope_ids.
+  List scope changes since cursors. Queries the shared scope event log
+  plus per-user events. Accepts separate scope and user cursors.
   """
-  def list_scope_changes_since(user_id, after_event_id) when is_binary(user_id) do
-    # Query scope events (shared log) plus any per-user events
+  def list_scope_changes_since(user_id, after_scope_event_id)
+      when is_binary(user_id) do
+    list_scope_changes_with_cursors(user_id, after_scope_event_id, after_scope_event_id)
+  end
+
+  def list_scope_changes_with_cursors(user_id, scope_cursor, user_cursor)
+      when is_binary(user_id) and is_integer(scope_cursor) and is_integer(user_cursor) do
     scope_events =
       from(event in ScopeSyncEvent,
-        where: event.id > ^after_event_id,
+        where: event.id > ^scope_cursor,
         order_by: [asc: event.id]
       )
       |> Repo.all()
 
-    user_events = list_events_since(user_id, after_event_id)
+    user_events = list_events_since(user_id, user_cursor)
 
     (scope_events ++ user_events)
     |> Enum.reduce(
