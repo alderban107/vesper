@@ -234,7 +234,14 @@ test.describe('P0 Smoke — full continuous run', () => {
 
     await openThread(alice.page, DM_MESSAGES.aliceToBob1)
     await waitForDmEncryptionReady(alice.page)
-    await sendThreadReply(alice.page, DM_MESSAGES.threadReply1)
+    try {
+      await sendThreadReply(alice.page, DM_MESSAGES.threadReply1)
+    } catch (err) {
+      console.error('=== THREAD E2EE DIAGNOSTIC LOGS (alice thread reply failed) ===')
+      for (const log of threadLogs) console.error(log)
+      console.error('=== END THREAD E2EE LOGS ===')
+      throw err
+    }
 
     // Bob opens the same thread
     await openThread(bob.page, DM_MESSAGES.aliceToBob1)
