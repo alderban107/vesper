@@ -134,7 +134,7 @@ test.describe('P0 Smoke — full continuous run', () => {
     const e2eeLogs: string[] = []
     const logCapture = (prefix: string) => (msg: { type: () => string; text: () => string }) => {
       const text = msg.text()
-      if (text.includes('[E2EE]') || text.includes('[MLS]')) {
+      if (text.includes('[E2EE]') || text.includes('[MLS]') || text.includes('[E2EE-DBG]') || text.includes('group') || text.includes('scope') || text.includes('key_package')) {
         e2eeLogs.push(`[${prefix}] ${text}`)
       }
     }
@@ -145,7 +145,14 @@ test.describe('P0 Smoke — full continuous run', () => {
     await createDm(alice.page, USERS.bob.username)
 
     // Alice sends messages
-    await sendDmMessage(alice.page, DM_MESSAGES.aliceToBob1)
+    try {
+      await sendDmMessage(alice.page, DM_MESSAGES.aliceToBob1)
+    } catch (err) {
+      console.error('=== E2EE DIAGNOSTIC LOGS (alice send failed) ===')
+      for (const log of e2eeLogs) console.error(log)
+      console.error('=== END E2EE LOGS ===')
+      throw err
+    }
     await sendDmMessage(alice.page, DM_MESSAGES.aliceToBob2)
 
     // Bob selects the DM
