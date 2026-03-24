@@ -422,7 +422,10 @@ function handleUserFeedEvent(topic: string, event: string, payload: unknown): vo
   }
 
   if (event === 'dm_message') {
-    // Legacy handler: kept for backward compatibility with older servers
+    // dm_message is only emitted by the dm:* topic broadcast (all participants
+    // receive this on the DM channel). Per-user notification is handled by
+    // dm_activity above. This handler covers the case where the user is
+    // actively viewing the DM and receives the broadcast directly.
     Promise.all([
       import('./dmStore'),
       import('./unreadStore')
