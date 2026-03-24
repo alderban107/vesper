@@ -958,7 +958,8 @@ defmodule Vesper.Chat do
 
     {parts, params, param_idx} =
       if channel_ids != [] do
-        placeholders = Enum.map_join(1..length(channel_ids), ", ", fn i -> "$#{param_idx + i}" end)
+        placeholders =
+          Enum.map_join(1..length(channel_ids), ", ", fn i -> "$#{param_idx + i}" end)
 
         sql = """
         SELECT 'channel' AS kind, m.channel_id::text AS scope_id, COUNT(m.id) AS cnt
