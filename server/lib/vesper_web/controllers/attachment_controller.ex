@@ -78,11 +78,19 @@ defmodule VesperWeb.AttachmentController do
           path = FileStorage.get_path(attachment.storage_key)
 
           if File.exists?(path) do
-            safe_filename = String.replace(attachment.filename, ~r/["\r\n\\]/, "_")
+            # For encrypted attachments, don't leak filename or content_type
+            # in HTTP headers — the client decrypts metadata from the message.
+            {resp_type, resp_filename} =
+              if attachment.encrypted do
+                {"application/octet-stream", attachment.id}
+              else
+                safe_filename = String.replace(attachment.filename, ~r/["\r\n\\]/, "_")
+                {attachment.content_type || "application/octet-stream", safe_filename}
+              end
 
             conn
-            |> put_resp_content_type(attachment.content_type || "application/octet-stream")
-            |> put_resp_header("content-disposition", ~s(attachment; filename="#{safe_filename}"))
+            |> put_resp_content_type(resp_type)
+            |> put_resp_header("content-disposition", ~s(attachment; filename="#{resp_filename}"))
             |> send_file(200, path)
           else
             conn |> put_status(:not_found) |> json(%{error: "file not found"})
