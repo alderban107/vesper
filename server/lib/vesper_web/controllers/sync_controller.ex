@@ -93,12 +93,10 @@ defmodule VesperWeb.SyncController do
       case since do
         nil ->
           channel_ids = Servers.list_user_channel_ids(user.id)
+          conversation_ids = Chat.list_user_conversation_ids(user.id)
 
-          unread_counts = %{
-            channels: Chat.get_channel_unread_counts(user.id, channel_ids),
-            conversations:
-              Chat.get_dm_unread_counts(user.id, Chat.list_user_conversation_ids(user.id))
-          }
+          unread_counts =
+            Chat.get_combined_unread_counts(user.id, channel_ids, conversation_ids)
 
           {Servers.list_channel_activity_snapshots(user.id, channel_ids), unread_counts}
 

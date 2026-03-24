@@ -1150,6 +1150,67 @@ defmodule Vesper.Chat do
     |> Map.new(fn conversation_id -> {conversation_id, Map.get(counts, conversation_id, 0)} end)
   end
 
+  @doc """
+  Combined unread counts for channels and DMs in a single DB round-trip.
+  Uses UNION ALL to merge both queries, saving 1 query per sync cycle.
+  """
+  def get_combined_unread_counts(user_id, channel_ids, conversation_ids)
+      when is_list(channel_ids) and is_list(conversation_ids) do
+    channel_fragment =
+      if channel_ids == [] do
+        nil
+      else
+        from(m in Message,
+          join: event in RoomEvent,
+          on: event.message_id == m.id and event.event_type == "vesper.message",
+          left_join: p in ChannelReadPosition,
+          on: p.channel_id == m.channel_id and p.user_id == ^user_id,
+          where:
+            m.channel_id in ^channel_ids and
+              m.sender_id != ^user_id and
+              (is_nil(p.last_read_seq) or event.room_seq > p.last_read_seq),
+          group_by: m.channel_id,
+          select: %{scope_kind: "channel", scope_id: m.channel_id, count: count(m.id)}
+        )
+      end
+
+    dm_fragment =
+      if conversation_ids == [] do
+        nil
+      else
+        from(m in Message,
+          join: event in RoomEvent,
+          on: event.message_id == m.id and event.event_type == "vesper.message",
+          left_join: p in DmReadPosition,
+          on: p.conversation_id == m.conversation_id and p.user_id == ^user_id,
+          where:
+            m.conversation_id in ^conversation_ids and
+              m.sender_id != ^user_id and
+              (is_nil(p.last_read_seq) or event.room_seq > p.last_read_seq),
+          group_by: m.conversation_id,
+          select: %{scope_kind: "dm", scope_id: m.conversation_id, count: count(m.id)}
+        )
+      end
+
+    results =
+      case {channel_fragment, dm_fragment} do
+        {nil, nil} -> []
+        {q, nil} -> Repo.all(q)
+        {nil, q} -> Repo.all(q)
+        {cq, dq} -> Repo.all(union_all(cq, ^dq))
+      end
+
+    results
+    |> Enum.filter(fn %{count: count} -> count > 0 end)
+    |> Enum.split_with(fn %{scope_kind: kind} -> kind == "channel" end)
+    |> then(fn {channels, dms} ->
+      %{
+        channels: Map.new(channels, fn %{scope_id: id, count: c} -> {id, c} end),
+        conversations: Map.new(dms, fn %{scope_id: id, count: c} -> {id, c} end)
+      }
+    end)
+  end
+
   defp get_channel_message_room_seq(channel_id, message_id) do
     from(event in RoomEvent,
       join: message in Message,
