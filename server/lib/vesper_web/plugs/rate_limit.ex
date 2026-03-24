@@ -10,11 +10,11 @@ defmodule VesperWeb.Plugs.RateLimit do
   require Logger
 
   @default_limits %{
-    login: {5, 60_000},
-    register: {3, 60_000},
-    recover: {3, 600_000},
-    refresh: {30, 60_000},
-    default: {60, 60_000}
+    login: {20, 60_000},
+    register: {10, 60_000},
+    recover: {5, 600_000},
+    refresh: {60, 60_000},
+    default: {120, 60_000}
   }
 
   def init(opts) do

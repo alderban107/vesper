@@ -21,24 +21,24 @@ defmodule VesperWeb.Plugs.RateLimitTest do
   end
 
   describe "login rate limiting" do
-    test "allows up to 5 requests" do
+    test "allows up to 20 requests" do
       ip = {10, 0, 1, 1}
       opts = RateLimit.init(action: :login)
 
       results =
-        for _ <- 1..5 do
+        for _ <- 1..20 do
           conn = build_conn(ip) |> RateLimit.call(opts)
           conn.halted
         end
 
-      assert results == [false, false, false, false, false]
+      assert Enum.all?(results, &(&1 == false))
     end
 
-    test "blocks the 6th request with 429" do
+    test "blocks the 21st request with 429" do
       ip = {10, 0, 1, 2}
       opts = RateLimit.init(action: :login)
 
-      for _ <- 1..5 do
+      for _ <- 1..20 do
         build_conn(ip) |> RateLimit.call(opts)
       end
 
@@ -55,24 +55,24 @@ defmodule VesperWeb.Plugs.RateLimitTest do
   end
 
   describe "register rate limiting" do
-    test "allows up to 3 requests" do
+    test "allows up to 10 requests" do
       ip = {10, 0, 2, 1}
       opts = RateLimit.init(action: :register)
 
       results =
-        for _ <- 1..3 do
+        for _ <- 1..10 do
           conn = build_conn(ip) |> RateLimit.call(opts)
           conn.halted
         end
 
-      assert results == [false, false, false]
+      assert Enum.all?(results, &(&1 == false))
     end
 
-    test "blocks the 4th request with 429" do
+    test "blocks the 11th request with 429" do
       ip = {10, 0, 2, 2}
       opts = RateLimit.init(action: :register)
 
-      for _ <- 1..3 do
+      for _ <- 1..10 do
         build_conn(ip) |> RateLimit.call(opts)
       end
 
@@ -84,24 +84,24 @@ defmodule VesperWeb.Plugs.RateLimitTest do
   end
 
   describe "recover rate limiting" do
-    test "allows up to 3 requests within 600s window" do
+    test "allows up to 5 requests within 600s window" do
       ip = {10, 0, 3, 1}
       opts = RateLimit.init(action: :recover)
 
       results =
-        for _ <- 1..3 do
+        for _ <- 1..5 do
           conn = build_conn(ip) |> RateLimit.call(opts)
           conn.halted
         end
 
-      assert results == [false, false, false]
+      assert Enum.all?(results, &(&1 == false))
     end
 
-    test "blocks the 4th request with 429 and retry-after of 600" do
+    test "blocks the 6th request with 429 and retry-after of 600" do
       ip = {10, 0, 3, 2}
       opts = RateLimit.init(action: :recover)
 
-      for _ <- 1..3 do
+      for _ <- 1..5 do
         build_conn(ip) |> RateLimit.call(opts)
       end
 
@@ -118,13 +118,13 @@ defmodule VesperWeb.Plugs.RateLimitTest do
 
   describe "init/1" do
     test "returns correct config for known actions" do
-      assert %{action: :login, limit: 5, window: 60_000} = RateLimit.init(action: :login)
-      assert %{action: :register, limit: 3, window: 60_000} = RateLimit.init(action: :register)
-      assert %{action: :recover, limit: 3, window: 600_000} = RateLimit.init(action: :recover)
+      assert %{action: :login, limit: 20, window: 60_000} = RateLimit.init(action: :login)
+      assert %{action: :register, limit: 10, window: 60_000} = RateLimit.init(action: :register)
+      assert %{action: :recover, limit: 5, window: 600_000} = RateLimit.init(action: :recover)
     end
 
     test "falls back to default limits for unknown actions" do
-      assert %{action: :unknown, limit: 60, window: 60_000} = RateLimit.init(action: :unknown)
+      assert %{action: :unknown, limit: 120, window: 60_000} = RateLimit.init(action: :unknown)
     end
   end
 end
