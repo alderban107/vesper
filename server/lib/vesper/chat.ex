@@ -481,7 +481,7 @@ defmodule Vesper.Chat do
           |> apply_after_cursor(after_cursor)
           |> Repo.all()
 
-        if non_sender == [] or messages == [] do
+        if non_sender == [] do
           messages
         else
           Repo.preload(messages, non_sender)
@@ -520,7 +520,7 @@ defmodule Vesper.Chat do
           |> apply_after_cursor(after_cursor)
           |> Repo.all()
 
-        if non_sender == [] or messages == [] do
+        if non_sender == [] do
           messages
         else
           Repo.preload(messages, non_sender)
