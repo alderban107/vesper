@@ -108,6 +108,7 @@ export class VesperAuthClient {
   private readonly storage: CryptoStorageRuntime
   private lastKnownUserId: string | null = null
   private keyPackageReplenishPromise: Promise<void> | null = null
+  private lastKeyPackageReplenishAt = 0
 
   constructor(options: VesperAuthClientOptions = {}) {
     this.storage = options.storageRuntime ?? createCryptoStorageRuntime(options.storage)
@@ -597,6 +598,14 @@ export class VesperAuthClient {
       return this.keyPackageReplenishPromise
     }
 
+    // Debounce: skip if we successfully replenished within the last 30 seconds.
+    // replenishKeyPackages is called after every Welcome, External Commit, and
+    // group creation — up to 5 times per scope join. The count check alone is
+    // 1 HTTP request each time.
+    if (Date.now() - this.lastKeyPackageReplenishAt < 30_000) {
+      return
+    }
+
     this.keyPackageReplenishPromise = this.withStorageContext(user?.id ?? null, async () => {
       if (!user || !canUseE2EE) {
         return
@@ -609,6 +618,7 @@ export class VesperAuthClient {
 
       const count = await getMyKeyPackageCount(this.resolveDeviceIdentity().id, this.httpClient)
       if (count >= KEY_PACKAGE_THRESHOLD) {
+        this.lastKeyPackageReplenishAt = Date.now()
         return
       }
 
@@ -638,6 +648,7 @@ export class VesperAuthClient {
 
       const publicPackageBytes = pairs.map((pair) => pair.publicData)
       await uploadKeyPackages(publicPackageBytes, this.resolveDeviceIdentity().id, this.httpClient)
+      this.lastKeyPackageReplenishAt = Date.now()
     }).finally(() => {
       this.keyPackageReplenishPromise = null
     })
