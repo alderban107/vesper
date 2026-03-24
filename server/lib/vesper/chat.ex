@@ -371,40 +371,110 @@ defmodule Vesper.Chat do
     end
   end
 
+  @doc """
+  Create and project a message atomically. If any step fails, the entire
+  operation rolls back — no orphaned messages in the DB.
+
+  Supports idempotent retries via `client_nonce`. If a message with the same
+  (scope, sender, nonce) already exists, returns the existing message without
+  re-broadcasting.
+
+  Options:
+  - `:preload` — associations to preload (default: `[:sender, :attachments]`, use `[]` to skip)
+  """
   def create_message(attrs, opts \\ []) do
     attrs = maybe_set_expires_at(attrs)
     preload = Keyword.get(opts, :preload, [:sender, :attachments])
+    changeset = Message.encrypted_changeset(%Message{}, attrs)
 
-    %Message{}
-    |> Message.encrypted_changeset(attrs)
-    |> Repo.insert()
-    |> case do
-      {:ok, message} ->
-        case Runtime.project_message(message) do
-          {:ok, event} ->
-            message = %{message | room_seq: event.room_seq}
+    Repo.transaction(fn ->
+      case insert_or_fetch_existing(changeset, attrs) do
+        {:new, message} ->
+          case Runtime.project_message(message) do
+            {:ok, event} ->
+              message = %{message | room_seq: event.room_seq}
+              maybe_preload_message(message, preload)
 
-            if preload == [] do
-              {:ok, message}
-            else
-              {:ok, Repo.preload(message, preload)}
-            end
+            {:error, reason} ->
+              Repo.rollback({:projection_failed, reason})
+          end
 
-          {:error, reason} ->
-            Logger.warning(
-              "Failed to project message #{message.id} into room events: #{inspect(reason)}"
-            )
+        {:existing, message} ->
+          # Idempotent retry — message already created and projected
+          maybe_preload_message(message, preload)
+      end
+    end)
+  end
 
-            if preload == [] do
-              {:ok, message}
-            else
-              {:ok, Repo.preload(message, preload)}
-            end
-        end
+  defp insert_or_fetch_existing(changeset, attrs) do
+    client_nonce = attrs[:client_nonce] || attrs["client_nonce"]
 
-      error ->
-        error
+    if is_binary(client_nonce) and client_nonce != "" do
+      # Idempotent path: use ON CONFLICT with nonce index
+      conflict_target = nonce_conflict_target(attrs)
+
+      case Repo.insert(changeset,
+             on_conflict: :nothing,
+             conflict_target: {:unsafe_fragment, conflict_target}
+           ) do
+        {:ok, %{id: nil}} ->
+          # Conflict — fetch the existing message
+          existing = fetch_by_nonce(attrs)
+
+          if existing do
+            # Load room_seq from the existing room event
+            event = Repo.get_by(Vesper.Runtime.RoomEvent, message_id: existing.id)
+            room_seq = if event, do: event.room_seq, else: nil
+            {:existing, %{existing | room_seq: room_seq}}
+          else
+            raise "nonce conflict but existing message not found"
+          end
+
+        {:ok, message} ->
+          {:new, message}
+
+        {:error, changeset} ->
+          Repo.rollback(changeset)
+      end
+    else
+      # No nonce — standard insert (no idempotency)
+      case Repo.insert(changeset) do
+        {:ok, message} -> {:new, message}
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
     end
+  end
+
+  defp nonce_conflict_target(attrs) do
+    channel_id = attrs[:channel_id] || attrs["channel_id"]
+
+    if channel_id do
+      "(channel_id, sender_id, client_nonce) WHERE client_nonce IS NOT NULL AND channel_id IS NOT NULL"
+    else
+      "(conversation_id, sender_id, client_nonce) WHERE client_nonce IS NOT NULL AND conversation_id IS NOT NULL"
+    end
+  end
+
+  defp fetch_by_nonce(attrs) do
+    nonce = attrs[:client_nonce] || attrs["client_nonce"]
+    sender_id = attrs[:sender_id] || attrs["sender_id"]
+    channel_id = attrs[:channel_id] || attrs["channel_id"]
+    conversation_id = attrs[:conversation_id] || attrs["conversation_id"]
+
+    query =
+      from(m in Message,
+        where: m.sender_id == ^sender_id and m.client_nonce == ^nonce,
+        limit: 1
+      )
+
+    query =
+      if channel_id do
+        from(m in query, where: m.channel_id == ^channel_id)
+      else
+        from(m in query, where: m.conversation_id == ^conversation_id)
+      end
+
+    Repo.one(query)
   end
 
   def update_conversation_ttl(conversation_id, ttl) do
@@ -715,6 +785,7 @@ defmodule Vesper.Chat do
   end
 
   defp maybe_preload_message(nil, _preload), do: nil
+  defp maybe_preload_message(message, []), do: message
   defp maybe_preload_message(message, preload), do: Repo.preload(message, preload)
 
   defp preload_messages_with_room_seq(message_pairs, preload) do

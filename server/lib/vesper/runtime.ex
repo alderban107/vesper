@@ -101,47 +101,20 @@ defmodule Vesper.Runtime do
     end
   end
 
-  def project_message(%Message{parent_message_id: nil} = message) do
-    with {:ok, room} <- room_for_message(message) do
-      Repo.transaction(fn ->
-        with {:ok, event} <- ensure_message_event(room, message) do
-          update_room_last_message(room.id, message.id, message.inserted_at, event.room_seq)
-          append_user_sync_events(room, "message")
-          {:ok, event}
-        else
-          error -> Repo.rollback(error)
-        end
-      end)
-      |> case do
-        {:ok, {:ok, event}} -> {:ok, event}
-        {:error, error} -> {:error, error}
-      end
-    end
-  end
+  @doc """
+  Project a message into the room event stream.
 
+  IMPORTANT: This function MUST be called inside a Repo.transaction.
+  It does not wrap itself in a transaction — the caller (Chat.create_message)
+  provides the outer transaction for all-or-nothing atomicity.
+  """
   def project_message(%Message{} = message) do
-    # Threaded messages need the transaction for thread relation creation
-    with {:ok, room} <- room_for_message(message) do
-      Repo.transaction(fn ->
-        with {:ok, event} <- ensure_message_event(room, message) do
-          case maybe_create_thread_relation(event, message) do
-            {:ok, _event} = result ->
-              update_room_last_message(room.id, message.id, message.inserted_at, event.room_seq)
-              append_user_sync_events(room, "message")
-              result
-
-            error ->
-              Repo.rollback(error)
-          end
-        else
-          error ->
-            Repo.rollback(error)
-        end
-      end)
-      |> case do
-        {:ok, {:ok, event}} -> {:ok, event}
-        {:error, error} -> error
-      end
+    with {:ok, room} <- room_for_message(message),
+         {:ok, event} <- ensure_message_event(room, message),
+         {:ok, _} <- maybe_create_thread_relation(event, message) do
+      update_room_last_message(room.id, message.id, message.inserted_at, event.room_seq)
+      append_user_sync_events(room, "message")
+      {:ok, event}
     end
   end
 
@@ -412,35 +385,38 @@ defmodule Vesper.Runtime do
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp update_room_last_message(room_id, message_id, inserted_at, room_seq) do
-    from(room in Room,
-      where:
-        room.id == ^room_id and
-          (is_nil(room.last_message_seq) or room.last_message_seq <= ^room_seq)
-    )
-    |> Repo.update_all(
-      set: [
-        last_message_id: message_id,
-        last_message_at: inserted_at,
-        last_message_seq: room_seq,
-        updated_at: DateTime.utc_now() |> DateTime.truncate(:second)
-      ]
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    # Race-free: GREATEST ensures the highest seq wins regardless of execution order.
+    # CASE expressions update message_id/at only when this seq is actually the highest,
+    # preventing a lower-seq concurrent message from overwriting a higher-seq one.
+    Repo.query!(
+      """
+      UPDATE rooms SET
+        last_message_id = CASE WHEN COALESCE(last_message_seq, 0) < $3 THEN $1 ELSE last_message_id END,
+        last_message_at = CASE WHEN COALESCE(last_message_seq, 0) < $3 THEN $2 ELSE last_message_at END,
+        last_message_seq = GREATEST(COALESCE(last_message_seq, 0), $3),
+        updated_at = $4
+      WHERE id = $5
+      """,
+      [Ecto.UUID.dump!(message_id), inserted_at, room_seq, now, Ecto.UUID.dump!(room_id)]
     )
 
     :ok
   end
 
   defp update_room_last_mutation(room_id, inserted_at, room_seq) do
-    from(room in Room,
-      where:
-        room.id == ^room_id and
-          (is_nil(room.last_mutation_seq) or room.last_mutation_seq < ^room_seq)
-    )
-    |> Repo.update_all(
-      set: [
-        last_mutation_at: inserted_at,
-        last_mutation_seq: room_seq,
-        updated_at: DateTime.utc_now() |> DateTime.truncate(:second)
-      ]
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    Repo.query!(
+      """
+      UPDATE rooms SET
+        last_mutation_at = CASE WHEN COALESCE(last_mutation_seq, 0) < $2 THEN $1 ELSE last_mutation_at END,
+        last_mutation_seq = GREATEST(COALESCE(last_mutation_seq, 0), $2),
+        updated_at = $3
+      WHERE id = $4
+      """,
+      [inserted_at, room_seq, now, Ecto.UUID.dump!(room_id)]
     )
 
     :ok

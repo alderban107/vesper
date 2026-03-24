@@ -24,6 +24,9 @@ defmodule VesperWeb.DmChannel do
         display_name: socket.assigns[:display_name]
       }
 
+      # Subscribe to participant changes for cache invalidation
+      Phoenix.PubSub.subscribe(Vesper.PubSub, "dm:participants:#{conversation_id}")
+
       socket =
         socket
         |> assign(:conversation_id, conversation_id)
@@ -67,7 +70,11 @@ defmodule VesperWeb.DmChannel do
       case Chat.create_message(attrs) do
         {:ok, message} ->
           message = maybe_link_attachments(message, params)
-          append_dm_urgent_events(message, socket.assigns.user_id, socket.assigns.participant_ids)
+
+          # Defense in depth: fresh-fetch participant_ids for notifications
+          # to prevent leaking to removed participants even if PubSub invalidation is delayed
+          fresh_participant_ids = Chat.list_participant_ids(socket.assigns.conversation_id)
+          append_dm_urgent_events(message, socket.assigns.user_id, fresh_participant_ids)
 
           broadcast!(
             socket,
@@ -80,25 +87,24 @@ defmodule VesperWeb.DmChannel do
           )
 
           notify_scope_mutation(
-            socket.assigns.participant_ids,
+            fresh_participant_ids,
             "dm",
             socket.assigns.conversation_id
           )
 
           conversation_id = socket.assigns.conversation_id
           sender_id = socket.assigns.user_id
-          participant_ids = socket.assigns.participant_ids
           sender_info = socket.assigns.sender_info
 
           notify_participants(
             conversation_id,
             sender_id,
-            participant_ids,
+            fresh_participant_ids,
             sender_info,
             message
           )
 
-          ScopeSummary.broadcast_dm_update(conversation_id, message, participant_ids)
+          ScopeSummary.broadcast_dm_update(conversation_id, message, fresh_participant_ids)
 
           {:reply, :ok, socket}
 
@@ -820,6 +826,19 @@ defmodule VesperWeb.DmChannel do
 
     {:noreply, socket}
   end
+
+  def handle_info({:participants_changed, new_participant_ids}, socket) do
+    user_id = socket.assigns.user_id
+
+    if user_id not in new_participant_ids do
+      # Current user was removed from the conversation — disconnect
+      {:stop, {:shutdown, :removed_from_conversation}, socket}
+    else
+      {:noreply, assign(socket, :participant_ids, new_participant_ids)}
+    end
+  end
+
+  def handle_info(_msg, socket), do: {:noreply, socket}
 
   defp normalize_resync_request(payload) do
     request_id = Map.get(payload, "request_id")
