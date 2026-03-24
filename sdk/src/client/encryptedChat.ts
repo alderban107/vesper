@@ -2100,9 +2100,13 @@ export class VesperEncryptedChat {
   }
 
   private async ensureDmGroupReady(conversationId: string, allowForce = false): Promise<boolean> {
+    const t0 = Date.now()
+
     if (await this.ensureGroupMembership(conversationId)) {
+      console.debug(`[E2EE-DBG] ensureDmGroupReady(${conversationId.slice(0, 8)}): membership OK in ${Date.now() - t0}ms`)
       await this.replayDurableEvents(conversationId)
       if (!this.hasGroup(conversationId)) {
+        console.debug(`[E2EE-DBG] ensureDmGroupReady: no group after replay`)
         return false
       }
 
@@ -2110,27 +2114,35 @@ export class VesperEncryptedChat {
         return true
       }
 
-      return await this.ensureDmParticipantCoverage(conversationId)
+      const t1 = Date.now()
+      const covered = await this.ensureDmParticipantCoverage(conversationId)
+      console.debug(`[E2EE-DBG] ensureDmGroupReady: participantCoverage=${covered} in ${Date.now() - t1}ms (total ${Date.now() - t0}ms)`)
+      return covered
     }
 
+    const t2 = Date.now()
     if (await this.bootstrapDmGroupIfLeader(conversationId)) {
+      console.debug(`[E2EE-DBG] ensureDmGroupReady: bootstrapped as leader in ${Date.now() - t2}ms`)
       await this.replayDurableEvents(conversationId)
-      return await this.ensureDmParticipantCoverage(conversationId)
+      const t3 = Date.now()
+      const covered = await this.ensureDmParticipantCoverage(conversationId)
+      console.debug(`[E2EE-DBG] ensureDmGroupReady: participantCoverage=${covered} in ${Date.now() - t3}ms (total ${Date.now() - t0}ms)`)
+      return covered
     }
 
-    // ensureGroupMembership already tried External Commit. If it failed
-    // and we can't bootstrap, the other participant may be offline.
+    console.debug(`[E2EE-DBG] ensureDmGroupReady: not leader, membership failed in ${Date.now() - t0}ms, allowForce=${allowForce}`)
+
     if (!allowForce) {
       return this.hasGroup(conversationId)
     }
 
-    // Force-create: bootstrap the group with ALL participants (not just a solo
-    // group).  `bootstrapDmGroupIfLeader` gates on leader election, but when we
-    // reach here the leader isn't online and nobody responded to our join
-    // request.  Creating a solo group would encrypt at epoch 0 with only the
-    // local user — the remote participant could never decrypt those messages.
+    const t4 = Date.now()
     await this.bootstrapDmGroup(conversationId)
-    return await this.ensureDmParticipantCoverage(conversationId)
+    console.debug(`[E2EE-DBG] ensureDmGroupReady: force-bootstrapped in ${Date.now() - t4}ms`)
+    const t5 = Date.now()
+    const covered = await this.ensureDmParticipantCoverage(conversationId)
+    console.debug(`[E2EE-DBG] ensureDmGroupReady: participantCoverage=${covered} in ${Date.now() - t5}ms (total ${Date.now() - t0}ms)`)
+    return covered
   }
 
   private async prepareScopeForReadInternal(
