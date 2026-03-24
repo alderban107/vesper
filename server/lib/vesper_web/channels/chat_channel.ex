@@ -109,9 +109,10 @@ defmodule VesperWeb.ChatChannel do
             server_id = socket.assigns.server_id
             member_ids = MemberCache.get_member_ids(server_id)
 
-            notify_unread(channel_id, message, sender_id, member_ids)
+            # Combined per-user broadcast: merges unread_update +
+            # scope_summary_updated into single channel_activity event.
+            notify_channel_activity(channel_id, message, sender_id, member_ids)
             notify_mentions(mentioned, channel_id, sender_id, server_id, member_ids)
-            ScopeSummary.broadcast_channel_update(channel_id, message, member_ids)
 
             {:reply, :ok, socket}
 
@@ -943,7 +944,7 @@ defmodule VesperWeb.ChatChannel do
   # Guard against clients sending a non-list value (e.g. a bare string) for mentioned_user_ids.
   defp notify_mentions(_non_list, _channel_id, _sender_id, _server_id, _member_ids), do: :ok
 
-  defp notify_unread(channel_id, message, sender_id, member_ids) do
+  defp notify_channel_activity(channel_id, message, sender_id, member_ids) do
     recipients = MapSet.delete(member_ids, sender_id)
 
     :telemetry.execute(
@@ -952,14 +953,22 @@ defmodule VesperWeb.ChatChannel do
       %{channel_id: channel_id, type: :unread}
     )
 
+    payload = %{
+      channel_id: channel_id,
+      message_id: message.id,
+      inserted_at: message.inserted_at,
+      sender_id: message.sender_id,
+      sender: sender_json(message.sender),
+      scope_summary: %{
+        kind: "channel",
+        scope_id: channel_id,
+        room_seq: message.room_seq,
+        channel_activity: ScopeSummary.channel_activity_json(channel_id, message)
+      }
+    }
+
     for uid <- recipients do
-      VesperWeb.Endpoint.broadcast("user:#{uid}", "unread_update", %{
-        channel_id: channel_id,
-        message_id: message.id,
-        inserted_at: message.inserted_at,
-        sender_id: message.sender_id,
-        sender: sender_json(message.sender)
-      })
+      VesperWeb.Endpoint.broadcast("user:#{uid}", "channel_activity", payload)
     end
   end
 

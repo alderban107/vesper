@@ -526,7 +526,58 @@ function handleUserFeedEvent(topic: string, event: string, payload: unknown): vo
     return
   }
 
+  if (event === 'channel_activity') {
+    // Combined event: replaces separate unread_update + scope_summary_updated
+    const data = payload as {
+      channel_id: string
+      message_id: string
+      inserted_at?: string
+      sender_id: string | null
+      sender?: { id: string; username: string; display_name?: string | null; avatar_url?: string | null } | null
+      scope_summary?: {
+        kind: 'channel'
+        scope_id: string
+        room_seq?: number | null
+        channel_activity?: Record<string, unknown> | null
+      } | null
+    }
+    Promise.all([
+      import('./serverStore'),
+      import('./unreadStore')
+    ]).then(([{ useServerStore }, { useUnreadStore }]) => {
+      // Unread + channel activity update
+      if (data.inserted_at) {
+        useServerStore.getState().applyChannelActivity({
+          channelId: data.channel_id,
+          messageId: data.message_id,
+          insertedAt: data.inserted_at,
+          senderId: data.sender_id,
+          sender: data.sender ?? null
+        })
+      }
+      if (useServerStore.getState().activeChannelId !== data.channel_id) {
+        useUnreadStore.getState().incrementChannel(data.channel_id)
+      }
+
+      // Scope summary sidebar update
+      if (data.scope_summary?.channel_activity) {
+        useServerStore.getState().syncChannelLastMessage({
+          channelId: data.scope_summary.scope_id,
+          lastMessage: data.scope_summary.channel_activity as {
+            channel_id: string
+            message_id: string | null
+            inserted_at: string | null
+            sender_id: string | null
+            sender: { id: string; username: string; display_name?: string | null; avatar_url?: string | null } | null
+          }
+        })
+      }
+    })
+    return
+  }
+
   if (event === 'unread_update') {
+    // Legacy — kept for non-message unread events (e.g., edit-based resets)
     const data = payload as {
       channel_id: string
       message_id: string

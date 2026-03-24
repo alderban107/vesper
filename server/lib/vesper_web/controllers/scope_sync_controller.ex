@@ -20,7 +20,8 @@ defmodule VesperWeb.ScopeSyncController do
     token =
       SyncCursor.encode(%{
         synced_at: DateTime.utc_now(),
-        user_sync_event_id: Sync.latest_event_id_for_user(user.id)
+        user_sync_event_id: Sync.latest_event_id_for_user(user.id),
+        scope_sync_event_id: Sync.latest_scope_event_id()
       })
 
     json(conn, %{
