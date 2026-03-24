@@ -7,6 +7,8 @@ defmodule Vesper.Servers.MemberCache do
   This GenServer only handles writes (cache population and invalidation).
 
   Member IDs are stored as MapSets for O(1) membership checks and removal.
+  The entire cache is swept every hour to prevent unbounded growth from
+  deleted servers whose PubSub events were missed.
   """
 
   use GenServer
@@ -14,13 +16,10 @@ defmodule Vesper.Servers.MemberCache do
   require Logger
 
   @table :vesper_member_cache
+  @sweep_interval :timer.hours(1)
 
   # --- Public API (direct ETS reads — no GenServer call on hot path) ---
 
-  @doc """
-  Get member IDs for a server as a MapSet. Reads directly from ETS (lock-free).
-  On cache miss, populates from DB via the GenServer.
-  """
   def get_member_ids(server_id) do
     case :ets.lookup(@table, server_id) do
       [{^server_id, member_ids}] ->
@@ -32,9 +31,6 @@ defmodule Vesper.Servers.MemberCache do
     end
   end
 
-  @doc """
-  Invalidate the cache entry for a server. Used for manual invalidation.
-  """
   def invalidate(server_id) do
     GenServer.cast(__MODULE__, {:invalidate, server_id})
   end
@@ -48,12 +44,12 @@ defmodule Vesper.Servers.MemberCache do
   @impl true
   def init([]) do
     :ets.new(@table, [:set, :public, :named_table, read_concurrency: true])
+    schedule_sweep()
     {:ok, %{}}
   end
 
   @impl true
   def handle_call({:populate, server_id}, _from, state) do
-    # Subscribe before fetching to avoid missing events between fetch and subscribe
     Phoenix.PubSub.subscribe(Vesper.PubSub, "server:members:#{server_id}")
     member_ids = fetch_and_cache(server_id)
     {:reply, member_ids, state}
@@ -66,7 +62,6 @@ defmodule Vesper.Servers.MemberCache do
         :ets.insert(@table, {server_id, MapSet.put(member_ids, user_id)})
 
       [] ->
-        # Not cached yet — no action needed, will be populated on first read
         :ok
     end
 
@@ -86,6 +81,12 @@ defmodule Vesper.Servers.MemberCache do
     {:noreply, state}
   end
 
+  def handle_info(:sweep, state) do
+    :ets.delete_all_objects(@table)
+    schedule_sweep()
+    {:noreply, state}
+  end
+
   @impl true
   def handle_info(_msg, state) do
     {:noreply, state}
@@ -98,6 +99,10 @@ defmodule Vesper.Servers.MemberCache do
   end
 
   # --- Private ---
+
+  defp schedule_sweep do
+    Process.send_after(self(), :sweep, @sweep_interval)
+  end
 
   defp fetch_and_cache(server_id) do
     member_ids = Vesper.Servers.list_member_ids(server_id) |> MapSet.new()

@@ -18,6 +18,7 @@ defmodule Vesper.Servers.PermissionsCache do
   require Logger
 
   @table :vesper_permissions_cache
+  @sweep_interval :timer.hours(1)
 
   # --- Public API (direct ETS reads — no GenServer call on hot path) ---
 
@@ -72,6 +73,7 @@ defmodule Vesper.Servers.PermissionsCache do
   @impl true
   def init([]) do
     :ets.new(@table, [:set, :public, :named_table, read_concurrency: true])
+    schedule_sweep()
     {:ok, %{subscribed: MapSet.new()}}
   end
 
@@ -97,12 +99,22 @@ defmodule Vesper.Servers.PermissionsCache do
     {:noreply, state}
   end
 
+  def handle_info(:sweep, state) do
+    :ets.delete_all_objects(@table)
+    schedule_sweep()
+    {:noreply, %{state | subscribed: MapSet.new()}}
+  end
+
   @impl true
   def handle_info(_msg, state) do
     {:noreply, state}
   end
 
   # --- Private ---
+
+  defp schedule_sweep do
+    Process.send_after(self(), :sweep, @sweep_interval)
+  end
 
   defp sandbox_pool? do
     Application.get_env(:vesper, Vesper.Repo, [])[:pool] == Ecto.Adapters.SQL.Sandbox
