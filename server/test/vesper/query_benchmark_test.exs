@@ -1,15 +1,17 @@
 defmodule Vesper.QueryBenchmarkTest do
   @moduledoc """
-  Counts total DB queries during a representative sync + message flow.
-  Used as the metric for autoresearch DB query optimization.
+  Counts total DB queries during representative flows.
+  Two scenarios measured:
+  1. Full sync flow (login → list servers → list channels → messages → unreads)
+  2. Hot path: 10 rapid message sends (the bottleneck at 1M scale)
   """
   use Vesper.DataCase, async: false
 
-  alias Vesper.{Chat, Servers, Sync}
+  alias Vesper.{Chat, Servers, Sync, Runtime}
 
   @tag :benchmark
-  test "counts total queries in sync + message scenario" do
-    # Setup: 1 server, 2 channels, 3 users, 5 messages per channel
+  test "counts total queries in sync + hot message path" do
+    # Setup: 1 server, 1 text channel, 3 users, seed messages
     user1 = insert_user(%{username: "bench_user1"})
     user2 = insert_user(%{username: "bench_user2"})
     user3 = insert_user(%{username: "bench_user3"})
@@ -18,23 +20,21 @@ defmodule Vesper.QueryBenchmarkTest do
     channels = Servers.list_channels(server.id)
     channel = Enum.find(channels, &(&1.type == "text"))
 
-    # user2 and user3 join the server
     {:ok, _} = Servers.join_server(user2, server.invite_code)
     {:ok, _} = Servers.join_server(user3, server.invite_code)
 
-    # Create 5 messages per user in the channel
-    for u <- [user1, user2, user3], i <- 1..5 do
+    # Seed 5 messages
+    for u <- [user1, user2], i <- 1..5 do
       {:ok, _} =
         Chat.create_message(%{
           channel_id: channel.id,
           sender_id: u.id,
           ciphertext: :crypto.strong_rand_bytes(64),
           mls_epoch: 1,
-          client_nonce: "nonce-#{u.id}-#{i}"
+          client_nonce: "seed-#{u.id}-#{i}"
         })
     end
 
-    # Create a DM conversation between user1 and user2
     {:ok, convo} = Chat.create_conversation(user1.id, [user2.id])
 
     for i <- 1..3 do
@@ -44,67 +44,68 @@ defmodule Vesper.QueryBenchmarkTest do
           sender_id: user1.id,
           ciphertext: :crypto.strong_rand_bytes(64),
           mls_epoch: 1,
-          client_nonce: "dm-nonce-#{i}"
+          client_nonce: "dm-seed-#{i}"
         })
     end
 
-    # Capture baseline scope event ID
-    baseline = Sync.latest_scope_event_id() || 0
+    baseline_scope = Sync.latest_scope_event_id() || 0
 
-    # Now simulate a client sync flow and count queries
-    counter = :counters.new(1, [:atomics])
+    # ============================================================
+    # SCENARIO 1: Full sync flow
+    # ============================================================
+    sync_counter = :counters.new(1, [:atomics])
+    sync_handler = "sync-counter-#{System.unique_integer([:positive])}"
 
-    handler_id = "test-query-counter-#{System.unique_integer([:positive])}"
+    :telemetry.attach(sync_handler, [:vesper, :repo, :query], fn _, _, _, _ ->
+      :counters.add(sync_counter, 1, 1)
+    end, nil)
 
-    :telemetry.attach(
-      handler_id,
-      [:vesper, :repo, :query],
-      fn _event, _measurements, _metadata, _config ->
-        :counters.add(counter, 1, 1)
-      end,
-      nil
-    )
-
-    # --- Measured operations ---
-
-    # 1. List user's servers (skip emojis for sync — loaded on demand)
     _servers = Servers.list_user_servers(user1, include_emojis: false)
-
-    # 2. List channels for server
     _channels = Servers.list_channels(server.id)
-
-    # 3. Check permissions for user in server
     _perms = Servers.get_user_permissions(user1.id, server.id)
-
-    # 4. List messages for channel (lean: initial sync, attachments load on demand)
     _messages = Chat.list_channel_messages(channel.id, limit: 20, lean: true)
-
-    # 5. List conversations
     _convos = Chat.list_conversations(user1.id)
-
-    # 6. List DM messages (lean: initial sync)
     _dm_msgs = Chat.list_conversation_messages(convo.id, limit: 20, lean: true)
-
-    # 7. Get unread counts (combined — single UNION query)
     _unreads = Chat.get_all_unread_counts(user1.id, [channel.id], [convo.id])
-
-    # 8. Scope changes since baseline
-    scope_ids = [channel.id, convo.id, server.id]
-    _changes = Sync.list_scope_changes_since(user1.id, baseline, scope_ids)
-
-    # 9. Check membership
+    _changes = Sync.list_scope_changes_since(user1.id, baseline_scope, [channel.id, convo.id, server.id])
     _member = Servers.user_is_member?(user1.id, server.id)
 
-    # --- End measured operations ---
+    :telemetry.detach(sync_handler)
+    sync_queries = :counters.get(sync_counter, 1)
 
-    :telemetry.detach(handler_id)
+    # ============================================================
+    # SCENARIO 2: Hot path — 10 message sends
+    # ============================================================
+    msg_counter = :counters.new(1, [:atomics])
+    msg_handler = "msg-counter-#{System.unique_integer([:positive])}"
 
-    query_count = :counters.get(counter, 1)
+    :telemetry.attach(msg_handler, [:vesper, :repo, :query], fn _, _, _, _ ->
+      :counters.add(msg_counter, 1, 1)
+    end, nil)
 
-    # Write metric to stdout for autoresearch to capture
-    IO.puts("QUERY_COUNT:#{query_count}")
+    for i <- 1..10 do
+      {:ok, _} =
+        Chat.create_message(%{
+          channel_id: channel.id,
+          sender_id: user1.id,
+          ciphertext: :crypto.strong_rand_bytes(64),
+          mls_epoch: 1,
+          client_nonce: "hot-#{i}"
+        })
+    end
 
-    # Soft assertion — we want this to be as low as possible
-    assert query_count > 0
+    :telemetry.detach(msg_handler)
+    msg_queries = :counters.get(msg_counter, 1)
+
+    total = sync_queries + msg_queries
+    per_msg = div(msg_queries, 10)
+
+    IO.puts("SYNC_QUERIES:#{sync_queries}")
+    IO.puts("MSG_QUERIES:#{msg_queries}")
+    IO.puts("PER_MSG:#{per_msg}")
+    IO.puts("QUERY_COUNT:#{total}")
+
+    assert sync_queries > 0
+    assert msg_queries > 0
   end
 end
