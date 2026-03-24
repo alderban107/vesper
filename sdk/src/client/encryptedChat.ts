@@ -3859,7 +3859,11 @@ export class VesperEncryptedChat {
       if (!waitForHistoryRecovery) {
         return await this.tryImmediateHistoryBundleRecovery(scope, ciphertext, messageId)
       }
-      return await this.waitForHistoryBundleRecovery(scope, ciphertext, messageId)
+      const olderRecovered = await this.waitForHistoryBundleRecovery(scope, ciphertext, messageId)
+      if (!olderRecovered) {
+        this.setScopeRepairState(scope.id, 'healthy', 'recovery_timeout', { persist: true })
+      }
+      return olderRecovered
     }
 
     const shouldReplay =
@@ -3896,6 +3900,12 @@ export class VesperEncryptedChat {
     const recovered = await this.waitForHistoryBundleRecovery(scope, ciphertext, messageId)
     if (recovered) {
       this.setScopeRepairState(scope.id, 'healthy', null, { persist: true })
+    } else {
+      // Recovery timed out. Clear repair state so the scope isn't permanently
+      // stuck in 'waiting_for_same_user_bundle'. Normal operations (send,
+      // encrypt) can proceed; the message stays undecrypted but the scope
+      // remains functional for new messages.
+      this.setScopeRepairState(scope.id, 'healthy', 'recovery_timeout', { persist: true })
     }
     return recovered
   }
