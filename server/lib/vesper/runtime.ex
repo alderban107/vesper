@@ -304,21 +304,53 @@ defmodule Vesper.Runtime do
         {:ok, event}
 
       nil ->
-        room_seq = next_room_seq!(room.id)
+        # Combine next_room_seq + event insert into a single round-trip
+        now = DateTime.utc_now() |> DateTime.truncate(:second)
+        event_id = Ecto.UUID.generate()
+        content = message_content(message) |> Jason.encode!()
+        algo = if(message.ciphertext, do: "mls", else: nil)
 
-        %RoomEvent{}
-        |> RoomEvent.changeset(%{
-          room_id: room.id,
-          room_seq: room_seq,
-          sender_id: message.sender_id,
-          message_id: message.id,
-          event_type: "vesper.message",
-          content: message_content(message),
-          ciphertext: message.ciphertext,
-          encryption_algorithm: if(message.ciphertext, do: "mls"),
-          mls_epoch: message.mls_epoch
-        })
-        |> Repo.insert()
+        sql = """
+        WITH seq AS (
+          UPDATE rooms SET current_seq = current_seq + 1, updated_at = $2
+          WHERE id = $1 RETURNING current_seq
+        )
+        INSERT INTO room_events (id, room_id, room_seq, sender_id, message_id, event_type, content, ciphertext, encryption_algorithm, mls_epoch, inserted_at, updated_at)
+        SELECT $3, $1, seq.current_seq, $4, $5, 'vesper.message', $6, $7, $8, $9, $2, $2
+        FROM seq
+        RETURNING id, room_seq
+        """
+
+        params = [
+          Ecto.UUID.dump!(room.id),
+          now,
+          Ecto.UUID.dump!(event_id),
+          Ecto.UUID.dump!(message.sender_id),
+          Ecto.UUID.dump!(message.id),
+          content,
+          message.ciphertext,
+          algo,
+          message.mls_epoch
+        ]
+
+        case Repo.query(sql, params) do
+          {:ok, %Postgrex.Result{rows: [[raw_id, room_seq]]}} ->
+            {:ok,
+             %RoomEvent{
+               id: Ecto.UUID.cast!(raw_id),
+               room_id: room.id,
+               room_seq: room_seq,
+               sender_id: message.sender_id,
+               message_id: message.id,
+               event_type: "vesper.message"
+             }}
+
+          {:ok, %Postgrex.Result{rows: []}} ->
+            {:error, :room_not_found}
+
+          {:error, error} ->
+            {:error, error}
+        end
     end
   end
 
