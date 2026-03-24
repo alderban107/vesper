@@ -509,22 +509,6 @@ function handleUserFeedEvent(topic: string, event: string, payload: unknown): vo
     return
   }
 
-  if (event === 'dm_unread_update') {
-    const data = payload as { conversation_id: string; message_id: string }
-    Promise.all([
-      import('./dmStore'),
-      import('./unreadStore')
-    ]).then(([{ useDmStore }, { useUnreadStore }]) => {
-      if (
-        useDmStore.getState().selectedConversationId !== data.conversation_id &&
-        claimUnreadMessageKey('dm', data.conversation_id, data.message_id)
-      ) {
-        useUnreadStore.getState().incrementDm(data.conversation_id)
-      }
-    })
-    return
-  }
-
   if (event === 'scope_mutation') {
     const data = payload as { kind: 'channel' | 'dm'; scope_id: string }
     queueScopeMutation(data.kind, data.scope_id)
