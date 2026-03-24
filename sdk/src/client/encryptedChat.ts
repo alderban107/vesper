@@ -4701,6 +4701,7 @@ export class VesperEncryptedChat {
     this.lastSuccessfulGroupInfoPublishEpochs.delete(scopeId)
 
     if (rollbackState) {
+      console.debug(`[E2EE-DBG] recoverFromSponsoredTransitionConflict(${scopeId.slice(0, 8)}): rolling back group state to pre-sponsored epoch`)
       await this.setGroupState(scopeId, rollbackState, { publishGroupInfo: false })
       this.setScopeRepairState(scopeId, 'replaying', 'sponsored_transition_conflict', {
         incrementFailure: true,
