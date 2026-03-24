@@ -919,6 +919,94 @@ defmodule Vesper.Chat do
     |> Enum.uniq()
   end
 
+  @doc """
+  Get both channel and DM unread counts in a single DB round-trip using UNION ALL.
+  Returns `%{channels: %{channel_id => count}, conversations: %{conversation_id => count}}`.
+  """
+  def get_all_unread_counts(user_id, channel_ids, conversation_ids)
+      when is_list(channel_ids) and is_list(conversation_ids) do
+    if channel_ids == [] and conversation_ids == [] do
+      %{channels: %{}, conversations: %{}}
+    else
+      {sql, params} =
+        build_unread_union_query(user_id, channel_ids, conversation_ids)
+
+      case Repo.query(sql, params) do
+        {:ok, %{rows: rows}} ->
+          {channels, conversations} =
+            Enum.reduce(rows, {%{}, %{}}, fn [kind, scope_id, count], {ch, dm} ->
+              id = Ecto.UUID.cast!(scope_id)
+
+              case kind do
+                "channel" -> {Map.put(ch, id, count), dm}
+                "dm" -> {ch, Map.put(dm, id, count)}
+              end
+            end)
+
+          %{channels: channels, conversations: conversations}
+
+        {:error, _} ->
+          %{channels: %{}, conversations: %{}}
+      end
+    end
+  end
+
+  defp build_unread_union_query(user_id, channel_ids, conversation_ids) do
+    parts = []
+    params = []
+    param_idx = 1
+
+    {parts, params, param_idx} =
+      if channel_ids != [] do
+        placeholders = Enum.map_join(1..length(channel_ids), ", ", fn i -> "$#{param_idx + i}" end)
+
+        sql = """
+        SELECT 'channel' AS kind, m.channel_id::text AS scope_id, COUNT(m.id) AS cnt
+        FROM messages m
+        JOIN room_events event ON event.message_id = m.id AND event.event_type = 'vesper.message'
+        LEFT JOIN channel_read_positions p ON p.channel_id = m.channel_id AND p.user_id = $#{param_idx}
+        WHERE m.channel_id IN (#{placeholders})
+          AND m.sender_id != $#{param_idx}
+          AND (p.last_read_seq IS NULL OR event.room_seq > p.last_read_seq)
+        GROUP BY m.channel_id
+        HAVING COUNT(m.id) > 0
+        """
+
+        new_params = [Ecto.UUID.dump!(user_id) | Enum.map(channel_ids, &Ecto.UUID.dump!/1)]
+        {[sql | parts], params ++ new_params, param_idx + 1 + length(channel_ids)}
+      else
+        {parts, params, param_idx}
+      end
+
+    {parts, params, _param_idx} =
+      if conversation_ids != [] do
+        placeholders =
+          Enum.map_join(1..length(conversation_ids), ", ", fn i -> "$#{param_idx + i}" end)
+
+        sql = """
+        SELECT 'dm' AS kind, m.conversation_id::text AS scope_id, COUNT(m.id) AS cnt
+        FROM messages m
+        JOIN room_events event ON event.message_id = m.id AND event.event_type = 'vesper.message'
+        LEFT JOIN dm_read_positions p ON p.conversation_id = m.conversation_id AND p.user_id = $#{param_idx}
+        WHERE m.conversation_id IN (#{placeholders})
+          AND m.sender_id != $#{param_idx}
+          AND (p.last_read_seq IS NULL OR event.room_seq > p.last_read_seq)
+        GROUP BY m.conversation_id
+        HAVING COUNT(m.id) > 0
+        """
+
+        new_params =
+          [Ecto.UUID.dump!(user_id) | Enum.map(conversation_ids, &Ecto.UUID.dump!/1)]
+
+        {[sql | parts], params ++ new_params, param_idx + 1 + length(conversation_ids)}
+      else
+        {parts, params, param_idx}
+      end
+
+    final_sql = Enum.join(Enum.reverse(parts), " UNION ALL ")
+    {final_sql, params}
+  end
+
   def get_channel_unread_counts(user_id, channel_ids) when is_list(channel_ids) do
     if channel_ids == [] do
       %{}
