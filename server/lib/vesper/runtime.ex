@@ -1,11 +1,10 @@
 defmodule Vesper.Runtime do
   import Ecto.Query
 
-  alias Vesper.{Chat, Sync}
+  alias Vesper.Sync
   alias Vesper.Chat.{DmConversation, Message}
   alias Vesper.Repo
   alias Vesper.Runtime.{Room, RoomEvent, RoomRelation}
-  alias Vesper.Servers
   alias Vesper.Servers.Channel
 
   @room_cache :vesper_room_cache
@@ -465,8 +464,8 @@ defmodule Vesper.Runtime do
          event_type
        )
        when is_binary(server_id) and is_binary(channel_id) do
-    user_ids = Servers.list_member_ids(server_id)
-    Sync.append_scope_events(user_ids, event_type, "channel", channel_id)
+    # append_scope_events writes to shared ScopeSyncEvent log (O(1), no user_ids needed)
+    Sync.append_scope_event(event_type, "channel", channel_id)
   end
 
   defp append_user_sync_events(
@@ -474,8 +473,7 @@ defmodule Vesper.Runtime do
          event_type
        )
        when is_binary(conversation_id) do
-    user_ids = Chat.list_participant_ids(conversation_id)
-    Sync.append_scope_events(user_ids, event_type, "dm", conversation_id)
+    Sync.append_scope_event(event_type, "dm", conversation_id)
   end
 
   defp append_user_sync_events(_room, _event_type), do: :ok
