@@ -8,11 +8,11 @@ interface SendOptions {
   timeout?: number
   /** Text to match in the feed. Defaults to the message text itself. */
   confirmText?: string
-  /**
-   * If true, skip the evaluateAll visibility/class filtering and just use
-   * waitForMessage-style detection (simpler, used by DMs).
-   */
-  simplePoll?: boolean
+  errorLabel?: string
+}
+
+interface AttachmentSendOptions {
+  timeout?: number
   errorLabel?: string
 }
 
@@ -21,8 +21,8 @@ interface SendOptions {
  *
  * The encryption handshake can lag behind the UI, so the composer may show an
  * error banner on the first attempt. This helper wraps the fill-send-check
- * cycle and retries on those transient encryption errors until the message
- * actually lands in the feed.
+ * cycle and retries on those transient encryption errors until the message is
+ * confirmed in the feed.
  */
 export async function sendMessageWithEncryptionRetry(
   page: Page,
@@ -48,24 +48,7 @@ export async function sendMessageWithEncryptionRetry(
       sent = true
     }
 
-    if (opts.simplePoll) {
-      // DM-style: brief pause then check for error banner before polling the feed
-      await page.waitForTimeout(400)
-      const alert = page.locator('.vesper-composer-alert')
-      const alertVisible = await alert.isVisible().catch(() => false)
-      if (alertVisible) {
-        sent = false
-        await dismissEncryptionAlert(page)
-        await inputLocator.fill('')
-        await page.waitForTimeout(POLL_INTERVAL)
-        continue
-      }
-      // No error -- wait for the message to appear via the standard visibility poll
-      await pollForVisibleMessage(feedLocator, confirmText)
-      return
-    }
-
-    // Channel/thread style: race the feed poll against the error banner
+    // Wait for a confirmed row, not just an optimistic local placeholder.
     const result = await Promise.race([
       pollForConfirmedMessage(feedLocator, confirmText).then(() => 'sent' as const),
       page.waitForSelector('.vesper-composer-alert', { timeout: 10_000 }).then(() => 'error' as const),
@@ -93,6 +76,81 @@ export async function sendMessageWithEncryptionRetry(
   )
 }
 
+export async function sendAttachmentWithEncryptionRetry(
+  page: Page,
+  submitLocator: Locator,
+  feedAttachmentLocator: Locator,
+  opts: AttachmentSendOptions = {}
+): Promise<void> {
+  const timeout = opts.timeout ?? DEFAULT_TIMEOUT
+  const errorLabel = opts.errorLabel ?? 'attachment'
+  const deadline = Date.now() + timeout
+  let submitted = false
+
+  while (Date.now() < deadline) {
+    if (await page.locator('text=Reconnecting to server').isVisible().catch(() => false)) {
+      await waitForSocketConnected(page)
+    }
+
+    if (!submitted) {
+      await submitLocator.press('Enter')
+      submitted = true
+    }
+
+    const result = await Promise.race([
+      expect
+        .poll(
+          async () => {
+            try {
+              return await feedAttachmentLocator.evaluateAll((elements) =>
+                elements.filter((el) => {
+                  if (!(el instanceof HTMLElement)) return false
+                  const style = window.getComputedStyle(el)
+                  if (style.visibility === 'hidden' || style.display === 'none') return false
+                  return el.getClientRects().length > 0
+                }).length
+              )
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error)
+              if (
+                message.includes('Execution context was destroyed') ||
+                message.includes('Target page, context or browser has been closed')
+              ) {
+                return 0
+              }
+              throw error
+            }
+          },
+          { timeout: 10_000 }
+        )
+        .toBeGreaterThan(0)
+        .then(() => 'sent' as const),
+      page.waitForSelector('.vesper-composer-alert', { timeout: 10_000 }).then(() => 'error' as const),
+    ]).catch(() => 'timeout' as const)
+
+    if (result === 'sent') {
+      return
+    }
+
+    if (result === 'error') {
+      submitted = false
+      await dismissEncryptionAlert(page)
+      await page.waitForTimeout(POLL_INTERVAL)
+      continue
+    }
+
+    if (await page.locator('text=Reconnecting to server').isVisible().catch(() => false)) {
+      submitted = false
+      await waitForSocketConnected(page)
+      await page.waitForTimeout(POLL_INTERVAL)
+    }
+  }
+
+  throw new Error(
+    `Could not send ${errorLabel} -- encryption did not become ready within ${timeout}ms`
+  )
+}
+
 /**
  * Poll until a confirmed (not sending, not failed, actually visible) message
  * appears in the feed. Used by channel and thread senders.
@@ -109,41 +167,6 @@ function pollForConfirmedMessage(feedLocator: Locator, text: string): Promise<vo
                 if (!(el instanceof HTMLElement)) return false
                 if (el.classList.contains('vesper-message-row-sending')) return false
                 if (el.classList.contains('vesper-message-row-failed')) return false
-                const style = window.getComputedStyle(el)
-                if (style.visibility === 'hidden' || style.display === 'none') return false
-                return el.getClientRects().length > 0
-              }).length
-            )
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error)
-          if (
-            message.includes('Execution context was destroyed') ||
-            message.includes('Target page, context or browser has been closed')
-          ) {
-            return 0
-          }
-          throw error
-        }
-      },
-      { timeout: 10_000 }
-    )
-    .toBeGreaterThan(0)
-}
-
-/**
- * Simpler visibility poll: waits for any matching message-row to be rendered
- * and visible. Used by DM sender via waitForMessage.
- */
-function pollForVisibleMessage(feedLocator: Locator, text: string): Promise<void> {
-  return expect
-    .poll(
-      async () => {
-        try {
-          return await feedLocator
-            .filter({ hasText: text })
-            .evaluateAll((elements) =>
-              elements.filter((el) => {
-                if (!(el instanceof HTMLElement)) return false
                 const style = window.getComputedStyle(el)
                 if (style.visibility === 'hidden' || style.display === 'none') return false
                 return el.getClientRects().length > 0

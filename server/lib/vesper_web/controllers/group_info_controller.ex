@@ -60,32 +60,85 @@ defmodule VesperWeb.GroupInfoController do
          epoch when is_integer(epoch) <- parse_epoch(params) do
       {channel_id, conversation_id} = scope_ids(scope_id)
       previous_epoch = parse_optional_epoch(params, "previous_epoch")
+      commit_data = external_commit_data(params)
+      commit_id = external_commit_id(params)
 
-      case Encryption.publish_group_info(%{
-             group_id: authorized_group_id,
-             group_info_data: group_info_data,
-             ratchet_tree_data: ratchet_tree_data,
-             epoch: epoch,
-             previous_epoch: previous_epoch,
-             publisher_id: user.id,
-             publisher_client_id: device.client_id,
-             channel_id: channel_id,
-             conversation_id: conversation_id
-           }) do
-        {:ok, group_info} ->
-          json(conn, %{
-            group_info: %{
-              group_id: group_info.group_id,
-              epoch: group_info.epoch,
-              updated_at: group_info.updated_at
-            }
-          })
+      attrs = %{
+        group_id: authorized_group_id,
+        group_info_data: group_info_data,
+        ratchet_tree_data: ratchet_tree_data,
+        epoch: epoch,
+        previous_epoch: previous_epoch,
+        publisher_id: user.id,
+        publisher_client_id: device.client_id,
+        channel_id: channel_id,
+        conversation_id: conversation_id
+      }
 
-        {:error, :epoch_conflict} ->
-          conn |> put_status(:conflict) |> json(%{error: "epoch_conflict"})
+      case {commit_data, commit_id} do
+        {nil, nil} ->
+          case Encryption.publish_group_info(attrs) do
+            {:ok, group_info} ->
+              json(conn, %{
+                group_info: %{
+                  group_id: group_info.group_id,
+                  epoch: group_info.epoch,
+                  updated_at: group_info.updated_at
+                }
+              })
 
-        {:error, reason} ->
-          conn |> put_status(:unprocessable_entity) |> json(%{error: inspect(reason)})
+            {:error, :epoch_conflict} ->
+              conn |> put_status(:conflict) |> json(%{error: "epoch_conflict"})
+
+            {:error, reason} ->
+              conn |> put_status(:unprocessable_entity) |> json(%{error: inspect(reason)})
+          end
+
+        {commit_data, commit_id} when is_binary(commit_data) and is_binary(commit_id) ->
+          case Encryption.publish_external_commit_group_info(
+                 Map.merge(attrs, %{
+                   commit_data: commit_data,
+                   commit_id: commit_id
+                 })
+               ) do
+            {:ok, %{group_info: group_info, event: event}} ->
+              broadcast_external_commit(
+                scope_id,
+                event.id,
+                commit_data,
+                user.id,
+                device.client_id
+              )
+
+              json(conn, %{
+                group_info: %{
+                  group_id: group_info.group_id,
+                  epoch: group_info.epoch,
+                  updated_at: group_info.updated_at
+                },
+                commit_event_seq: event.id
+              })
+
+            {:error, :epoch_conflict} ->
+              conn |> put_status(:conflict) |> json(%{error: "epoch_conflict"})
+
+            {:error, :invalid_previous_epoch} ->
+              conn |> put_status(:bad_request) |> json(%{error: "invalid previous_epoch"})
+
+            {:error, :invalid_commit_data} ->
+              conn |> put_status(:bad_request) |> json(%{error: "invalid commit_data"})
+
+            {:error, :invalid_idempotency_key} ->
+              conn |> put_status(:bad_request) |> json(%{error: "invalid commit_id"})
+
+            {:error, reason} ->
+              conn |> put_status(:unprocessable_entity) |> json(%{error: inspect(reason)})
+          end
+
+        _ ->
+          conn
+          |> put_status(:bad_request)
+          |> json(%{error: "commit_data and commit_id must be provided together"})
       end
     else
       {:error, :invalid_scope} ->
@@ -177,6 +230,46 @@ defmodule VesperWeb.GroupInfoController do
 
       _ ->
         nil
+    end
+  end
+
+  defp external_commit_data(params) do
+    case Map.get(params, "commit_data") do
+      value when is_binary(value) and value != "" -> value
+      _ -> nil
+    end
+  end
+
+  defp external_commit_id(params) do
+    case Map.get(params, "commit_id") || Map.get(params, "idempotency_key") do
+      value when is_binary(value) and value != "" -> value
+      _ -> nil
+    end
+  end
+
+  defp broadcast_external_commit(scope_id, seq, commit_data, sender_id, sender_device_id) do
+    case scope_topic(scope_id) do
+      nil ->
+        :ok
+
+      topic ->
+        VesperWeb.Endpoint.broadcast(topic, "mls_commit", %{
+          seq: seq,
+          commit_data: commit_data,
+          sender_id: sender_id,
+          sender_device_id: sender_device_id
+        })
+    end
+  end
+
+  defp scope_topic("voice:channel:" <> channel_id), do: "voice:channel:#{channel_id}"
+  defp scope_topic("voice:dm:" <> conversation_id), do: "voice:dm:#{conversation_id}"
+
+  defp scope_topic(scope_id) do
+    case scope_ids(scope_id) do
+      {channel_id, nil} when is_binary(channel_id) -> "chat:channel:#{channel_id}"
+      {nil, conversation_id} when is_binary(conversation_id) -> "dm:#{conversation_id}"
+      _ -> nil
     end
   end
 

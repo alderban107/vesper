@@ -57,6 +57,7 @@ defmodule VesperWeb.DmChannel do
       attrs =
         %{
           ciphertext: decoded,
+          client_nonce: client_nonce,
           mls_epoch: epoch,
           conversation_id: socket.assigns.conversation_id,
           sender_id: socket.assigns.user_id
@@ -788,7 +789,7 @@ defmodule VesperWeb.DmChannel do
           topic: "dm:#{socket.assigns.conversation_id}"
         })
 
-        {:noreply, socket}
+        {:reply, :ok, socket}
 
       {:error, _changeset} ->
         {:reply, {:error, %{reason: "could not store history bundle"}}, socket}
@@ -873,8 +874,8 @@ defmodule VesperWeb.DmChannel do
     :ok
   end
 
-  defp notify_history_request_pending(conversation_id, requester_id, topic) do
-    for user_id <- Chat.list_participant_ids(conversation_id), user_id != requester_id do
+  defp notify_history_request_pending(conversation_id, _requester_id, topic) do
+    for user_id <- Chat.list_participant_ids(conversation_id) do
       VesperWeb.Endpoint.broadcast("user:#{user_id}", "mls_history_request_pending", %{
         scope_id: conversation_id,
         topic: topic

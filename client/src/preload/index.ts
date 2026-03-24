@@ -38,6 +38,49 @@ const cryptoDbApi = {
     ipcRenderer.invoke('cryptoDb:getGroupSyncCursor', groupId),
   setGroupSyncCursor: (groupId: string, lastEventSeq: number) =>
     ipcRenderer.invoke('cryptoDb:setGroupSyncCursor', groupId, lastEventSeq),
+  getScopeCheckpoint: (groupId: string) =>
+    ipcRenderer.invoke('cryptoDb:getScopeCheckpoint', groupId),
+  getKnownScopeIds: () =>
+    ipcRenderer.invoke('cryptoDb:getKnownScopeIds'),
+  setScopeCheckpoint: (
+    groupId: string,
+    checkpoint: {
+      state: Uint8Array | null
+      epoch: number
+      last_event_seq: number
+      recent_commit_fingerprints?: string[]
+      recent_history_bundle_fingerprints?: string[]
+      repair_status?: string | null
+      repair_failure_count?: number
+      repair_last_error?: string | null
+      repair_updated_at?: string | null
+      pending_group_info_publish?: {
+        group_info_data: Uint8Array
+        ratchet_tree_data: Uint8Array | null
+        epoch: number
+      } | null
+      pending_external_commit_broadcast?: {
+        commit_data: string
+        commit_id: string
+      } | null
+      pending_sponsored_transition?: {
+        recipient_id: string
+        recipient_client_id: string | null
+        recipient_key_package_ref: string | null
+        commit_data: string
+        commit_id: string
+        remove_commit_data: string | null
+        welcome_data: string | null
+        group_info_data: Uint8Array | null
+        ratchet_tree_data: Uint8Array | null
+        epoch: number | null
+        previous_epoch: number | null
+        base_state: Uint8Array | null
+        base_epoch: number | null
+      } | null
+    }
+  ) =>
+    ipcRenderer.invoke('cryptoDb:setScopeCheckpoint', groupId, checkpoint),
   getPendingGroupInfoPublishes: () =>
     ipcRenderer.invoke('cryptoDb:getPendingGroupInfoPublishes'),
   setPendingGroupInfoPublish: (
@@ -57,6 +100,8 @@ const cryptoDbApi = {
     ipcRenderer.invoke('cryptoDb:deletePendingGroupInfoPublish', groupId),
   getPendingExternalCommitBroadcasts: () =>
     ipcRenderer.invoke('cryptoDb:getPendingExternalCommitBroadcasts'),
+  getPendingSponsoredTransitions: () =>
+    ipcRenderer.invoke('cryptoDb:getPendingSponsoredTransitions'),
   setPendingExternalCommitBroadcast: (
     groupId: string,
     commitData: string,

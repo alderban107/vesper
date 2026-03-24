@@ -71,6 +71,7 @@ defmodule VesperWeb.ScopeSummary do
     base = %{
       id: message.id,
       conversation_id: message.conversation_id,
+      client_nonce: message.client_nonce,
       sender_id: message.sender_id,
       sender: ChannelHelpers.sender_json(message.sender),
       inserted_at: message.inserted_at

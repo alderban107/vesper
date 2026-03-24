@@ -159,6 +159,7 @@ defmodule VesperWeb.Router do
     # MLS GroupInfo for External Commits (RFC 9420 §12.4)
     get("/group-info/:scope_id", GroupInfoController, :show)
     put("/group-info/:scope_id", GroupInfoController, :upsert)
+    post("/mls-sponsored-transition/:scope_id", SponsoredTransitionController, :create)
 
     # Pending same-user MLS history recovery
     get("/pending-history-requests/:channel_id", PendingHistoryRequestController, :index)

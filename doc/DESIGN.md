@@ -6,10 +6,17 @@
 Companion docs:
 
 - [Protocol spec](./PROTOCOL.md)
+- [E2EE docs index](./e2ee/README.md)
 - [E2EE implementation guide](./e2ee/E2EE-IMPLEMENTATION.md)
-- [E2EE requirements](./e2ee/REQUIREMENTS-E2EE.md)
-- [E2EE audit](./e2ee/REQUIREMENTS-E2EE-AUDIT.md)
+- [SDK encryption guide](./sdk/encryption.md)
+- [E2EE correctness plan](./E2EE-CORRECTNESS-PLAN.md) (RCA + follow-up work)
 - [Matrix core evaluation](./MATRIX-CORE-ANALYSIS.md)
+
+Status note (2026-03-23):
+
+- The live E2EE stack now uses OpenMLS via `vesper-openmls-wasm`, not `ts-mls`.
+- The broad product architecture in this document is still useful, but older E2EE-specific package comparisons and migration notes later in the file are historical context unless they explicitly mention OpenMLS.
+- Current E2EE sources of truth are [PROTOCOL.md](./PROTOCOL.md), [E2EE-IMPLEMENTATION.md](./e2ee/E2EE-IMPLEMENTATION.md), and [sdk/encryption.md](./sdk/encryption.md).
 
 ## 1. Vision & Goals
 
@@ -72,8 +79,8 @@ No external services, no "also install X", no setup guides that span multiple pa
 **What "self-contained" means in practice:**
 - The server bundles its own TURN/STUN (coturn) — no reliance on Google's public STUN
   servers or third-party TURN services for voice to work
-- The client bundles ts-mls — no WebAssembly compilation, no native crypto dependencies
-  to install
+- The client bundles `vesper-openmls-wasm` inside the app build — no separate crypto
+  runtime or external service to install
 - The SFU is built into the server via ex_webrtc — no separate media server process
 - Local encrypted SQLite for client-side storage — no external database for the client
 - No accounts on any external service required for either server owners or users
@@ -101,7 +108,7 @@ No external services, no "also install X", no setup guides that span multiple pa
 | **State Management** | Zustand | ~> 5.x | Lightweight, no boilerplate, works naturally with React. |
 | **Styling** | Tailwind CSS | ~> 4.x | Utility-first, fast iteration, consistent design. |
 | **Icons** | lucide-react | latest | Consistent SVG icon set. Tree-shakeable, TypeScript-native. |
-| **E2EE Protocol** | MLS (RFC 9420) | ts-mls (npm) | Best group encryption protocol. Forward secrecy + post-compromise security. Pure TypeScript — no WASM compilation needed. IETF-listed implementation. |
+| **E2EE Protocol** | MLS (RFC 9420) | OpenMLS via `vesper-openmls-wasm` | Full RFC 9420 support including External Commits, audited crypto core, and one implementation path across Node, Electron, and browser runtimes. |
 | **Voice/WebRTC** | ex_webrtc | ~> 0.15 | Pure Elixir WebRTC by Software Mansion. Serves as native SFU. Phoenix Channels for signaling. |
 | **Voice Backpressure** | semaphore | ~> 1.3 | Rate-limits concurrent voice room operations (join/leave) to prevent thundering herd. |
 | **Markdown** | react-markdown + remark-gfm | ^10.1 / ^4.0 | Client-side markdown rendering in messages. GFM for tables, strikethrough, autolinks. |
@@ -115,8 +122,8 @@ No external services, no "also install X", no setup guides that span multiple pa
 | Alternative | Why We Didn't Choose It |
 |-------------|------------------------|
 | Rust backend | Elixir's concurrency model is purpose-built for messaging. Rust would need async runtime + manual connection management. |
-| mls-rs (WASM) | No official npm package. Would need custom WASM compilation. ts-mls works out of the box. |
-| OpenMLS (WASM) | Same problem — no JS/npm package exists. |
+| mls-rs (WASM) | We chose OpenMLS and maintain our own WASM packaging instead of adopting a second MLS stack. |
+| OpenMLS (WASM) | Current choice. Older notes in this document that rejected it predate the migration to `vesper-openmls-wasm`. |
 | Guardian (auth) | Heavier than Joken. We don't need OAuth2/SSO. Joken is sufficient for single-app JWT. |
 | mediasoup/Janus (SFU) | External C++/C services. ex_webrtc keeps everything in Elixir — simpler deployment. |
 | Redux | Zustand is lighter, less boilerplate, better DX for our scale. |
@@ -133,7 +140,7 @@ No external services, no "also install X", no setup guides that span multiple pa
 │               Electron + React                   │
 │                                                  │
 │  ┌──────────┐  ┌───────────┐  ┌──────────────┐  │
-│  │   React  │  │  ts-mls   │  │   WebRTC     │  │
+│  │   React  │  │ OpenMLS   │  │   WebRTC     │  │
 │  │    UI    │  │  (E2EE)   │  │  (Voice)     │  │
 │  └────┬─────┘  └─────┬─────┘  └──────┬───────┘  │
 │       │              │               │           │
@@ -292,41 +299,43 @@ MLS is the IETF standard for group end-to-end encryption. It provides:
 - **Scalable groups**: Efficient for groups up to 50,000 members (tree-based key agreement)
 - **Single protocol**: Same mechanism for 1:1 DMs and large channels
 
-### Library: ts-mls
+### Library: OpenMLS via `vesper-openmls-wasm`
 
-- Pure TypeScript implementation of RFC 9420
-- `npm install ts-mls` — no WASM, no native compilation
-- IETF-listed as an official MLS implementation
-- Supports 21 cipher suites including post-quantum (X-Wing hybrid KEM)
-- **Caveat**: Has not undergone a formal security audit. Plan for one before public release.
+- Rust OpenMLS core packaged as `vesper-openmls-wasm` for Electron, browser, and Node
+- Full RFC 9420 support including External Commits
+- Audited crypto core with one SDK-owned orchestration path across platforms
+- Vesper-specific durability, replay, repair, and storage logic lives in the SDK layer
 
 ### How It Works
 
 ```
 Creating an Encrypted Channel:
-  1. First user creates an MLS group (generates group state)
-  2. When another user joins, their Key Package (public key bundle) is fetched from server
-  3. Joiner is added to the MLS group via a Welcome message
-  4. Both sides now share a group secret → can derive message encryption keys
+  1. First user creates an MLS group and publishes GroupInfo for the scope
+  2. Joining devices fetch the latest GroupInfo from the server
+  3. Joiners self-add with an External Commit or consume a Welcome when a sponsor path is used
+  4. The SDK persists the resulting scope checkpoint before advertising success
 
 Sending a Message:
-  1. Sender encrypts plaintext with current group epoch key
-  2. Ciphertext sent to server via WebSocket
-  3. Server stores ciphertext blob + metadata (sender_id, timestamp, channel_id)
-  4. Server broadcasts ciphertext to other channel members via WebSocket
-  5. Recipients decrypt with their copy of the group epoch key
+  1. Sender loads or restores the scope checkpoint in the SDK
+  2. Sender encrypts plaintext with the current MLS epoch state
+  3. Ciphertext sent to server via WebSocket
+  4. Server stores ciphertext blob + metadata (sender_id, timestamp, channel_id)
+  5. Server broadcasts ciphertext to other channel members via WebSocket
+  6. Recipients decrypt with their local scope state and update their checkpoint
 
 Key Updates (Ratcheting):
   1. Periodically (or on member join/leave), a member issues an MLS Commit
   2. Commit updates the group's key material (new epoch)
-  3. All members process the Commit → derive new encryption keys
-  4. Old keys are deleted → forward secrecy achieved
+  3. GroupInfo, durable MLS events, and any pending outbox state are stored atomically enough
+     for replay to resume after reconnect or restart
+  4. Other members replay the durable event stream in order and advance their checkpoints
 ```
 
 ### Key Package Directory
 
 The server maintains a directory of MLS Key Packages — public key bundles that allow
-any member to add a new user to an encrypted group without that user being online.
+new members to bootstrap identity material and consume Welcome-based repair flows without
+already being online at the right moment.
 
 ```
 POST   /api/key-packages           Upload key packages (clients upload several at a time)
@@ -334,8 +343,8 @@ GET    /api/key-packages/:user_id  Fetch a key package for a user (consumed on u
 DELETE /api/key-packages/:id       Remove a key package
 ```
 
-Clients should upload 10-20 key packages at a time. Each is consumed once when someone
-adds them to a group. Client replenishes when running low.
+Clients upload 20 key packages at a time today and replenish when the server-side count
+drops below 5.
 
 ### What the Server Handles vs Client
 
@@ -344,8 +353,8 @@ adds them to a group. Client replenishes when running low.
 | Store/forward ciphertext | Yes | — |
 | Decrypt messages | No | Yes |
 | Key Package Directory | Yes (storage) | Yes (generation, consumption) |
-| MLS group state | No | Yes (full state) |
-| Member add/remove coordination | Yes (relay Commits/Welcomes) | Yes (generate Commits/Welcomes) |
+| MLS group state + scope checkpoints | No | Yes |
+| Member add/remove coordination | Yes (durable relay, GroupInfo storage, sponsored transition endpoints) | Yes (generate Commits, External Commits, Welcomes) |
 | Key material | Never | Always |
 
 ### MLS Group Mapping
@@ -365,14 +374,15 @@ Default: `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`
 - SHA-256 for hashing
 - Ed25519 for signatures
 
-Post-quantum cipher suite available as opt-in for the paranoid:
-`X-Wing (X25519 + ML-KEM-768)` — ts-mls supports this via FIPS-203/204.
+The current implementation uses the standard X25519 + AES-128-GCM + Ed25519 suite. Future
+suite changes need to ship through the OpenMLS/WASM layer and preserve on-disk checkpoint
+compatibility.
 
 ### Local Key Storage
 
-On the client, MLS group state and private keys are stored in an encrypted SQLite
-database (via `better-sqlite3`), encrypted at rest with a key derived from the user's
-password (or stored in OS keychain via Electron's `safeStorage`).
+On the client, identity material, scope checkpoints, cached ciphertext metadata, and
+sent-message plaintext fallbacks are stored locally. Electron uses encrypted SQLite plus
+`safeStorage`; the web client uses IndexedDB via the SDK storage runtime.
 
 ---
 
@@ -1252,8 +1262,8 @@ Scaffolding, auth, REST API, Phoenix Channels, React UI, real-time plaintext mes
 
 ### Phase 2: E2EE — COMPLETE (2026-03-02)
 
-ts-mls integration, key pair generation, encrypted messaging, identity backup/recovery.
-Key Package Directory API, MLS group lifecycle, local encrypted SQLite via better-sqlite3.
+OpenMLS/WASM integration, key pair generation, encrypted messaging, identity backup/recovery.
+Key Package Directory API, scope checkpoints, durable replay, and local encrypted SQLite.
 
 ### Phase 3: Voice — COMPLETE (2026-03-02)
 
@@ -1354,7 +1364,7 @@ VoiceChannel join handlers. Eliminates TOCTOU races from separate lookup + check
 
 ### Security Checklist (Pre-Release)
 
-- [ ] Commission security audit of ts-mls integration
+- [ ] Commission security audit of the OpenMLS/WASM packaging plus Vesper SDK orchestration
 - [ ] Commission security audit of key backup/recovery flow
 - [ ] Penetration test of the Phoenix API
 - [ ] Review Argon2id parameters against current OWASP recommendations
@@ -1371,150 +1381,28 @@ VoiceChannel join handlers. Eliminates TOCTOU races from separate lookup + check
 
 ```
 ~/projects/vesper/
-├── DESIGN.md                    # This file
-├── PROGRESS.md                  # Build progress — what's done, session logs
-├── CLAUDE.md                    # Project conventions for Claude sessions
-├── CONTRIBUTING.md              # Contribution guide + migration safety rules
-├── TODO.md                      # Bug reports, planned features
-├── LICENSE                      # AGPL-3.0
 ├── README.md
-├── docker-compose.yml           # Self-hosting deployment (4 services)
-├── .env.example                 # Environment variable template
-├── turnserver.conf              # coturn configuration
-├── .github/workflows/
-│   ├── docker.yml               # Build + push Docker images on push to main
-│   └── release.yml              # Electron app releases (AppImage, deb, Windows)
-│
-├── server/                      # Elixir/Phoenix backend
-│   ├── mix.exs
-│   ├── mix.lock
-│   ├── Dockerfile
-│   ├── config/
-│   │   ├── config.exs
-│   │   ├── dev.exs
-│   │   ├── prod.exs
-│   │   ├── runtime.exs
-│   │   └── test.exs
-│   ├── lib/
-│   │   ├── vesper/              # Business logic (contexts)
-│   │   │   ├── accounts/        # User, UserToken schemas
-│   │   │   ├── accounts.ex      # Registration, login, JWT, key bundles
-│   │   │   ├── servers/         # Server, Channel, Membership, Role, MemberRole,
-│   │   │   │                    #   Invite, Permissions, PermissionsCache, MemberCache
-│   │   │   ├── servers.ex       # Server + channel CRUD, permissions, invites
-│   │   │   ├── chat/            # Message, DmConversation, DmParticipant, Attachment,
-│   │   │   │                    #   Reaction, PinnedMessage, LinkPreview, LinkPreviewFetcher,
-│   │   │   │                    #   ChannelReadPosition, DmReadPosition
-│   │   │   ├── chat.ex          # Messages, DMs, reactions, pins, read positions
-│   │   │   ├── voice/
-│   │   │   │   ├── room.ex            # GenServer SFU room (max 25 participants)
-│   │   │   │   └── room_supervisor.ex # DynamicSupervisor (max 500 rooms)
-│   │   │   ├── voice.ex         # Voice room coordination (ensure, join, leave, SDP, ICE)
-│   │   │   ├── encryption/      # KeyPackage, PendingWelcome schemas
-│   │   │   ├── encryption.ex    # Key package directory, MLS welcome storage
-│   │   │   ├── workers/         # Oban job workers (message expiry, cleanup)
-│   │   │   └── application.ex   # OTP supervision tree (incl. Task.Supervisors, caches)
-│   │   ├── vesper_web/          # Web layer
-│   │   │   ├── controllers/
-│   │   │   │   ├── auth_controller.ex
-│   │   │   │   ├── server_controller.ex    # CRUD + join/leave/kick/invites/roles
-│   │   │   │   ├── channel_controller.ex
-│   │   │   │   ├── message_controller.ex   # History, pins, mark read
-│   │   │   │   ├── conversation_controller.ex
-│   │   │   │   ├── attachment_controller.ex
-│   │   │   │   ├── avatar_controller.ex
-│   │   │   │   ├── unread_controller.ex
-│   │   │   │   ├── link_preview_controller.ex
-│   │   │   │   ├── user_controller.ex      # Username search
-│   │   │   │   ├── health_controller.ex
-│   │   │   │   ├── key_package_controller.ex
-│   │   │   │   └── pending_welcome_controller.ex
-│   │   │   ├── channels/
-│   │   │   │   ├── user_socket.ex          # JWT WebSocket auth, topic routing
-│   │   │   │   ├── chat_channel.ex         # chat:channel:{id}
-│   │   │   │   ├── dm_channel.ex           # dm:{id}
-│   │   │   │   ├── voice_channel.ex        # voice:channel:{id}, voice:dm:{id}
-│   │   │   │   ├── user_channel.ex         # user:{id} (notifications, presence)
-│   │   │   │   ├── server_presence_channel.ex  # presence:server:{id}
-│   │   │   │   ├── channel_helpers.ex      # Shared helpers (safe_decode64, etc.)
-│   │   │   │   └── presence.ex
-│   │   │   ├── plugs/           # Auth plug
-│   │   │   └── router.ex
-│   │   └── vesper.ex
-│   ├── priv/
-│   │   ├── repo/migrations/     # 25 migration files
-│   │   └── uploads/             # File attachment storage
-│   └── test/
-│       ├── vesper/              # Context tests (accounts, chat, encryption, servers, voice)
-│       ├── vesper_web/
-│       │   ├── channels/        # Channel tests
-│       │   └── controllers/     # Controller tests
-│       └── support/             # Test helpers (conn_case, data_case, factory)
-│
-├── client/                      # Electron + React frontend
-│   ├── package.json
-│   ├── electron-vite.config.ts
-│   ├── electron-builder.yml     # Packaging config (AppImage, deb, Windows)
-│   ├── postcss.config.js        # Tailwind CSS via PostCSS (not @tailwindcss/vite)
-│   ├── vite.web.config.ts       # Web build config (for Docker web service)
-│   ├── Dockerfile.web           # Static web client build
-│   ├── src/
-│   │   ├── main/                # Electron main process
-│   │   │   ├── index.ts
-│   │   │   └── db.ts            # Local encrypted SQLite
-│   │   ├── preload/
-│   │   │   └── index.ts         # Context bridge
-│   │   └── renderer/src/        # React app
-│   │       ├── main.tsx
-│   │       ├── App.tsx
-│   │       ├── api/
-│   │       │   ├── client.ts    # REST API client (fetch + auto token refresh)
-│   │       │   ├── socket.ts    # Phoenix WebSocket client
-│   │       │   └── crypto.ts    # Key package + welcome API
-│   │       ├── stores/
-│   │       │   ├── authStore.ts
-│   │       │   ├── serverStore.ts
-│   │       │   ├── messageStore.ts
-│   │       │   ├── voiceStore.ts
-│   │       │   ├── dmStore.ts
-│   │       │   ├── presenceStore.ts
-│   │       │   ├── unreadStore.ts
-│   │       │   ├── settingsStore.ts
-│   │       │   └── uiStore.ts
-│   │       ├── sdk/
-│   │       │   └── client.ts    # Renderer SDK singleton + encrypted chat runtime
-│   │       ├── crypto/
-│   │       │   ├── mls.ts       # ts-mls wrapper
-│   │       │   ├── identity.ts  # Key generation, backup, recovery
-│   │       │   └── storage.ts   # Encrypted local SQLite bridge
-│   │       ├── voice/
-│   │       │   ├── webrtc.ts    # WebRTC connection management
-│   │       │   ├── encryption.ts # Insertable Streams encryption
-│   │       │   ├── e2ee-worker.ts # AES-128-GCM Web Worker
-│   │       │   └── audio.ts    # Audio device management
-│   │       ├── data/
-│   │       │   └── emojis.ts    # Emoji dataset (500+ Unicode emoji)
-│   │       ├── hooks/
-│   │       │   └── useContextMenu.ts
-│   │       ├── components/
-│   │       │   ├── layout/      # Sidebar, Header
-│   │       │   ├── chat/        # MessageList, MessageInput, MessageItem, SearchBar,
-│   │       │   │                #   DisappearingSettings, EmojiPicker, PinsPanel,
-│   │       │   │                #   LinkPreview, MentionAutocomplete, MarkdownContent,
-│   │       │   │                #   FilePreview
-│   │       │   ├── voice/       # VoiceControls, VoiceParticipants, CallOverlay,
-│   │       │   │                #   IncomingCallModal
-│   │       │   ├── server/      # CreateServerModal, JoinServerModal, CreateChannelModal,
-│   │       │   │                #   ServerSettingsModal, MemberListPanel, InviteManager,
-│   │       │   │                #   RoleManager
-│   │       │   ├── dm/          # DmSidebar, DmMessageList, DmMessageInput, NewDmModal
-│   │       │   ├── ui/          # Avatar, ContextMenu
-│   │       │   ├── settings/    # SettingsModal
-│   │       │   └── auth/        # RecoveryKeyModal
-│   │       └── pages/           # Login, Register, Recovery, Main
-│   └── e2e/                     # Playwright E2E tests (45 tests)
-│       ├── tests/               # auth/, dm/, messaging/, server/, ui/
-│       └── fixtures/            # Test fixtures, mocks, auth helpers
+├── docker-compose.yml
+├── server/                      # Phoenix API, channels, sync controllers, MLS coordination
+│   ├── lib/vesper/              # Accounts, chat, servers, encryption, voice
+│   ├── lib/vesper_web/          # Controllers, channels, router
+│   ├── priv/repo/migrations/    # Database schema
+│   └── test/                    # ExUnit coverage
+├── client/                      # Electron + web UI shells
+│   ├── src/main/                # Electron main process + encrypted SQLite
+│   ├── src/preload/             # IPC bridge
+│   ├── src/renderer/src/        # React app, stores, SDK bootstrap, voice UI
+│   └── e2e/                     # Playwright coverage
+├── sdk/                         # Shared runtime used by Electron, web, tests, and bots
+│   ├── src/api/                 # REST, socket, and sync clients
+│   ├── src/auth/                # Account, device, and key-package flows
+│   ├── src/client/              # Encrypted chat runtime and diagnostics
+│   ├── src/crypto/              # OpenMLS wrapper, storage runtime, payload codecs
+│   ├── src/storage/             # File, memory, and IndexedDB adapters
+│   ├── src/testing/             # Harnesses and local stack helpers
+│   └── test/                    # Node integration tests
+├── doc/                         # Design, protocol, SDK, and E2EE docs
+└── scripts/                     # Repo automation and local verification
 ```
 
 ---
@@ -1523,7 +1411,7 @@ VoiceChannel join handlers. Eliminates TOCTOU races from separate lookup + check
 
 | Library | URL | Purpose |
 |---------|-----|---------|
-| ts-mls | https://github.com/LukaJCB/ts-mls | MLS E2EE (client) |
+| OpenMLS | https://github.com/openmls/openmls | MLS core library |
 | ex_webrtc | https://github.com/elixir-webrtc/ex_webrtc | WebRTC SFU (server) |
 | Phoenix | https://hexdocs.pm/phoenix | Web framework (server) |
 | Joken | https://hexdocs.pm/joken | JWT auth (server) |
@@ -1532,6 +1420,6 @@ VoiceChannel join handlers. Eliminates TOCTOU races from separate lookup + check
 | semaphore | https://hex.pm/packages/semaphore | Voice backpressure (server) |
 | Zustand | https://github.com/pmndrs/zustand | State management (client) |
 | electron-vite | https://electron-vite.org | Electron build tool (client) |
-| better-sqlite3 | https://github.com/WiseLibs/better-sqlite3 | Local encrypted storage (client) |
+| better-sqlite3-multiple-ciphers | https://github.com/m4heshd/better-sqlite3-multiple-ciphers | Local encrypted storage (client) |
 | lucide-react | https://lucide.dev | SVG icon library (client) |
 | Playwright | https://playwright.dev | E2E browser testing (client) |

@@ -52,6 +52,7 @@ import {
   assertConvergence,
   assertThreeWayConvergence,
   assertNoDecryptionFailures,
+  captureSnapshot,
 } from '../helpers/assertions'
 import { getMlsDiagnostics, assertMlsBudget, findDiagnosticScopes } from '../helpers/mls-diagnostics'
 import { recordSnapshot, writeSnapshots } from '../helpers/snapshots'
@@ -208,6 +209,22 @@ test.describe('P0 Smoke — full continuous run', () => {
 
   // --- Step 8: DM thread (R-DM-3) ---
   test('Step 8: DM thread and threaded replies converge', async () => {
+    const threadLogs: string[] = []
+    const logCapture = (prefix: string) => (msg: { text: () => string }) => {
+      const text = msg.text()
+      if (
+        text.includes('[E2EE]') ||
+        text.includes('[MLS]') ||
+        text.includes('[E2EE-DBG]') ||
+        text.includes('Conversation encryption is still syncing')
+      ) {
+        threadLogs.push(`[${prefix}] ${text}`)
+      }
+    }
+
+    alice.page.on('console', logCapture('alice-thread'))
+    bob.page.on('console', logCapture('bob-thread'))
+
     await openThread(alice.page, DM_MESSAGES.aliceToBob1)
     await sendThreadReply(alice.page, DM_MESSAGES.threadReply1)
 
@@ -217,7 +234,14 @@ test.describe('P0 Smoke — full continuous run', () => {
       timeout: 10_000,
     })
 
-    await sendThreadReply(bob.page, DM_MESSAGES.threadReply2)
+    try {
+      await sendThreadReply(bob.page, DM_MESSAGES.threadReply2)
+    } catch (err) {
+      console.error('=== THREAD E2EE DIAGNOSTIC LOGS ===')
+      for (const log of threadLogs) console.error(log)
+      console.error('=== END THREAD E2EE LOGS ===')
+      throw err
+    }
 
     // Verify on alice's side
     await alice.page.waitForSelector(
@@ -375,38 +399,109 @@ test.describe('P0 Smoke — full continuous run', () => {
       throw err
     }
 
-    // Group is confirmed ready — Bob and Charlie send
-    await sendChannelMessage(bob.page, CHANNEL_MESSAGES.bob1)
-    await sendChannelMessage(charlie.page, CHANNEL_MESSAGES.charlie1)
+    let channelScopeId: string | null = null
+    await expect
+      .poll(
+        async () => {
+          const scopeIds = await findDiagnosticScopes(alice.page, { hasGroupCreations: true })
+          let bestScopeId: string | null = null
+          let bestEpoch = -1
 
-    // All three users should see all messages
-    for (const page of [alice.page, bob.page, charlie.page]) {
-      await waitForMessage(page, CHANNEL_MESSAGES.bob1, 10_000)
-      await waitForMessage(page, CHANNEL_MESSAGES.charlie1, 10_000)
-    }
+          for (const scopeId of scopeIds) {
+            const diag = await getMlsDiagnostics(alice.page, scopeId)
+            if (diag && diag.epoch > bestEpoch) {
+              bestEpoch = diag.epoch
+              bestScopeId = scopeId
+            }
+          }
+
+          if (!bestScopeId) {
+            return false
+          }
+
+          const [aliceDiag, bobDiag, charlieDiag] = await Promise.all([
+            getMlsDiagnostics(alice.page, bestScopeId),
+            getMlsDiagnostics(bob.page, bestScopeId),
+            getMlsDiagnostics(charlie.page, bestScopeId),
+          ])
+
+          const converged = [aliceDiag, bobDiag, charlieDiag].every(
+            (diag) => diag && diag.epoch >= 2
+          )
+
+          if (converged) {
+            channelScopeId = bestScopeId
+          }
+
+          return converged
+        },
+        { timeout: 30_000 }
+      )
+      .toBe(true)
+
+    // Group is confirmed ready — Bob and Charlie send one at a time so each
+    // post-join commit and message fanout settles before the next sender goes.
+    await sendChannelMessage(bob.page, CHANNEL_MESSAGES.bob1)
+    await expect
+      .poll(
+        async () => {
+          const snapshots = await Promise.all([
+            captureSnapshot(alice.page),
+            captureSnapshot(bob.page),
+            captureSnapshot(charlie.page),
+          ])
+
+          return snapshots.every((snapshot) => {
+            const texts = snapshot.messages.map((message) => message.text)
+            return texts.includes(CHANNEL_MESSAGES.bob1)
+          })
+        },
+        { timeout: 30_000 }
+      )
+      .toBe(true)
+
+    await sendChannelMessage(charlie.page, CHANNEL_MESSAGES.charlie1)
+    await expect
+      .poll(
+        async () => {
+          const snapshots = await Promise.all([
+            captureSnapshot(alice.page),
+            captureSnapshot(bob.page),
+            captureSnapshot(charlie.page),
+          ])
+
+          return snapshots.every((snapshot) => {
+            const texts = snapshot.messages.map((message) => message.text)
+            return texts.includes(CHANNEL_MESSAGES.charlie1)
+          })
+        },
+        { timeout: 30_000 }
+      )
+      .toBe(true)
+
+    await assertThreeWayConvergence(
+      alice.page,
+      bob.page,
+      charlie.page,
+      'step-16 channel convergence'
+    )
 
     // MLS epoch budget: 3-user channel. Alice creates group (epoch 0),
     // Bob External Commits (epoch 1), Charlie External Commits (epoch 2).
-    const channelScopes = await findDiagnosticScopes(alice.page, { hasGroupCreations: true })
-    // Filter to the channel scope (not the DM from Steps 5-6) by epoch >= 2
-    for (const scopeId of channelScopes) {
-      const aliceDiag = await getMlsDiagnostics(alice.page, scopeId)
-      if (aliceDiag && aliceDiag.epoch >= 2) {
-        // This is the channel scope (epoch 2 from two External Commits)
-        assertMlsBudget(aliceDiag, {
-          maxEpoch: 2,
-          maxGroupCreations: 1,
-        }, 'alice channel epoch budget')
+    if (channelScopeId) {
+      const aliceDiag = await getMlsDiagnostics(alice.page, channelScopeId)
+      assertMlsBudget(aliceDiag, {
+        maxEpoch: 2,
+        maxGroupCreations: 1,
+      }, 'alice channel epoch budget')
 
-        for (const [name, user] of [['bob', bob], ['charlie', charlie]] as const) {
-          const diag = await getMlsDiagnostics(user.page, scopeId)
-          if (diag) {
-            assertMlsBudget(diag, {
-              maxEpoch: 2,
-            }, `${name} channel epoch budget`)
-          }
+      for (const [name, user] of [['bob', bob], ['charlie', charlie]] as const) {
+        const diag = await getMlsDiagnostics(user.page, channelScopeId)
+        if (diag) {
+          assertMlsBudget(diag, {
+            maxEpoch: 2,
+          }, `${name} channel epoch budget`)
         }
-        break
       }
     }
   })
@@ -414,9 +509,33 @@ test.describe('P0 Smoke — full continuous run', () => {
   // --- Step 17: Channel thread (R-CHANNEL-2) ---
   test('Step 17: channel thread stays threaded', async () => {
     test.setTimeout(45_000)
+    const threadLogs: string[] = []
+    const logCapture = (prefix: string) => (msg: { text: () => string }) => {
+      const text = msg.text()
+      if (
+        text.includes('[E2EE]') ||
+        text.includes('[MLS]') ||
+        text.includes('[E2EE-DBG]') ||
+        text.includes('[THREAD-DBG]') ||
+        text.includes('Message could not be encrypted')
+      ) {
+        threadLogs.push(`[${prefix}] ${text}`)
+        console.error(`[${prefix}] ${text}`)
+      }
+    }
+
+    alice.page.on('console', logCapture('alice-channel-thread'))
+    bob.page.on('console', logCapture('bob-channel-thread'))
 
     await openThread(alice.page, CHANNEL_MESSAGES.alice1)
-    await sendThreadReply(alice.page, CHANNEL_MESSAGES.threadReply1)
+    try {
+      await sendThreadReply(alice.page, CHANNEL_MESSAGES.threadReply1)
+    } catch (err) {
+      console.error('=== CHANNEL THREAD E2EE DIAGNOSTIC LOGS ===')
+      for (const log of threadLogs) console.error(log)
+      console.error('=== END CHANNEL THREAD E2EE LOGS ===')
+      throw err
+    }
 
     // Bob opens the same thread and sees alice's reply
     await openThread(bob.page, CHANNEL_MESSAGES.alice1)
@@ -424,7 +543,14 @@ test.describe('P0 Smoke — full continuous run', () => {
       `.vesper-thread-feed :text("${CHANNEL_MESSAGES.threadReply1}")`,
       { timeout: 15_000 }
     )
-    await sendThreadReply(bob.page, CHANNEL_MESSAGES.threadReply2)
+    try {
+      await sendThreadReply(bob.page, CHANNEL_MESSAGES.threadReply2)
+    } catch (err) {
+      console.error('=== CHANNEL THREAD E2EE DIAGNOSTIC LOGS ===')
+      for (const log of threadLogs) console.error(log)
+      console.error('=== END CHANNEL THREAD E2EE LOGS ===')
+      throw err
+    }
 
     // Verify on alice's side
     await alice.page.waitForSelector(

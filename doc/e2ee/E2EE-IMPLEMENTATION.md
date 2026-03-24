@@ -1,14 +1,14 @@
 # E2EE Implementation Guide
 
-This document describes how Vesper's end-to-end encryption works as currently implemented, how to work with it as a developer, and where the sharp edges are. It is a companion to [REQUIREMENTS-E2EE.md](./REQUIREMENTS-E2EE.md) (what the system must do and why), [REQUIREMENTS-E2EE-AUDIT.md](./REQUIREMENTS-E2EE-AUDIT.md) (which requirements are met and by what code), and [DESIGN.md](../DESIGN.md) (the overall architecture). This document covers what the system actually does right now, in enough detail to modify it without breaking things.
+This document describes how Vesper's end-to-end encryption works as currently implemented, how to work with it as a developer, and where the sharp edges are. Use it together with [PROTOCOL.md](../PROTOCOL.md), [doc/sdk/encryption.md](../sdk/encryption.md), [E2EE-CORRECTNESS-PLAN.md](../E2EE-CORRECTNESS-PLAN.md), and [DESIGN.md](../DESIGN.md). This document covers what the system actually does right now, in enough detail to modify it without breaking things.
 
-Last updated after the Phase 0–6 E2EE refactor.
+Last updated after the OpenMLS migration, durable checkpoint work, and SDK-owned repair move on `fix/mls-e2e-handshake`.
 
 ---
 
 ## 1. Architecture Overview
 
-Vesper's E2EE uses the MLS protocol (RFC 9420) via the `ts-mls` TypeScript library. The design principle is that the server is cryptographically blind — it stores and relays opaque ciphertext but never has access to plaintext content or encryption keys.
+Vesper's E2EE uses the MLS protocol (RFC 9420) via OpenMLS packaged as `vesper-openmls-wasm`. The design principle is still that the server is cryptographically blind: it stores and relays opaque ciphertext plus MLS coordination artifacts, but never has access to plaintext content or encryption keys.
 
 The system has four layers:
 
@@ -16,15 +16,15 @@ The system has four layers:
 ┌──────────────────────────────────────────────────┐
 │  UI stores + SDK client runtime                    │  ← Orchestration
 ├──────────────────────────────────────────────────┤
-│  Crypto (mls, identity, payload, groupLock, …)   │  ← Cryptographic operations
+│  Crypto (OpenMLS WASM, identity, payload, lock)  │  ← Cryptographic operations
 ├──────────────────────────────────────────────────┤
-│  Storage (storage.ts → db.ts / indexedDbStorage)  │  ← Persistence
+│  Storage (scope checkpoints + message caches)     │  ← Persistence
 ├──────────────────────────────────────────────────┤
-│  Server (Phoenix channels, REST API)              │  ← Relay + coordination
+│  Server (Phoenix channels, REST APIs)             │  ← Relay + coordination
 └──────────────────────────────────────────────────┘
 ```
 
-Two storage backends exist: an encrypted SQLite database in Electron (the primary path) and an IndexedDB fallback for the web client. The web client has reduced functionality — no FTS5 search, no at-rest encryption guarantees beyond browser-level storage.
+Two storage backends exist: an encrypted SQLite database in Electron (the primary path) and an IndexedDB fallback for the web client. The SDK now stores per-scope checkpoints that bundle serialized group state, durable replay cursors, and pending control-plane outbox entries so restart and reconnect recovery can resume deterministically.
 
 ---
 
@@ -118,39 +118,38 @@ Each text channel, DM conversation, and voice channel maps to one MLS group. The
 
 ### 4.2 Group Lifecycle
 
-**Creation:** The first user to need encryption in a scope creates the MLS group. `createGroup()` consumes a local key package, calls `ts-mls.createGroup()`, and persists the resulting `ClientState`. A `pendingGroupCreations` Map prevents concurrent calls from creating duplicate groups for the same scope. The consumed key package is also marked consumed on the server via `POST /api/v1/key-packages/me/consume` to prevent stale packages from being handed out.
+**Creation:** The first user to need encryption in a scope can create the MLS group. `createGroup()` consumes a local key package, initializes a new OpenMLS-backed `GroupState`, and persists it inside the scope checkpoint. A `pendingGroupCreations` Map prevents concurrent calls from creating duplicate groups for the same scope. The consumed key package is also marked consumed on the server so stale packages are not handed out later.
 
 For channels, only the channel owner creates the group (via `ensureChannelGroupReady`). For DMs, deterministic leader election decides: the participant with the lower UUID creates the group.
 
-**Joining (channels):** When a user enters a channel that already has an MLS group, the existing group owner (first member in the ratchet tree) handles join requests. The flow: the joining user receives `mls_request_join_all` → responds with `mls_request_join` → the group owner fetches the joiner's key package, calls `addMemberToGroup()`, and broadcasts the resulting Commit + Welcome. Join requests are deduplicated per user per scope (10-second window) to prevent cascading epoch storms from multiple code paths sending duplicate join requests.
+**Joining (channels):** When a user enters a channel that already has published GroupInfo, the SDK prefers External Commit. The joining client fetches `GET /api/v1/group-info/:scope`, builds an External Commit locally, and the server atomically stores the new GroupInfo plus the durable `mls_commit` event before advertising success. If GroupInfo does not exist yet, the owner-gated bootstrap path still creates the first group and publishes the first epoch.
 
-**Joining (DMs):** When two users open a DM simultaneously, both independently create MLS groups. The `mls_request_join_all` handler uses deterministic leader election (lower UUID wins) to break symmetry. The leader adds the non-leader directly. The non-leader yields (drops their group via `resetScope`, marks the scope in `yieldedDmScopes` to prevent recreation, and sends `mls_request_join`). The server stores `mls_request_join_all` events durably and replays them to late-joining DM participants, solving the missed-broadcast timing problem.
+**Joining (DMs):** DMs still use deterministic leader election when there is no published GroupInfo yet, but late or restarting devices recover through the same SDK-owned External Commit, durable replay, and same-user history-repair machinery used elsewhere. Missed `mls_request_join_all` events are replayed durably so a late DM participant can still converge.
 
-**Welcome processing:** The joining user receives the Welcome message and calls `handleWelcome()`, which tries each local key package until one matches. On success, it produces a `ClientState` for the group and processes any pending commits that arrived before the Welcome.
+**Welcome processing:** The joining user receives the Welcome message and calls `handleWelcome()`, which tries local key packages until one matches. On success, it produces an OpenMLS-backed `GroupState` for the scope and processes any pending commits that arrived before the Welcome.
 
 **Commit processing:** All other group members receive the Commit message and call `handleCommit()` to advance their epoch.
 
-**State persistence:** After every operation that modifies `ClientState` (create, join, welcome, commit, encrypt, decrypt), the state is serialized via `encodeGroupState()` and written to the `mls_groups` table.
+**State persistence:** After every operation that modifies the scope state, the SDK updates the serialized group state plus the scope checkpoint. The checkpoint includes the durable MLS replay cursor, recent commit fingerprints, repair state, and pending outbox work such as GroupInfo publish, External Commit broadcast, and sponsored transitions.
 
 ### 4.3 Ensuring Group Membership
 
-`ensureGroupMembership(channelId)` is the entry point before any encrypt/decrypt operation. It checks three tiers:
+`ensureGroupMembership(scopeId)` is the entry point before any encrypt or decrypt operation. It checks three tiers:
 
 1. In-memory `groupStates` map — fastest path.
-2. Local database (`mls_groups` table) — deserializes persisted state.
-3. Pending welcomes from the server — processes offline-delivered Welcome messages.
+2. Local checkpoint storage — restores the persisted group state, replay cursor, and pending outbox entries.
+3. Recovery artifacts from the server — pending welcomes, durable MLS replay, pending resync requests, pending history requests, and pending history bundles.
 
-If none of these produce a valid state, the user must wait for a group member to process their join request.
+If none of these produce a valid state, the SDK enters repair instead of leaving the scope silently wedged.
 
-### 4.4 Epoch Key Retention
+### 4.4 Recovery and replay
 
-ts-mls manages historical epoch keys internally via `historicalReceiverData` inside `ClientState`. This is configured to retain keys for 64 epochs (the `retainKeysForEpochs` setting, up from the library default of 4). When a message arrives from a past epoch, ts-mls looks up the stored receiver data for that epoch and decrypts without needing the current epoch's state.
+The current implementation treats replay and repair as SDK-owned lifecycle work:
 
-The 64-epoch retention window means messages can be decrypted as long as fewer than 64 Commits have advanced the group since the message was sent. For a typical chat with periodic member joins/leaves, this covers hours to days of history. Messages from epochs older than the retention window become permanently undecryptable.
-
-The retention is bounded rather than unlimited because each epoch snapshot adds ~2–5 KB to the serialized state. At 64 epochs, that's roughly 128–320 KB per group — manageable for the SQLite store.
-
-**Why not a separate `epoch_keys` table?** The original design considered extracting minimal epoch key material and storing it in a dedicated table keyed by `(group_id, epoch)`. A spike into the ts-mls source revealed that `processPrivateMessage` requires full `EpochReceiverData` (secret tree, ratchet tree, sender data secret, group context) rather than a single symmetric key — and this data is already stored inside `ClientState.historicalReceiverData`. Extracting and re-injecting it would require manipulating the library's internal structures with no public API support. Using the built-in retention config is simpler, safer, and achieves the same goal. If ts-mls ever exposes an API for standalone epoch decryption, the separate table approach could be revisited.
+- `replayDurableEvents()` replays durable MLS commits by server `seq`
+- `processPendingRepairArtifacts()` drains resync requests, history requests, and history bundles
+- reconnect and restart restore per-scope checkpoints before attempting new work
+- same-user repair is scoped and durable instead of being driven by renderer-only code
 
 ### 4.5 Concurrency
 
@@ -158,21 +157,18 @@ All state-mutating operations on a group are serialized via a per-group async mu
 
 The lock is per-channel-ID, so operations on different channels proceed independently. `ensureGroupMembership()` is deliberately *not* locked — it calls `handleWelcome()` internally, which acquires its own lock. Locking `ensureGroupMembership` would deadlock.
 
-### 4.6 Commit Failure Handling
+### 4.6 Commit failure handling
 
-`handleCommit()` retries up to 3 times with exponential backoff (100ms, 500ms, 2s). If all retries fail, the group state is evicted from memory and deleted from the database. The next operation on that channel will trigger `ensureGroupMembership()`, which will attempt to rejoin via pending welcomes or request a fresh join.
+Commit handling now distinguishes applied, already-applied, buffered, and repair-needed states instead of collapsing everything to a generic boolean failure. Duplicate durable commits can safely advance the replay cursor, while stale or conflicting local state moves the scope into repair.
 
-### 4.7 ts-mls Integration Notes
+### 4.7 OpenMLS integration notes
 
-Two aspects of the ts-mls API require care:
+The `sdk/src/crypto/mls.ts` layer now wraps OpenMLS via WASM:
 
-**Decoder functions require explicit offset and return tuples.** ts-mls's `decodeMlsMessage` and `decodeGroupState` are raw TLS decoders with the signature `(buf: Uint8Array, offset: number) => [value, bytesConsumed] | undefined`. They must be called with an explicit offset (0 for top-level decoding). Omitting the offset leaves it as `undefined`, which corrupts the internal accumulator: `undefined + 2 = NaN`, causing every sub-decoder after the first to read from byte 0 instead of advancing through the buffer. The return value is a `[decodedValue, bytesConsumed]` tuple, not the decoded value directly.
-
-`decodeMlsMessageFromBytes()` in `mls.ts` wraps this correctly — always use it instead of calling `decodeMlsMessage` directly. The wrapper passes `offset = 0` and extracts the value from the tuple.
-
-**`clientConfig` is not serialized.** `encodeGroupState()` serializes the MLS `ClientState` for persistence, but the `clientConfig` field (which contains `paddingConfig`, `authService`, `keyRetentionConfig`, etc.) is not included in the TLS encoding. After a serialize → deserialize round-trip (page reload, session restore, app restart), `clientConfig` will be `undefined`. Any subsequent call to `createApplicationMessage` or `processPrivateMessage` will crash accessing `state.clientConfig.paddingConfig`.
-
-`deserializeGroupState()` in `mls.ts` handles this by reattaching `vesperClientConfig` after decoding. Do not call `decodeGroupState` directly — always use `deserializeGroupState()`.
+- no `decodeMlsMessage(..., offset)` footgun
+- full serialized state round-trips through the SDK storage layer
+- full RFC 9420 External Commit support
+- audited cryptographic core from OpenMLS, while the Vesper orchestration and storage integration remain product-specific code that still needs normal review
 
 ---
 
@@ -217,8 +213,8 @@ User types message
   → encodePayload({ v: 1, type: 'text', text: content })
   → withGroupLock(channelId, ...)
   → encryptMessage(state, payloadString)
-    → ts-mls: AEAD encrypt with current epoch key, ratchet state
-  → persist new state to mls_groups table
+    → OpenMLS: AEAD encrypt with current scope state
+  → persist updated scope checkpoint
   → base64-encode ciphertext
   → push to WebSocket channel
   → cache ciphertext + epoch to message_cache (never plaintext)
@@ -233,8 +229,8 @@ WebSocket delivers encrypted message
   → if miss: check sent-message cache by ciphertext base64
   → if miss: withGroupLock(channelId, ...)
     → decryptMessage(state, ciphertextBytes)
-      → ts-mls: look up epoch key, AEAD decrypt, verify Ed25519 signature
-    → persist new state
+      → OpenMLS: decrypt, authenticate sender, update scope state
+    → persist updated scope checkpoint
   → decodePayload(plaintext)
   → getDisplayText(payload)
   → populate LRU cache
@@ -247,15 +243,13 @@ WebSocket delivers encrypted message
 
 A 2000-entry LRU cache (`decryptionCache.ts`) prevents re-decrypting messages that have already been shown. The cache is keyed by message ID and holds plaintext strings. It's checked before MLS decryption and populated on success. Entries are evicted on message deletion and updated on message edits.
 
-A separate sent-message cache (100-entry LRU, also in `decryptionCache.ts`) handles a fundamental MLS constraint: senders cannot decrypt their own messages. When `createApplicationMessage` encrypts, it consumes the sender's ratchet key and advances to the next generation. When the server echoes the message back via WebSocket, the sender's local state has already moved past that generation — `processPrivateMessage` cannot derive the decryption key. Other group members decrypt the message normally; only the sender is affected.
+A separate sent-message cache handles a fundamental MLS constraint: senders cannot always decrypt their own echoed ciphertexts after ratchet advancement. When the server echoes the message back via WebSocket, the sender's local state may already have moved past the needed generation. Other group members decrypt the message normally; only the sender needs the plaintext cache.
 
-The sent-message cache maps `ciphertext_base64 → plaintext` and is populated in `encryptForChannel()` at encrypt time. On the receive path, `processIncomingMessage()`, `handleReactionUpdate()`, and `handleMessageEdited()` all check this cache before attempting MLS decryption.
-
-The sent-message cache is volatile — it does not survive page reloads or app restarts. After a reload, the sender's own historical messages will show as "[Message unavailable - decryption failed]" until re-sent or until the messages age out of view. This is a known limitation (see §12). Other group members are unaffected.
+The sent-message cache maps `ciphertext_base64 → plaintext`, is populated at encrypt time, and is persisted through the storage runtime. On the receive path, `processIncomingMessage()`, `handleReactionUpdate()`, and `handleMessageEdited()` all check this cache before attempting MLS decryption or repair.
 
 ### 5.6 Message Cache (On-Disk)
 
-The `message_cache` table stores: message ID, channel ID, sender metadata, ciphertext (BLOB), MLS epoch (INTEGER), and timestamp. Plaintext is never written to disk. When loading cached messages, the client must decrypt each one using the channel's current MLS state — if the epoch key has been evicted (older than 64 epochs), the message is unrecoverable from cache.
+The `message_cache` table stores message ID, scope metadata, ciphertext, cached plaintext when available, MLS epoch, and timestamps. If direct decrypt fails on older data, the SDK can fall back to same-user history repair instead of relying only on a fixed historical-epoch window.
 
 ---
 
@@ -374,20 +368,19 @@ That's seven files for a schema change. The layers exist for security (renderer 
 
 ### Debugging MLS Issues
 
-- **"Failed to process commit"** — usually an epoch mismatch. The client received a Commit for an epoch it's not at. After 3 retries, the group state is evicted and will rejoin.
+- **"Failed to process commit"** — usually a stale local checkpoint, out-of-order replay, or a real divergence. Check whether the scope has already entered repair and whether the durable replay cursor is advancing.
 - **"No key package available for user X"** — the target user has exhausted their server-side key package supply. They need to come online so `replenishKeyPackages()` runs.
-- **Decryption returns null** — either the epoch key has been evicted (>64 epochs ago) or the state is corrupted. Check the mls_groups table for the group's current epoch.
-- **State corruption** — if MLS state gets into a bad state, `resetGroup(channelId)` evicts it. The next operation will trigger a rejoin. This is the nuclear option.
-- **"Failed to decode MLS message: decoder returned undefined"** — the bytes passed to `decodeMlsMessageFromBytes()` are not a valid MLS message. Check that the input is a proper `Uint8Array` with correct MLS framing (first 2 bytes: protocol version, next 2 bytes: wireformat).
-- **"Cannot read properties of undefined (reading 'paddingConfig')"** — `clientConfig` is missing from the `ClientState`. This happens if `decodeGroupState` was called directly instead of through `deserializeGroupState()`, which reattaches `vesperClientConfig`.
-- **Sender's messages show as "[Message unavailable]"** — normal for messages sent before the current session. The sent-message cache is in-memory only. For messages in the current session, verify that `cacheSentMessage()` is being called in `encryptForChannel()`.
+- **Decryption returns null** — the device is missing the right historical epoch material, same-user history repair has not landed yet, or the local scope state is corrupt. Check pending history bundles, recent commit fingerprints, and the stored checkpoint for that scope.
+- **State corruption** — clear the affected scope checkpoint and let the SDK repair path rehydrate from GroupInfo, durable replay, or a same-user history bundle.
+- **External Commit loops or repeated GroupInfo publish retries** — inspect the pending outbox fields in the stored scope checkpoint and confirm the server is accepting `PUT /api/v1/group-info/:scope_id` and `POST /api/v1/mls-sponsored-transition/:scope_id`.
+- **Sender's messages show as "[Message unavailable]"** — verify the persisted sent-message cache is writing rows for echoed ciphertext and that the scope checkpoint is being saved after encrypt.
 
 ### Testing
 
-The Electron-specific code (SQLite, safeStorage, IPC) is not covered by the Playwright E2E tests, which test the web client. For crypto correctness, the primary verification path is:
-1. Docker build (catches TypeScript compilation errors).
-2. Manual testing with two Electron clients.
-3. Checking that the server health endpoint responds after migration.
+The Electron-specific code (SQLite, `safeStorage`, IPC) is still different from the web path, but the current verification story is broader than manual smoke checks:
+1. SDK integration tests exercise the encrypted chat runtime directly in Node.
+2. Playwright E2E covers the web client against the live Phoenix stack.
+3. Electron still needs manual coverage for OS keychain and local encrypted SQLite behavior.
 
 ### MLS Diagnostics and Epoch Budget Testing
 
@@ -474,8 +467,8 @@ If a budget assertion fails, it means the protocol flow has regressed — likely
 
 | Area | Current State | Target | Notes |
 |---|---|---|---|
-| Epoch key lifecycle | Bounded retention (64 epochs) via ts-mls config | Tie epoch key deletion to message lifecycle (delete key when last message from that epoch is gone) | Requires hooking into disappearing message expiry to check if any messages remain for an epoch |
-| Self-decrypt after reload | Sender's own messages from previous sessions show as decryption failed (sent-message cache is volatile) | Persist sent-message cache or accept as limitation | MLS by design: sender's ratchet key is consumed on encrypt. The in-memory cache handles the current session; persistence would require storing plaintext mappings |
+| Historical message recovery | Uses persisted group state, durable replay, and same-user history repair | Add explicit checkpoint snapshots for very large scopes | Current recovery is correctness-first for small and medium scopes; very large rooms still need a different topology |
+| Self-decrypt after reload | Sent-message plaintext cache is persisted and checked before repair | Keep cache bounded and scoped | MLS still consumes sender ratchet state on encrypt; the cache is the local workaround |
 | Search | FTS5 infrastructure wired, UI not connected | Full search UI with results navigation | Index is populated on decrypt — only viewed messages are searchable |
 | Large files | Single-shot AES-256-GCM | Chunked encryption (256 KB chunks) for streaming decrypt | Each chunk independently authenticated with chunk index in AAD to prevent reordering |
 | Crypto thread | Runs on renderer main thread | Web Worker for symmetric crypto offload | Full `ClientState` likely won't survive `structuredClone`. Recommended fallback: keep MLS state in main thread, offload only AES-GCM encrypt/decrypt to Worker |
@@ -494,13 +487,13 @@ If a budget assertion fails, it means the protocol flow has regressed — likely
 
 - **Server blindness**: The server stores only ciphertext. Key material never leaves the client unencrypted (except public keys, by definition).
 - **Forward secrecy**: MLS provides forward secrecy through key ratcheting. Compromising a device doesn't reveal past messages (assuming epoch keys have been evicted).
-- **Sender authentication**: Every decrypted message is verified against the sender's Ed25519 public key via `verifyFramedContentSignature` in ts-mls. Invalid signatures throw `CryptoVerificationError`.
+- **Sender authentication**: Every decrypted message is authenticated by OpenMLS against the sender credential embedded in the group state.
 - **At-rest encryption**: The local database is encrypted with a key that only the OS keychain can decrypt.
 
 ### Unverified / Unaudited
 
-- **ts-mls itself**: The library has not undergone a formal security audit. This is a hard gate for production deployment (see pre-release checklist in REQUIREMENTS-E2EE.md).
-- **Side-channel resistance**: JavaScript/TypeScript crypto is inherently vulnerable to timing attacks. The `noble` libraries used for low-level primitives are designed to be constant-time, but the MLS state machine in ts-mls has not been analyzed for side channels.
+- **Vesper's OpenMLS integration**: The OpenMLS core is audited, but the Vesper-specific orchestration, storage, and recovery flows have not had a separate full-system security audit yet.
+- **Side-channel resistance**: The MLS core now runs inside WASM, but JavaScript orchestration, persistence, and surrounding file/key handling still need normal side-channel caution.
 - **Memory safety**: Key material in JavaScript cannot be reliably zeroed. The runtime may copy, move, or retain key bytes in memory unpredictably. The `signature_private_key` column in the local database is the most sensitive long-lived secret.
 
 ### Accepted Metadata Leaks

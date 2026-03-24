@@ -63,6 +63,7 @@ defmodule VesperWeb.ChatChannel do
         attrs =
           %{
             ciphertext: decoded,
+            client_nonce: client_nonce,
             mls_epoch: epoch,
             channel_id: socket.assigns.channel_id,
             sender_id: socket.assigns.user_id
@@ -840,7 +841,7 @@ defmodule VesperWeb.ChatChannel do
           topic: "chat:channel:#{socket.assigns.channel_id}"
         })
 
-        {:noreply, socket}
+        {:reply, :ok, socket}
 
       {:error, _changeset} ->
         {:reply, {:error, %{reason: "could not store history bundle"}}, socket}
@@ -971,10 +972,9 @@ defmodule VesperWeb.ChatChannel do
     :ok
   end
 
-  defp notify_history_request_pending(server_id, channel_id, requester_id, topic) do
+  defp notify_history_request_pending(server_id, channel_id, _requester_id, topic) do
     server_id
     |> Servers.list_member_ids()
-    |> Enum.reject(&(&1 == requester_id))
     |> Enum.filter(&Servers.user_can_view_channel?(&1, channel_id))
     |> Enum.each(fn user_id ->
       VesperWeb.Endpoint.broadcast("user:#{user_id}", "mls_history_request_pending", %{

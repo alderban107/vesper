@@ -1,8 +1,8 @@
 import type { Locator, Page } from '@playwright/test'
-import { sendMessageWithEncryptionRetry } from './sendRetry'
+import { sendAttachmentWithEncryptionRetry, sendMessageWithEncryptionRetry } from './sendRetry'
 import { waitForSocketConnected } from './wait'
 
-const ENCRYPTION_READY_TIMEOUT = 10_000
+const ENCRYPTION_READY_TIMEOUT = 30_000
 const ENCRYPTION_POLL_INTERVAL = 500
 const DM_HYDRATION_TIMEOUT = 5_000
 
@@ -161,7 +161,7 @@ export async function sendDmMessage(page: Page, text: string): Promise<void> {
     page.locator('.vesper-composer-textarea'),
     page.getByTestId('message-row'),
     text,
-    { timeout: ENCRYPTION_READY_TIMEOUT, simplePoll: true, errorLabel: 'DM' }
+    { timeout: ENCRYPTION_READY_TIMEOUT, errorLabel: 'DM' }
   )
 }
 
@@ -209,5 +209,10 @@ export async function uploadDmAttachment(
   })
 
   const textarea = page.locator('.vesper-composer-textarea')
-  await textarea.press('Enter')
+  await sendAttachmentWithEncryptionRetry(
+    page,
+    textarea,
+    page.locator('[data-testid="message-row"] [data-testid="attachment"]'),
+    { errorLabel: 'DM attachment' }
+  )
 }

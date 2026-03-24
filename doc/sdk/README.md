@@ -44,7 +44,7 @@ import { bootServerStack } from '@vesper/sdk/testing'               // Test util
 
 | Package | Purpose |
 |---------|---------|
-| `ts-mls` | MLS (Messaging Layer Security) protocol implementation |
+| `vesper-openmls-wasm` | OpenMLS-backed MLS protocol implementation (Rust/WASM) |
 | `@noble/ciphers` | AES-GCM encryption |
 | `@noble/curves` | X25519, Ed25519 key exchange and signing |
 | `@noble/hashes` | SHA-256, SHA-512 |

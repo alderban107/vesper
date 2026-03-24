@@ -318,7 +318,11 @@ export class VesperSocketClient {
       return false
     }
 
-    return !this.isChannelClosed(channel) && !this.isChannelLeaving(channel)
+    return (
+      this.isChannelJoined(channel) &&
+      !this.isChannelClosed(channel) &&
+      !this.isChannelLeaving(channel)
+    )
   }
 
   onSocketOpen(listener: () => void): () => void {

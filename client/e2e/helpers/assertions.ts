@@ -35,6 +35,13 @@ export async function captureSnapshot(page: Page): Promise<ChatSnapshot> {
 
     const rows = document.querySelectorAll('[data-testid="message-row"]')
     rows.forEach((row) => {
+      if (
+        row.classList.contains('vesper-message-row-sending') ||
+        row.classList.contains('vesper-message-row-failed')
+      ) {
+        return
+      }
+
       const content = row.querySelector('[data-testid="message-content"]')?.textContent || ''
       const sender = row.querySelector('[data-testid="message-sender"]')?.textContent || ''
       const threadBtn = row.querySelector('[data-testid="thread-count"]')

@@ -1,12 +1,13 @@
 import { expect, type Page } from '@playwright/test'
-import { waitForThreadPanel } from './wait'
-import { sendMessageWithEncryptionRetry } from './sendRetry'
+import { waitForChannelEncryptionReady, waitForThreadPanel } from './wait'
+import { sendAttachmentWithEncryptionRetry, sendMessageWithEncryptionRetry } from './sendRetry'
 
 /**
  * When the message contains custom emoji shortcodes that get rendered as images,
  * pass `waitForText` with a text fragment that will still be visible after rendering.
  */
 export async function sendChannelMessage(page: Page, text: string, waitForText?: string): Promise<void> {
+  await waitForChannelEncryptionReady(page)
   await sendMessageWithEncryptionRetry(
     page,
     page.locator('[data-testid="message-input"]'),
@@ -22,7 +23,13 @@ export async function getChannelMessages(page: Page): Promise<string[]> {
 }
 
 export async function openThread(page: Page, messageText: string): Promise<void> {
-  const row = page.locator(`[data-testid="message-row"]:has-text("${messageText}")`).first()
+  const confirmedRows = page.locator(
+    `[data-testid="message-row"]:not(.vesper-message-row-sending):not(.vesper-message-row-failed):has-text("${messageText}")`
+  )
+  const row =
+    (await confirmedRows.count()) > 0
+      ? confirmedRows.first()
+      : page.locator(`[data-testid="message-row"]:has-text("${messageText}")`).first()
   await row.scrollIntoViewIfNeeded()
   await row.hover()
   const threadButton = row.locator('[data-testid="thread-button"].vesper-message-action-button')
@@ -69,7 +76,13 @@ export async function closeThread(page: Page): Promise<void> {
 }
 
 export async function getThreadCount(page: Page, messageText: string): Promise<number> {
-  const row = page.locator(`[data-testid="message-row"]:has-text("${messageText}")`)
+  const confirmedRows = page.locator(
+    `[data-testid="message-row"]:not(.vesper-message-row-sending):not(.vesper-message-row-failed):has-text("${messageText}")`
+  )
+  const row =
+    (await confirmedRows.count()) > 0
+      ? confirmedRows.first()
+      : page.locator(`[data-testid="message-row"]:has-text("${messageText}")`).first()
   const badge = row.locator('[data-testid="thread-count"]')
   if (!(await badge.isVisible())) return 0
   const text = await badge.textContent()
@@ -88,7 +101,12 @@ export async function uploadChannelAttachment(
   })
 
   const input = page.locator('[data-testid="message-input"]')
-  await input.press('Enter')
+  await sendAttachmentWithEncryptionRetry(
+    page,
+    input,
+    page.locator('[data-testid="message-row"] [data-testid="attachment"]'),
+    { errorLabel: 'channel attachment' }
+  )
 }
 
 export async function startChannelTyping(page: Page): Promise<void> {

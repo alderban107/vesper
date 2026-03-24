@@ -416,11 +416,11 @@ export default function MainPage(): React.JSX.Element {
             placeholder="Reply to thread"
             rows={1}
             className="vesper-thread-composer-textarea"
-            disabled={!resolvedThreadParent}
+            disabled={!activeThreadParentId}
           />
           <button
             type="submit"
-            disabled={!threadReply.trim() || !resolvedThreadParent}
+            disabled={!threadReply.trim() || !activeThreadParentId}
             className="vesper-thread-composer-send"
           >
             <SendHorizonal className="w-4 h-4" />

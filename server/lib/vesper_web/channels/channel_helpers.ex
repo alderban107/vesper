@@ -106,6 +106,7 @@ defmodule VesperWeb.ChannelHelpers do
       room_seq: message.room_seq,
       ciphertext: Base.encode64(message.ciphertext),
       mls_epoch: message.mls_epoch,
+      client_nonce: message.client_nonce,
       sender_id: message.sender_id,
       sender: sender_json(message.sender),
       expires_at: message.expires_at,
@@ -126,6 +127,7 @@ defmodule VesperWeb.ChannelHelpers do
     base = %{
       id: message.id,
       room_seq: message.room_seq,
+      client_nonce: message.client_nonce,
       inserted_at: message.inserted_at,
       sender_id: message.sender_id,
       sender: sender_json(message.sender)

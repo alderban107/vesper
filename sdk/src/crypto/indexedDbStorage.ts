@@ -10,14 +10,16 @@
  */
 
 const DB_NAME_PREFIX = 'vesper-crypto'
-const DB_VERSION = 6
+const DB_VERSION = 8
 
 const STORES = {
   identityKeys: 'identity_keys',
   mlsGroups: 'mls_groups',
   mlsGroupSyncState: 'mls_group_sync_state',
+  mlsScopeMetadata: 'mls_scope_metadata',
   mlsPendingGroupInfoPublishes: 'mls_pending_group_info_publishes',
   mlsPendingExternalCommitBroadcasts: 'mls_pending_external_commit_broadcasts',
+  mlsPendingSponsoredTransitions: 'mls_pending_sponsored_transitions',
   localKeyPackages: 'local_key_packages',
   messageCache: 'message_cache',
   sentMessageCache: 'sent_message_cache'
@@ -106,12 +108,20 @@ function openDb(userId: string): Promise<IDBDatabase> {
         db.createObjectStore(STORES.mlsGroupSyncState, { keyPath: 'group_id' })
       }
 
+      if (!db.objectStoreNames.contains(STORES.mlsScopeMetadata)) {
+        db.createObjectStore(STORES.mlsScopeMetadata, { keyPath: 'group_id' })
+      }
+
       if (!db.objectStoreNames.contains(STORES.mlsPendingGroupInfoPublishes)) {
         db.createObjectStore(STORES.mlsPendingGroupInfoPublishes, { keyPath: 'group_id' })
       }
 
       if (!db.objectStoreNames.contains(STORES.mlsPendingExternalCommitBroadcasts)) {
         db.createObjectStore(STORES.mlsPendingExternalCommitBroadcasts, { keyPath: 'group_id' })
+      }
+
+      if (!db.objectStoreNames.contains(STORES.mlsPendingSponsoredTransitions)) {
+        db.createObjectStore(STORES.mlsPendingSponsoredTransitions, { keyPath: 'group_id' })
       }
 
       if (!db.objectStoreNames.contains(STORES.localKeyPackages)) {
@@ -288,8 +298,10 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
       const db = await getDb()
       await req(tx(db, STORES.mlsGroups, 'readwrite').delete(groupId))
       await req(tx(db, STORES.mlsGroupSyncState, 'readwrite').delete(groupId))
+      await req(tx(db, STORES.mlsScopeMetadata, 'readwrite').delete(groupId))
       await req(tx(db, STORES.mlsPendingGroupInfoPublishes, 'readwrite').delete(groupId))
       await req(tx(db, STORES.mlsPendingExternalCommitBroadcasts, 'readwrite').delete(groupId))
+      await req(tx(db, STORES.mlsPendingSponsoredTransitions, 'readwrite').delete(groupId))
     },
 
     async getGroupSyncCursor(groupId: string) {
@@ -308,6 +320,250 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
           last_event_seq: Math.max(existing?.last_event_seq ?? 0, lastEventSeq)
         })
       )
+    },
+
+    async getScopeCheckpoint(groupId: string) {
+      const db = await getDb()
+      const transaction = db.transaction(
+        [
+          STORES.mlsGroups,
+          STORES.mlsGroupSyncState,
+          STORES.mlsScopeMetadata,
+          STORES.mlsPendingGroupInfoPublishes,
+          STORES.mlsPendingExternalCommitBroadcasts,
+          STORES.mlsPendingSponsoredTransitions
+        ],
+        'readonly'
+      )
+      const groupStateStore = transaction.objectStore(STORES.mlsGroups)
+      const syncStateStore = transaction.objectStore(STORES.mlsGroupSyncState)
+      const metadataStore = transaction.objectStore(STORES.mlsScopeMetadata)
+      const groupInfoStore = transaction.objectStore(STORES.mlsPendingGroupInfoPublishes)
+      const externalCommitStore = transaction.objectStore(STORES.mlsPendingExternalCommitBroadcasts)
+      const sponsoredTransitionStore = transaction.objectStore(
+        STORES.mlsPendingSponsoredTransitions
+      )
+
+      const [
+        groupState,
+        syncState,
+        metadata,
+        pendingGroupInfo,
+        pendingExternalCommit,
+        pendingSponsoredTransition
+      ] =
+        await Promise.all([
+          req(groupStateStore.get(groupId)),
+          req(syncStateStore.get(groupId)),
+          req(metadataStore.get(groupId)),
+          req(groupInfoStore.get(groupId)),
+          req(externalCommitStore.get(groupId)),
+          req(sponsoredTransitionStore.get(groupId))
+        ])
+      await txComplete(transaction)
+
+      return {
+        group_id: groupId,
+        state: groupState?.state ?? null,
+        epoch: groupState?.epoch ?? 0,
+        last_event_seq: syncState?.last_event_seq ?? 0,
+        recent_commit_fingerprints: Array.isArray(metadata?.recent_commit_fingerprints)
+          ? metadata.recent_commit_fingerprints.filter(
+              (value: unknown): value is string => typeof value === 'string'
+            )
+          : [],
+        recent_history_bundle_fingerprints: Array.isArray(
+          metadata?.recent_history_bundle_fingerprints
+        )
+          ? metadata.recent_history_bundle_fingerprints.filter(
+              (value: unknown): value is string => typeof value === 'string'
+            )
+          : [],
+        repair_status:
+          typeof metadata?.repair_status === 'string' ? metadata.repair_status : null,
+        repair_failure_count:
+          typeof metadata?.repair_failure_count === 'number' ? metadata.repair_failure_count : 0,
+        repair_last_error:
+          typeof metadata?.repair_last_error === 'string' ? metadata.repair_last_error : null,
+        repair_updated_at:
+          typeof metadata?.repair_updated_at === 'string' ? metadata.repair_updated_at : null,
+        pending_group_info_publish: pendingGroupInfo
+          ? {
+              group_info_data: pendingGroupInfo.group_info_data,
+              ratchet_tree_data: pendingGroupInfo.ratchet_tree_data ?? null,
+              epoch: pendingGroupInfo.epoch
+            }
+          : null,
+        pending_external_commit_broadcast: pendingExternalCommit
+          ? {
+              commit_data: pendingExternalCommit.commit_data,
+              commit_id: pendingExternalCommit.commit_id
+            }
+          : null,
+        pending_sponsored_transition: pendingSponsoredTransition
+          ? {
+              recipient_id: pendingSponsoredTransition.recipient_id,
+              recipient_client_id: pendingSponsoredTransition.recipient_client_id ?? null,
+              recipient_key_package_ref:
+                pendingSponsoredTransition.recipient_key_package_ref ?? null,
+              commit_data: pendingSponsoredTransition.commit_data,
+              commit_id: pendingSponsoredTransition.commit_id,
+              remove_commit_data: pendingSponsoredTransition.remove_commit_data ?? null,
+              welcome_data: pendingSponsoredTransition.welcome_data ?? null,
+              group_info_data: pendingSponsoredTransition.group_info_data ?? null,
+              ratchet_tree_data: pendingSponsoredTransition.ratchet_tree_data ?? null,
+              epoch: pendingSponsoredTransition.epoch ?? null,
+              previous_epoch: pendingSponsoredTransition.previous_epoch ?? null,
+              base_state: pendingSponsoredTransition.base_state ?? null,
+              base_epoch: pendingSponsoredTransition.base_epoch ?? null
+            }
+          : null
+      }
+    },
+
+    async getKnownScopeIds() {
+      const db = await getDb()
+      const transaction = db.transaction(
+        [
+          STORES.mlsGroups,
+          STORES.mlsGroupSyncState,
+          STORES.mlsScopeMetadata,
+          STORES.mlsPendingGroupInfoPublishes,
+          STORES.mlsPendingExternalCommitBroadcasts,
+          STORES.mlsPendingSponsoredTransitions
+        ],
+        'readonly'
+      )
+      const stores = [
+        transaction.objectStore(STORES.mlsGroups),
+        transaction.objectStore(STORES.mlsGroupSyncState),
+        transaction.objectStore(STORES.mlsScopeMetadata),
+        transaction.objectStore(STORES.mlsPendingGroupInfoPublishes),
+        transaction.objectStore(STORES.mlsPendingExternalCommitBroadcasts),
+        transaction.objectStore(STORES.mlsPendingSponsoredTransitions)
+      ]
+
+      const keys = await Promise.all(stores.map((store) => req(store.getAllKeys())))
+      await txComplete(transaction)
+
+      return [...new Set(keys.flat().filter((key): key is string => typeof key === 'string'))].sort()
+    },
+
+    async setScopeCheckpoint(groupId: string, checkpoint) {
+      const db = await getDb()
+      const transaction = db.transaction(
+        [
+          STORES.mlsGroups,
+          STORES.mlsGroupSyncState,
+          STORES.mlsScopeMetadata,
+          STORES.mlsPendingGroupInfoPublishes,
+          STORES.mlsPendingExternalCommitBroadcasts,
+          STORES.mlsPendingSponsoredTransitions
+        ],
+        'readwrite'
+      )
+      const groupStateStore = transaction.objectStore(STORES.mlsGroups)
+      const syncStateStore = transaction.objectStore(STORES.mlsGroupSyncState)
+      const metadataStore = transaction.objectStore(STORES.mlsScopeMetadata)
+      const groupInfoStore = transaction.objectStore(STORES.mlsPendingGroupInfoPublishes)
+      const externalCommitStore = transaction.objectStore(STORES.mlsPendingExternalCommitBroadcasts)
+      const sponsoredTransitionStore = transaction.objectStore(
+        STORES.mlsPendingSponsoredTransitions
+      )
+
+      const existingSyncState = await req(syncStateStore.get(groupId))
+      const nextSeq = Math.max(existingSyncState?.last_event_seq ?? 0, checkpoint.last_event_seq)
+
+      if (checkpoint.state) {
+        await req(
+          groupStateStore.put({
+            group_id: groupId,
+            state: checkpoint.state,
+            epoch: checkpoint.epoch
+          })
+        )
+      } else {
+        await req(groupStateStore.delete(groupId))
+      }
+
+      await req(
+        syncStateStore.put({
+          group_id: groupId,
+          last_event_seq: nextSeq
+        })
+      )
+
+      await req(
+        metadataStore.put({
+          group_id: groupId,
+          recent_commit_fingerprints: checkpoint.recent_commit_fingerprints ?? [],
+          recent_history_bundle_fingerprints:
+            checkpoint.recent_history_bundle_fingerprints ?? [],
+          repair_status: checkpoint.repair_status ?? null,
+          repair_failure_count: checkpoint.repair_failure_count ?? 0,
+          repair_last_error: checkpoint.repair_last_error ?? null,
+          repair_updated_at: checkpoint.repair_updated_at ?? null
+        })
+      )
+
+      if (Object.prototype.hasOwnProperty.call(checkpoint, 'pending_group_info_publish')) {
+        if (checkpoint.pending_group_info_publish) {
+          await req(
+            groupInfoStore.put({
+              group_id: groupId,
+              group_info_data: checkpoint.pending_group_info_publish.group_info_data,
+              ratchet_tree_data: checkpoint.pending_group_info_publish.ratchet_tree_data,
+              epoch: checkpoint.pending_group_info_publish.epoch
+            })
+          )
+        } else {
+          await req(groupInfoStore.delete(groupId))
+        }
+      }
+
+      if (
+        Object.prototype.hasOwnProperty.call(checkpoint, 'pending_external_commit_broadcast')
+      ) {
+        if (checkpoint.pending_external_commit_broadcast) {
+          await req(
+            externalCommitStore.put({
+              group_id: groupId,
+              commit_data: checkpoint.pending_external_commit_broadcast.commit_data,
+              commit_id: checkpoint.pending_external_commit_broadcast.commit_id
+            })
+          )
+        } else {
+          await req(externalCommitStore.delete(groupId))
+        }
+      }
+
+      if (Object.prototype.hasOwnProperty.call(checkpoint, 'pending_sponsored_transition')) {
+        if (checkpoint.pending_sponsored_transition) {
+          await req(
+            sponsoredTransitionStore.put({
+              group_id: groupId,
+              recipient_id: checkpoint.pending_sponsored_transition.recipient_id,
+              recipient_client_id: checkpoint.pending_sponsored_transition.recipient_client_id,
+              recipient_key_package_ref:
+                checkpoint.pending_sponsored_transition.recipient_key_package_ref,
+              commit_data: checkpoint.pending_sponsored_transition.commit_data,
+              commit_id: checkpoint.pending_sponsored_transition.commit_id,
+              remove_commit_data: checkpoint.pending_sponsored_transition.remove_commit_data,
+              welcome_data: checkpoint.pending_sponsored_transition.welcome_data,
+              group_info_data: checkpoint.pending_sponsored_transition.group_info_data,
+              ratchet_tree_data: checkpoint.pending_sponsored_transition.ratchet_tree_data,
+              epoch: checkpoint.pending_sponsored_transition.epoch,
+              previous_epoch: checkpoint.pending_sponsored_transition.previous_epoch,
+              base_state: checkpoint.pending_sponsored_transition.base_state,
+              base_epoch: checkpoint.pending_sponsored_transition.base_epoch
+            })
+          )
+        } else {
+          await req(sponsoredTransitionStore.delete(groupId))
+        }
+      }
+
+      await txComplete(transaction)
     },
 
     async getPendingGroupInfoPublishes() {
@@ -340,6 +596,11 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
     async getPendingExternalCommitBroadcasts() {
       const db = await getDb()
       return await req(tx(db, STORES.mlsPendingExternalCommitBroadcasts, 'readonly').getAll())
+    },
+
+    async getPendingSponsoredTransitions() {
+      const db = await getDb()
+      return await req(tx(db, STORES.mlsPendingSponsoredTransitions, 'readonly').getAll())
     },
 
     async setPendingExternalCommitBroadcast(groupId: string, commitData: string, commitId: string) {

@@ -34,6 +34,49 @@ export type CryptoStorageAdapter = CryptoDbApi
 export type CryptoStorageFactory = (userId: string) => CryptoStorageAdapter
 export type CryptoStorageConfig = CryptoStorageAdapter | CryptoStorageFactory
 
+export interface ScopeRepairStateRecord {
+  status: string
+  failureCount: number
+  lastError: string | null
+  updatedAt: string | null
+}
+
+export interface ScopeCheckpointRecord {
+  groupId: string
+  groupState: {
+    state: Uint8Array
+    epoch: number
+  } | null
+  lastEventSeq: number
+  recentCommitFingerprints: string[]
+  recentHistoryBundleFingerprints: string[]
+  repairState: ScopeRepairStateRecord | null
+  pendingGroupInfoPublish: {
+    groupInfoData: Uint8Array
+    ratchetTreeData: Uint8Array | null
+    epoch: number
+  } | null
+  pendingExternalCommitBroadcast: {
+    commitData: string
+    commitId: string
+  } | null
+  pendingSponsoredTransition: {
+    recipientId: string
+    recipientClientId: string | null
+    recipientKeyPackageRef: string | null
+    commitData: string
+    commitId: string
+    removeCommitData: string | null
+    welcomeData: string | null
+    groupInfoData: Uint8Array | null
+    ratchetTreeData: Uint8Array | null
+    epoch: number | null
+    previousEpoch: number | null
+    baseState: Uint8Array | null
+    baseEpoch: number | null
+  } | null
+}
+
 export interface CryptoStorageRuntime {
   configure(storage: CryptoStorageConfig | undefined): void
   init(userId: string): void
@@ -65,6 +108,9 @@ export interface CryptoStorageRuntime {
   deleteGroupState(groupId: string): Promise<void>
   loadGroupSyncCursor(groupId: string): Promise<number>
   saveGroupSyncCursor(groupId: string, lastEventSeq: number): Promise<void>
+  loadScopeCheckpoint(groupId: string): Promise<ScopeCheckpointRecord>
+  loadKnownScopeIds(): Promise<string[]>
+  saveScopeCheckpoint(groupId: string, checkpoint: ScopeCheckpointRecord): Promise<void>
   loadPendingGroupInfoPublishes(): Promise<
     Array<{
       groupId: string
@@ -85,6 +131,24 @@ export interface CryptoStorageRuntime {
       groupId: string
       commitData: string
       commitId: string
+    }>
+  >
+  loadPendingSponsoredTransitions(): Promise<
+    Array<{
+      groupId: string
+      recipientId: string
+      recipientClientId: string | null
+      recipientKeyPackageRef: string | null
+      commitData: string
+      commitId: string
+      removeCommitData: string | null
+      welcomeData: string | null
+      groupInfoData: Uint8Array | null
+      ratchetTreeData: Uint8Array | null
+      epoch: number | null
+      previousEpoch: number | null
+      baseState: Uint8Array | null
+      baseEpoch: number | null
     }>
   >
   savePendingExternalCommitBroadcast(
@@ -328,6 +392,119 @@ export class DefaultCryptoStorageRuntime implements CryptoStorageRuntime {
     await this.db().setGroupSyncCursor(groupId, lastEventSeq)
   }
 
+  async loadScopeCheckpoint(groupId: string): Promise<ScopeCheckpointRecord> {
+    const result = await this.db().getScopeCheckpoint(groupId)
+
+    return {
+      groupId: result.group_id,
+      groupState: result.state
+        ? {
+            state: new Uint8Array(result.state),
+            epoch: result.epoch
+          }
+        : null,
+      lastEventSeq: result.last_event_seq,
+      recentCommitFingerprints: [...result.recent_commit_fingerprints],
+      recentHistoryBundleFingerprints: [...(result.recent_history_bundle_fingerprints ?? [])],
+      repairState: result.repair_status
+        ? {
+            status: result.repair_status,
+            failureCount: result.repair_failure_count,
+            lastError: result.repair_last_error,
+            updatedAt: result.repair_updated_at
+          }
+        : null,
+      pendingGroupInfoPublish: result.pending_group_info_publish
+        ? {
+            groupInfoData: new Uint8Array(result.pending_group_info_publish.group_info_data),
+            ratchetTreeData: result.pending_group_info_publish.ratchet_tree_data
+              ? new Uint8Array(result.pending_group_info_publish.ratchet_tree_data)
+              : null,
+            epoch: result.pending_group_info_publish.epoch
+          }
+        : null,
+      pendingExternalCommitBroadcast: result.pending_external_commit_broadcast
+        ? {
+            commitData: result.pending_external_commit_broadcast.commit_data,
+            commitId: result.pending_external_commit_broadcast.commit_id
+          }
+        : null,
+      pendingSponsoredTransition: result.pending_sponsored_transition
+        ? {
+            recipientId: result.pending_sponsored_transition.recipient_id,
+            recipientClientId: result.pending_sponsored_transition.recipient_client_id,
+            recipientKeyPackageRef:
+              result.pending_sponsored_transition.recipient_key_package_ref,
+            commitData: result.pending_sponsored_transition.commit_data,
+            commitId: result.pending_sponsored_transition.commit_id,
+            removeCommitData: result.pending_sponsored_transition.remove_commit_data,
+            welcomeData: result.pending_sponsored_transition.welcome_data,
+            groupInfoData: result.pending_sponsored_transition.group_info_data
+              ? new Uint8Array(result.pending_sponsored_transition.group_info_data)
+              : null,
+            ratchetTreeData: result.pending_sponsored_transition.ratchet_tree_data
+              ? new Uint8Array(result.pending_sponsored_transition.ratchet_tree_data)
+              : null,
+            epoch: result.pending_sponsored_transition.epoch ?? null,
+            previousEpoch: result.pending_sponsored_transition.previous_epoch ?? null,
+            baseState: result.pending_sponsored_transition.base_state
+              ? new Uint8Array(result.pending_sponsored_transition.base_state)
+              : null,
+            baseEpoch: result.pending_sponsored_transition.base_epoch ?? null
+      }
+        : null
+    }
+  }
+
+  async loadKnownScopeIds(): Promise<string[]> {
+    return await this.db().getKnownScopeIds()
+  }
+
+  async saveScopeCheckpoint(groupId: string, checkpoint: ScopeCheckpointRecord): Promise<void> {
+    await this.db().setScopeCheckpoint(groupId, {
+      state: checkpoint.groupState?.state ?? null,
+      epoch: checkpoint.groupState?.epoch ?? 0,
+      last_event_seq: checkpoint.lastEventSeq,
+      recent_commit_fingerprints: [...checkpoint.recentCommitFingerprints],
+      recent_history_bundle_fingerprints: [...checkpoint.recentHistoryBundleFingerprints],
+      repair_status: checkpoint.repairState?.status ?? null,
+      repair_failure_count: checkpoint.repairState?.failureCount ?? 0,
+      repair_last_error: checkpoint.repairState?.lastError ?? null,
+      repair_updated_at: checkpoint.repairState?.updatedAt ?? null,
+      pending_group_info_publish: checkpoint.pendingGroupInfoPublish
+        ? {
+            group_info_data: checkpoint.pendingGroupInfoPublish.groupInfoData,
+            ratchet_tree_data: checkpoint.pendingGroupInfoPublish.ratchetTreeData,
+            epoch: checkpoint.pendingGroupInfoPublish.epoch
+          }
+        : null,
+      pending_external_commit_broadcast: checkpoint.pendingExternalCommitBroadcast
+        ? {
+            commit_data: checkpoint.pendingExternalCommitBroadcast.commitData,
+            commit_id: checkpoint.pendingExternalCommitBroadcast.commitId
+          }
+        : null,
+      pending_sponsored_transition: checkpoint.pendingSponsoredTransition
+        ? {
+            recipient_id: checkpoint.pendingSponsoredTransition.recipientId,
+            recipient_client_id: checkpoint.pendingSponsoredTransition.recipientClientId,
+            recipient_key_package_ref:
+              checkpoint.pendingSponsoredTransition.recipientKeyPackageRef,
+            commit_data: checkpoint.pendingSponsoredTransition.commitData,
+            commit_id: checkpoint.pendingSponsoredTransition.commitId,
+            remove_commit_data: checkpoint.pendingSponsoredTransition.removeCommitData,
+            welcome_data: checkpoint.pendingSponsoredTransition.welcomeData,
+            group_info_data: checkpoint.pendingSponsoredTransition.groupInfoData,
+            ratchet_tree_data: checkpoint.pendingSponsoredTransition.ratchetTreeData,
+            epoch: checkpoint.pendingSponsoredTransition.epoch,
+            previous_epoch: checkpoint.pendingSponsoredTransition.previousEpoch,
+            base_state: checkpoint.pendingSponsoredTransition.baseState,
+            base_epoch: checkpoint.pendingSponsoredTransition.baseEpoch
+          }
+        : null
+    })
+  }
+
   async loadPendingGroupInfoPublishes(): Promise<
     Array<{
       groupId: string
@@ -385,6 +562,45 @@ export class DefaultCryptoStorageRuntime implements CryptoStorageRuntime {
 
   async deletePendingExternalCommitBroadcast(groupId: string): Promise<void> {
     await this.db().deletePendingExternalCommitBroadcast(groupId)
+  }
+
+  async loadPendingSponsoredTransitions(): Promise<
+    Array<{
+      groupId: string
+      recipientId: string
+      recipientClientId: string | null
+      recipientKeyPackageRef: string | null
+      commitData: string
+      commitId: string
+      removeCommitData: string | null
+      welcomeData: string | null
+      groupInfoData: Uint8Array | null
+      ratchetTreeData: Uint8Array | null
+      epoch: number | null
+      previousEpoch: number | null
+      baseState: Uint8Array | null
+      baseEpoch: number | null
+    }>
+  > {
+    const results = await this.db().getPendingSponsoredTransitions()
+    return results.map((result) => ({
+      groupId: result.group_id,
+      recipientId: result.recipient_id,
+      recipientClientId: result.recipient_client_id ?? null,
+      recipientKeyPackageRef: result.recipient_key_package_ref ?? null,
+      commitData: result.commit_data,
+      commitId: result.commit_id,
+      removeCommitData: result.remove_commit_data ?? null,
+      welcomeData: result.welcome_data ?? null,
+      groupInfoData: result.group_info_data ? new Uint8Array(result.group_info_data) : null,
+      ratchetTreeData: result.ratchet_tree_data
+        ? new Uint8Array(result.ratchet_tree_data)
+        : null,
+      epoch: result.epoch ?? null,
+      previousEpoch: result.previous_epoch ?? null,
+      baseState: result.base_state ? new Uint8Array(result.base_state) : null,
+      baseEpoch: result.base_epoch ?? null
+    }))
   }
 
   async saveKeyPackages(

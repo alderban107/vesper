@@ -120,6 +120,19 @@ function mergeChannelActivity(existing: Channel | undefined, incoming: Channel):
   }
 }
 
+function primeNewTextChannel(channelId: string): void {
+  if (!getRendererClient().getState().canUseE2EE) {
+    return
+  }
+
+  void getRendererEncryptedChat()
+    .prepareScopeForRead(
+      { kind: 'channel', id: channelId },
+      { reason: 'channel_created' }
+    )
+    .catch(() => {})
+}
+
 function mergeServerChannels(existingChannels: Channel[], incomingChannels: Channel[]): Channel[] {
   const existingById = new Map(existingChannels.map((channel) => [channel.id, channel]))
   return sortChannels(
@@ -604,6 +617,9 @@ export const useServerStore = create<ServerState>((set, get) => ({
         action: 'created',
         channel
       })
+      if (channel.type === 'text') {
+        primeNewTextChannel(channel.id)
+      }
       return channel
     } catch {
       // ignore

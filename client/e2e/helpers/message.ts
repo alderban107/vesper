@@ -1,5 +1,27 @@
 import type { Page } from '@playwright/test'
 
+async function resolveStableMessageRow(page: Page, messageText: string) {
+  const confirmedRow = page.locator(
+    `[data-testid="message-row"]:not(.vesper-message-row-sending):not(.vesper-message-row-failed):has-text("${messageText}")`
+  ).first()
+
+  const confirmedVisible = await confirmedRow
+    .waitFor({ state: 'visible', timeout: 10_000 })
+    .then(() => true)
+    .catch(() => false)
+
+  if (confirmedVisible) {
+    const confirmedId = await confirmedRow.getAttribute('data-message-id')
+    if (confirmedId && !confirmedId.startsWith('local:')) {
+      return confirmedRow
+    }
+  }
+
+  const anyRow = page.locator(`[data-testid="message-row"]:has-text("${messageText}")`).first()
+  await anyRow.waitFor({ state: 'visible', timeout: 10_000 })
+  return anyRow
+}
+
 export async function addReaction(
   page: Page,
   messageText: string,
@@ -49,8 +71,7 @@ export async function editMessage(
   originalText: string,
   newText: string
 ): Promise<void> {
-  const rowByText = page.locator(`[data-testid="message-row"]:has-text("${originalText}")`).first()
-  await rowByText.waitFor({ state: 'visible', timeout: 10_000 })
+  const rowByText = await resolveStableMessageRow(page, originalText)
   const messageId = await rowByText.getAttribute('data-message-id')
   const row = messageId
     ? page.locator(`[data-testid="message-row"][data-message-id="${messageId}"]`)
@@ -62,19 +83,37 @@ export async function editMessage(
   const editInput = row.locator('[data-testid="edit-input"]')
   await editInput.waitFor({ state: 'visible', timeout: 10_000 })
   await editInput.fill(newText)
-  await editInput.press('Enter')
 
-  if (messageId) {
-    await row.filter({ hasText: newText }).waitFor({ state: 'visible', timeout: 10_000 })
-  } else {
-    await page.waitForSelector(`[data-testid="message-row"]:has-text("${newText}")`, {
-      timeout: 10_000,
-    })
+  const deadline = Date.now() + 15_000
+  while (Date.now() < deadline) {
+    await editInput.focus()
+    await page.keyboard.press('Enter')
+
+    const committed = await editInput
+      .waitFor({ state: 'hidden', timeout: 1_500 })
+      .then(() => true)
+      .catch(() => false)
+
+    if (!committed) {
+      continue
+    }
+
+    if (messageId) {
+      await row.filter({ hasText: newText }).waitFor({ state: 'visible', timeout: 10_000 })
+    } else {
+      await page.waitForSelector(`[data-testid="message-row"]:has-text("${newText}")`, {
+        timeout: 10_000,
+      })
+    }
+
+    return
   }
+
+  throw new Error(`Timed out saving edited message "${originalText}"`)
 }
 
 export async function deleteMessage(page: Page, messageText: string): Promise<void> {
-  const row = page.locator(`[data-testid="message-row"]:has-text("${messageText}")`)
+  const row = await resolveStableMessageRow(page, messageText)
   await row.hover()
 
   const inlineDelete = row.locator('[data-testid="delete-message"]')

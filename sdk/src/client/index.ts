@@ -182,10 +182,8 @@ const UNREAD_EVENT_DEDUPE_WINDOW_MS = 15_000
 const FIRE_AND_FORGET_SCOPE_EVENTS = new Set([
   'typing_start',
   'typing_stop',
-  'new_message',
   'mls_resync_request',
-  'mls_history_request',
-  'mls_history_bundle'
+  'mls_history_request'
 ])
 
 function defaultState(): VesperClientState {
@@ -1666,8 +1664,8 @@ export class VesperClient {
     return await fetchPendingResyncRequests(scopeId, this.httpClient)
   }
 
-  async ackPendingResyncRequest(requestId: string): Promise<void> {
-    await ackPendingResyncRequest(requestId, this.httpClient)
+  async ackPendingResyncRequest(requestId: string, requestToken: string): Promise<void> {
+    await ackPendingResyncRequest(requestId, requestToken, this.httpClient)
   }
 
   async fetchPendingHistoryRequests(scopeId: string): Promise<

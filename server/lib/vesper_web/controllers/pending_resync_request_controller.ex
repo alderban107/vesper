@@ -24,7 +24,8 @@ defmodule VesperWeb.PendingResyncRequestController do
   end
 
   @doc "DELETE /api/v1/pending-resync-requests/:id — acknowledge a processed resync request"
-  def delete(conn, %{"id" => id}) do
+  def delete(conn, %{"id" => id, "request_id" => request_id})
+      when is_binary(request_id) and byte_size(request_id) > 0 do
     user = conn.assigns.current_user
     request = Encryption.get_pending_resync_request(id)
 
@@ -36,9 +37,13 @@ defmodule VesperWeb.PendingResyncRequestController do
         conn |> put_status(:forbidden) |> json(%{error: "forbidden"})
 
       true ->
-        Encryption.delete_pending_resync_request(id)
+        Encryption.delete_pending_resync_request(id, request_id)
         json(conn, %{ok: true})
     end
+  end
+
+  def delete(conn, %{"id" => _id}) do
+    conn |> put_status(:bad_request) |> json(%{error: "request_id required"})
   end
 
   defp render_requests(conn, requests) do

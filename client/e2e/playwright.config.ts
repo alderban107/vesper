@@ -8,6 +8,11 @@
 
 import { defineConfig } from '@playwright/test'
 
+const traceMode = process.env.PW_TRACE_MODE ?? 'retain-on-failure'
+const videoMode = process.env.PW_VIDEO_MODE ?? 'retain-on-failure'
+const screenshotMode = process.env.PW_SCREENSHOT_MODE ?? 'only-on-failure'
+const includeDiagnosticProject = process.env.PW_INCLUDE_DIAGNOSTIC === '1'
+
 export default defineConfig({
   testDir: './tests',
   timeout: 120_000,
@@ -38,9 +43,9 @@ export default defineConfig({
     },
 
     // Artifact collection on failure (R-HARNESS-3)
-    trace: 'retain-on-failure',
-    screenshot: 'only-on-failure',
-    video: 'retain-on-failure',
+    trace: traceMode,
+    screenshot: screenshotMode,
+    video: videoMode,
 
     // Permissions
     permissions: ['clipboard-read', 'clipboard-write', 'camera', 'microphone'],
@@ -52,10 +57,14 @@ export default defineConfig({
       name: 'p0-smoke',
       testMatch: /p0-.*\.spec\.ts/,
     },
-    {
-      name: 'diagnostic',
-      testMatch: /debug-.*\.spec\.ts/,
-    },
+    ...(includeDiagnosticProject
+      ? [
+          {
+            name: 'diagnostic',
+            testMatch: /debug-.*\.spec\.ts/,
+          },
+        ]
+      : []),
     {
       name: 'p1-extended',
       testMatch: /p1-.*\.spec\.ts/,

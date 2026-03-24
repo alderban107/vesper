@@ -551,6 +551,9 @@ Urgent sync response:
 | `GET` | `/api/v1/mls-events/:channel_id` | Durable MLS control-plane replay | query `after_seq`, `limit` | `{ "events": [...] }` |
 | `GET` | `/api/v1/pending-resync-requests/:channel_id` | Fetch stored resync requests | scope id or voice scope string | `{ "requests": [...] }` |
 | `DELETE` | `/api/v1/pending-resync-requests/:id` | Ack pending resync request | none | `{ "ok": true }` |
+| `GET` | `/api/v1/group-info/:scope_id` | Fetch the latest published GroupInfo for External Commit joins | scope id | `{ "group_info": { ... } }` or `404` |
+| `PUT` | `/api/v1/group-info/:scope_id` | Publish GroupInfo, or atomically publish GroupInfo plus an External Commit | `group_info_data`, `epoch`, optional `previous_epoch`, optional `ratchet_tree_data`, optional `commit_data`, optional `commit_id` | `{ "ok": true, "fresh": boolean, ... }` or `409 epoch_conflict` |
+| `POST` | `/api/v1/mls-sponsored-transition/:scope_id` | Atomically publish a sponsored remove/commit/welcome transition | `group_info_data`, `epoch`, `previous_epoch`, `recipient_id`, `commit_data`, `commit_id`, optional `remove_commit_data`, optional `welcome_data`, optional `recipient_device_id`, optional `recipient_key_package_ref` | `{ "ok": true, "fresh": boolean, "commit_event_seq": <id-or-null>, "remove_event_seq": <id-or-null>, "welcome_id": <id-or-null> }` or `409` |
 | `GET` | `/api/v1/pending-history-requests/:channel_id` | Fetch same-user history requests | scope id | `{ "requests": [...] }` |
 | `DELETE` | `/api/v1/pending-history-requests/:id` | Ack history request | none | `{ "ok": true }` |
 | `GET` | `/api/v1/pending-history-bundles/:channel_id` | Fetch same-user history bundles | scope id | `{ "bundles": [...] }` |
@@ -1089,15 +1092,17 @@ Group ids:
 - voice channel group id = `voice:channel:<channel_id>`
 - voice DM group id = `voice:dm:<conversation_id>`
 
-Each scope stores one serialized MLS `ClientState`. Vesper persists that state with `encodeGroupState()` and restores it with `decodeGroupState()`.
+Each scope stores one serialized OpenMLS-backed group state plus a per-scope checkpoint record.
 
-After deserialization, the client reattaches its `clientConfig` because `ts-mls` does not serialize that field.
+The checkpoint carries:
 
-Retention policy:
+- serialized group state
+- current epoch
+- last durable MLS replay cursor
+- pending control-plane outbox entries
+- repair metadata used for reconnect and same-user recovery
 
-- `retainKeysForEpochs = 64`
-
-That allows the client to decrypt older ciphertexts as long as the needed epoch material is still inside `historicalReceiverData`.
+Historical message recovery now relies on persisted group state, durable MLS replay, and same-user history repair artifacts instead of implementation-specific epoch-retention hacks.
 
 Concurrency rule:
 

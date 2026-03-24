@@ -156,6 +156,7 @@ defmodule VesperWeb.ConversationController do
       id: message.id,
       room_seq: message.room_seq,
       conversation_id: message.conversation_id,
+      client_nonce: message.client_nonce,
       sender_id: message.sender_id,
       sender: sender_json(message.sender),
       expires_at: message.expires_at,

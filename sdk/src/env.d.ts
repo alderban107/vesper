@@ -25,6 +25,81 @@ interface CryptoDbApi {
   deleteGroupState(groupId: string): Promise<void>
   getGroupSyncCursor(groupId: string): Promise<number>
   setGroupSyncCursor(groupId: string, lastEventSeq: number): Promise<void>
+  getScopeCheckpoint(groupId: string): Promise<{
+    group_id: string
+    state: ArrayBuffer | null
+    epoch: number
+    last_event_seq: number
+    recent_commit_fingerprints: string[]
+    recent_history_bundle_fingerprints: string[]
+    repair_status: string | null
+    repair_failure_count: number
+    repair_last_error: string | null
+    repair_updated_at: string | null
+    pending_group_info_publish: {
+      group_info_data: ArrayBuffer
+      ratchet_tree_data: ArrayBuffer | null
+      epoch: number
+    } | null
+    pending_external_commit_broadcast: {
+      commit_data: string
+      commit_id: string
+    } | null
+    pending_sponsored_transition: {
+      recipient_id: string
+      recipient_client_id: string | null
+      recipient_key_package_ref: string | null
+      commit_data: string
+      commit_id: string
+      remove_commit_data: string | null
+      welcome_data: string | null
+      group_info_data: ArrayBuffer | null
+      ratchet_tree_data: ArrayBuffer | null
+      epoch: number | null
+      previous_epoch: number | null
+      base_state: ArrayBuffer | null
+      base_epoch: number | null
+    } | null
+  }>
+  getKnownScopeIds(): Promise<string[]>
+  setScopeCheckpoint(
+    groupId: string,
+    checkpoint: {
+      state: Uint8Array | null
+      epoch: number
+      last_event_seq: number
+      recent_commit_fingerprints?: string[]
+      recent_history_bundle_fingerprints?: string[]
+      repair_status?: string | null
+      repair_failure_count?: number
+      repair_last_error?: string | null
+      repair_updated_at?: string | null
+      pending_group_info_publish?: {
+        group_info_data: Uint8Array
+        ratchet_tree_data: Uint8Array | null
+        epoch: number
+      } | null
+      pending_external_commit_broadcast?: {
+        commit_data: string
+        commit_id: string
+      } | null
+      pending_sponsored_transition?: {
+        recipient_id: string
+        recipient_client_id: string | null
+        recipient_key_package_ref: string | null
+        commit_data: string
+        commit_id: string
+        remove_commit_data: string | null
+        welcome_data: string | null
+        group_info_data: Uint8Array | null
+        ratchet_tree_data: Uint8Array | null
+        epoch: number | null
+        previous_epoch: number | null
+        base_state: Uint8Array | null
+        base_epoch: number | null
+      } | null
+    }
+  ): Promise<void>
   getPendingGroupInfoPublishes(): Promise<
     Array<{
       group_id: string
@@ -45,6 +120,24 @@ interface CryptoDbApi {
       group_id: string
       commit_data: string
       commit_id: string
+    }>
+  >
+  getPendingSponsoredTransitions(): Promise<
+    Array<{
+      group_id: string
+      recipient_id: string
+      recipient_client_id: string | null
+      recipient_key_package_ref: string | null
+      commit_data: string
+      commit_id: string
+      remove_commit_data: string | null
+      welcome_data: string | null
+      group_info_data: ArrayBuffer | null
+      ratchet_tree_data: ArrayBuffer | null
+      epoch: number | null
+      previous_epoch: number | null
+      base_state: ArrayBuffer | null
+      base_epoch: number | null
     }>
   >
   setPendingExternalCommitBroadcast(
