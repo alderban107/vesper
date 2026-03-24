@@ -439,7 +439,8 @@ defmodule Vesper.Encryption do
   they fetched so an old ACK cannot delete a newer refreshed request for the
   same device.
   """
-  def delete_pending_resync_request(id, request_id) when is_binary(request_id) and byte_size(request_id) > 0 do
+  def delete_pending_resync_request(id, request_id)
+      when is_binary(request_id) and byte_size(request_id) > 0 do
     from(pr in PendingResyncRequest, where: pr.id == ^id and pr.request_id == ^request_id)
     |> Repo.delete_all()
   end
@@ -512,19 +513,27 @@ defmodule Vesper.Encryption do
     previous_epoch = Map.get(attrs, :previous_epoch) || Map.get(attrs, "previous_epoch")
     commit_data = Map.get(attrs, :commit_data) || Map.get(attrs, "commit_data")
     commit_id = Map.get(attrs, :commit_id) || Map.get(attrs, "commit_id")
-    remove_commit_data = Map.get(attrs, :remove_commit_data) || Map.get(attrs, "remove_commit_data")
+
+    remove_commit_data =
+      Map.get(attrs, :remove_commit_data) || Map.get(attrs, "remove_commit_data")
+
     recipient_id = Map.get(attrs, :recipient_id) || Map.get(attrs, "recipient_id")
-    recipient_client_id = Map.get(attrs, :recipient_client_id) || Map.get(attrs, "recipient_client_id")
+
+    recipient_client_id =
+      Map.get(attrs, :recipient_client_id) || Map.get(attrs, "recipient_client_id")
+
     welcome_data = Map.get(attrs, :welcome_data) || Map.get(attrs, "welcome_data")
+
     key_package_ref =
       Map.get(attrs, :recipient_key_package_ref) || Map.get(attrs, "recipient_key_package_ref")
 
-    with true <- is_binary(group_id) and group_id != "" || {:error, :invalid_transition_scope},
-         true <- is_binary(group_info_data) and group_info_data != "" || {:error, :invalid_group_info},
+    with true <- (is_binary(group_id) and group_id != "") || {:error, :invalid_transition_scope},
+         true <-
+           (is_binary(group_info_data) and group_info_data != "") || {:error, :invalid_group_info},
          true <- is_integer(previous_epoch) || {:error, :invalid_previous_epoch},
-         true <- is_binary(commit_data) and commit_data != "" || {:error, :invalid_commit_data},
-         true <- is_binary(commit_id) and commit_id != "" || {:error, :invalid_idempotency_key},
-         true <- is_binary(recipient_id) and recipient_id != "" || {:error, :invalid_recipient},
+         true <- (is_binary(commit_data) and commit_data != "") || {:error, :invalid_commit_data},
+         true <- (is_binary(commit_id) and commit_id != "") || {:error, :invalid_idempotency_key},
+         true <- (is_binary(recipient_id) and recipient_id != "") || {:error, :invalid_recipient},
          {:ok, commit_attrs} <-
            normalize_mls_commit_event_attrs(
              %{
@@ -535,7 +544,8 @@ defmodule Vesper.Encryption do
                sender_device_id:
                  Map.get(attrs, :sender_device_id) || Map.get(attrs, "sender_device_id"),
                channel_id: Map.get(attrs, :channel_id) || Map.get(attrs, "channel_id"),
-               conversation_id: Map.get(attrs, :conversation_id) || Map.get(attrs, "conversation_id")
+               conversation_id:
+                 Map.get(attrs, :conversation_id) || Map.get(attrs, "conversation_id")
              },
              commit_id
            ) do
@@ -750,7 +760,12 @@ defmodule Vesper.Encryption do
   defp maybe_insert_sponsored_remove_event(_attrs, nil, _recipient_id, _recipient_client_id),
     do: {:ok, nil}
 
-  defp maybe_insert_sponsored_remove_event(attrs, remove_commit_data, recipient_id, recipient_client_id)
+  defp maybe_insert_sponsored_remove_event(
+         attrs,
+         remove_commit_data,
+         recipient_id,
+         recipient_client_id
+       )
        when is_binary(remove_commit_data) and remove_commit_data != "" do
     insert_mls_event(%{
       group_id: Map.get(attrs, :group_id) || Map.get(attrs, "group_id"),
@@ -758,19 +773,24 @@ defmodule Vesper.Encryption do
       conversation_id: Map.get(attrs, :conversation_id) || Map.get(attrs, "conversation_id"),
       event_type: "mls_remove",
       payload:
-        (%{
-           removed_user_id: recipient_id,
-           commit_data: remove_commit_data
-         }
-         |> maybe_put_remove_device(recipient_client_id)
-         |> stringify_map_keys()),
+        %{
+          removed_user_id: recipient_id,
+          commit_data: remove_commit_data
+        }
+        |> maybe_put_remove_device(recipient_client_id)
+        |> stringify_map_keys(),
       sender_id: Map.get(attrs, :sender_id) || Map.get(attrs, "sender_id"),
       sender_device_id: Map.get(attrs, :sender_device_id) || Map.get(attrs, "sender_device_id")
     })
   end
 
-  defp maybe_insert_sponsored_remove_event(_attrs, _remove_commit_data, _recipient_id, _recipient_client_id),
-    do: {:error, :invalid_remove_commit_data}
+  defp maybe_insert_sponsored_remove_event(
+         _attrs,
+         _remove_commit_data,
+         _recipient_id,
+         _recipient_client_id
+       ),
+       do: {:error, :invalid_remove_commit_data}
 
   defp maybe_upsert_sponsored_welcome(_attrs, nil, _key_package_ref), do: {:ok, nil}
 

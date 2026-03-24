@@ -351,7 +351,12 @@ defmodule Vesper.EncryptionTest do
       }
 
       assert {:ok,
-              %{fresh: true, remove_event: remove_event, commit_event: commit_event, welcome: welcome}} =
+              %{
+                fresh: true,
+                remove_event: remove_event,
+                commit_event: commit_event,
+                welcome: welcome
+              }} =
                Encryption.publish_sponsored_transition(attrs)
 
       assert remove_event.event_type == "mls_remove"
@@ -372,7 +377,12 @@ defmodule Vesper.EncryptionTest do
              ]
 
       assert {:ok,
-              %{fresh: false, remove_event: nil, commit_event: replayed_commit, welcome: replayed_welcome}} =
+              %{
+                fresh: false,
+                remove_event: nil,
+                commit_event: replayed_commit,
+                welcome: replayed_welcome
+              }} =
                Encryption.publish_sponsored_transition(attrs)
 
       assert replayed_commit.id == commit_event.id

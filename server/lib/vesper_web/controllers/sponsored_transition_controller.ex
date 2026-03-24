@@ -19,8 +19,10 @@ defmodule VesperWeb.SponsoredTransitionController do
          {:ok, ratchet_tree_data} <- decode_optional_base64(params, "ratchet_tree_data"),
          epoch when is_integer(epoch) <- parse_epoch(params),
          previous_epoch when is_integer(previous_epoch) <- parse_previous_epoch(params),
-         {:ok, recipient_id} <- require_non_empty_string(params, "recipient_id", :invalid_recipient),
-         {:ok, commit_data} <- require_non_empty_string(params, "commit_data", :invalid_commit_data),
+         {:ok, recipient_id} <-
+           require_non_empty_string(params, "recipient_id", :invalid_recipient),
+         {:ok, commit_data} <-
+           require_non_empty_string(params, "commit_data", :invalid_commit_data),
          {:ok, commit_id} <-
            require_non_empty_string(params, "commit_id", :invalid_idempotency_key),
          {:ok, remove_commit_data} <- optional_non_empty_string(params, "remove_commit_data"),
