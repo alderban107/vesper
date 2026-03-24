@@ -13,6 +13,32 @@ defmodule Vesper.Runtime do
     if :ets.info(@room_cache) == :undefined do
       :ets.new(@room_cache, [:set, :public, :named_table, read_concurrency: true])
     end
+
+    # Pre-warm cache with all rooms — avoids DB hit on first message per channel.
+    # Uses only immutable fields (id, kind, server_id, channel_id, conversation_id).
+    warm_room_cache()
+  end
+
+  defp warm_room_cache do
+    rooms = Repo.all(from(r in Room, select: r))
+
+    for room <- rooms do
+      case room.kind do
+        :channel when is_binary(room.channel_id) ->
+          :ets.insert(@room_cache, {{:channel, room.channel_id}, room})
+
+        :dm when is_binary(room.conversation_id) ->
+          :ets.insert(@room_cache, {{:dm, room.conversation_id}, room})
+
+        _ ->
+          :ok
+      end
+    end
+
+    :ok
+  rescue
+    # DB not ready yet (migrations pending) — cache will populate lazily
+    _ -> :ok
   end
 
   def get_room(id), do: Repo.get(Room, id)
