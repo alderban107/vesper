@@ -2,7 +2,7 @@
 
 How to run tests, what patterns to follow, and how CI enforces quality.
 
-See also: [API Reference](./api-reference.md) | [Configuration Guide](./configuration-guide.md) | [Deployment Guide](./deployment-guide.md)
+See also: [Protocol Reference](PROTOCOL.md) | [Configuration Guide](./configuration-guide.md) | [Deployment Guide](./deployment-guide.md)
 
 ---
 

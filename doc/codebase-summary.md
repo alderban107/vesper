@@ -4,7 +4,7 @@ This document provides a file-level inventory of the Vesper monorepo, covering
 the server, client, SDK, documentation, and supporting infrastructure.
 
 For architecture diagrams, see [system-architecture.md](./system-architecture.md).
-For product context, see [project-overview-pdr.md](./project-overview-pdr.md).
+For product context, see [project-overview.md](./project-overview.md).
 
 ## Repository Structure
 

@@ -2,7 +2,7 @@
 
 How to deploy and operate a Vesper instance. Covers Docker Compose quickstart, production configuration, voice/TURN setup, and scaling.
 
-See also: [Configuration Guide](./configuration-guide.md) | [API Reference](./api-reference.md) | [Testing Guide](./testing-guide.md)
+See also: [Configuration Guide](./configuration-guide.md) | [Protocol Reference](PROTOCOL.md) | [Testing Guide](./testing-guide.md)
 
 ---
 

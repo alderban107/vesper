@@ -1,6 +1,6 @@
 # System Architecture
 
-> See also: [Project Overview](project-overview-pdr.md) | [API Reference](api-reference.md) | [Code Standards](code-standards.md)
+> See also: [Project Overview](project-overview.md) | [Protocol Reference](PROTOCOL.md) | [Code Standards](code-standards.md)
 
 ## High-Level Components
 

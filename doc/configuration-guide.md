@@ -2,7 +2,7 @@
 
 All configuration options for the Vesper server, organized by subsystem.
 
-See also: [Deployment Guide](./deployment-guide.md) | [API Reference](./api-reference.md) | [Testing Guide](./testing-guide.md)
+See also: [Deployment Guide](./deployment-guide.md) | [Protocol Reference](PROTOCOL.md) | [Testing Guide](./testing-guide.md)
 
 ---
 
