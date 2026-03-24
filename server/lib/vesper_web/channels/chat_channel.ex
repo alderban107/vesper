@@ -107,11 +107,23 @@ defmodule VesperWeb.ChatChannel do
             channel_id = socket.assigns.channel_id
             sender_id = socket.assigns.user_id
             server_id = socket.assigns.server_id
-            member_ids = MemberCache.get_member_ids(server_id)
 
-            # Combined per-user broadcast: merges unread_update +
-            # scope_summary_updated into single channel_activity event.
-            notify_channel_activity(channel_id, message, sender_id, member_ids)
+            # Scope mutation with embedded activity data. Broadcast to the
+            # server presence channel — only reaches online server members.
+            # The scope_mutation handler on the client can update unread counts
+            # and sidebar directly from this payload, no HTTP sync needed.
+            notify_scope_mutation(server_id, "channel", channel_id, %{
+              message_id: message.id,
+              sender_id: sender_id,
+              sender: sender_json(message.sender),
+              inserted_at: message.inserted_at,
+              room_seq: message.room_seq
+            })
+
+            # Mentions still need per-user notification (targeted, not fan-out)
+            member_ids =
+              if mentioned != [], do: MemberCache.get_member_ids(server_id), else: MapSet.new()
+
             notify_mentions(mentioned, channel_id, sender_id, server_id, member_ids)
 
             {:reply, :ok, socket}
@@ -944,39 +956,20 @@ defmodule VesperWeb.ChatChannel do
   # Guard against clients sending a non-list value (e.g. a bare string) for mentioned_user_ids.
   defp notify_mentions(_non_list, _channel_id, _sender_id, _server_id, _member_ids), do: :ok
 
-  defp notify_channel_activity(channel_id, message, sender_id, member_ids) do
-    recipients = MapSet.delete(member_ids, sender_id)
-
-    :telemetry.execute(
-      [:vesper, :chat, :notification, :fanout],
-      %{count: MapSet.size(recipients)},
-      %{channel_id: channel_id, type: :unread}
-    )
-
+  defp notify_scope_mutation(server_id, kind, scope_id, activity \\ nil) do
     payload = %{
-      channel_id: channel_id,
-      message_id: message.id,
-      inserted_at: message.inserted_at,
-      sender_id: message.sender_id,
-      sender: sender_json(message.sender),
-      scope_summary: %{
-        kind: "channel",
-        scope_id: channel_id,
-        room_seq: message.room_seq,
-        channel_activity: ScopeSummary.channel_activity_json(channel_id, message)
-      }
-    }
-
-    for uid <- recipients do
-      VesperWeb.Endpoint.broadcast("user:#{uid}", "channel_activity", payload)
-    end
-  end
-
-  defp notify_scope_mutation(server_id, kind, scope_id) do
-    VesperWeb.Endpoint.broadcast("presence:server:#{server_id}", "scope_mutation", %{
       kind: kind,
       scope_id: scope_id
-    })
+    }
+
+    payload =
+      if activity do
+        Map.put(payload, :activity, activity)
+      else
+        payload
+      end
+
+    VesperWeb.Endpoint.broadcast("presence:server:#{server_id}", "scope_mutation", payload)
 
     :ok
   end

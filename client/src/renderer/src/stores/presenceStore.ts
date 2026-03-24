@@ -616,8 +616,38 @@ function handleUserFeedEvent(topic: string, event: string, payload: unknown): vo
   }
 
   if (event === 'scope_mutation') {
-    const data = payload as { kind: 'channel' | 'dm'; scope_id: string }
+    const data = payload as {
+      kind: 'channel' | 'dm'
+      scope_id: string
+      activity?: {
+        message_id?: string
+        sender_id?: string | null
+        sender?: { id: string; username: string; display_name?: string | null; avatar_url?: string | null } | null
+        inserted_at?: string
+        room_seq?: number | null
+      } | null
+    }
     queueScopeMutation(data.kind, data.scope_id)
+
+    // If activity data is embedded, update unread + sidebar immediately
+    // without waiting for the HTTP sync round-trip.
+    if (data.kind === 'channel' && data.activity?.message_id && data.activity.inserted_at) {
+      Promise.all([
+        import('./serverStore'),
+        import('./unreadStore')
+      ]).then(([{ useServerStore }, { useUnreadStore }]) => {
+        useServerStore.getState().applyChannelActivity({
+          channelId: data.scope_id,
+          messageId: data.activity!.message_id!,
+          insertedAt: data.activity!.inserted_at!,
+          senderId: data.activity!.sender_id ?? null,
+          sender: data.activity!.sender ?? null
+        })
+        if (useServerStore.getState().activeChannelId !== data.scope_id) {
+          useUnreadStore.getState().incrementChannel(data.scope_id)
+        }
+      })
+    }
     return
   }
 
