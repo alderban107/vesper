@@ -15,16 +15,18 @@ interface Props {
 export default function MessageList({ scope }: Props): React.JSX.Element {
   // For DMs with a backing channel, use the channelId as the scope.
   // All messages, MLS state, and broadcasts go through the channel topic.
+  // Subscribe to dmStore so this re-evaluates when conversations sync.
+  const dmChannelId = useDmStore((s) => {
+    if (scope.kind !== 'dm') return null
+    return s.conversations.find(c => c.id === scope.id)?.channel_id ?? null
+  })
+
   const resolvedScope = useMemo(() => {
-    if (scope.kind === 'dm') {
-      const conversation = useDmStore.getState().conversations.find(c => c.id === scope.id)
-      const channelId = conversation?.channel_id
-      if (channelId) {
-        return { kind: 'channel' as const, id: channelId }
-      }
+    if (scope.kind === 'dm' && dmChannelId) {
+      return { kind: 'channel' as const, id: dmChannelId }
     }
     return scope
-  }, [scope])
+  }, [scope, dmChannelId])
 
   const scopeId = resolvedScope.id
   const allMessages = useMessageStore((s) =>
