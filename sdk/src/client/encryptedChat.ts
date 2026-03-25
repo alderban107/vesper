@@ -57,8 +57,6 @@ import type { VesperClient } from './index.js'
 import { MLSDiagnostics } from './mlsDiagnostics.js'
 
 const JOIN_WAIT_MS = 2_500
-const DM_PREPARE_WAIT_MS = 5_000
-const DM_PARTICIPANT_JOIN_WAIT_MS = 3_000
 const EVICTION_REQUEST_COOLDOWN_MS = 3_000
 const VOICE_JOIN_REQUEST_COOLDOWN_MS = 2_000
 const VOICE_RESYNC_REQUEST_COOLDOWN_MS = 3_000
@@ -531,7 +529,6 @@ export class VesperEncryptedChat {
   private readonly yieldedDmScopes = new Set<string>()
   private readonly pendingGroupCreations = new Map<string, Promise<void>>()
   private readonly pendingExternalCommits = new Map<string, Promise<boolean>>()
-  private readonly pendingBootstraps = new Map<string, Promise<boolean>>()
   private readonly pendingGroupInfoPublishes = new Map<string, PendingGroupInfoPublish>()
   private readonly groupInfoPublishRetryAttempts = new Map<string, number>()
   private readonly groupInfoPublishRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -1053,21 +1050,11 @@ export class VesperEncryptedChat {
   /** Ensures the MLS group for a scope is ready, optionally creating it if missing. Routes to channel or DM-specific logic. */
   async ensureScopeReady(scope: EncryptedScope, allowCreate = false): Promise<boolean> {
     return await this.withStorageContext(async () => {
-      // DMs with a backing channel use the channel MLS path entirely.
-      // This eliminates the DM-specific leader election / sponsored transition
-      // flow that was causing epoch fork races.
-      if (scope.channelId) {
-        this.scopeKinds.set(scope.channelId, 'channel')
-        return await this.ensureChannelGroupReady(scope.channelId, allowCreate)
-      }
-
-      this.scopeKinds.set(scope.id, scope.kind)
-
-      if (scope.kind === 'channel') {
-        return await this.ensureChannelGroupReady(scope.id, allowCreate)
-      }
-
-      return await this.ensureDmGroupReady(scope.id, allowCreate)
+      // All scopes (channels and DMs) use the channel MLS path.
+      // DMs have a backing channelId; use it for MLS operations.
+      const channelId = scope.channelId ?? scope.id
+      this.scopeKinds.set(channelId, 'channel')
+      return await this.ensureChannelGroupReady(channelId, allowCreate)
     })
   }
 
@@ -1088,8 +1075,6 @@ export class VesperEncryptedChat {
     let attemptedPush = false
     let pushed = false
     let pushError: unknown = null
-
-    console.debug(`[E2EE-DBG] sendPayload(${scope.id.slice(0, 8)}): acquired scope watch, starting operation`)
 
     try {
       try {
@@ -1121,12 +1106,10 @@ export class VesperEncryptedChat {
 
           attemptedPush = true
           const sent = await this.pushScopeEventResolved(scope, 'new_message', messagePayload)
-          console.debug(`[E2EE-DBG] sendPayload: pushScopeEvent returned ${sent}`)
 
           return sent
         })
       } catch (error) {
-        console.debug(`[E2EE-DBG] sendPayload: operation threw`, error)
         pushError = error
       }
 
@@ -1358,7 +1341,6 @@ export class VesperEncryptedChat {
   }
 
   private async resetScopeState(scopeId: string): Promise<void> {
-      console.debug(`[E2EE-DBG] resetScopeState(${scopeId.slice(0, 8)}) called`, new Error().stack?.split('\n').slice(1, 4).join(' <- '))
       this.groupStates.delete(scopeId)
       this.pendingCommits.delete(scopeId)
       this.scopeMessages.delete(scopeId)
@@ -1368,7 +1350,6 @@ export class VesperEncryptedChat {
       this.welcomeAppliedAtByScope.delete(scopeId)
       this.welcomeReceivedScopes.delete(scopeId)
       this.pendingGroupCreations.delete(scopeId)
-      this.pendingBootstraps.delete(scopeId)
       this.welcomeInProgress.delete(scopeId)
       this.lastSuccessfulGroupInfoPublishEpochs.delete(scopeId)
       this.recentCommitFingerprints.delete(scopeId)
@@ -1708,8 +1689,7 @@ export class VesperEncryptedChat {
         }
 
         // We independently created this group — drop it and External Commit
-        // into the leader's group. Mark as yielded so concurrent code paths
-        // (e.g. forceBootstrapDmGroup) don't immediately recreate it.
+        // into the leader's group.
         this.yieldedDmScopes.add(scope.id)
         await this.resetScopeState(scope.id)
         await this.tryJoinViaExternalCommit(scope.id)
@@ -2116,85 +2096,33 @@ export class VesperEncryptedChat {
     return this.getGroupEpoch(channelId) !== 0
   }
 
-  private async ensureDmGroupReady(conversationId: string, allowForce = false): Promise<boolean> {
-    const t0 = Date.now()
-
-    if (await this.ensureGroupMembership(conversationId)) {
-      console.debug(`[E2EE-DBG] ensureDmGroupReady(${conversationId.slice(0, 8)}): membership OK in ${Date.now() - t0}ms`)
-      await this.replayDurableEvents(conversationId)
-      if (!this.hasGroup(conversationId)) {
-        console.debug(`[E2EE-DBG] ensureDmGroupReady: no group after replay`)
-        return false
-      }
-
-      if (!allowForce) {
-        return true
-      }
-
-      const t1 = Date.now()
-      const covered = await this.ensureDmParticipantCoverage(conversationId)
-      console.debug(`[E2EE-DBG] ensureDmGroupReady: participantCoverage=${covered} in ${Date.now() - t1}ms (total ${Date.now() - t0}ms)`)
-      return covered
-    }
-
-    const t2 = Date.now()
-    if (await this.bootstrapDmGroupIfLeader(conversationId)) {
-      console.debug(`[E2EE-DBG] ensureDmGroupReady: bootstrapped as leader in ${Date.now() - t2}ms`)
-      await this.replayDurableEvents(conversationId)
-      const t3 = Date.now()
-      const covered = await this.ensureDmParticipantCoverage(conversationId)
-      console.debug(`[E2EE-DBG] ensureDmGroupReady: participantCoverage=${covered} in ${Date.now() - t3}ms (total ${Date.now() - t0}ms)`)
-      return covered
-    }
-
-    console.debug(`[E2EE-DBG] ensureDmGroupReady: not leader, membership failed in ${Date.now() - t0}ms, allowForce=${allowForce}`)
-
-    if (!allowForce) {
-      return this.hasGroup(conversationId)
-    }
-
-    const t4 = Date.now()
-    await this.bootstrapDmGroup(conversationId)
-    console.debug(`[E2EE-DBG] ensureDmGroupReady: force-bootstrapped in ${Date.now() - t4}ms`)
-    const t5 = Date.now()
-    const covered = await this.ensureDmParticipantCoverage(conversationId)
-    console.debug(`[E2EE-DBG] ensureDmGroupReady: participantCoverage=${covered} in ${Date.now() - t5}ms (total ${Date.now() - t0}ms)`)
-    return covered
-  }
-
   private async prepareScopeForReadInternal(
     scope: EncryptedScope,
     options: ScopePreparationOptions
   ): Promise<boolean> {
-    this.scopeKinds.set(scope.id, scope.kind)
+    const channelId = scope.channelId ?? scope.id
+    this.scopeKinds.set(channelId, 'channel')
 
-    const initiallyReady =
-      scope.kind === 'dm'
-        ? await this.ensureDmGroupReady(scope.id, false)
-        : await this.ensureChannelGroupReady(scope.id, false)
-    if (initiallyReady) {
+    if (await this.ensureChannelGroupReady(channelId, false)) {
       await this.processPendingRepairArtifacts(scope, true)
       return true
     }
 
-    if (scope.kind === 'channel') {
-      await this.primeEmptyChannelGroupIfOwner(scope.id)
-      if (await this.ensureChannelGroupReady(scope.id, false)) {
-        await this.processPendingRepairArtifacts(scope, true)
-        return true
-      }
+    await this.primeEmptyChannelGroupIfOwner(channelId)
+    if (await this.ensureChannelGroupReady(channelId, false)) {
+      await this.processPendingRepairArtifacts(scope, true)
+      return true
     }
 
-    const waitMs = scope.kind === 'dm' ? DM_PREPARE_WAIT_MS : JOIN_WAIT_MS
-    if (await this.pollForScopeMembership(scope, waitMs)) {
-      await this.replayDurableEvents(scope.id).catch((error) =>
+    if (await this.pollForScopeMembership(scope, JOIN_WAIT_MS)) {
+      await this.replayDurableEvents(channelId).catch((error) =>
         this.logIgnoredError('replay scope events during prepare', error)
       )
       await this.processPendingRepairArtifacts(scope, true)
-      return this.hasGroup(scope.id)
+      return this.hasGroup(channelId)
     }
 
-    if (scope.kind === 'channel' && !this.hasGroup(scope.id)) {
+    if (!this.hasGroup(channelId)) {
       this.ensureBackgroundChannelMembershipRetry(scope)
     }
 
@@ -2203,13 +2131,13 @@ export class VesperEncryptedChat {
     }
 
     if (await this.pollForScopeMembership(scope, JOIN_WAIT_MS)) {
-      await this.replayDurableEvents(scope.id).catch((error) =>
+      await this.replayDurableEvents(channelId).catch((error) =>
         this.logIgnoredError('replay scope events after resync prepare', error)
       )
     }
 
     await this.processPendingRepairArtifacts(scope, true)
-    return this.hasGroup(scope.id)
+    return this.hasGroup(channelId)
   }
 
   private ensureBackgroundChannelMembershipRetry(scope: EncryptedScope): void {
@@ -2775,8 +2703,8 @@ export class VesperEncryptedChat {
     }
 
     // Guard against concurrent createGroup calls for the same scope.
-    // Without this, two callers (e.g. ensureDmGroupReady and
-    // forceBootstrapDmGroup) can both pass the hasGroup check before
+    // Without this, two callers can both pass the hasGroup check before
+    // either finishes, each consuming a key package and overwriting
     // either finishes, each consuming a key package and overwriting
     // the other's group state. The second caller awaits the first
     // call's completion instead of creating a duplicate group.
@@ -5558,199 +5486,6 @@ export class VesperEncryptedChat {
 
   private getPreferredJoinDeviceId(scope: EncryptedScope, userId: string): string | null {
     return this.recentJoinDeviceIds.get(`${scopeTopic(scope)}:${userId}`) ?? null
-  }
-
-  private async bootstrapDmGroupIfLeader(conversationId: string): Promise<boolean> {
-    // Prevent concurrent bootstraps — the messageStore and SDK can both
-    // attempt to bootstrap the same DM simultaneously, causing a
-    // remove+re-add cycle that burns through epochs.
-    const inflight = this.pendingBootstraps.get(conversationId)
-    if (inflight) {
-      return await inflight
-    }
-
-    const promise = this.doBootstrapDmGroupIfLeader(conversationId)
-    this.pendingBootstraps.set(conversationId, promise)
-    try {
-      return await promise
-    } finally {
-      this.pendingBootstraps.delete(conversationId)
-    }
-  }
-
-  private async doBootstrapDmGroupIfLeader(conversationId: string): Promise<boolean> {
-    const session = this.client.getAuthSession()
-    const conversation = await this.loadConversation(conversationId)
-
-    if (!conversation || !session) {
-      return false
-    }
-
-    const participantIds = conversation.participants
-      .map((participant) => participant.user_id)
-      .sort((left, right) => left.localeCompare(right))
-
-    if (participantIds[0] !== session.user.id) {
-      return false
-    }
-
-    return await this.bootstrapLocalDmGroup(conversationId)
-  }
-
-  /** Like bootstrapDmGroupIfLeader but skips the leader check — used as the
-   *  last-resort path when the leader isn't online. */
-  private async bootstrapDmGroup(conversationId: string): Promise<boolean> {
-    // Same inflight guard as bootstrapDmGroupIfLeader
-    const inflight = this.pendingBootstraps.get(conversationId)
-    if (inflight) {
-      return await inflight
-    }
-
-    if (this.hasGroup(conversationId)) {
-      return true
-    }
-
-    const promise = this.doBootstrapDmGroup(conversationId)
-    this.pendingBootstraps.set(conversationId, promise)
-    try {
-      return await promise
-    } finally {
-      this.pendingBootstraps.delete(conversationId)
-    }
-  }
-
-  private async doBootstrapDmGroup(conversationId: string): Promise<boolean> {
-    const session = this.client.getAuthSession()
-    const conversation = await this.loadConversation(conversationId)
-
-    if (!conversation || !session) {
-      return false
-    }
-
-    return await this.bootstrapLocalDmGroup(conversationId)
-  }
-
-  private async loadConversation(conversationId: string): Promise<VesperConversation | null> {
-    let conversation =
-      this.client.getState().conversations.find((entry) => entry.id === conversationId) ?? null
-
-    if (conversation) {
-      return conversation
-    }
-
-    await this.client.syncNow(false).catch((e) => this.logIgnoredError('background sync failed', e))
-    conversation =
-      this.client.getState().conversations.find((entry) => entry.id === conversationId) ?? null
-    return conversation
-  }
-
-  private getDmParticipantIds(
-    conversation: VesperConversation,
-    localUserId: string
-  ): string[] {
-    return [...new Set(
-      conversation.participants
-        .map((participant) => participant.user_id)
-        .filter((userId) => userId && userId !== localUserId)
-    )].sort((left, right) => left.localeCompare(right))
-  }
-
-  private async bootstrapLocalDmGroup(conversationId: string): Promise<boolean> {
-    await this.createGroup(conversationId)
-    if (!this.hasGroup(conversationId)) {
-      return false
-    }
-
-    return await this.ensureCurrentGroupInfoPublished(conversationId)
-  }
-
-  private async ensureDmParticipantCoverage(conversationId: string): Promise<boolean> {
-    if (!this.hasGroup(conversationId)) {
-      console.debug(`[E2EE-DBG] ensureDmParticipantCoverage(${conversationId.slice(0, 8)}): no group`)
-      return false
-    }
-
-    const session = this.client.getAuthSession()
-    const conversation = await this.loadConversation(conversationId)
-    if (!session || !conversation) {
-      console.debug(`[E2EE-DBG] ensureDmParticipantCoverage: no session/conversation`)
-      return this.hasGroup(conversationId)
-    }
-
-    const participantIds = this.getDmParticipantIds(conversation, session.user.id)
-    if (participantIds.length === 0) {
-      return true
-    }
-
-    const memberStatus = participantIds.map(pid => `${pid.slice(0, 8)}:${this.isMemberOfGroup(conversationId, pid)}`)
-    console.debug(`[E2EE-DBG] ensureDmParticipantCoverage: participants=${memberStatus.join(',')}`)
-
-    if (participantIds.every((participantId) => this.isMemberOfGroup(conversationId, participantId))) {
-      return true
-    }
-
-    const scope = {
-      kind: 'dm' as const,
-      id: conversationId
-    }
-
-    for (const participantId of participantIds) {
-      if (this.isMemberOfGroup(conversationId, participantId)) {
-        continue
-      }
-
-      await this.sponsorScopeJoinLocked(
-        conversationId,
-        participantId,
-        this.getPreferredJoinDeviceId(scope, participantId)
-      )
-    }
-
-    if (participantIds.every((participantId) => this.isMemberOfGroup(conversationId, participantId))) {
-      void this.client.pushScopeEvent('dm', conversationId, 'mls_request_join_all', {})
-      return true
-    }
-
-    if (!await this.ensureCurrentGroupInfoPublished(conversationId)) {
-      return false
-    }
-
-    const pushed = await this.client.pushScopeEvent('dm', conversationId, 'mls_request_join_all', {})
-    if (!pushed) {
-      return false
-    }
-
-    const joined = await this.awaitDmParticipantCoverage(conversationId, participantIds)
-    if (joined) {
-      await this.replayDurableEvents(conversationId).catch((error) =>
-        this.logIgnoredError('replay dm durable events during bootstrap', error)
-      )
-    }
-
-    return participantIds.every((participantId) => this.isMemberOfGroup(conversationId, participantId))
-  }
-
-  private async awaitDmParticipantCoverage(
-    conversationId: string,
-    participantIds: string[],
-    timeoutMs = DM_PARTICIPANT_JOIN_WAIT_MS
-  ): Promise<boolean> {
-    const deadline = Date.now() + timeoutMs
-
-    while (Date.now() < deadline) {
-      if (participantIds.every((participantId) => this.isMemberOfGroup(conversationId, participantId))) {
-        return true
-      }
-
-      const remainingMs = deadline - Date.now()
-      if (remainingMs <= 0) {
-        break
-      }
-
-      await this.awaitGroupMembership(conversationId, Math.min(remainingMs, 250))
-    }
-
-    return participantIds.every((participantId) => this.isMemberOfGroup(conversationId, participantId))
   }
 
   private async loadOrderedWelcomeKeyPackages(

@@ -2577,7 +2577,6 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
   joinDmChat: (conversationId) => {
     const channelId = resolveDmChannelId(conversationId)
-    console.debug(`[E2EE-DBG] joinDmChat conv=${conversationId?.slice(0, 8)} channelId=${channelId?.slice(0, 8) ?? 'NULL'}`)
 
     if (channelId) {
       get().joinChannelChat(channelId)
