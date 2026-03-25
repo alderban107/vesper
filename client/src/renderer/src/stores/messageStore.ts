@@ -1102,17 +1102,19 @@ interface EncryptedScopeDescriptor {
   topic: string
 }
 
-function scopeFromTopic(targetId: string, topic: string): { kind: 'channel' | 'dm'; id: string } {
-  return {
-    kind: topic.startsWith('dm:') ? 'dm' : 'channel',
-    id: targetId
+function scopeFromTopic(targetId: string, topic: string): { kind: 'channel' | 'dm'; id: string; channelId?: string | null } {
+  if (topic.startsWith('dm:')) {
+    const channelId = resolveDmChannelId(targetId)
+    return { kind: 'dm', id: targetId, channelId }
   }
+  return { kind: 'channel', id: targetId }
 }
 
-function sdkScopeFromDescriptor(scope: EncryptedScopeDescriptor): { kind: 'channel' | 'dm'; id: string } {
+function sdkScopeFromDescriptor(scope: EncryptedScopeDescriptor): { kind: 'channel' | 'dm'; id: string; channelId?: string | null } {
   return {
     kind: scope.kind,
-    id: scope.targetId
+    id: scope.targetId,
+    channelId: scope.channelId
   }
 }
 
@@ -2923,6 +2925,12 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   },
 
   fetchOlderDmMessages: async (conversationId) => {
+    const channelId = resolveDmChannelId(conversationId)
+    if (channelId) {
+      await get().fetchOlderMessages(channelId)
+      return
+    }
+
     if (inFlightOlderScopeMessageFetches.has(`dm:${conversationId}`)) {
       return
     }
@@ -3009,6 +3017,12 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   },
 
   fetchNewerDmMessages: async (conversationId) => {
+    const channelId = resolveDmChannelId(conversationId)
+    if (channelId) {
+      await get().fetchNewerMessages(channelId)
+      return
+    }
+
     if (inFlightNewerScopeMessageFetches.has(`dm:${conversationId}`)) {
       return
     }
@@ -3143,11 +3157,21 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   },
 
   sendDmTypingStart: (conversationId) => {
-    void getRendererEncryptedChat().sendTyping({ kind: 'dm', id: conversationId }, true)
+    const channelId = resolveDmChannelId(conversationId)
+    if (channelId) {
+      void getRendererEncryptedChat().sendTyping({ kind: 'channel', id: channelId }, true)
+    } else {
+      void getRendererEncryptedChat().sendTyping({ kind: 'dm', id: conversationId }, true)
+    }
   },
 
   sendDmTypingStop: (conversationId) => {
-    void getRendererEncryptedChat().sendTyping({ kind: 'dm', id: conversationId }, false)
+    const channelId = resolveDmChannelId(conversationId)
+    if (channelId) {
+      void getRendererEncryptedChat().sendTyping({ kind: 'channel', id: channelId }, false)
+    } else {
+      void getRendererEncryptedChat().sendTyping({ kind: 'dm', id: conversationId }, false)
+    }
   },
 
   // Threads

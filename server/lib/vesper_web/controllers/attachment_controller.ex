@@ -115,7 +115,7 @@ defmodule VesperWeb.AttachmentController do
       message.channel_id ->
         case Servers.get_channel(message.channel_id) do
           nil -> false
-          channel -> Servers.user_is_member?(user_id, channel.server_id)
+          channel -> Servers.user_is_channel_member?(user_id, channel)
         end
 
       message.conversation_id ->

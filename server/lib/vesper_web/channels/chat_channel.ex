@@ -2,7 +2,7 @@ defmodule VesperWeb.ChatChannel do
   use Phoenix.Channel
 
   alias Vesper.Servers
-  alias Vesper.Servers.{MemberCache, Permissions, PermissionsCache}
+  alias Vesper.Servers.{Channel, MemberCache, Permissions, PermissionsCache}
   alias Vesper.Chat
   alias Vesper.Encryption
   alias Vesper.Runtime
@@ -390,10 +390,18 @@ defmodule VesperWeb.ChatChannel do
         broadcast!(socket, "message_deleted", Map.put(payload, :room_seq, room_seq))
         notify_scope_mutation(socket.assigns.server_id, "channel", socket.assigns.channel_id)
 
+        member_ids =
+          if socket.assigns.server_id do
+            MemberCache.get_member_ids(socket.assigns.server_id)
+          else
+            channel = Servers.get_channel(socket.assigns.channel_id)
+            Servers.list_channel_member_ids(channel) |> MapSet.new()
+          end
+
         ScopeSummary.broadcast_channel_update(
           socket.assigns.channel_id,
           latest_message,
-          MemberCache.get_member_ids(socket.assigns.server_id)
+          member_ids
         )
 
         {:reply, :ok, socket}
@@ -960,7 +968,12 @@ defmodule VesperWeb.ChatChannel do
   # Guard against clients sending a non-list value (e.g. a bare string) for mentioned_user_ids.
   defp notify_mentions(_non_list, _channel_id, _sender_id, _server_id, _member_ids), do: :ok
 
-  defp notify_scope_mutation(server_id, kind, scope_id, activity \\ nil) do
+  # DM channels have no server_id — skip server-level presence notifications.
+  # Header clause needed because of the default argument.
+  defp notify_scope_mutation(server_id, kind, scope_id, activity \\ nil)
+  defp notify_scope_mutation(nil, _kind, _scope_id, _activity), do: :ok
+
+  defp notify_scope_mutation(server_id, kind, scope_id, activity) do
     payload = %{
       kind: kind,
       scope_id: scope_id
@@ -979,8 +992,16 @@ defmodule VesperWeb.ChatChannel do
   end
 
   defp notify_history_request_pending(server_id, channel_id, _requester_id, topic) do
-    server_id
-    |> Servers.list_member_ids()
+    member_ids =
+      case Servers.get_channel(channel_id) do
+        %Channel{server_id: nil} = channel ->
+          Servers.list_channel_member_ids(channel)
+
+        _ ->
+          Servers.list_member_ids(server_id)
+      end
+
+    member_ids
     |> Enum.filter(&Servers.user_can_view_channel?(&1, channel_id))
     |> Enum.each(fn user_id ->
       VesperWeb.Endpoint.broadcast("user:#{user_id}", "mls_history_request_pending", %{

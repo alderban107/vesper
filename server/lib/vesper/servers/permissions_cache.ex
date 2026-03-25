@@ -50,7 +50,10 @@ defmodule Vesper.Servers.PermissionsCache do
 
   @doc """
   Check if a user has a specific permission. Convenience wrapper.
+  Returns true for nil server_id (DM channels have no permission system).
   """
+  def has_permission?(_user_id, nil, _permission), do: true
+
   def has_permission?(user_id, server_id, permission) do
     perms = get(user_id, server_id)
     Vesper.Servers.Permissions.has_permission?(perms, permission)

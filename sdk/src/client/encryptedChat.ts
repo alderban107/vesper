@@ -1120,7 +1120,7 @@ export class VesperEncryptedChat {
           }
 
           attemptedPush = true
-          const sent = await this.client.pushScopeEvent(scope.kind, scope.id, 'new_message', messagePayload)
+          const sent = await this.pushScopeEventResolved(scope, 'new_message', messagePayload)
           console.debug(`[E2EE-DBG] sendPayload: pushScopeEvent returned ${sent}`)
 
           return sent
@@ -1265,7 +1265,7 @@ export class VesperEncryptedChat {
         throw new Error(`Failed to publish GroupInfo for ${scopeTopic(scope)}`)
       }
 
-      const pushed = await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_request_join_all', {})
+      const pushed = await this.pushScopeEventResolved(scope, 'mls_request_join_all', {})
       if (!pushed) {
         throw new Error(`Failed to request join-all for ${scopeTopic(scope)}`)
       }
@@ -1537,12 +1537,12 @@ export class VesperEncryptedChat {
     try {
       await this.withReadyScopeOperation(scope, false, async () => {
         const encrypted = await this.encryptForScope(
-          scope.id,
+          scope.channelId ?? scope.id,
           encodePayload({ v: 1, type: 'text', text })
         )
         await cacheSentMessage(this.storage, encrypted.ciphertext, text)
 
-        const pushed = await this.client.pushScopeEvent(scope.kind, scope.id, 'edit_message', {
+        const pushed = await this.pushScopeEventResolved(scope, 'edit_message', {
           message_id: messageId,
           ciphertext: encrypted.ciphertext,
           mls_epoch: encrypted.epoch
@@ -1558,7 +1558,7 @@ export class VesperEncryptedChat {
 
   async deleteMessage(scope: EncryptedScope, messageId: string): Promise<void> {
     await this.withStorageContext(async () => {
-      const pushed = await this.client.pushScopeEvent(scope.kind, scope.id, 'delete_message', {
+      const pushed = await this.pushScopeEventResolved(scope, 'delete_message', {
         message_id: messageId
       })
       if (!pushed) {
@@ -1586,9 +1586,8 @@ export class VesperEncryptedChat {
   }
 
   async sendTyping(scope: EncryptedScope, active: boolean): Promise<void> {
-    const pushed = await this.client.pushScopeEvent(
-      scope.kind,
-      scope.id,
+    const pushed = await this.pushScopeEventResolved(
+      scope,
       active ? 'typing_start' : 'typing_stop',
       {}
     )
@@ -1598,7 +1597,7 @@ export class VesperEncryptedChat {
   }
 
   async pinMessage(scope: EncryptedScope, messageId: string): Promise<void> {
-    const pushed = await this.client.pushScopeEvent(scope.kind, scope.id, 'pin_message', {
+    const pushed = await this.pushScopeEventResolved(scope, 'pin_message', {
       message_id: messageId
     })
     if (!pushed) {
@@ -1607,7 +1606,7 @@ export class VesperEncryptedChat {
   }
 
   async unpinMessage(scope: EncryptedScope, messageId: string): Promise<void> {
-    const pushed = await this.client.pushScopeEvent(scope.kind, scope.id, 'unpin_message', {
+    const pushed = await this.pushScopeEventResolved(scope, 'unpin_message', {
       message_id: messageId
     })
     if (!pushed) {
@@ -1923,7 +1922,7 @@ export class VesperEncryptedChat {
           return
         }
 
-        const claimed = await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_eviction_claim', {
+        const claimed = await this.pushScopeEventResolved(scope, 'mls_eviction_claim', {
           id: evictionId
         })
         if (!claimed) {
@@ -1941,7 +1940,7 @@ export class VesperEncryptedChat {
             : findMemberLeafIndex(state, targetUserId)
 
         if (leafIndex == null) {
-          const skipped = await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_eviction_skip', {
+          const skipped = await this.pushScopeEventResolved(scope, 'mls_eviction_skip', {
             id: evictionId,
             target_user_id: targetUserId,
             ...(targetDeviceId ? { target_device_id: targetDeviceId } : {}),
@@ -1959,7 +1958,7 @@ export class VesperEncryptedChat {
         const removed = await removeMemberFromGroup(this.cloneGroupState(state), leafIndex)
         await this.setGroupState(scope.id, removed.newState)
 
-        const pushed = await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_remove', {
+        const pushed = await this.pushScopeEventResolved(scope, 'mls_remove', {
           removed_user_id: targetUserId,
           ...(targetDeviceId ? { removed_device_id: targetDeviceId } : {}),
           commit_data: uint8ToBase64(removed.commitBytes),
@@ -2712,7 +2711,7 @@ export class VesperEncryptedChat {
     const request = (async () => {
       await this.client.replenishKeyPackages()
 
-      const pushed = await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_request_join', {
+      const pushed = await this.pushScopeEventResolved(scope, 'mls_request_join', {
         device_id: this.client.deviceIdentity?.id
       })
 
@@ -3200,7 +3199,7 @@ export class VesperEncryptedChat {
       return
     }
 
-    const pushed = await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_history_request', {
+    const pushed = await this.pushScopeEventResolved(scope, 'mls_history_request', {
       device_id: localDeviceId
     })
     if (!pushed && !force) {
@@ -3461,7 +3460,7 @@ export class VesperEncryptedChat {
     })
     const encrypted = await this.encryptForScope(scopeId, bundlePayload)
 
-    const pushed = await this.client.pushScopeEvent(scope.kind, scope.id, 'mls_history_bundle', {
+    const pushed = await this.pushScopeEventResolved(scope, 'mls_history_bundle', {
       ciphertext: encrypted.ciphertext,
       mls_epoch: encrypted.epoch,
       recipient_id: recipientId,
@@ -3798,6 +3797,17 @@ export class VesperEncryptedChat {
     }
 
     return false
+  }
+
+  /** Push an event to the correct topic for a scope (resolves channelId for DMs). */
+  private async pushScopeEventResolved(
+    scope: EncryptedScope,
+    event: string,
+    payload: object
+  ): Promise<boolean> {
+    const kind = scope.channelId ? 'channel' : scope.kind
+    const id = scope.channelId ?? scope.id
+    return await this.client.pushScopeEvent(kind, id, event, payload)
   }
 
   private unrefRetryTimer(timer: ReturnType<typeof setTimeout>): void {
@@ -6126,7 +6136,7 @@ export class VesperEncryptedChat {
     emoji: string
   ): Promise<void> {
     if (!this.client.getState().canUseE2EE) {
-      const pushed = await this.client.pushScopeEvent(scope.kind, scope.id, event, {
+      const pushed = await this.pushScopeEventResolved(scope, event, {
         message_id: messageId,
         emoji
       })
@@ -6137,9 +6147,10 @@ export class VesperEncryptedChat {
     }
 
     await this.withReadyScopeOperation(scope, false, async () => {
-      const encrypted = await this.encryptForScope(scope.id, emoji)
+      const mlsId = scope.channelId ?? scope.id
+      const encrypted = await this.encryptForScope(mlsId, emoji)
       await cacheSentMessage(this.storage, encrypted.ciphertext, emoji)
-      const pushed = await this.client.pushScopeEvent(scope.kind, scope.id, event, {
+      const pushed = await this.pushScopeEventResolved(scope, event, {
         message_id: messageId,
         ciphertext: encrypted.ciphertext,
         mls_epoch: encrypted.epoch
