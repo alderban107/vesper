@@ -101,33 +101,34 @@ defmodule VesperWeb.ChatChannel do
               %{channel_id: socket.assigns.channel_id}
             )
 
-            notify_scope_mutation(
-              socket.assigns.server_id,
-              "channel",
-              socket.assigns.channel_id
-            )
+            if socket.assigns.server_id do
+              notify_scope_mutation(
+                socket.assigns.server_id,
+                "channel",
+                socket.assigns.channel_id
+              )
+            end
 
             channel_id = socket.assigns.channel_id
             sender_id = socket.assigns.user_id
             server_id = socket.assigns.server_id
 
-            # Scope mutation with embedded activity data. Broadcast to the
-            # server presence channel — only reaches online server members.
-            # The scope_mutation handler on the client can update unread counts
-            # and sidebar directly from this payload, no HTTP sync needed.
-            notify_scope_mutation(server_id, "channel", channel_id, %{
-              message_id: message.id,
-              sender_id: sender_id,
-              sender: sender_json(message.sender),
-              inserted_at: message.inserted_at,
-              room_seq: message.room_seq
-            })
+            # DM channels have no server — skip server-level notifications
+            if server_id do
+              notify_scope_mutation(server_id, "channel", channel_id, %{
+                message_id: message.id,
+                sender_id: sender_id,
+                sender: sender_json(message.sender),
+                inserted_at: message.inserted_at,
+                room_seq: message.room_seq
+              })
 
-            # Mentions still need per-user notification (targeted, not fan-out)
-            member_ids =
-              if mentioned != [], do: MemberCache.get_member_ids(server_id), else: MapSet.new()
+              # Mentions still need per-user notification (targeted, not fan-out)
+              member_ids =
+                if mentioned != [], do: MemberCache.get_member_ids(server_id), else: MapSet.new()
 
-            notify_mentions(mentioned, channel_id, sender_id, server_id, member_ids)
+              notify_mentions(mentioned, channel_id, sender_id, server_id, member_ids)
+            end
 
             {:reply, :ok, socket}
 

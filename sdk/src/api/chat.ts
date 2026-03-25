@@ -52,6 +52,7 @@ export interface VesperConversation {
   id: string
   type: string
   name: string | null
+  channel_id?: string | null
   disappearing_ttl: number | null
   inserted_at: string
   participants: VesperConversationParticipant[]

@@ -75,6 +75,7 @@ const SCOPE_NOT_READY = Symbol('scope-not-ready')
 export interface EncryptedScope {
   kind: 'channel' | 'dm'
   id: string
+  channelId?: string | null
 }
 
 export interface ProcessedScopeMessage {
@@ -856,7 +857,9 @@ export class VesperEncryptedChat {
     listener?: ScopeListener
   ): Promise<() => void> {
     return await this.withStorageContext(async () => {
-      const topic = scopeTopic(scope)
+      // For DMs with a backing channel, watch the channel topic
+      const watchScope = scope.channelId ? { kind: 'channel' as const, id: scope.channelId } : scope
+      const topic = scopeTopic(watchScope)
       this.scopeWatchRefs.set(topic, (this.scopeWatchRefs.get(topic) ?? 0) + 1)
 
       if (listener) {
@@ -1050,6 +1053,14 @@ export class VesperEncryptedChat {
   /** Ensures the MLS group for a scope is ready, optionally creating it if missing. Routes to channel or DM-specific logic. */
   async ensureScopeReady(scope: EncryptedScope, allowCreate = false): Promise<boolean> {
     return await this.withStorageContext(async () => {
+      // DMs with a backing channel use the channel MLS path entirely.
+      // This eliminates the DM-specific leader election / sponsored transition
+      // flow that was causing epoch fork races.
+      if (scope.channelId) {
+        this.scopeKinds.set(scope.channelId, 'channel')
+        return await this.ensureChannelGroupReady(scope.channelId, allowCreate)
+      }
+
       this.scopeKinds.set(scope.id, scope.kind)
 
       if (scope.kind === 'channel') {
@@ -1084,7 +1095,7 @@ export class VesperEncryptedChat {
       try {
         pushed = await this.withReadyScopeOperation(scope, true, async () => {
           const plaintext = encodePayload(payload)
-          const encrypted = await this.encryptForScope(scope.id, plaintext)
+          const encrypted = await this.encryptForScope(scope.channelId ?? scope.id, plaintext)
           await cacheSentMessage(this.storage, encrypted.ciphertext, plaintext)
 
           const messagePayload: Record<string, unknown> = {
@@ -2032,7 +2043,8 @@ export class VesperEncryptedChat {
     }
 
     const ownerUserId = await this.resolveChannelOwnerId(channelId)
-    if (!localUserId || ownerUserId == null || localUserId !== ownerUserId) {
+    // DM channels (no server owner): any member can create. Server channels: owner only.
+    if (!localUserId || (ownerUserId != null && localUserId !== ownerUserId)) {
       return false
     }
 
@@ -2074,7 +2086,8 @@ export class VesperEncryptedChat {
 
     const localUserId = this.client.getAuthSession()?.user.id ?? this.client.getState().user?.id
     const ownerUserId = await this.resolveChannelOwnerId(channelId)
-    if (!localUserId || ownerUserId == null || localUserId !== ownerUserId) {
+    // DM channels (no server owner): any member can create. Server channels: owner only.
+    if (!localUserId || (ownerUserId != null && localUserId !== ownerUserId)) {
       return false
     }
 
@@ -5129,7 +5142,10 @@ export class VesperEncryptedChat {
   private async channelRequiresExternalJoin(channelId: string, localUserId: string): Promise<boolean> {
     const serverId = await this.resolveChannelServerId(channelId)
     if (!serverId) {
-      return true
+      // DM channels (no server): the creator encrypts at epoch 0.
+      // Other members join via External Commit when they open the DM.
+      // No need to wait for them before sending.
+      return false
     }
 
     try {
@@ -6147,7 +6163,7 @@ export class VesperEncryptedChat {
         continue
       }
 
-      const result = await this.withLockedScopeOperation(scope.id, async () => {
+      const result = await this.withLockedScopeOperation(scope.channelId ?? scope.id, async () => {
         if (!await this.ensureScopeReady(scope, allowCreate)) {
           return SCOPE_NOT_READY
         }

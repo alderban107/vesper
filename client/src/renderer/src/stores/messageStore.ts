@@ -65,6 +65,19 @@ const MESSAGE_PAGE_SIZE = 50
 const MAX_RESIDENT_MESSAGES_PER_SCOPE = 400
 const MAX_WARM_SCOPES = 3
 
+// Mapping from DM conversation_id to backing channel_id for unified MLS path.
+// Populated by dmStore when conversations are loaded/created.
+const dmChannelMappings = new Map<string, string>()
+
+export function registerDmChannelMapping(conversationId: string, channelId: string): void {
+  dmChannelMappings.set(conversationId, channelId)
+}
+
+// Resolve the backing channel_id for a DM conversation.
+function resolveDmChannelId(conversationId: string): string | null {
+  return dmChannelMappings.get(conversationId) ?? null
+}
+
 type ScopeKind = 'channel' | 'dm'
 type ScopeLifecycleState = 'cold' | 'loading' | 'warm' | 'active' | 'stale'
 
@@ -2539,6 +2552,14 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   // --- DM conversation messaging ---
 
   joinDmChat: (conversationId) => {
+    const channelId = resolveDmChannelId(conversationId)
+
+    if (channelId) {
+      get().joinChannelChat(channelId)
+      return
+    }
+
+    // Legacy DM path (no backing channel)
     const topic = `dm:${conversationId}`
     const scope: EncryptedScopeDescriptor = {
       kind: 'dm',
@@ -2572,10 +2593,23 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   },
 
   leaveDmChat: (conversationId) => {
+    const channelId = resolveDmChannelId(conversationId)
+    if (channelId) {
+      get().leaveChannelChat(channelId)
+      return
+    }
     releaseLiveScopeWatch(`dm:${conversationId}`)
   },
 
   fetchDmMessages: async (conversationId) => {
+    // DM-as-channel: fetch via channel messages endpoint
+    const channelId = resolveDmChannelId(conversationId)
+    if (channelId) {
+      await get().fetchMessages(channelId)
+      return
+    }
+
+    // Legacy DM path
     const existingFetch = inFlightScopeMessageFetches.get(`dm:${conversationId}`)
     if (existingFetch) {
       await existingFetch
@@ -3039,6 +3073,14 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       return
     }
 
+    // DM-as-channel: delegate to channel send path
+    const channelId = resolveDmChannelId(conversationId)
+    if (channelId) {
+      await get().sendMessage(channelId, content, parentMessageId)
+      return
+    }
+
+    // Legacy DM path
     const replyingTo = get().replyingTo
     const parentId = parentMessageId ?? replyingTo?.id ?? undefined
     const shouldClearInlineReply = !parentMessageId

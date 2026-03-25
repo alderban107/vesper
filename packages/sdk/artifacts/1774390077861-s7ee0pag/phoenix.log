@@ -1,0 +1,12 @@
+15:08:02.695 [error] :gen_statem #PID<0.339.0> terminating
+** (RuntimeError) connect raised MatchError exception. The exception details are hidden, as they may contain sensitive data such as database credentials. You may set :show_sensitive_data_on_connection_error to true when starting your connection if you wish to see all of the details
+    (postgrex 0.22.0) lib/postgrex/scram.ex:65: Postgrex.SCRAM.do_verify_server/3
+    (postgrex 0.22.0) lib/postgrex/protocol.ex:929: Postgrex.Protocol.auth_fin/4
+    (postgrex 0.22.0) lib/postgrex/protocol.ex:760: Postgrex.Protocol.handshake/3
+    (postgrex 0.22.0) lib/postgrex/protocol.ex:229: Postgrex.Protocol.connect_endpoints/6
+    (db_connection 2.9.0) lib/db_connection/connection.ex:80: DBConnection.Connection.handle_event/4
+    (stdlib 7.2) gen_statem.erl:3743: :gen_statem.loop_state_callback/11
+    (stdlib 7.2) proc_lib.erl:333: :proc_lib.init_p_do_apply/3
+Process Label: "db_conn_4"
+Queue: [internal: {:connect, :init}]
+Postponed: []
