@@ -3,6 +3,12 @@ import { getRendererClient } from '../sdk/client'
 import { getStoredValue, writeStoredValue } from '../utils/localStorage'
 import { registerDmChannelMapping } from './messageStore'
 
+function registerMapping(conversationId: string, channelId: string | null): void {
+  if (channelId) {
+    registerDmChannelMapping(conversationId, channelId)
+  }
+}
+
 const LAST_CONVERSATION_KEY = 'vesper:lastConversationId'
 
 function readStoredConversationId(): string | null {
@@ -175,7 +181,7 @@ export const useDmStore = create<DmState>((set, get) => ({
       // Register channel mappings for DM-as-channel MLS routing
       for (const conv of conversations) {
         if (conv.channel_id) {
-          registerDmChannelMapping(conv.id, conv.channel_id)
+          registerMapping(conv.id, conv.channel_id)
         }
       }
 
@@ -200,7 +206,7 @@ export const useDmStore = create<DmState>((set, get) => ({
 
       // Register channel mapping immediately so sendDmMessage can delegate
       if (conversation.channel_id) {
-        registerDmChannelMapping(conversation.id, conversation.channel_id)
+        registerMapping(conversation.id, conversation.channel_id)
       }
 
       set((s) => {
@@ -222,7 +228,7 @@ export const useDmStore = create<DmState>((set, get) => ({
 
   addConversation: (conversation) => {
     if (conversation.channel_id) {
-      registerDmChannelMapping(conversation.id, conversation.channel_id)
+      registerMapping(conversation.id, conversation.channel_id)
     }
     set((s) => {
       const exists = s.conversations.some((c) => c.id === conversation.id)

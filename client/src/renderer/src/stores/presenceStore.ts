@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { useServerStore } from './serverStore'
+import { registerDmChannelMapping } from './messageStore'
 import type { DmConversation } from './dmStore'
 import { getRendererClient, getRendererEncryptedChat } from '../sdk/client'
 import { fireAndForget } from '../utils/async'
@@ -334,9 +335,14 @@ function handleUserFeedEvent(topic: string, event: string, payload: unknown): vo
   }
 
   if (event === 'new_conversation') {
+    const data = payload as { conversation: DmConversation & { channel_id?: string | null } }
+    // Register channel mapping SYNCHRONOUSLY before the async dmStore import
+    // so joinDmChat can resolve it even if the import hasn't completed
+    if (data.conversation?.channel_id && data.conversation?.id) {
+      registerDmChannelMapping(data.conversation.id, data.conversation.channel_id)
+    }
     import('./dmStore').then(({ useDmStore }) => {
-      const data = payload as { conversation: DmConversation }
-      useDmStore.getState().addConversation(data.conversation)
+      useDmStore.getState().addConversation(data.conversation as DmConversation)
     })
     return
   }

@@ -18,8 +18,10 @@ export default function MessageList({ scope }: Props): React.JSX.Element {
   const resolvedScope = useMemo(() => {
     if (scope.kind === 'dm') {
       const conversation = useDmStore.getState().conversations.find(c => c.id === scope.id)
-      if (conversation?.channel_id) {
-        return { kind: 'channel' as const, id: conversation.channel_id }
+      const channelId = conversation?.channel_id
+      console.debug(`[E2EE-DBG] MessageList resolvedScope: dm ${scope.id.slice(0, 8)} → channelId=${channelId?.slice(0, 8) ?? 'NULL'}`)
+      if (channelId) {
+        return { kind: 'channel' as const, id: channelId }
       }
     }
     return scope

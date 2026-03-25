@@ -157,9 +157,31 @@ test.describe('P0 Smoke — full continuous run', () => {
 
     // Bob selects the DM
     await selectDm(bob.page, USERS.alice.username)
+
+    // Debug: check channel mapping and messages on Bob's page
+    const bobDebug = await bob.page.evaluate(() => {
+      const map = (window as any).__vesperDmChannelMappings as Map<string, string> | undefined
+      const mappings = map ? Object.fromEntries(map.entries()) : 'NO MAP'
+      return { mappings }
+    })
+    e2eeLogs.push(`[DEBUG] Bob mappings: ${JSON.stringify(bobDebug)}`)
+
     try {
       await waitForMessage(bob.page, DM_MESSAGES.aliceToBob2)
     } catch (err) {
+      // Debug: check what Bob's page shows
+      const bobHtml = await bob.page.evaluate(() => {
+        const feed = document.querySelector('[data-testid="message-row"]')
+        const noMsg = document.querySelector('.vesper-empty-state')
+        return {
+          hasMessageRows: !!feed,
+          messageRowCount: document.querySelectorAll('[data-testid="message-row"]').length,
+          hasEmptyState: !!noMsg,
+          emptyStateText: noMsg?.textContent ?? null
+        }
+      })
+      console.error('BOB MAPPINGS:', JSON.stringify(bobDebug))
+      console.error('BOB DOM STATE:', JSON.stringify(bobHtml))
       console.error('=== E2EE DIAGNOSTIC LOGS ===')
       for (const log of e2eeLogs) console.error(log)
       console.error('=== END E2EE LOGS ===')

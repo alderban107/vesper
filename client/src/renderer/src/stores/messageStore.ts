@@ -66,16 +66,38 @@ const MAX_RESIDENT_MESSAGES_PER_SCOPE = 400
 const MAX_WARM_SCOPES = 3
 
 // Mapping from DM conversation_id to backing channel_id for unified MLS path.
-// Populated by dmStore when conversations are loaded/created.
-const dmChannelMappings = new Map<string, string>()
+// Stored on window to survive HMR module reloads.
+function getDmChannelMappings(): Map<string, string> {
+  const w = window as Record<string, unknown>
+  if (!w.__vesperDmChannelMappings) {
+    w.__vesperDmChannelMappings = new Map<string, string>()
+  }
+  return w.__vesperDmChannelMappings as Map<string, string>
+}
 
 export function registerDmChannelMapping(conversationId: string, channelId: string): void {
-  dmChannelMappings.set(conversationId, channelId)
+  getDmChannelMappings().set(conversationId, channelId)
 }
 
 // Resolve the backing channel_id for a DM conversation.
 function resolveDmChannelId(conversationId: string): string | null {
-  return dmChannelMappings.get(conversationId) ?? null
+  const cached = getDmChannelMappings().get(conversationId)
+  if (cached) return cached
+
+  // Fall back to the SDK client state (populated by sync)
+  try {
+    const sdkConversation = getRendererClient().getState().conversations.find(
+      (c: { id: string; channel_id?: string | null }) => c.id === conversationId
+    )
+    if (sdkConversation?.channel_id) {
+      getDmChannelMappings().set(conversationId, sdkConversation.channel_id)
+      return sdkConversation.channel_id
+    }
+  } catch {
+    // SDK not initialized yet
+  }
+
+  return null
 }
 
 type ScopeKind = 'channel' | 'dm'
@@ -2553,6 +2575,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
   joinDmChat: (conversationId) => {
     const channelId = resolveDmChannelId(conversationId)
+    console.debug(`[E2EE-DBG] joinDmChat conv=${conversationId?.slice(0, 8)} channelId=${channelId?.slice(0, 8) ?? 'NULL'}`)
 
     if (channelId) {
       get().joinChannelChat(channelId)
