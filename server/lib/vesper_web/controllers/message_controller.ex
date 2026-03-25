@@ -14,7 +14,7 @@ defmodule VesperWeb.MessageController do
       is_nil(channel) ->
         conn |> put_status(:not_found) |> json(%{error: "channel not found"})
 
-      not Servers.user_is_member?(user.id, channel.server_id) ->
+      not Servers.user_is_channel_member?(user.id, channel) ->
         conn |> put_status(:forbidden) |> json(%{error: "not a member"})
 
       not Servers.user_can_view_channel?(user.id, channel) ->
@@ -95,7 +95,7 @@ defmodule VesperWeb.MessageController do
       is_nil(channel) ->
         conn |> put_status(:not_found) |> json(%{error: "channel not found"})
 
-      not Servers.user_is_member?(user.id, channel.server_id) ->
+      not Servers.user_is_channel_member?(user.id, channel) ->
         conn |> put_status(:forbidden) |> json(%{error: "not a member"})
 
       not Servers.user_can_view_channel?(user.id, channel) ->
@@ -130,7 +130,7 @@ defmodule VesperWeb.MessageController do
       is_nil(channel) ->
         conn |> put_status(:not_found) |> json(%{error: "channel not found"})
 
-      not Servers.user_is_member?(user.id, channel.server_id) ->
+      not Servers.user_is_channel_member?(user.id, channel) ->
         conn |> put_status(:forbidden) |> json(%{error: "not a member"})
 
       not Servers.user_can_view_channel?(user.id, channel) ->
@@ -159,7 +159,7 @@ defmodule VesperWeb.MessageController do
               is_nil(channel) ->
                 conn |> put_status(:not_found) |> json(%{error: "channel not found"})
 
-              not Servers.user_is_member?(user.id, channel.server_id) ->
+              not Servers.user_is_channel_member?(user.id, channel) ->
                 conn |> put_status(:forbidden) |> json(%{error: "not a member"})
 
               not Servers.user_can_view_channel?(user.id, channel) ->
@@ -235,7 +235,7 @@ defmodule VesperWeb.MessageController do
       is_nil(channel) ->
         {:error, :not_found, "channel not found"}
 
-      not Servers.user_is_member?(user.id, channel.server_id) ->
+      not Servers.user_is_channel_member?(user.id, channel) ->
         {:error, :forbidden, "not a member"}
 
       not Servers.user_can_view_channel?(user.id, channel) ->

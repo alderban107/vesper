@@ -492,6 +492,22 @@ defmodule Vesper.Servers do
     |> Repo.all()
   end
 
+  @doc """
+  List member user IDs for a channel. For server-backed channels, returns
+  server members. For DM channels (no server_id), returns channel-direct members.
+  """
+  def list_channel_member_ids(%Channel{server_id: nil, id: channel_id}) do
+    from(m in Membership,
+      where: m.channel_id == ^channel_id,
+      select: m.user_id
+    )
+    |> Repo.all()
+  end
+
+  def list_channel_member_ids(%Channel{server_id: server_id}) do
+    list_member_ids(server_id)
+  end
+
   def get_membership(user_id, server_id) do
     Repo.get_by(Membership, user_id: user_id, server_id: server_id)
   end
@@ -640,6 +656,27 @@ defmodule Vesper.Servers do
   def user_is_member?(user_id, server_id) do
     from(m in Membership, where: m.user_id == ^user_id and m.server_id == ^server_id)
     |> Repo.exists?()
+  end
+
+  @doc """
+  Check if a user is a member of a channel. For server-backed channels,
+  checks server membership. For DM channels, checks channel-direct membership.
+  Accepts a Channel struct or a channel_id string.
+  """
+  def user_is_channel_member?(user_id, %Channel{server_id: nil, id: channel_id}) do
+    from(m in Membership, where: m.user_id == ^user_id and m.channel_id == ^channel_id)
+    |> Repo.exists?()
+  end
+
+  def user_is_channel_member?(user_id, %Channel{server_id: server_id}) do
+    user_is_member?(user_id, server_id)
+  end
+
+  def user_is_channel_member?(user_id, channel_id) when is_binary(channel_id) do
+    case get_channel(channel_id) do
+      nil -> false
+      channel -> user_is_channel_member?(user_id, channel)
+    end
   end
 
   def user_role(user_id, server_id) do
