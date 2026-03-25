@@ -123,6 +123,23 @@ defmodule VesperWeb.ChatChannel do
                 if mentioned != [], do: MemberCache.get_member_ids(server_id), else: MapSet.new()
 
               notify_mentions(mentioned, channel_id, sender_id, server_id, member_ids)
+
+              # Push notifications for offline @mentioned users
+              if mentioned && mentioned != [] do
+                resolved =
+                  if "everyone" in mentioned do
+                    MapSet.to_list(member_ids)
+                  else
+                    mentioned |> Enum.reject(&(&1 == "everyone"))
+                  end
+
+                Vesper.Notifications.notify_mentioned_users(
+                  resolved,
+                  sender_id,
+                  channel_id,
+                  server_id
+                )
+              end
             else
               # DM channel: send dm_activity to each member's user channel
               notify_dm_channel_activity(channel_id, sender_id, message)

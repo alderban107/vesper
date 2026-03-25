@@ -109,6 +109,13 @@ defmodule VesperWeb.DmChannel do
             message
           )
 
+          # Push notifications for offline DM participants
+          Vesper.Notifications.notify_dm_message(
+            sender_id,
+            conversation_id,
+            participant_ids
+          )
+
           {:reply, :ok, socket}
 
         {:error, _changeset} ->
@@ -625,5 +632,4 @@ defmodule VesperWeb.DmChannel do
       })
     end
   end
-
 end

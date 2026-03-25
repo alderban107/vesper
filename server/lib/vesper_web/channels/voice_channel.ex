@@ -123,6 +123,15 @@ defmodule VesperWeb.VoiceChannel do
           :ok
       end
 
+      # Push notification for offline DM participants
+      participant_ids = Chat.list_participant_ids(room_id)
+
+      Vesper.Notifications.notify_incoming_call(
+        caller_id,
+        room_id,
+        participant_ids
+      )
+
       {:noreply, socket}
     end
   end

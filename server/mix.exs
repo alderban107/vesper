@@ -62,7 +62,8 @@ defmodule Vesper.MixProject do
       {:ex_webrtc, "~> 0.15.0"},
       {:semaphore, "~> 1.3"},
       {:hammer, "~> 6.2"},
-      {:hammer_plug, "~> 3.0"}
+      {:hammer_plug, "~> 3.0"},
+      {:web_push_elixir, "~> 0.5.0"}
     ]
   end
 

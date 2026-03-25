@@ -43,6 +43,26 @@ function openmlsWasmPlugin(): Plugin {
   }
 }
 
+/**
+ * Vite plugin to copy the service worker to the build output.
+ * The SW must be served from the root path for push notifications.
+ */
+function serviceWorkerPlugin(): Plugin {
+  return {
+    name: 'service-worker-copy',
+    generateBundle() {
+      const swPath = resolve(__dirname, 'src/renderer/sw.js')
+      if (existsSync(swPath)) {
+        this.emitFile({
+          type: 'asset',
+          fileName: 'sw.js',
+          source: readFileSync(swPath, 'utf-8')
+        })
+      }
+    }
+  }
+}
+
 export default defineConfig({
   root: 'src/renderer',
   server: {
@@ -51,7 +71,7 @@ export default defineConfig({
       allow: ['..', resolve(__dirname, '../sdk')]
     }
   },
-  plugins: [react(), openmlsWasmPlugin()],
+  plugins: [react(), openmlsWasmPlugin(), serviceWorkerPlugin()],
   resolve: {
     alias: {
       '@vesper/sdk/api': resolve(__dirname, '../sdk/src/api/index.ts'),

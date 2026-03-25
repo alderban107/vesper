@@ -30,6 +30,8 @@ const ChannelSettingsModal = lazyWithRetry(() => import('../components/server/Ch
 const MemberListPanel = lazyWithRetry(() => import('../components/server/MemberListPanel'))
 const PinsPanel = lazyWithRetry(() => import('../components/chat/PinsPanel'))
 const VoiceChannelPanel = lazyWithRetry(() => import('../components/voice/VoiceChannelPanel'))
+const DmCallPanel = lazyWithRetry(() => import('../components/voice/DmCallPanel'))
+const ScreenShareIndicator = lazyWithRetry(() => import('../components/voice/ScreenShareIndicator'))
 
 const EMPTY_MESSAGES: Message[] = []
 const EMPTY_TYPING_USERS: { user_id: string; username: string }[] = []
@@ -148,6 +150,7 @@ export default function MainPage(): React.JSX.Element {
   const voiceState = useVoiceStore((s) => s.state)
   const voiceRoomId = useVoiceStore((s) => s.roomId)
   const voiceRoomType = useVoiceStore((s) => s.roomType)
+  const screenShareEnabled = useVoiceStore((s) => s.screenShareEnabled)
   const servers = useServerStore((s) => s.servers)
   const currentUser = useAuthStore((s) => s.user)
   const currentDevice = useAuthStore((s) => s.currentDevice)
@@ -266,8 +269,14 @@ export default function MainPage(): React.JSX.Element {
     isVoiceChannelView &&
     voiceRoomType === 'channel' &&
     voiceRoomId === activeChannelId
+  const isCurrentDmCallView =
+    isDmView &&
+    voiceRoomType === 'dm' &&
+    voiceRoomId === selectedConversationId &&
+    (voiceState === 'connected' || voiceState === 'in_call')
   const shouldShowCallOverlay =
     voiceState !== 'idle' &&
+    !isCurrentDmCallView &&
     (voiceRoomType === 'dm' || (isMobile && !isCurrentVoiceRoomView))
   const showThreadPanel = Boolean(activeThreadParentId && (isChannelView || isDmView))
   const inlineThreadReplies = activeThreadParentId
@@ -477,6 +486,11 @@ export default function MainPage(): React.JSX.Element {
                 </>
               ) : isDmView ? (
                 <>
+                  {isCurrentDmCallView && (
+                    <DeferredChrome>
+                      <DmCallPanel />
+                    </DeferredChrome>
+                  )}
                   <MessageList scope={{ kind: 'dm', id: selectedConversationId! }} />
                   <MessageInput scope={{ kind: 'dm', id: selectedConversationId! }} />
                 </>
@@ -540,6 +554,11 @@ export default function MainPage(): React.JSX.Element {
               </>
             ) : isDmView ? (
               <>
+                {isCurrentDmCallView && (
+                  <DeferredChrome>
+                    <DmCallPanel />
+                  </DeferredChrome>
+                )}
                 <MessageList scope={{ kind: 'dm', id: selectedConversationId! }} />
                 <MessageInput scope={{ kind: 'dm', id: selectedConversationId! }} />
               </>
@@ -575,6 +594,7 @@ export default function MainPage(): React.JSX.Element {
         {showChannelSettingsModal && <ChannelSettingsModal />}
         {incomingCall && <IncomingCallModal />}
         {shouldShowCallOverlay && <CallOverlay />}
+        {screenShareEnabled && <ScreenShareIndicator />}
       </DeferredChrome>
     </div>
   )
