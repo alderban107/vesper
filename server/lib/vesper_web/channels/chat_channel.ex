@@ -968,10 +968,28 @@ defmodule VesperWeb.ChatChannel do
   # Guard against clients sending a non-list value (e.g. a bare string) for mentioned_user_ids.
   defp notify_mentions(_non_list, _channel_id, _sender_id, _server_id, _member_ids), do: :ok
 
-  # DM channels have no server_id — skip server-level presence notifications.
+  # DM channels have no server_id — broadcast scope_mutation to each member's
+  # user channel instead of the server presence topic.
   # Header clause needed because of the default argument.
   defp notify_scope_mutation(server_id, kind, scope_id, activity \\ nil)
-  defp notify_scope_mutation(nil, _kind, _scope_id, _activity), do: :ok
+
+  defp notify_scope_mutation(nil, kind, scope_id, activity) do
+    payload = %{kind: kind, scope_id: scope_id}
+    payload = if activity, do: Map.put(payload, :activity, activity), else: payload
+
+    case Servers.get_channel(scope_id) do
+      %Channel{} = channel ->
+        Servers.list_channel_member_ids(channel)
+        |> Enum.each(fn user_id ->
+          VesperWeb.Endpoint.broadcast("user:#{user_id}", "scope_mutation", payload)
+        end)
+
+      _ ->
+        :ok
+    end
+
+    :ok
+  end
 
   defp notify_scope_mutation(server_id, kind, scope_id, activity) do
     payload = %{
