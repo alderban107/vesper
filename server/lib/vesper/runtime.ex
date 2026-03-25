@@ -37,8 +37,10 @@ defmodule Vesper.Runtime do
 
     :ok
   rescue
-    # DB not ready yet (migrations pending) — cache will populate lazily
-    _ -> :ok
+    e in [DBConnection.ConnectionError, Postgrex.Error, RuntimeError] ->
+      require Logger
+      Logger.warning("Room cache warm skipped (DB not ready): #{Exception.message(e)}")
+      :ok
   end
 
   def get_room(id), do: Repo.get(Room, id)

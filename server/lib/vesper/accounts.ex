@@ -61,10 +61,16 @@ defmodule Vesper.Accounts do
          user when not is_nil(user) <- get_user(token_record.user_id),
          device when not is_nil(device) <- get_user_device(user.id, token_record.device_id),
          false <- device_revoked?(device) do
-      # Rotate: delete old token, create new pair
-      Repo.delete!(token_record)
-      touch_device(device)
-      create_tokens(user, device)
+      # Rotate: delete old token, create new pair atomically
+      Repo.transaction(fn ->
+        Repo.delete!(token_record)
+        touch_device(device)
+
+        case create_tokens(user, device) do
+          {:ok, tokens} -> tokens
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
     else
       _ -> {:error, :invalid_token}
     end
@@ -180,6 +186,7 @@ defmodule Vesper.Accounts do
 
         if match?({:ok, _}, result) do
           revoke_device_tokens(device_id)
+          VesperWeb.Endpoint.broadcast("user_socket:#{user_id}:#{device_id}", "disconnect", %{})
         end
 
         result

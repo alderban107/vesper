@@ -14,7 +14,7 @@ defmodule Vesper.Chat do
     PinnedMessage
   }
 
-  alias Vesper.Servers.{Channel, Membership}
+  alias Vesper.Servers
 
   alias Vesper.Runtime
   alias Vesper.Runtime.{Room, RoomEvent}
@@ -82,32 +82,12 @@ defmodule Vesper.Chat do
   defp create_backing_dm_channel!(conversation, type, user_ids, now) do
     channel_type = if type == "direct", do: "dm", else: "group_dm"
 
-    channel =
-      %Channel{}
-      |> Channel.dm_changeset(%{
-        type: channel_type,
-        disappearing_ttl: conversation.disappearing_ttl
-      })
-      |> Repo.insert!()
-
-    # Create Room for the channel (MLS uses the channel room, not the conversation room)
-    case Runtime.ensure_room_for_channel(channel) do
-      {:ok, _room} -> :ok
-      {:error, changeset} -> Repo.rollback(changeset)
-    end
-
-    # Create channel-direct memberships for all participants
-    for user_id <- user_ids do
-      %Membership{
-        user_id: user_id,
-        channel_id: channel.id,
-        role: "member",
-        joined_at: now
-      }
-      |> Repo.insert!()
-    end
-
-    channel
+    Servers.create_dm_channel(%{
+      type: channel_type,
+      disappearing_ttl: conversation.disappearing_ttl,
+      user_ids: user_ids,
+      joined_at: now
+    })
   end
 
   defp find_direct_conversation(user_a_id, user_b_id) do
@@ -1381,10 +1361,7 @@ defmodule Vesper.Chat do
 
     cond do
       channel_id ->
-        case Vesper.Repo.get(Vesper.Servers.Channel, channel_id) do
-          %{disappearing_ttl: ttl} when is_integer(ttl) and ttl > 0 -> ttl
-          _ -> nil
-        end
+        Servers.get_channel_disappearing_ttl(channel_id)
 
       conversation_id ->
         case Vesper.Repo.get(DmConversation, conversation_id) do

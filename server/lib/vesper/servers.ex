@@ -742,6 +742,50 @@ defmodule Vesper.Servers do
   end
 
   @doc """
+  Get the disappearing message TTL for a channel. Returns the TTL integer or nil.
+  Used by the Chat context to apply TTL without directly querying the Channel schema.
+  """
+  def get_channel_disappearing_ttl(channel_id) do
+    case Repo.get(Channel, channel_id) do
+      %{disappearing_ttl: ttl} when is_integer(ttl) and ttl > 0 -> ttl
+      _ -> nil
+    end
+  end
+
+  @doc """
+  Create a backing DM channel with memberships. Called by Chat when creating DM conversations.
+  Returns {:ok, channel} or {:error, changeset}.
+  """
+  def create_dm_channel(attrs) do
+    channel_type = attrs[:type] || "dm"
+    disappearing_ttl = attrs[:disappearing_ttl]
+    user_ids = attrs[:user_ids] || []
+    joined_at = attrs[:joined_at] || DateTime.utc_now() |> DateTime.truncate(:second)
+
+    channel =
+      %Channel{}
+      |> Channel.dm_changeset(%{type: channel_type, disappearing_ttl: disappearing_ttl})
+      |> Repo.insert!()
+
+    case Runtime.ensure_room_for_channel(channel) do
+      {:ok, _room} -> :ok
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+
+    for user_id <- user_ids do
+      %Membership{
+        user_id: user_id,
+        channel_id: channel.id,
+        role: "member",
+        joined_at: joined_at
+      }
+      |> Repo.insert!()
+    end
+
+    channel
+  end
+
+  @doc """
   Get a channel only if the user is a member of its server. Single query with join.
   Returns the channel or nil.
   """
@@ -1720,7 +1764,11 @@ defmodule Vesper.Servers do
                   {:ok, %Membership{id: id}} when not is_nil(id) ->
                     maybe_assign_invite_role(id, invite.role_id)
 
-                    from(i in Invite, where: i.id == ^invite.id)
+                    # Atomic increment with max_uses guard to prevent race condition
+                    from(i in Invite,
+                      where: i.id == ^invite.id,
+                      where: is_nil(i.max_uses) or i.uses < i.max_uses
+                    )
                     |> Repo.update_all(inc: [uses: 1])
 
                     broadcast_membership_change(server.id, user.id, :member_joined)
