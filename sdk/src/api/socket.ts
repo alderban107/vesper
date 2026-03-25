@@ -13,7 +13,7 @@ const CHAT_EVENTS = [
   'message_edited', 'message_deleted',
   'message_pinned', 'message_unpinned',
   'mention',
-  'new_conversation', 'dm_message',
+  'new_conversation', 'dm_message', 'dm_activity',
   'dm_typing_start', 'dm_typing_stop',
   'scope_summary_updated',
   'scope_mutation',
