@@ -304,4 +304,15 @@ defmodule VesperWeb.ChannelHelpers do
   defp scope_matches?(message, :conversation_id, scope_id) do
     message.conversation_id == scope_id and is_nil(message.channel_id)
   end
+
+  def maybe_add_expires_at(attrs, ttl) when is_integer(ttl) and ttl > 0 do
+    expires_at =
+      DateTime.utc_now()
+      |> DateTime.add(ttl, :second)
+      |> DateTime.truncate(:second)
+
+    Map.put(attrs, :expires_at, expires_at)
+  end
+
+  def maybe_add_expires_at(attrs, _ttl), do: attrs
 end
