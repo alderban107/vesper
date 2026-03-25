@@ -529,6 +529,7 @@ export class VesperEncryptedChat {
   private readonly yieldedDmScopes = new Set<string>()
   private readonly pendingGroupCreations = new Map<string, Promise<void>>()
   private readonly pendingExternalCommits = new Map<string, Promise<boolean>>()
+  private readonly scopesWithoutRemoteGroup = new Set<string>()
   private readonly pendingGroupInfoPublishes = new Map<string, PendingGroupInfoPublish>()
   private readonly groupInfoPublishRetryAttempts = new Map<string, number>()
   private readonly groupInfoPublishRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -788,6 +789,7 @@ export class VesperEncryptedChat {
     this.scopeMessages.clear()
     this.inFlightScopePreparations.clear()
     this.backgroundChannelMembershipRetries.clear()
+    this.scopesWithoutRemoteGroup.clear()
     this.welcomeAppliedAtByScope.clear()
     this.recentDmJoinProcessed.clear()
     this.yieldedDmScopes.clear()
@@ -1621,6 +1623,12 @@ export class VesperEncryptedChat {
   ): Promise<EncryptedScopeWatchEvent | null> {
     const groupId = this.resolveMlsGroupId(scope)
 
+    // A live MLS event means a remote group exists — clear the "no remote group"
+    // flag so retry loops can resume if they were suppressed.
+    if (event === 'mls_commit' || event === 'mls_request_join_all' || event === 'mls_welcome') {
+      this.scopesWithoutRemoteGroup.delete(groupId)
+    }
+
     if (event === 'new_message') {
       const message = await this.processIncomingMessage(scope, payload as unknown as VesperMessage)
       this.upsertScopeMessage(scope.id, message)
@@ -2055,6 +2063,8 @@ export class VesperEncryptedChat {
       return false
     }
 
+    this.scopesWithoutRemoteGroup.delete(channelId)
+
     if (!await this.ensureCurrentGroupInfoPublished(channelId)) {
       return false
     }
@@ -2184,6 +2194,10 @@ export class VesperEncryptedChat {
           return
         }
 
+        if (this.scopesWithoutRemoteGroup.has(scope.id)) {
+          return
+        }
+
         await new Promise((resolve) => setTimeout(resolve, OUTBOUND_SCOPE_READY_RETRY_MS))
       }
     })().finally(() => {
@@ -2204,6 +2218,12 @@ export class VesperEncryptedChat {
       const ready = await this.ensureMembership(scope).catch(() => false)
       if (ready || this.hasGroup(groupId)) {
         return true
+      }
+
+      // No GroupInfo on the server — stop polling. A live event
+      // (mls_commit, mls_request_join_all) will clear this flag.
+      if (this.scopesWithoutRemoteGroup.has(groupId)) {
+        return false
       }
 
       await new Promise((resolve) => setTimeout(resolve, 100))
@@ -2390,6 +2410,7 @@ export class VesperEncryptedChat {
 
         const groupInfo = await fetchGroupInfo(scopeId, this.client.getHttpClient())
         if (!groupInfo) {
+          this.scopesWithoutRemoteGroup.add(scopeId)
           return false // No GroupInfo published yet
         }
 
@@ -2436,6 +2457,7 @@ export class VesperEncryptedChat {
         this.lastSuccessfulGroupInfoPublishEpochs.set(scopeId, newEpoch)
         // Mark as joined so the mls_request_join_all handler won't reset and re-EC.
         this.welcomeReceivedScopes.add(scopeId)
+        this.scopesWithoutRemoteGroup.delete(scopeId)
         return true
       } catch (err) {
         if (attempt < MAX_RETRIES - 1) {
