@@ -58,6 +58,7 @@ opencode.json
 # Test artifacts
 client/e2e/artifacts/
 media-test-files/
+packages/
 
 # Analysis artifacts
 .desloppify/
