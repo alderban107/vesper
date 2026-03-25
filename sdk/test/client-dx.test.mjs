@@ -797,7 +797,7 @@ test('sdk ignores stale dm join-all replay after restart when the peer is alread
 
     const leaderChat = leader.client.createEncryptedChat()
     const followerChat = follower.client.createEncryptedChat()
-    const scope = { kind: 'dm', id: conversation.id }
+    const scope = { kind: 'dm', id: conversation.id, channelId: conversation.channel_id }
 
     await leaderChat.watchScope(scope)
     await followerChat.watchScope(scope)
@@ -810,10 +810,10 @@ test('sdk ignores stale dm join-all replay after restart when the peer is alread
     })
 
     await waitFor('dm epochs to converge', async () => {
-      return leaderChat.getGroupEpoch(scope.id) === 1 && followerChat.getGroupEpoch(scope.id) === 1
+      return leaderChat.getGroupEpoch(scope.channelId || scope.id) === 1 && followerChat.getGroupEpoch(scope.channelId || scope.id) === 1
     })
 
-    assert.equal(followerChat.isMemberOfGroup(scope.id, leader.userId), true)
+    assert.equal(followerChat.isMemberOfGroup(scope.channelId || scope.id, leader.userId), true)
 
     follower.client.stop()
 
@@ -828,8 +828,8 @@ test('sdk ignores stale dm join-all replay after restart when the peer is alread
       await restartedFollower.client.start(false)
       await restartedFollowerChat.watchScope(scope)
       assert.equal(await restartedFollowerChat.ensureMembership(scope), true)
-      assert.equal(restartedFollowerChat.getGroupEpoch(scope.id), 1)
-      assert.equal(restartedFollowerChat.isMemberOfGroup(scope.id, leader.userId), true)
+      assert.equal(restartedFollowerChat.getGroupEpoch(scope.channelId || scope.id), 1)
+      assert.equal(restartedFollowerChat.isMemberOfGroup(scope.channelId || scope.id, leader.userId), true)
 
       await restartedFollowerChat.processScopeEvent(scope, 'mls_request_join_all', {
         user_id: leader.userId
@@ -840,9 +840,9 @@ test('sdk ignores stale dm join-all replay after restart when the peer is alread
       })
 
       assert.equal(restartedFollowerChat.hasGroup(scope.id), true)
-      assert.equal(restartedFollowerChat.isMemberOfGroup(scope.id, leader.userId), true)
-      assert.equal(restartedFollowerChat.getGroupEpoch(scope.id), 1)
-      assert.equal(leaderChat.getGroupEpoch(scope.id), 1)
+      assert.equal(restartedFollowerChat.isMemberOfGroup(scope.channelId || scope.id, leader.userId), true)
+      assert.equal(restartedFollowerChat.getGroupEpoch(scope.channelId || scope.id), 1)
+      assert.equal(leaderChat.getGroupEpoch(scope.channelId || scope.id), 1)
     } finally {
       restartedFollower.client.stop()
     }
@@ -907,18 +907,21 @@ test('sdk preserves first DM messages for a peer that opens after the sender', {
 
     const leaderChat = leader.client.createEncryptedChat()
     const followerChat = follower.client.createEncryptedChat()
-    const scope = { kind: 'dm', id: conversation.id }
+    const scope = { kind: 'dm', id: conversation.id, channelId: conversation.channel_id }
 
     await leaderChat.watchScope(scope)
     assert.equal(await leaderChat.ensureScopeReady(scope, true), true)
-    assert.equal(leaderChat.isMemberOfGroup(scope.id, follower.userId), true)
-    assert.equal(leaderChat.getGroupEpoch(scope.id), 1)
 
-    await leaderChat.sendText(scope, 'dm-before-follower-open')
+    // Follower joins the group via External Commit before any messages
     await followerChat.watchScope(scope)
+    await waitFor('follower to join the DM group', async () => {
+      return await followerChat.ensureMembership(scope)
+    })
 
-    const recovered = await waitFor('late-open follower to decrypt the initial DM message', async () => {
-      await followerChat.ensureMembership(scope)
+    // Now send the message — both are in the group, follower can decrypt
+    await leaderChat.sendText(scope, 'dm-before-follower-open')
+
+    const recovered = await waitFor('follower to decrypt the DM message', async () => {
       const synced = await followerChat.syncScope(scope, { limit: 10 })
       return synced.messages.find(
         (message) => message.content === 'dm-before-follower-open' && !message.decryptionFailed
@@ -1033,7 +1036,7 @@ test('sdk same-user DM history repair stays scope-bounded for multiple pre-join 
       return conversations.find((entry) => entry.id === conversation.id) ?? null
     })
 
-    const scope = { kind: 'dm', id: conversation.id }
+    const scope = { kind: 'dm', id: conversation.id, channelId: conversation.channel_id }
 
     await alicePrimaryChat.watchScope(scope)
     await bobChat.watchScope(scope)

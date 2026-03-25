@@ -866,9 +866,10 @@ export class VesperEncryptedChat {
       }
 
       if (!this.joinedTopics.has(topic)) {
-        this.scopeKinds.set(scope.id, scope.kind)
-        const dispose = await this.client.watchScope(scope.kind, scope.id, async ({ event, payload }) => {
-          const nextEvent = await withGroupLock(scope.id, async () => {
+        this.scopeKinds.set(watchScope.id, watchScope.kind)
+        const dispose = await this.client.watchScope(watchScope.kind, watchScope.id, async ({ event, payload }) => {
+          const groupId = this.resolveMlsGroupId(scope)
+          const nextEvent = await withGroupLock(groupId, async () => {
             return await this.withStorageContext(async () => {
               return await this.handleScopeEvent(scope, event, normalizePayload(payload))
             })
@@ -1013,20 +1014,21 @@ export class VesperEncryptedChat {
       limit?: number
     } = {}
   ): Promise<ScopeSyncResult> {
-    return await this.withLockedScopeOperation(scope.id, async () => {
-      this.scopeKinds.set(scope.id, scope.kind)
+    const groupId = this.resolveMlsGroupId(scope)
+    return await this.withLockedScopeOperation(groupId, async () => {
+      this.scopeKinds.set(groupId, scope.channelId ? 'channel' : scope.kind)
 
       const startedAt = performance.now()
       const limit = options.limit ?? 50
 
-      await this.ensureGroupMembership(scope.id)
-      await this.replayDurableEvents(scope.id)
+      await this.ensureGroupMembership(groupId)
+      await this.replayDurableEvents(groupId)
 
-      const hasGroup = this.hasGroup(scope.id)
-      const epoch = this.getGroupEpoch(scope.id)
+      const hasGroup = this.hasGroup(groupId)
+      const epoch = this.getGroupEpoch(groupId)
 
-      const cached = await this.loadProcessedCachedMessages(scope.id)
-      const existing = this.scopeMessages.get(scope.id) ?? cached
+      const cached = await this.loadProcessedCachedMessages(groupId)
+      const existing = this.scopeMessages.get(groupId) ?? cached
       const afterSeq = highestRoomSeq(existing)
       const delta =
         afterSeq == null
@@ -1047,11 +1049,14 @@ export class VesperEncryptedChat {
     })
   }
 
+  /** Resolve the MLS group key for a scope. DMs with a backing channel use channelId. */
+  private resolveMlsGroupId(scope: EncryptedScope): string {
+    return scope.channelId ?? scope.id
+  }
+
   /** Ensures the MLS group for a scope is ready, optionally creating it if missing. Routes to channel or DM-specific logic. */
   async ensureScopeReady(scope: EncryptedScope, allowCreate = false): Promise<boolean> {
     return await this.withStorageContext(async () => {
-      // All scopes (channels and DMs) use the channel MLS path.
-      // DMs have a backing channelId; use it for MLS operations.
       const channelId = scope.channelId ?? scope.id
       this.scopeKinds.set(channelId, 'channel')
       return await this.ensureChannelGroupReady(channelId, allowCreate)
@@ -1215,9 +1220,10 @@ export class VesperEncryptedChat {
 
   /** Public API: loads or restores MLS group membership for a scope from storage or pending welcomes. */
   async ensureMembership(scope: EncryptedScope): Promise<boolean> {
-    return await this.withLockedScopeOperation(scope.id, async () => {
-      this.scopeKinds.set(scope.id, scope.kind)
-      return await this.ensureGroupMembership(scope.id)
+    const groupId = this.resolveMlsGroupId(scope)
+    return await this.withLockedScopeOperation(groupId, async () => {
+      this.scopeKinds.set(groupId, scope.channelId ? 'channel' : scope.kind)
+      return await this.ensureGroupMembership(groupId)
     })
   }
 
