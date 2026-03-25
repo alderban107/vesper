@@ -108,6 +108,8 @@ sequenceDiagram
     CH-->>C: :ok
 ```
 
+**DM channel side effects:** When `server_id` is nil (DM channel), `chat_channel.ex` calls `notify_dm_channel_activity` which looks up the backing `DmConversation` and sends `dm_activity` to each participant's user channel. This drives unread badges and sidebar updates. Voice `incoming_call` events are also dual-broadcast to both `dm:` and `chat:channel:` topics.
+
 **Query count per message: 7** (message INSERT, BEGIN, idempotency check, CTE seq+event, room update, sync insert, COMMIT)
 
 **Chaos hardening:**
@@ -241,10 +243,12 @@ erDiagram
     servers ||--o{ memberships : has
     servers ||--o{ roles : defines
     memberships ||--o{ member_roles : assigned
+    channels ||--o{ memberships : "direct (DM)"
     roles ||--o{ member_roles : assigned
     channels ||--o{ messages : contains
     dm_conversations ||--o{ messages : contains
     dm_conversations ||--o{ dm_participants : has
+    dm_conversations ||--|| channels : "backed by"
     messages ||--o{ attachments : has
     messages ||--o{ reactions : has
     rooms ||--o{ room_events : logs
@@ -257,3 +261,6 @@ erDiagram
 - Messages belong to either a channel OR a conversation (CHECK constraint)
 - Room events reference messages for the event stream
 - Permissions computed from roles via bitfield ORing with channel-level overrides
+- DM conversations have a backing channel (`dm_conversations.channel_id`) for unified MLS
+- DM channels have type `dm`/`group_dm` with `server_id = NULL`
+- DM channel memberships use `memberships.channel_id` (no server required)

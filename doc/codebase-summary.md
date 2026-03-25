@@ -90,7 +90,7 @@ Each context is a boundary module with internal schemas.
 | `chat.ex` | Boundary: message CRUD, conversations, reactions, read positions |
 | `chat/message.ex` | Message schema (ciphertext, mls_epoch, sender, channel/conversation, expires_at) |
 | `chat/attachment.ex` | File attachment schema (storage_key, content_type, size, uploader_id) |
-| `chat/dm_conversation.ex` | DM conversation schema (type: direct or group) |
+| `chat/dm_conversation.ex` | DM conversation schema (type: direct or group, channel_id FK for backing channel) |
 | `chat/dm_participant.ex` | Join table: user <-> conversation |
 | `chat/reaction.ex` | Emoji reaction schema |
 | `chat/channel_read_position.ex` | Per-user read cursor for channels |
@@ -178,8 +178,8 @@ Each context is a boundary module with internal schemas.
 
 | File | Topic Pattern | Purpose |
 |------|--------------|---------|
-| `chat_channel.ex` | `chat:channel:<id>` | Text message send/receive, MLS events, typing, reactions, pins |
-| `dm_channel.ex` | `dm:<id>` | DM message send/receive, MLS events, typing, reactions |
+| `chat_channel.ex` | `chat:channel:<id>` | Text message send/receive, MLS events, typing, reactions, pins. Handles both server channels and DM channels (server_id=nil). DM channels trigger dm_activity user notifications. |
+| `dm_channel.ex` | `dm:<id>` | Legacy DM path. DMs with backing channels route through chat_channel instead. |
 | `voice_channel.ex` | `voice:channel:<id>`, `voice:dm:<id>` | WebRTC signaling (SDP, ICE), media frames, mute state |
 | `user_channel.ex` | `user:<id>` | Per-user notifications, presence tracking, heartbeat |
 | `server_presence_channel.ex` | `presence:server:<id>` | Server-wide online/idle presence |
@@ -379,7 +379,7 @@ sdk/
 
 | File | Purpose |
 |------|---------|
-| `encryptedChat.ts` | High-level encrypted message send/receive using MLS |
+| `encryptedChat.ts` | High-level encrypted message send/receive using MLS. All scopes (channels and DMs) use the channel MLS path via External Commit. DM-specific bootstrap code (leader election, sponsored transitions) removed. |
 | `fileSessionStore.ts` | Node.js file-based session persistence |
 | `mlsDiagnostics.ts` | MLS group state debugging and diagnostics |
 
