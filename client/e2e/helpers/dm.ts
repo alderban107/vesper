@@ -105,9 +105,9 @@ async function waitForOpenDm(page: Page, displayName: string): Promise<void> {
   await waitForSocketConnected(page)
   await waitForEncryptionReady(page)
 
-  // Wait for the scope watch to connect (async Phoenix channel join).
-  // The scope watch may reconnect if a double-call occurs during React
-  // re-renders; this wait ensures the final connection is established.
+  // Allow async scope watch to complete Phoenix channel subscription.
+  // joinChannelChat fires the watch asynchronously; this gives it
+  // time to connect before tests interact with the channel.
   await page.waitForTimeout(3_000)
 }
 

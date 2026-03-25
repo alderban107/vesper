@@ -1907,6 +1907,13 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
   joinChannelChat: (channelId) => {
     const topic = `chat:channel:${channelId}`
+
+    // Skip if already watching — prevents double-join from React re-renders
+    // that would invalidate the first watch's token and cause a reconnect gap.
+    if (liveScopeWatchTokens.has(topic)) {
+      return
+    }
+
     const scope: EncryptedScopeDescriptor = {
       kind: 'channel',
       targetId: channelId,

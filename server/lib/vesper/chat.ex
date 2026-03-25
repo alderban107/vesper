@@ -257,6 +257,22 @@ defmodule Vesper.Chat do
   end
 
   @doc """
+  Look up the DmConversation linked to a DM channel.
+  Returns {conversation_id, participant_ids} or nil.
+  """
+  def get_dm_context_for_channel(channel_id) do
+    case Repo.one(
+           from(c in DmConversation,
+             where: c.channel_id == ^channel_id,
+             select: c.id
+           )
+         ) do
+      nil -> nil
+      conversation_id -> {conversation_id, list_participant_ids(conversation_id)}
+    end
+  end
+
+  @doc """
   Check if a user is a participant in a conversation.
   """
   def user_is_participant?(user_id, conversation_id) do
