@@ -103,6 +103,7 @@ async function waitForOpenDm(page: Page, displayName: string): Promise<void> {
   }, displayName, { timeout: 10_000 })
 
   await waitForSocketConnected(page)
+  await waitForEncryptionReady(page)
 }
 
 async function resolveDmState(
