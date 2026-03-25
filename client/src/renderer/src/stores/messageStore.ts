@@ -117,6 +117,7 @@ function releaseLiveScopeWatch(topic: string): void {
   liveScopeWatchTokens.delete(topic)
   liveScopeWatchDisposers.get(topic)?.()
   liveScopeWatchDisposers.delete(topic)
+  liveScopeReadyPromises.delete(topic)
 }
 
 function beginThreadReplyRefresh(parentMessageId: string): number {
@@ -697,6 +698,8 @@ async function handleSdkScopeEvent(
   }
 }
 
+const liveScopeReadyPromises = new Map<string, Promise<void>>()
+
 function startLiveScopeWatch(
   scope: EncryptedScopeDescriptor,
   set: (fn: (s: MessageState) => Partial<MessageState>) => void
@@ -705,7 +708,7 @@ function startLiveScopeWatch(
   const token = Symbol(scope.topic)
   liveScopeWatchTokens.set(scope.topic, token)
 
-  void getRendererEncryptedChat()
+  const readyPromise = getRendererEncryptedChat()
     .watchScope(
       {
         kind: scope.kind,
@@ -723,11 +726,20 @@ function startLiveScopeWatch(
 
       liveScopeWatchDisposers.set(scope.topic, dispose)
     })
-    .catch(() => {
+    .catch((err) => {
+      console.error(`[SCOPE-WATCH] failed: ${scope.topic}`, err)
       if (liveScopeWatchTokens.get(scope.topic) === token) {
         liveScopeWatchTokens.delete(scope.topic)
       }
     })
+
+  liveScopeReadyPromises.set(scope.topic, readyPromise)
+}
+
+/** Wait for the scope's Phoenix channel subscription to be established. */
+export function waitForScopeConnected(scopeId: string): Promise<void> {
+  const topic = `chat:channel:${scopeId}`
+  return liveScopeReadyPromises.get(topic) ?? Promise.resolve()
 }
 
 export interface MessageSender {
@@ -2566,11 +2578,15 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   },
 
   sendTypingStart: (channelId) => {
-    void getRendererEncryptedChat().sendTyping({ kind: 'channel', id: channelId }, true)
+    void waitForScopeConnected(channelId).then(() =>
+      getRendererEncryptedChat().sendTyping({ kind: 'channel', id: channelId }, true)
+    ).catch(() => {})
   },
 
   sendTypingStop: (channelId) => {
-    void getRendererEncryptedChat().sendTyping({ kind: 'channel', id: channelId }, false)
+    void waitForScopeConnected(channelId).then(() =>
+      getRendererEncryptedChat().sendTyping({ kind: 'channel', id: channelId }, false)
+    ).catch(() => {})
   },
 
   // --- DM conversation messaging ---
@@ -3158,7 +3174,9 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   sendDmTypingStart: (conversationId) => {
     const channelId = resolveDmChannelId(conversationId)
     if (channelId) {
-      void getRendererEncryptedChat().sendTyping({ kind: 'channel', id: channelId }, true)
+      void waitForScopeConnected(channelId).then(() =>
+        getRendererEncryptedChat().sendTyping({ kind: 'channel', id: channelId }, true)
+      ).catch(() => {})
     } else {
       void getRendererEncryptedChat().sendTyping({ kind: 'dm', id: conversationId }, true)
     }
@@ -3167,7 +3185,9 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   sendDmTypingStop: (conversationId) => {
     const channelId = resolveDmChannelId(conversationId)
     if (channelId) {
-      void getRendererEncryptedChat().sendTyping({ kind: 'channel', id: channelId }, false)
+      void waitForScopeConnected(channelId).then(() =>
+        getRendererEncryptedChat().sendTyping({ kind: 'channel', id: channelId }, false)
+      ).catch(() => {})
     } else {
       void getRendererEncryptedChat().sendTyping({ kind: 'dm', id: conversationId }, false)
     }

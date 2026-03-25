@@ -112,8 +112,8 @@ export default function MessageList({ scope }: Props): React.JSX.Element {
             markChannelRead(scopeId, messageId)
           }
         } else {
-          if (useDmStore.getState().selectedConversationId === scopeId) {
-            markDmRead(scopeId, messageId)
+          if (useDmStore.getState().selectedConversationId === scope.id) {
+            markDmRead(scope.id, messageId)
           }
         }
       }}
