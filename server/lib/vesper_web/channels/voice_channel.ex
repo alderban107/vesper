@@ -111,6 +111,16 @@ defmodule VesperWeb.VoiceChannel do
         conversation_id: room_id
       })
 
+      # Also broadcast on the backing channel topic for DM-as-channels migration
+      case Chat.get_dm_context_for_channel_by_conversation(room_id) do
+        {:ok, channel_id} ->
+          VesperWeb.Endpoint.broadcast("chat:channel:#{channel_id}", "incoming_call", %{
+            caller_id: caller_id,
+            conversation_id: room_id
+          })
+        _ -> :ok
+      end
+
       {:noreply, socket}
     end
   end

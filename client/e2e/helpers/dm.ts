@@ -207,6 +207,10 @@ export async function uploadDmAttachment(
   page: Page,
   filePath: string
 ): Promise<void> {
+  // Ensure encryption is ready before staging the file — otherwise the
+  // submit will fail and the file input is consumed without retry.
+  await waitForEncryptionReady(page)
+
   const fileInput = page.locator('.vesper-composer-form input[type="file"]')
   await fileInput.setInputFiles(filePath)
   await page.waitForSelector('.vesper-composer-icon-button .animate-spin', {

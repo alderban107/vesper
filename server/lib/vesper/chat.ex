@@ -282,6 +282,22 @@ defmodule Vesper.Chat do
     |> Repo.exists?()
   end
 
+  @doc """
+  Look up the backing channel_id for a DM conversation.
+  Returns {:ok, channel_id} or :error.
+  """
+  def get_dm_context_for_channel_by_conversation(conversation_id) do
+    case Repo.one(
+           from(c in DmConversation,
+             where: c.id == ^conversation_id and not is_nil(c.channel_id),
+             select: c.channel_id
+           )
+         ) do
+      nil -> :error
+      channel_id -> {:ok, channel_id}
+    end
+  end
+
   defp conversations_with_last_message(conversations) do
     conv_ids = Enum.map(conversations, & &1.id)
 
