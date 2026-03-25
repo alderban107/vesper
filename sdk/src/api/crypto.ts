@@ -169,11 +169,15 @@ export async function fetchPendingResyncRequests(
  */
 export async function ackPendingResyncRequest(
   requestId: string,
+  requestToken: string,
   httpClient: VesperHttpClient = getDefaultHttpClient()
 ): Promise<void> {
-  const res = await httpClient.apiFetch(`/api/v1/pending-resync-requests/${requestId}`, {
-    method: 'DELETE'
-  })
+  const res = await httpClient.apiFetch(
+    `/api/v1/pending-resync-requests/${requestId}?request_id=${encodeURIComponent(requestToken)}`,
+    {
+      method: 'DELETE'
+    }
+  )
   if (!res.ok) {
     throw new Error(`Could not acknowledge pending resync request ${requestId}: ${res.status}`)
   }
@@ -314,3 +318,233 @@ function base64ToUint8(b64: string): Uint8Array {
 }
 
 export { uint8ToBase64, base64ToUint8 }
+
+// --- GroupInfo (for External Commits) ---
+
+/**
+ * Publish MLS GroupInfo to the server for External Commit joins.
+ * Should be called after every epoch change (add, remove, update, external commit).
+ *
+ * When `previousEpoch` is provided, uses compare-and-swap (CAS) semantics:
+ * the server only accepts the update if the stored epoch matches previousEpoch.
+ * Returns 'conflict' on mismatch (another joiner claimed the epoch first).
+ */
+export async function publishGroupInfo(
+  scopeId: string,
+  groupInfoData: Uint8Array,
+  ratchetTreeData: Uint8Array | null,
+  epoch: number,
+  httpClient: VesperHttpClient = getDefaultHttpClient(),
+  previousEpoch?: number
+): Promise<'ok' | 'conflict'> {
+  const body: Record<string, unknown> = {
+    group_info_data: uint8ToBase64(groupInfoData),
+    epoch
+  }
+  if (ratchetTreeData) {
+    body.ratchet_tree_data = uint8ToBase64(ratchetTreeData)
+  }
+  if (previousEpoch !== undefined) {
+    body.previous_epoch = previousEpoch
+  }
+
+  const res = await httpClient.apiFetch(
+    `/api/v1/group-info/${encodeURIComponent(scopeId)}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(body)
+    }
+  )
+
+  if (res.status === 409) {
+    return 'conflict'
+  }
+
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(`Failed to publish GroupInfo: ${res.status} ${data.error || ''}`)
+  }
+
+  return 'ok'
+}
+
+export async function publishExternalCommitGroupInfo(
+  scopeId: string,
+  groupInfoData: Uint8Array,
+  ratchetTreeData: Uint8Array | null,
+  epoch: number,
+  previousEpoch: number,
+  commitData: string,
+  commitId: string,
+  httpClient: VesperHttpClient = getDefaultHttpClient()
+): Promise<'ok' | 'conflict'> {
+  const body: Record<string, unknown> = {
+    group_info_data: uint8ToBase64(groupInfoData),
+    epoch,
+    previous_epoch: previousEpoch,
+    commit_data: commitData,
+    commit_id: commitId
+  }
+
+  if (ratchetTreeData) {
+    body.ratchet_tree_data = uint8ToBase64(ratchetTreeData)
+  }
+
+  const res = await httpClient.apiFetch(
+    `/api/v1/group-info/${encodeURIComponent(scopeId)}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(body)
+    }
+  )
+
+  if (res.status === 409) {
+    return 'conflict'
+  }
+
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(`Failed to publish External Commit GroupInfo: ${res.status} ${data.error || ''}`)
+  }
+
+  return 'ok'
+}
+
+export async function publishSponsoredTransition(
+  scopeId: string,
+  transition: {
+    groupInfoData: Uint8Array
+    ratchetTreeData: Uint8Array | null
+    epoch: number
+    previousEpoch: number
+    recipientId: string
+    recipientClientId: string | null
+    recipientKeyPackageRef: string | null
+    commitData: string
+    commitId: string
+    removeCommitData: string | null
+    welcomeData: string | null
+  },
+  httpClient: VesperHttpClient = getDefaultHttpClient()
+): Promise<
+  | {
+      status: 'ok'
+      fresh: boolean
+      commitEventSeq: number | null
+      removeEventSeq: number | null
+      welcomeId: string | null
+    }
+  | {
+      status: 'conflict'
+      currentEpoch: number | null
+    }
+> {
+  const body: Record<string, unknown> = {
+    group_info_data: uint8ToBase64(transition.groupInfoData),
+    epoch: transition.epoch,
+    previous_epoch: transition.previousEpoch,
+    recipient_id: transition.recipientId,
+    commit_data: transition.commitData,
+    commit_id: transition.commitId
+  }
+
+  if (transition.ratchetTreeData) {
+    body.ratchet_tree_data = uint8ToBase64(transition.ratchetTreeData)
+  }
+
+  if (transition.recipientClientId) {
+    body.recipient_device_id = transition.recipientClientId
+  }
+
+  if (transition.recipientKeyPackageRef) {
+    body.recipient_key_package_ref = transition.recipientKeyPackageRef
+  }
+
+  if (transition.removeCommitData) {
+    body.remove_commit_data = transition.removeCommitData
+  }
+
+  if (transition.welcomeData) {
+    body.welcome_data = transition.welcomeData
+  }
+
+  const res = await httpClient.apiFetch(
+    `/api/v1/mls-sponsored-transition/${encodeURIComponent(scopeId)}`,
+    {
+      method: 'POST',
+      body: JSON.stringify(body)
+    }
+  )
+
+  if (res.status === 409) {
+    let currentEpoch: number | null = null
+    try {
+      const body = await res.json()
+      if (typeof body.current_epoch === 'number') {
+        currentEpoch = body.current_epoch
+      }
+    } catch {
+      // ignore parse errors
+    }
+    return {
+      status: 'conflict',
+      currentEpoch
+    }
+  }
+
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(`Failed to publish sponsored transition: ${res.status} ${data.error || ''}`)
+  }
+
+  const data = await res.json().catch(() => ({}))
+  return {
+    status: 'ok',
+    fresh: data.fresh !== false,
+    commitEventSeq: typeof data.commit_event_seq === 'number' ? data.commit_event_seq : null,
+    removeEventSeq: typeof data.remove_event_seq === 'number' ? data.remove_event_seq : null,
+    welcomeId: typeof data.welcome_id === 'string' ? data.welcome_id : null
+  }
+}
+
+/**
+ * Fetch the latest MLS GroupInfo from the server for External Commit joins.
+ * Returns null if no GroupInfo has been published yet.
+ */
+export async function fetchGroupInfo(
+  scopeId: string,
+  httpClient: VesperHttpClient = getDefaultHttpClient()
+): Promise<{
+  groupInfoData: Uint8Array
+  ratchetTreeData: Uint8Array | null
+  epoch: number
+  publisherId: string
+} | null> {
+  const res = await httpClient.apiFetch(
+    `/api/v1/group-info/${encodeURIComponent(scopeId)}`
+  )
+
+  if (res.status === 404) {
+    return null
+  }
+
+  if (!res.ok) {
+    throw new Error(`Failed to fetch GroupInfo: ${res.status}`)
+  }
+
+  const data = (await res.json()) as { group_info: {
+    group_info_data: string
+    ratchet_tree_data: string | null
+    epoch: number
+    publisher_id: string
+  }}
+
+  return {
+    groupInfoData: base64ToUint8(data.group_info.group_info_data),
+    ratchetTreeData: data.group_info.ratchet_tree_data
+      ? base64ToUint8(data.group_info.ratchet_tree_data)
+      : null,
+    epoch: data.group_info.epoch,
+    publisherId: data.group_info.publisher_id
+  }
+}

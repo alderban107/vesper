@@ -1,8 +1,9 @@
 defmodule VesperWeb.ChatChannel do
   use Phoenix.Channel
+  require Logger
 
   alias Vesper.Servers
-  alias Vesper.Servers.{MemberCache, Permissions, PermissionsCache}
+  alias Vesper.Servers.{Channel, MemberCache, Permissions, PermissionsCache}
   alias Vesper.Chat
   alias Vesper.Encryption
   alias Vesper.Runtime
@@ -21,13 +22,19 @@ defmodule VesperWeb.ChatChannel do
         if Servers.user_can_view_channel?(socket.assigns.user_id, channel) do
           # Subscribe to TTL changes so cached value stays in sync
           Phoenix.PubSub.subscribe(Vesper.PubSub, "channel:settings:#{channel_id}")
-          Phoenix.PubSub.subscribe(Vesper.PubSub, "server:members:#{channel.server_id}")
+
+          if channel.server_id do
+            Phoenix.PubSub.subscribe(Vesper.PubSub, "server:members:#{channel.server_id}")
+          end
 
           socket =
             socket
             |> assign(:channel_id, channel_id)
             |> assign(:server_id, channel.server_id)
             |> assign(:disappearing_ttl, channel.disappearing_ttl)
+
+          # Schedule replay of missed mls_request_join_all events after join completes
+          send(self(), :replay_mls_join_broadcasts)
 
           {:ok, socket}
         else
@@ -60,6 +67,7 @@ defmodule VesperWeb.ChatChannel do
         attrs =
           %{
             ciphertext: decoded,
+            client_nonce: client_nonce,
             mls_epoch: epoch,
             channel_id: socket.assigns.channel_id,
             sender_id: socket.assigns.user_id
@@ -71,12 +79,9 @@ defmodule VesperWeb.ChatChannel do
           {:ok, message} ->
             message = maybe_link_attachments(message, params)
             mentioned = params["mentioned_user_ids"]
-
-            append_channel_urgent_events(
-              message,
-              socket.assigns.user_id,
-              normalize_mentioned_user_ids(mentioned, socket.assigns.user_id)
-            )
+            channel_id = socket.assigns.channel_id
+            sender_id = socket.assigns.user_id
+            server_id = socket.assigns.server_id
 
             broadcast!(
               socket,
@@ -91,23 +96,35 @@ defmodule VesperWeb.ChatChannel do
             :telemetry.execute(
               [:vesper, :chat, :message, :send],
               %{duration: System.monotonic_time() - start_time},
-              %{channel_id: socket.assigns.channel_id}
+              %{channel_id: channel_id}
             )
 
-            notify_scope_mutation(
-              socket.assigns.server_id,
-              "channel",
-              socket.assigns.channel_id
-            )
+            if server_id do
+              # Server channel: full server-level notifications
+              append_channel_urgent_events(
+                message,
+                sender_id,
+                normalize_mentioned_user_ids(mentioned, sender_id)
+              )
 
-            channel_id = socket.assigns.channel_id
-            sender_id = socket.assigns.user_id
-            server_id = socket.assigns.server_id
-            member_ids = MemberCache.get_member_ids(server_id)
+              notify_scope_mutation(server_id, "channel", channel_id)
 
-            notify_unread(channel_id, message, sender_id, member_ids)
-            notify_mentions(mentioned, channel_id, sender_id, server_id, member_ids)
-            ScopeSummary.broadcast_channel_update(channel_id, message, member_ids)
+              notify_scope_mutation(server_id, "channel", channel_id, %{
+                message_id: message.id,
+                sender_id: sender_id,
+                sender: sender_json(message.sender),
+                inserted_at: message.inserted_at,
+                room_seq: message.room_seq
+              })
+
+              member_ids =
+                if mentioned != [], do: MemberCache.get_member_ids(server_id), else: MapSet.new()
+
+              notify_mentions(mentioned, channel_id, sender_id, server_id, member_ids)
+            else
+              # DM channel: send dm_activity to each member's user channel
+              notify_dm_channel_activity(channel_id, sender_id, message)
+            end
 
             {:reply, :ok, socket}
 
@@ -369,10 +386,18 @@ defmodule VesperWeb.ChatChannel do
         broadcast!(socket, "message_deleted", Map.put(payload, :room_seq, room_seq))
         notify_scope_mutation(socket.assigns.server_id, "channel", socket.assigns.channel_id)
 
+        member_ids =
+          if socket.assigns.server_id do
+            MemberCache.get_member_ids(socket.assigns.server_id)
+          else
+            channel = Servers.get_channel(socket.assigns.channel_id)
+            Servers.list_channel_member_ids(channel) |> MapSet.new()
+          end
+
         ScopeSummary.broadcast_channel_update(
           socket.assigns.channel_id,
           latest_message,
-          MemberCache.get_member_ids(socket.assigns.server_id)
+          member_ids
         )
 
         {:reply, :ok, socket}
@@ -503,12 +528,25 @@ defmodule VesperWeb.ChatChannel do
       device_id: Map.get(payload, "device_id") || socket.assigns.device_client_id
     })
 
-    {:noreply, socket}
+    {:reply, :ok, socket}
   end
 
   def handle_in("mls_request_join_all", _payload, socket) do
-    broadcast_from!(socket, "mls_request_join_all", %{user_id: socket.assigns.user_id})
-    {:noreply, socket}
+    case Encryption.store_mls_event(%{
+           group_id: socket.assigns.channel_id,
+           channel_id: socket.assigns.channel_id,
+           event_type: "mls_request_join_all",
+           payload: %{user_id: socket.assigns.user_id},
+           sender_id: socket.assigns.user_id,
+           sender_device_id: socket.assigns.device_client_id
+         }) do
+      {:ok, event} ->
+        broadcast_from!(socket, "mls_request_join_all", %{user_id: socket.assigns.user_id})
+        {:reply, {:ok, %{seq: event.id}}, socket}
+
+      {:error, _changeset} ->
+        {:reply, {:error, %{reason: "could not store join request"}}, socket}
+    end
   end
 
   def handle_in("mls_resync_request", payload, socket) when is_map(payload) do
@@ -549,16 +587,23 @@ defmodule VesperWeb.ChatChannel do
     end
   end
 
-  def handle_in("mls_commit", %{"commit_data" => commit_data}, socket)
+  def handle_in("mls_commit", %{"commit_data" => commit_data} = payload, socket)
       when is_binary(commit_data) do
-    case Encryption.store_mls_event(%{
-           group_id: socket.assigns.channel_id,
-           channel_id: socket.assigns.channel_id,
-           event_type: "mls_commit",
-           payload: %{commit_data: commit_data},
-           sender_id: socket.assigns.user_id,
-           sender_device_id: socket.assigns.device_client_id
-         }) do
+    idempotency_key =
+      optional_binary(Map.get(payload, "idempotency_key")) ||
+        optional_binary(Map.get(payload, "commit_id"))
+
+    case Encryption.store_mls_commit_event(
+           %{
+             group_id: socket.assigns.channel_id,
+             channel_id: socket.assigns.channel_id,
+             event_type: "mls_commit",
+             payload: %{commit_data: commit_data},
+             sender_id: socket.assigns.user_id,
+             sender_device_id: socket.assigns.device_client_id
+           }
+           |> maybe_put(:idempotency_key, idempotency_key)
+         ) do
       {:ok, event} ->
         broadcast!(socket, "mls_commit", %{
           seq: event.id,
@@ -567,7 +612,7 @@ defmodule VesperWeb.ChatChannel do
           sender_device_id: socket.assigns.device_client_id
         })
 
-        {:noreply, socket}
+        {:reply, {:ok, %{seq: event.id}}, socket}
 
       {:error, _changeset} ->
         {:reply, {:error, %{reason: "could not store commit"}}, socket}
@@ -692,7 +737,7 @@ defmodule VesperWeb.ChatChannel do
           request_next_crypto_eviction("channel", socket.assigns.channel_id)
         end
 
-        {:noreply, socket}
+        {:reply, {:ok, %{seq: event.id}}, socket}
 
       {:error, reason} when is_atom(reason) ->
         {:reply, {:error, %{reason: eviction_error_reason(reason)}}, socket}
@@ -732,7 +777,7 @@ defmodule VesperWeb.ChatChannel do
               sender_id: sender_id
             })
 
-            {:noreply, socket}
+            {:reply, {:ok, %{id: welcome.id}}, socket}
 
           {:error, _changeset} ->
             {:reply, {:error, %{reason: "could not store welcome"}}, socket}
@@ -817,7 +862,7 @@ defmodule VesperWeb.ChatChannel do
           topic: "chat:channel:#{socket.assigns.channel_id}"
         })
 
-        {:noreply, socket}
+        {:reply, :ok, socket}
 
       {:error, _changeset} ->
         {:reply, {:error, %{reason: "could not store history bundle"}}, socket}
@@ -835,6 +880,27 @@ defmodule VesperWeb.ChatChannel do
   def handle_info({:member_left, server_id, user_id}, socket)
       when server_id == socket.assigns.server_id and user_id == socket.assigns.user_id do
     {:stop, {:shutdown, :membership_revoked}, socket}
+  end
+
+  def handle_info(:replay_mls_join_broadcasts, socket) do
+    channel_id = socket.assigns.channel_id
+    user_id = socket.assigns.user_id
+
+    # Replay recent mls_request_join_all events from OTHER participants so that
+    # a late-joining client can discover an existing MLS group and converge onto it
+    # rather than creating a competing independent group.
+    Encryption.list_recent_mls_events(channel_id, 50, "mls_request_join_all")
+    |> Enum.filter(fn event ->
+      event.sender_id != user_id
+    end)
+    |> Enum.uniq_by(& &1.sender_id)
+    |> Enum.each(fn event ->
+      push(socket, "mls_request_join_all", %{
+        user_id: event.sender_id
+      })
+    end)
+
+    {:noreply, socket}
   end
 
   def handle_info(_msg, socket), do: {:noreply, socket}
@@ -898,39 +964,65 @@ defmodule VesperWeb.ChatChannel do
   # Guard against clients sending a non-list value (e.g. a bare string) for mentioned_user_ids.
   defp notify_mentions(_non_list, _channel_id, _sender_id, _server_id, _member_ids), do: :ok
 
-  defp notify_unread(channel_id, message, sender_id, member_ids) do
-    recipients = MapSet.delete(member_ids, sender_id)
+  # DM channels have no server_id — broadcast scope_mutation to each member's
+  # user channel instead of the server presence topic.
+  # Header clause needed because of the default argument.
+  defp notify_scope_mutation(server_id, kind, scope_id, activity \\ nil)
 
-    :telemetry.execute(
-      [:vesper, :chat, :notification, :fanout],
-      %{count: MapSet.size(recipients)},
-      %{channel_id: channel_id, type: :unread}
-    )
+  defp notify_scope_mutation(nil, _kind, scope_id, activity) do
+    case Servers.get_channel(scope_id) do
+      %Channel{} = channel ->
+        # Resolve DM conversation_id so clients get kind=dm, scope_id=conversation_id
+        {dm_kind, dm_scope_id} =
+          case Chat.get_dm_context_for_channel(scope_id) do
+            {conversation_id, _} -> {"dm", conversation_id}
+            _ -> {"channel", scope_id}
+          end
 
-    for uid <- recipients do
-      VesperWeb.Endpoint.broadcast("user:#{uid}", "unread_update", %{
-        channel_id: channel_id,
-        message_id: message.id,
-        inserted_at: message.inserted_at,
-        sender_id: message.sender_id,
-        sender: sender_json(message.sender)
-      })
+        payload = %{kind: dm_kind, scope_id: dm_scope_id}
+        payload = if activity, do: Map.put(payload, :activity, activity), else: payload
+
+        Servers.list_channel_member_ids(channel)
+        |> Enum.each(fn user_id ->
+          VesperWeb.Endpoint.broadcast("user:#{user_id}", "scope_mutation", payload)
+        end)
+
+      _ ->
+        :ok
     end
-  end
-
-  defp notify_scope_mutation(server_id, kind, scope_id) do
-    VesperWeb.Endpoint.broadcast("presence:server:#{server_id}", "scope_mutation", %{
-      kind: kind,
-      scope_id: scope_id
-    })
 
     :ok
   end
 
-  defp notify_history_request_pending(server_id, channel_id, requester_id, topic) do
-    server_id
-    |> Servers.list_member_ids()
-    |> Enum.reject(&(&1 == requester_id))
+  defp notify_scope_mutation(server_id, kind, scope_id, activity) do
+    payload = %{
+      kind: kind,
+      scope_id: scope_id
+    }
+
+    payload =
+      if activity do
+        Map.put(payload, :activity, activity)
+      else
+        payload
+      end
+
+    VesperWeb.Endpoint.broadcast("presence:server:#{server_id}", "scope_mutation", payload)
+
+    :ok
+  end
+
+  defp notify_history_request_pending(server_id, channel_id, _requester_id, topic) do
+    member_ids =
+      case Servers.get_channel(channel_id) do
+        %Channel{server_id: nil} = channel ->
+          Servers.list_channel_member_ids(channel)
+
+        _ ->
+          Servers.list_member_ids(server_id)
+      end
+
+    member_ids
     |> Enum.filter(&Servers.user_can_view_channel?(&1, channel_id))
     |> Enum.each(fn user_id ->
       VesperWeb.Endpoint.broadcast("user:#{user_id}", "mls_history_request_pending", %{
@@ -940,6 +1032,62 @@ defmodule VesperWeb.ChatChannel do
     end)
 
     :ok
+  end
+
+  # DM channel notification: looks up the backing conversation and sends
+  # dm_activity + urgent events to each participant, mirroring dm_channel.ex.
+  defp notify_dm_channel_activity(channel_id, sender_id, message) do
+    case Chat.get_dm_context_for_channel(channel_id) do
+      {conversation_id, participant_ids} ->
+        sender_info = sender_json(message.sender)
+
+        # Urgent events for background sync (unread indicators on reconnect)
+        urgent_events =
+          participant_ids
+          |> Enum.reject(&(&1 == sender_id))
+          |> Enum.map(fn user_id ->
+            %{
+              user_id: user_id,
+              scope_kind: "dm",
+              scope_id: conversation_id,
+              payload: %{
+                message_id: message.id,
+                room_seq: message.room_seq,
+                sender_id: sender_id,
+                sender: sender_info,
+                parent_message_id: message.parent_message_id,
+                urgent_reason: "dm",
+                mentions_you: false,
+                reply_to_you: false,
+                is_dm: true
+              }
+            }
+          end)
+
+        Sync.append_urgent_events(urgent_events)
+
+        # Per-user dm_activity broadcast (drives unread badge + sidebar update)
+        dm_activity_payload = %{
+          conversation_id: conversation_id,
+          message_id: message.id,
+          sender_id: sender_id,
+          sender: sender_info,
+          inserted_at: message.inserted_at,
+          scope_summary: %{
+            kind: "dm",
+            scope_id: conversation_id,
+            room_seq: message.room_seq,
+            conversation_reset: ScopeSummary.conversation_reset_json(conversation_id, message)
+          }
+        }
+
+        for uid <- participant_ids, uid != sender_id do
+          VesperWeb.Endpoint.broadcast("user:#{uid}", "dm_activity", dm_activity_payload)
+        end
+
+      _ ->
+        :ok
+    end
   end
 
   defp ensure_trusted_sponsor(socket) do

@@ -121,7 +121,7 @@ test('cached messages stay scoped even when channel and dm ids collide', async (
   assert.equal(await runtime.loadCachedMessageDecryption('other-scope-message'), 'other body')
 })
 
-test('deleting group state also clears the stored sync cursor', async (t) => {
+test('deleting group state preserves the sync cursor', async (t) => {
   const { runtime } = configureMemoryStorage()
   t.after(() => {
     runtime.reset()
@@ -132,5 +132,7 @@ test('deleting group state also clears the stored sync cursor', async (t) => {
   assert.equal(await runtime.loadGroupSyncCursor('scope-1'), 42)
 
   await runtime.deleteGroupState('scope-1')
-  assert.equal(await runtime.loadGroupSyncCursor('scope-1'), 0)
+  // Cursor must survive group deletion to prevent replay death spirals
+  // (stale mls_remove events re-deleting the group on every replay)
+  assert.equal(await runtime.loadGroupSyncCursor('scope-1'), 42)
 })

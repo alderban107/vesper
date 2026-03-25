@@ -25,15 +25,119 @@ export async function waitForRecoveryModal(page: Page): Promise<void> {
 }
 
 export async function waitForServerInSidebar(page: Page, serverName: string): Promise<void> {
-  await page.waitForSelector(`[data-testid="sidebar"] button[title="${serverName}"]`, {
-    timeout: 10_000,
-  })
+  await waitForSocketConnected(page).catch(() => {})
+
+  const deadline = Date.now() + 30_000
+  while (Date.now() < deadline) {
+    const state = await page.evaluate((name) => {
+      const activeTitle = document
+        .querySelector('.vesper-channel-sidebar-title')
+        ?.textContent
+        ?.trim()
+      if (activeTitle === name) {
+        return 'open'
+      }
+
+      const railButtons = Array.from(
+        document.querySelectorAll<HTMLButtonElement>('[data-testid="sidebar"] .vesper-server-rail button[title]')
+      )
+      return railButtons.some((button) => button.title === name) ? 'listed' : 'missing'
+    }, serverName).catch(() => 'missing')
+
+    if (state === 'open' || state === 'listed') {
+      return
+    }
+
+    await page.waitForTimeout(200)
+  }
+
+  const sidebarDiagnostics = await page.evaluate(() => ({
+    activeTitle:
+      document.querySelector('.vesper-channel-sidebar-title')?.textContent?.trim() ?? null,
+    railTitles: Array.from(
+      document.querySelectorAll<HTMLButtonElement>('[data-testid="sidebar"] .vesper-server-rail button[title]')
+    ).map((button) => button.title)
+  })).catch(() => ({ activeTitle: null, railTitles: [] as string[] }))
+
+  throw new Error(
+    `Server "${serverName}" did not appear in the sidebar within 30000ms: ` +
+    JSON.stringify(sidebarDiagnostics)
+  )
 }
 
 export async function waitForChannel(page: Page, channelName: string): Promise<void> {
   await page.waitForSelector(`.vesper-channel-row-label:has-text("${channelName}")`, {
     timeout: 10_000,
   })
+}
+
+export async function waitForChannelEncryptionReady(
+  page: Page,
+  timeout = 30_000
+): Promise<void> {
+  await waitForSocketConnected(page).catch(() => {})
+
+  const deadline = Date.now() + timeout
+  let lastStatus:
+    | {
+        scopeId: string | null
+        ready: boolean
+        hasGroup: boolean
+        diagnostics: Record<string, unknown> | null
+      }
+    | null = null
+
+  while (Date.now() < deadline) {
+    const status = await page.evaluate(async () => {
+      const bridge = window.__vesperE2eeTest
+      if (!bridge) {
+        return {
+          scopeId: null,
+          ready: false,
+          hasGroup: false,
+          diagnostics: null
+        }
+      }
+
+      const scopeId = await bridge.resolveActiveChannelScopeId()
+      if (!scopeId) {
+        return {
+          scopeId: null,
+          ready: false,
+          hasGroup: false,
+          diagnostics: null
+        }
+      }
+
+      const ready = await bridge.prepareScopeForRead(
+        { kind: 'channel', id: scopeId },
+        { reason: 'e2e_active_channel_wait' }
+      ).catch(() => false)
+
+      return {
+        scopeId,
+        ready,
+        hasGroup: bridge.hasGroup(scopeId),
+        diagnostics: bridge.getScopeDiagnostics(scopeId)
+      }
+    }).catch(() => ({
+      scopeId: null,
+      ready: false,
+      hasGroup: false,
+      diagnostics: null
+    }))
+
+    lastStatus = status
+    if (status.ready) {
+      return
+    }
+
+    await page.waitForTimeout(250)
+  }
+
+  throw new Error(
+    `Channel encryption did not become ready within ${timeout}ms: ${JSON.stringify(lastStatus)}`
+  )
 }
 
 export async function waitForMessage(page: Page, text: string, timeout = 10_000): Promise<void> {
@@ -46,6 +150,8 @@ export async function waitForMessage(page: Page, text: string, timeout = 10_000)
           const rowMatches = await page.getByTestId('message-row').evaluateAll((elements) =>
             elements.map((element) => ({
               visible: (element as HTMLElement).offsetParent !== null,
+              sending: element.classList.contains('vesper-message-row-sending'),
+              failed: element.classList.contains('vesper-message-row-failed'),
               text:
                 (element as HTMLElement).innerText ??
                 element.textContent ??
@@ -55,16 +161,16 @@ export async function waitForMessage(page: Page, text: string, timeout = 10_000)
 
           for (const row of rowMatches) {
             const normalizedRowText = normalizeVisibleText(row.text)
-            if (row.visible && normalizedRowText.includes(normalizedTarget)) {
+            if (
+              row.visible &&
+              !row.sending &&
+              !row.failed &&
+              normalizedRowText.includes(normalizedTarget)
+            ) {
               return 1
             }
           }
-
-          const bodyText = await page
-            .locator('body')
-            .evaluate((element) => (element as HTMLElement).innerText ?? element.textContent ?? '')
-            .catch(() => null)
-          return normalizeVisibleText(bodyText).includes(normalizedTarget) ? 1 : 0
+          return 0
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           if (
@@ -162,6 +268,29 @@ export async function waitForDeviceTrustGateGone(page: Page): Promise<void> {
 
 export async function waitForThreadPanel(page: Page): Promise<void> {
   await page.waitForSelector('.vesper-thread-panel', { timeout: 10_000 })
+}
+
+export async function waitForDmEncryptionReady(
+  page: Page,
+  timeout = 30_000
+): Promise<void> {
+  await waitForSocketConnected(page).catch(() => {})
+
+  const deadline = Date.now() + timeout
+
+  while (Date.now() < deadline) {
+    // Check if the encryption error alert is gone (encryption is ready)
+    const alertVisible = await page.locator('.vesper-composer-alert').isVisible().catch(() => false)
+    if (!alertVisible) return
+
+    // Dismiss the alert and wait for recovery
+    const dismissBtn = page.locator('.vesper-composer-alert button')
+    if (await dismissBtn.first().isVisible().catch(() => false)) {
+      await dismissBtn.first().click().catch(() => {})
+    }
+
+    await page.waitForTimeout(500)
+  }
 }
 
 export async function waitForThreadReplyCount(

@@ -8,6 +8,7 @@ defmodule Vesper.Chat.Message do
   schema "messages" do
     field :content, :string
     field :ciphertext, :binary
+    field :client_nonce, :string
     field :mls_epoch, :integer
     field :expires_at, :utc_datetime
     field :edited_at, :utc_datetime
@@ -28,6 +29,7 @@ defmodule Vesper.Chat.Message do
     message
     |> cast(attrs, [
       :ciphertext,
+      :client_nonce,
       :mls_epoch,
       :channel_id,
       :conversation_id,
@@ -45,6 +47,7 @@ defmodule Vesper.Chat.Message do
     message
     |> cast(attrs, [
       :ciphertext,
+      :client_nonce,
       :mls_epoch,
       :channel_id,
       :conversation_id,

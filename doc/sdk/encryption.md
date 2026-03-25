@@ -1,6 +1,6 @@
 # Encryption
 
-Vesper uses MLS (Messaging Layer Security, RFC 9420) for end-to-end encryption. The SDK handles all MLS operations internally, but this document explains the underlying model for users who need to understand the security properties or extend the system.
+Vesper uses MLS (Messaging Layer Security, RFC 9420) for end-to-end encryption. The SDK handles MLS setup, replay, repair, same-user recovery, and durable control-plane retries internally, but this document explains the underlying model for users who need to understand the security properties or extend the system.
 
 ## Architecture
 
@@ -63,36 +63,43 @@ Each channel and DM conversation maps to one MLS group. The SDK identifies group
 
 ### Group Lifecycle
 
-1. **Creation**: For channels, the channel owner creates the MLS group when first sending a message. For DMs, deterministic leader election (lower UUID wins) decides which participant creates the group. A `pendingGroupCreations` guard prevents concurrent creation from consuming duplicate key packages.
-2. **Join requests**: Other users request to join via `mls_request_join`; the group owner (channels) or leader (DMs) processes join requests by adding the requester's key package and creating a commit. Join requests are deduplicated per user per scope (10-second window) to prevent epoch storms.
-3. **Welcome messages**: The server delivers Welcome messages to new members, allowing them to initialize their group state
-4. **Messaging**: Members encrypt/decrypt application messages using the shared group key
-5. **Membership changes**: Adding or removing members advances the epoch
-6. **History bundles**: After joining, the new member requests re-encrypted history from an existing member via the `mls_history_request` / `mls_history_bundle` exchange
+1. **Creation**: For channels, the owner can create the initial scope group. For DMs, deterministic leader election still breaks symmetry when a scope has no published GroupInfo yet.
+2. **External Commit joins**: Once GroupInfo is published, new members self-join through the SDK's External Commit path instead of depending on an already-online member to add them manually.
+3. **Sponsored transitions**: When a device needs a targeted repair or re-add, the SDK can publish an atomic sponsored transition that stores GroupInfo, remove/commit state, and any resulting Welcome together.
+4. **Messaging**: Members encrypt and decrypt application messages with the current scope group state.
+5. **Same-user recovery**: If one trusted device is missing scope history or group state, the SDK uses `mls_history_request` and `mls_history_bundle` to repair it without renderer-specific protocol code.
+6. **Durable replay**: MLS commits and related control-plane artifacts are replayed from durable server state and a local per-scope checkpoint.
 
 ### Group State
 
-Group state is serialized to bytes and stored locally through the `CryptoStorageRuntime` interface. Each state is tagged with its epoch number.
+Group state is serialized to bytes and stored locally through the `CryptoStorageRuntime` interface together with a per-scope checkpoint.
 
 ```typescript
-interface MLSGroupInfo {
+interface ScopeCheckpointRecord {
   groupId: string
-  state: Uint8Array
-  epoch: number
+  groupState: {
+    state: Uint8Array
+    epoch: number
+  } | null
+  lastEventSeq: number
+  pendingGroupInfoPublish: object | null
+  pendingExternalCommitBroadcast: object | null
+  pendingSponsoredTransition: object | null
 }
 ```
 
-The SDK stores the current group state. When a commit advances the epoch, the old state is replaced. Messages encrypted under old epochs can still be decrypted if the state was cached in the decryption cache.
+The SDK stores the current group state, replay cursor, repair state, and pending durable outbox work together. That lets it resume GroupInfo publishes, External Commit broadcasts, sponsored transitions, and same-user repair work after reconnect or restart.
 
 ### Commits and Proposals
 
-MLS membership changes happen through commits:
+MLS membership changes still happen through commits, but the SDK now uses a few different coordination paths:
 
-- **Add**: A current member fetches a key package and creates a commit adding the new member
-- **Remove**: A current member creates a commit removing another member
-- **Update**: A member updates their own key material
+- **External Commit**: a new member self-joins from published GroupInfo
+- **Sponsored transition**: an existing member atomically publishes a remove/commit/welcome repair package
+- **Remove**: a current member creates a commit removing another member
+- **Update**: a member updates their own key material
 
-The SDK processes these automatically when socket events arrive (`mls_commit`, `mls_welcome`, `mls_remove`).
+The SDK processes these automatically when socket events arrive (`mls_commit`, `mls_welcome`, `mls_remove`) or when durable replay and pending repair artifact polling catch up after a restart.
 
 ## Decryption Cache
 
@@ -104,7 +111,7 @@ The SDK maintains an in-memory LRU cache of decrypted message plaintext (2000 en
 const text = chat.getDecryptedMessageText(message)
 ```
 
-Sent messages get special handling: MLS senders cannot decrypt their own ciphertexts (by protocol design), so the SDK caches sent plaintext keyed by the ciphertext's base64 encoding.
+Sent messages get special handling: MLS senders cannot reliably decrypt their own echoed ciphertexts after ratchet advancement, so the SDK also persists a bounded sent-message plaintext cache keyed by ciphertext base64. That cache survives restart and is consulted before fallback repair.
 
 ## File Encryption
 
@@ -160,13 +167,13 @@ interface KeyPackagePair {
 interface EncryptedMessage {
   ciphertext: Uint8Array
   epoch: number
-  newState: ClientState     // Updated MLS group state
+  newState: GroupState      // Updated MLS group state
 }
 
 // Result of decrypting a message
 interface DecryptedMessage {
   plaintext: string
-  newState: ClientState
+  newState: GroupState
 }
 
 // Recovery key data generated during registration

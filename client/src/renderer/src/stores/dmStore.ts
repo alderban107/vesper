@@ -1,6 +1,13 @@
 import { create } from 'zustand'
 import { getRendererClient } from '../sdk/client'
 import { getStoredValue, writeStoredValue } from '../utils/localStorage'
+import { registerDmChannelMapping } from './messageStore'
+
+function registerMapping(conversationId: string, channelId: string | null): void {
+  if (channelId) {
+    registerDmChannelMapping(conversationId, channelId)
+  }
+}
 
 const LAST_CONVERSATION_KEY = 'vesper:lastConversationId'
 
@@ -62,6 +69,7 @@ export interface DmConversation {
   id: string
   type: string
   name: string | null
+  channel_id: string | null
   disappearing_ttl: number | null
   inserted_at: string
   participants: DmParticipant[]
@@ -170,6 +178,13 @@ export const useDmStore = create<DmState>((set, get) => ({
           getConversationActivityTimestamp(right) - getConversationActivityTimestamp(left)
       )
 
+      // Register channel mappings for DM-as-channel MLS routing
+      for (const conv of conversations) {
+        if (conv.channel_id) {
+          registerMapping(conv.id, conv.channel_id)
+        }
+      }
+
       const selectedConversationId = state.selectedConversationId
       const restoredConversation = selectedConversationId
         ? mergedById.get(selectedConversationId) ?? null
@@ -188,6 +203,12 @@ export const useDmStore = create<DmState>((set, get) => ({
     try {
       const conversation =
         await getRendererClient().createConversation(userIds, name) as DmConversation
+
+      // Register channel mapping immediately so sendDmMessage can delegate
+      if (conversation.channel_id) {
+        registerMapping(conversation.id, conversation.channel_id)
+      }
+
       set((s) => {
         const exists = s.conversations.some((c) => c.id === conversation.id)
         writeStoredConversationId(conversation.id)
@@ -206,6 +227,9 @@ export const useDmStore = create<DmState>((set, get) => ({
   },
 
   addConversation: (conversation) => {
+    if (conversation.channel_id) {
+      registerMapping(conversation.id, conversation.channel_id)
+    }
     set((s) => {
       const exists = s.conversations.some((c) => c.id === conversation.id)
       return exists ? {} : { conversations: [conversation, ...s.conversations] }

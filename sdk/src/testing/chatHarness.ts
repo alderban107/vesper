@@ -2,27 +2,30 @@ import { EventEmitter } from 'node:events'
 
 import {
   ackPendingWelcome,
+  fetchGroupInfo,
   fetchKeyPackage,
   fetchMlsEvents,
   fetchPendingWelcomes,
+  publishGroupInfo,
   uint8ToBase64
 } from '../api/crypto.js'
 import {
   addMemberToGroup,
   buildClientCredentialIdentity,
-  createKeyPackageBatch,
   createMLSGroup,
   decodeKeyPackageBytes,
   decodePayload,
   decryptMessage,
   deserializeGroupState,
-  deserializePrivatePackage,
   encodePayload,
   encryptMessage,
+  exportGroupInfo,
+  exportRatchetTree,
   getDisplayText,
   getGroupLeafIdentities,
   groupHasMember,
   initCipherSuite,
+  joinViaExternalCommit,
   findMemberLeafIndex,
   processCommitMessage,
   processWelcome,
@@ -196,6 +199,10 @@ export class SdkChatHarness extends EventEmitter {
   async createScopeGroup(scope: EncryptedScope): Promise<void> {
     await this.device.run(async () => {
       await this.createGroup(scope.id)
+      const state = this.groupStates.get(scope.id)
+      if (state && !await this.publishGroupInfoForScope(scope.id, state)) {
+        throw new Error(`Failed to publish GroupInfo for ${scope.id}`)
+      }
     })
   }
 
@@ -769,53 +776,106 @@ export class SdkChatHarness extends EventEmitter {
       }
     }
 
+    // Try External Commit as fallback — no online member needed
+    if (await this.tryJoinViaExternalCommit(scopeId)) {
+      return true
+    }
+
     return false
+  }
+
+  private async tryJoinViaExternalCommit(scopeId: string): Promise<boolean> {
+    try {
+      await initCipherSuite()
+
+      const groupInfo = await fetchGroupInfo(scopeId, this.device.httpClient)
+      if (!groupInfo) return false
+
+      const session = this.device.requireSession()
+      const identityName = buildClientCredentialIdentity(
+        session.user.id,
+        this.device.deviceIdentity.id
+      )
+
+      const { state, commitBytes } = await joinViaExternalCommit(
+        groupInfo.groupInfoData,
+        groupInfo.ratchetTreeData,
+        identityName
+      )
+
+      await this.setGroupState(scopeId, state)
+      this.notifyMembershipWaiters(scopeId, true)
+      return true
+    } catch {
+      return false
+    }
   }
 
   async replayDurableEvents(scope: EncryptedScope): Promise<void> {
     const session = this.device.requireSession()
-    const cursor = await this.storage.loadGroupSyncCursor(scope.id)
-    let events: Awaited<ReturnType<typeof fetchMlsEvents>> = []
-    try {
-      events = await fetchMlsEvents(scope.id, cursor, 200, this.device.httpClient)
-    } catch {
-      return
-    }
-    let latestSeq = cursor
+    const pageSize = 200
+    let cursor = await this.storage.loadGroupSyncCursor(scope.id)
 
-    for (const event of events) {
-      if (
-        event.event_type === 'mls_commit' &&
-        typeof event.payload.commit_data === 'string' &&
-        !(
-          event.sender_id === session.user.id &&
-          event.sender_device_id === this.device.deviceIdentity.id
-        )
-      ) {
-        await this.handleCommit(scope.id, event.payload.commit_data)
+    while (true) {
+      let events: Awaited<ReturnType<typeof fetchMlsEvents>> = []
+      try {
+        events = await fetchMlsEvents(scope.id, cursor, pageSize, this.device.httpClient)
+      } catch {
+        return
       }
 
-      if (event.event_type === 'mls_remove') {
-        const payload = event.payload as Record<string, unknown> | undefined
-        const removedUserId =
-          typeof payload?.removed_user_id === 'string' ? payload.removed_user_id : null
-        const removedDeviceId =
-          typeof payload?.removed_device_id === 'string' ? payload.removed_device_id : null
-        const isLocalTarget =
-          removedUserId === session.user.id &&
-          (removedDeviceId == null || removedDeviceId === this.device.deviceIdentity.id)
+      if (events.length === 0) {
+        return
+      }
 
-        if (isLocalTarget) {
-          this.groupStates.delete(scope.id)
-          this.groupStateSnapshots.delete(scope.id)
+      let latestSeq = cursor
+
+      for (const event of events) {
+        if (
+          event.event_type === 'mls_commit' &&
+          typeof event.payload.commit_data === 'string' &&
+          !(
+            event.sender_id === session.user.id &&
+            event.sender_device_id === this.device.deviceIdentity.id
+          )
+        ) {
+          const applied = await this.handleCommit(scope.id, event.payload.commit_data)
+          if (!applied) {
+            if (latestSeq > cursor) {
+              await this.storage.saveGroupSyncCursor(scope.id, latestSeq)
+            }
+            return
+          }
         }
+
+        if (event.event_type === 'mls_remove') {
+          const payload = event.payload as Record<string, unknown> | undefined
+          const removedUserId =
+            typeof payload?.removed_user_id === 'string' ? payload.removed_user_id : null
+          const removedDeviceId =
+            typeof payload?.removed_device_id === 'string' ? payload.removed_device_id : null
+          const isLocalTarget =
+            removedUserId === session.user.id &&
+            (removedDeviceId == null || removedDeviceId === this.device.deviceIdentity.id)
+
+          if (isLocalTarget) {
+            this.groupStates.delete(scope.id)
+            this.groupStateSnapshots.delete(scope.id)
+            return
+          }
+        }
+
+        latestSeq = Math.max(latestSeq, event.seq)
       }
 
-      latestSeq = Math.max(latestSeq, event.seq)
-    }
+      if (latestSeq > cursor) {
+        await this.storage.saveGroupSyncCursor(scope.id, latestSeq)
+        cursor = latestSeq
+      }
 
-    if (latestSeq > cursor) {
-      await this.storage.saveGroupSyncCursor(scope.id, latestSeq)
+      if (events.length < pageSize) {
+        return
+      }
     }
   }
 
@@ -945,25 +1005,15 @@ export class SdkChatHarness extends EventEmitter {
     await this.device.replenishKeyPackages()
 
     const session = this.device.requireSession()
+    const identityName = buildClientCredentialIdentity(session.user.id, this.device.deviceIdentity.id)
     const localPackages = await this.storage.loadKeyPackages()
-    let publicPackage = null
-    let privatePackage = null
 
     if (localPackages.length > 0) {
       const localPackage = localPackages[0]
       await this.storage.consumeKeyPackage(localPackage.id)
-      publicPackage = decodeKeyPackageBytes(new Uint8Array(localPackage.publicData))
-      privatePackage = deserializePrivatePackage(new Uint8Array(localPackage.privateData))
-    } else {
-      const pairs = await createKeyPackageBatch(
-        buildClientCredentialIdentity(session.user.id, this.device.deviceIdentity.id),
-        1
-      )
-      publicPackage = pairs[0].publicPackage
-      privatePackage = pairs[0].privatePackage
     }
 
-    const state = await createMLSGroup(scopeId, publicPackage, privatePackage)
+    const state = await createMLSGroup(scopeId, identityName)
     await this.setGroupState(scopeId, state)
     await this.device.replenishKeyPackages()
   }
@@ -1002,11 +1052,11 @@ export class SdkChatHarness extends EventEmitter {
     }
 
     const memberKeyPackage = decodeKeyPackageBytes(keyPackageBytes)
-    const credential = memberKeyPackage.leafNode.credential
-    const requestedIdentity =
-      credential.credentialType === 'basic'
-        ? new TextDecoder().decode(credential.identity)
-        : null
+
+    // Infer identity from userId/deviceId rather than parsing the opaque key package
+    const requestedIdentity = deviceId
+      ? buildClientCredentialIdentity(userId, deviceId)
+      : userId
 
     if (
       requestedIdentity &&
@@ -1018,7 +1068,7 @@ export class SdkChatHarness extends EventEmitter {
 
     const result = await addMemberToGroup(
       this.cloneGroupState(state),
-      memberKeyPackage
+      keyPackageBytes
     )
     await this.setGroupState(scopeId, result.newState)
 
@@ -1047,12 +1097,12 @@ export class SdkChatHarness extends EventEmitter {
 
     for (const localPackage of orderedPackages) {
       try {
-        const publicPackage = decodeKeyPackageBytes(new Uint8Array(localPackage.publicData))
-        const privatePackage = deserializePrivatePackage(new Uint8Array(localPackage.privateData))
+        const session = this.device.requireSession()
+        const identityName = buildClientCredentialIdentity(session.user.id, this.device.deviceIdentity.id)
         const state = await processWelcome(
           Buffer.from(welcomeData, 'base64'),
-          publicPackage,
-          privatePackage
+          identityName,
+          new Uint8Array(localPackage.privateData)
         )
 
         await this.setGroupState(scopeId, state)
@@ -1105,9 +1155,25 @@ export class SdkChatHarness extends EventEmitter {
       return
     }
 
-    this.pendingCommits.set(scopeId, [])
+    const remaining: string[] = []
+    let blocked = false
+    this.pendingCommits.delete(scopeId)
+
     for (const commitData of pending) {
-      await this.handleCommit(scopeId, commitData)
+      if (blocked) {
+        remaining.push(commitData)
+        continue
+      }
+
+      const applied = await this.handleCommit(scopeId, commitData)
+      if (!applied) {
+        blocked = true
+        remaining.push(commitData)
+      }
+    }
+
+    if (remaining.length > 0) {
+      this.pendingCommits.set(scopeId, remaining)
     }
   }
 
@@ -1328,6 +1394,20 @@ export class SdkChatHarness extends EventEmitter {
       epoch
     )
     this.notifyMembershipWaiters(scopeId, true)
+
+    void this.publishGroupInfoForScope(scopeId, state)
+  }
+
+  private async publishGroupInfoForScope(scopeId: string, state: GroupState): Promise<boolean> {
+    try {
+      const groupInfoData = exportGroupInfo(state)
+      const ratchetTreeData = exportRatchetTree(state)
+      const epoch = Number(state.groupContext.epoch)
+      await publishGroupInfo(scopeId, groupInfoData, ratchetTreeData, epoch, this.device.httpClient)
+      return true
+    } catch {
+      return false
+    }
   }
 
   private cloneGroupState(state: GroupState): GroupState {

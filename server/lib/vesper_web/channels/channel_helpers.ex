@@ -32,13 +32,19 @@ defmodule VesperWeb.ChannelHelpers do
 
   def attachments_json(%{attachments: attachments}) when is_list(attachments) do
     Enum.map(attachments, fn a ->
-      %{
+      base = %{
         id: a.id,
-        filename: a.filename,
-        content_type: a.content_type,
         size_bytes: a.size_bytes,
         encrypted: a.encrypted
       }
+
+      # For encrypted attachments, filename and content_type are inside the
+      # encrypted message payload — don't leak them in plaintext broadcasts.
+      if a.encrypted do
+        base
+      else
+        Map.merge(base, %{filename: a.filename, content_type: a.content_type})
+      end
     end)
   end
 
@@ -106,6 +112,7 @@ defmodule VesperWeb.ChannelHelpers do
       room_seq: message.room_seq,
       ciphertext: Base.encode64(message.ciphertext),
       mls_epoch: message.mls_epoch,
+      client_nonce: message.client_nonce,
       sender_id: message.sender_id,
       sender: sender_json(message.sender),
       expires_at: message.expires_at,
@@ -126,6 +133,7 @@ defmodule VesperWeb.ChannelHelpers do
     base = %{
       id: message.id,
       room_seq: message.room_seq,
+      client_nonce: message.client_nonce,
       inserted_at: message.inserted_at,
       sender_id: message.sender_id,
       sender: sender_json(message.sender)

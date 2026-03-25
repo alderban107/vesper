@@ -29,6 +29,7 @@ export interface VesperServer {
   icon_url: string | null
   owner_id: string
   channels: VesperChannel[]
+  emojis?: VesperCustomEmoji[]
 }
 
 export interface VesperConversationParticipant {
@@ -51,6 +52,7 @@ export interface VesperConversation {
   id: string
   type: string
   name: string | null
+  channel_id?: string | null
   disappearing_ttl: number | null
   inserted_at: string
   participants: VesperConversationParticipant[]

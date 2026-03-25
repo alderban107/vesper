@@ -1,5 +1,5 @@
 defmodule Vesper.Voice.Room do
-  use GenServer, restart: :temporary
+  use GenServer, restart: :transient
 
   require Logger
 
@@ -20,6 +20,7 @@ defmodule Vesper.Voice.Room do
   defstruct [
     :room_id,
     :room_type,
+    :router_pid,
     :caller_id,
     :ring_timer_ref,
     :idle_timer_ref,
@@ -39,8 +40,8 @@ defmodule Vesper.Voice.Room do
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
-  def join(room_id, user_id, channel_pid) do
-    GenServer.call(via(room_id), {:join, user_id, channel_pid}, 10_000)
+  def join(room_id, user_id, channel_pid, opts \\ []) do
+    GenServer.call(via(room_id), {:join, user_id, channel_pid, opts}, 10_000)
   end
 
   def leave(room_id, user_id) do
@@ -83,24 +84,23 @@ defmodule Vesper.Voice.Room do
 
   @impl true
   def init(opts) do
-    # Trap exits so PeerConnection crashes don't take down the room
+    # Trap exits so PeerConnection and Router crashes don't take down the room
     Process.flag(:trap_exit, true)
 
-    # Tune GC for processes handling RTP binary packets.
-    # Larger binary vheap reduces GC frequency for many small binary refs.
-    Process.flag(:min_bin_vheap_size, 233_681)
-    # Full sweep more often to reclaim old binaries faster (default is 65535).
-    Process.flag(:fullsweep_after, 20)
-    # Safety limit to prevent runaway memory — configurable, defaults to ~400MB.
+    # Safety limit — GC tuning moved to Router which handles binary-heavy RTP
     max_heap = Application.get_env(:vesper, :voice_room_max_heap_size, 50_000_000)
     Process.flag(:max_heap_size, %{size: max_heap, kill: true, error_logger: true})
 
     room_id = Keyword.fetch!(opts, :room_id)
     room_type = Keyword.get(opts, :room_type, :channel)
 
+    {:ok, router_pid} =
+      Vesper.Voice.Room.Router.start_link(room_pid: self(), room_id: room_id)
+
     state = %__MODULE__{
       room_id: room_id,
-      room_type: room_type
+      room_type: room_type,
+      router_pid: router_pid
     }
 
     # Schedule idle timeout — room shuts down if nobody joins
@@ -109,7 +109,9 @@ defmodule Vesper.Voice.Room do
   end
 
   @impl true
-  def handle_call({:join, user_id, channel_pid}, _from, state) do
+  def handle_call({:join, user_id, channel_pid, opts}, _from, state) do
+    transport = Keyword.get(opts, :transport, :webrtc)
+
     if map_size(state.participants) >= @max_participants do
       {:reply, {:error, :room_full}, state}
     else
@@ -117,7 +119,7 @@ defmodule Vesper.Voice.Room do
       if state.idle_timer_ref, do: Process.cancel_timer(state.idle_timer_ref)
       start_time = System.monotonic_time()
 
-      case add_participant(state, user_id, channel_pid) do
+      case add_participant(state, user_id, channel_pid, transport) do
         {:ok, offer_sdp, track_map, publish_map, new_state} ->
           :telemetry.execute(
             [:vesper, :voice, :room, :join],
@@ -125,6 +127,7 @@ defmodule Vesper.Voice.Room do
             %{room_id: state.room_id, participant_count: map_size(new_state.participants)}
           )
 
+          push_routing_table(new_state)
           new_state = %{new_state | idle_timer_ref: nil}
           {:reply, {:ok, offer_sdp, track_map, publish_map}, new_state}
 
@@ -136,6 +139,7 @@ defmodule Vesper.Voice.Room do
 
   def handle_call({:leave, user_id}, _from, state) do
     new_state = remove_participant(state, user_id)
+    push_routing_table(new_state)
 
     :telemetry.execute(
       [:vesper, :voice, :room, :leave],
@@ -197,11 +201,16 @@ defmodule Vesper.Voice.Room do
     end
   end
 
+  def handle_call(:get_router, _from, state) do
+    {:reply, state.router_pid, state}
+  end
+
   def handle_call(:get_participants, _from, state) do
     participants =
       Enum.map(state.participants, fn {user_id, p} ->
         %{
           user_id: user_id,
+          transport: p.transport || :webrtc,
           muted: p.muted,
           voice_audio_track_id: p.voice_audio_track_id,
           share_audio_track_id: p.share_audio_track_id,
@@ -319,90 +328,72 @@ defmodule Vesper.Voice.Room do
     end
   end
 
+  # --- Events forwarded from Router ---
+
   @impl true
-  def handle_info({:ex_webrtc, pc, {:rtp, track_id, _rid, packet}}, state) do
-    # O(1) lookup via reverse map instead of O(N) scan
-    sender_id = Map.get(state.pc_to_user, pc)
+  def handle_info({:router_track_event, pc, track}, state) do
+    user_id = Map.get(state.pc_to_user, pc)
 
-    if sender_id do
-      sender_participant = Map.get(state.participants, sender_id)
+    if user_id do
+      participant = state.participants[user_id]
 
-      media_slot =
-        if sender_participant do
-          sender_participant
+      if participant do
+        media_slot = incoming_slot_for_track(participant.pc, track.id)
+
+        incoming_track_slots =
+          participant
           |> Map.get(:incoming_track_slots, %{})
-          |> Map.get(track_id, :voice_audio)
-        else
-          :voice_audio
-        end
+          |> Map.put(track.id, media_slot)
 
-      # Forward to all other participants
-      Enum.each(state.participants, fn {uid, participant} ->
-        if uid != sender_id do
-          outgoing_track_id =
-            participant.outgoing_tracks
-            |> Map.get(sender_id, %{})
-            |> Map.get(media_slot)
+        updated =
+          participant
+          |> Map.put(:incoming_track_slots, incoming_track_slots)
+          |> Map.put(media_track_field(media_slot), track.id)
 
-          case outgoing_track_id do
-            nil -> :ok
-            out_track_id -> PeerConnection.send_rtp(participant.pc, out_track_id, packet)
-          end
-        end
-      end)
-    end
-
-    {:noreply, state}
-  end
-
-  def handle_info({:ex_webrtc, pc, {:ice_candidate, candidate}}, state) do
-    user_id = Map.get(state.pc_to_user, pc)
-
-    if user_id do
-      participant = state.participants[user_id]
-      send(participant.channel_pid, {:ice_candidate, ICECandidate.to_json(candidate)})
-    end
-
-    {:noreply, state}
-  end
-
-  def handle_info({:ex_webrtc, pc, {:track, track}}, state) do
-    user_id = Map.get(state.pc_to_user, pc)
-
-    if user_id do
-      participant = state.participants[user_id]
-      media_slot = incoming_slot_for_track(participant.pc, track.id)
-
-      incoming_track_slots =
-        participant
-        |> Map.get(:incoming_track_slots, %{})
-        |> Map.put(track.id, media_slot)
-
-      updated =
-        participant
-        |> Map.put(:incoming_track_slots, incoming_track_slots)
-        |> Map.put(media_track_field(media_slot), track.id)
-
-      {:noreply, put_in(state.participants[user_id], updated)}
+        new_state = put_in(state.participants[user_id], updated)
+        push_routing_table(new_state)
+        {:noreply, new_state}
+      else
+        {:noreply, state}
+      end
     else
       {:noreply, state}
     end
   end
 
-  def handle_info({:ex_webrtc, pc, {:connection_state_change, :failed}}, state) do
+  def handle_info({:pc_failed, pc}, state) do
     user_id = Map.get(state.pc_to_user, pc)
 
     if user_id do
       Logger.warning("PeerConnection failed for user #{user_id} in room #{state.room_id}")
-      {:noreply, maybe_idle_after_remove(remove_participant(state, user_id))}
+      new_state = remove_participant(state, user_id)
+      push_routing_table(new_state)
+      {:noreply, maybe_idle_after_remove(new_state)}
     else
       {:noreply, state}
     end
   end
 
-  def handle_info({:ex_webrtc, _pc, _msg}, state) do
-    # Ignore other ex_webrtc messages (state changes, gathering, etc.)
-    {:noreply, state}
+  def handle_info({:EXIT, pid, reason}, %{router_pid: pid} = state) do
+    Logger.error("Voice Router crashed: #{inspect(reason)}, restarting")
+
+    {:ok, new_router} =
+      Vesper.Voice.Room.Router.start_link(room_pid: self(), room_id: state.room_id)
+
+    # Reassign all WebRTC PeerConnections to new Router
+    Enum.each(state.participants, fn {_uid, p} ->
+      if p.pc do
+        try do
+          PeerConnection.controlling_process(p.pc, new_router)
+        catch
+          _, _ -> :ok
+        end
+      end
+    end)
+
+    new_state = %{state | router_pid: new_router}
+    push_routing_table(new_state)
+    {:noreply, new_state}
   end
 
   def handle_info({:EXIT, pid, _reason}, state) do
@@ -410,7 +401,9 @@ defmodule Vesper.Voice.Room do
     user_id = Map.get(state.pc_to_user, pid)
 
     if user_id do
-      {:noreply, maybe_idle_after_remove(remove_participant(state, user_id))}
+      new_state = remove_participant(state, user_id)
+      push_routing_table(new_state)
+      {:noreply, maybe_idle_after_remove(new_state)}
     else
       {:noreply, state}
     end
@@ -421,7 +414,9 @@ defmodule Vesper.Voice.Room do
     user_id = Map.get(state.channel_to_user, pid)
 
     if user_id do
-      {:noreply, maybe_idle_after_remove(remove_participant(state, user_id))}
+      new_state = remove_participant(state, user_id)
+      push_routing_table(new_state)
+      {:noreply, maybe_idle_after_remove(new_state)}
     else
       {:noreply, state}
     end
@@ -485,29 +480,98 @@ defmodule Vesper.Voice.Room do
     Application.get_env(:vesper, :ice_servers, [])
   end
 
-  defp add_participant(state, user_id, channel_pid) do
+  defp push_routing_table(%{router_pid: router_pid} = state) when is_pid(router_pid) do
+    GenServer.cast(router_pid, {:update_routing_table, build_routing_table(state)})
+  end
+
+  defp push_routing_table(_state), do: :ok
+
+  defp build_routing_table(state) do
+    %{
+      pc_to_user: state.pc_to_user,
+      participants:
+        Map.new(state.participants, fn {uid, p} ->
+          {uid,
+           %{
+             pc: p.pc,
+             transport: p.transport || :webrtc,
+             channel_pid: p.channel_pid,
+             outgoing_tracks: p.outgoing_tracks,
+             incoming_track_slots: Map.get(p, :incoming_track_slots, %{})
+           }}
+        end)
+    }
+  end
+
+  defp add_participant(state, user_id, channel_pid, transport) do
     # Monitor the channel process for cleanup
     Process.monitor(channel_pid)
 
-    # Create PeerConnection
+    case transport do
+      :websocket ->
+        add_websocket_participant(state, user_id, channel_pid)
+
+      _ ->
+        add_webrtc_participant(state, user_id, channel_pid)
+    end
+  end
+
+  defp add_websocket_participant(state, user_id, channel_pid) do
+    new_participant = %{
+      pc: nil,
+      transport: :websocket,
+      channel_pid: channel_pid,
+      voice_audio_track_id: nil,
+      share_audio_track_id: nil,
+      camera_video_track_id: nil,
+      share_video_track_id: nil,
+      incoming_track_slots: %{},
+      outgoing_tracks: %{},
+      muted: false,
+      pending_candidates: [],
+      negotiating: false,
+      renegotiate_pending: false,
+      track_map: %{},
+      publish_map: %{}
+    }
+
+    new_state =
+      state
+      |> put_in([Access.key(:participants), user_id], new_participant)
+      |> Map.update!(:channel_to_user, &Map.put(&1, channel_pid, user_id))
+
+    # Add outgoing tracks on existing WebRTC participants for this new WS user
+    new_state =
+      Enum.reduce(state.participants, new_state, fn {existing_uid, existing_p}, acc_state ->
+        if existing_p.transport != :websocket do
+          add_outgoing_track_and_renegotiate(acc_state, existing_uid, user_id)
+        else
+          acc_state
+        end
+      end)
+
+    {:ok, :websocket, %{}, %{}, new_state}
+  end
+
+  defp add_webrtc_participant(state, user_id, channel_pid) do
+    # Create PeerConnection with Router as controlling_process
     pc_opts = [
       ice_servers: ice_servers(),
-      controlling_process: self()
+      controlling_process: state.router_pid
     ]
 
     case PeerConnection.start_link(pc_opts) do
       {:ok, pc} ->
         # Unlink so DTLS/ICE sub-process crashes don't take down the Room.
-        # We don't monitor the PC — if it dies, the participant stays in state
-        # and gets cleaned up when their channel process leaves.
         Process.unlink(pc)
 
-        # Reserve incoming slots for the user's audio + one video track (camera or screen share).
+        # Reserve incoming slots for the user's audio + video tracks.
         Enum.each(@media_slots, fn {_slot, media_kind} ->
           {:ok, _recv_tr} = PeerConnection.add_transceiver(pc, media_kind, direction: :recvonly)
         end)
 
-        # Add sendonly transceivers for each existing participant's media slots.
+        # Add sendonly transceivers for each existing participant's media slots
+        # (WebRTC participants get real tracks, WS participants get virtual slots)
         outgoing_tracks =
           Enum.reduce(state.participants, %{}, fn {existing_uid, _existing_p}, acc ->
             Map.put(acc, existing_uid, create_outgoing_track_set(pc))
@@ -522,6 +586,7 @@ defmodule Vesper.Voice.Room do
 
         new_participant = %{
           pc: pc,
+          transport: :webrtc,
           channel_pid: channel_pid,
           voice_audio_track_id: nil,
           share_audio_track_id: nil,
@@ -544,9 +609,14 @@ defmodule Vesper.Voice.Room do
           |> Map.update!(:channel_to_user, &Map.put(&1, channel_pid, user_id))
 
         # For each existing participant: add outgoing tracks for the new user's media.
+        # Only WebRTC participants need PeerConnection renegotiation.
         new_state =
-          Enum.reduce(state.participants, new_state, fn {existing_uid, _existing_p}, acc_state ->
-            add_outgoing_track_and_renegotiate(acc_state, existing_uid, user_id)
+          Enum.reduce(state.participants, new_state, fn {existing_uid, existing_p}, acc_state ->
+            if existing_p.transport != :websocket do
+              add_outgoing_track_and_renegotiate(acc_state, existing_uid, user_id)
+            else
+              acc_state
+            end
           end)
 
         {:ok, offer.sdp, track_map, publish_map, new_state}

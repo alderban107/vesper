@@ -182,15 +182,8 @@ const UNREAD_EVENT_DEDUPE_WINDOW_MS = 15_000
 const FIRE_AND_FORGET_SCOPE_EVENTS = new Set([
   'typing_start',
   'typing_stop',
-  'new_message',
-  'mls_request_join',
-  'mls_request_join_all',
   'mls_resync_request',
-  'mls_commit',
-  'mls_remove',
-  'mls_welcome',
-  'mls_history_request',
-  'mls_history_bundle'
+  'mls_history_request'
 ])
 
 function defaultState(): VesperClientState {
@@ -787,8 +780,14 @@ export class VesperClient {
 
     this.seenSocketOpen = false
     this.socketClient.connect()
-    await this.connectUserFeed(session.user.id)
-    await this.syncNow(forceFull)
+
+    // Parallelize: user feed join (WebSocket) and workspace sync (HTTP)
+    // are independent — no need to serialize them.
+    await Promise.all([
+      this.connectUserFeed(session.user.id),
+      this.syncNow(forceFull)
+    ])
+
     this.setState({ started: true })
     this.emitter.emit('ready', this.getState())
     return this.getState()
@@ -966,9 +965,8 @@ export class VesperClient {
   async listServers(): Promise<VesperServer[]> {
     const servers = await listServers(this.httpClient)
     for (const server of servers) {
-      const raw = server as Record<string, unknown>
-      if (Array.isArray(raw.emojis)) {
-        raw.emojis = this.resolveEmojiUrls(raw.emojis as VesperCustomEmoji[])
+      if (Array.isArray(server.emojis)) {
+        server.emojis = this.resolveEmojiUrls(server.emojis)
       }
     }
     this.setState({
@@ -1672,8 +1670,8 @@ export class VesperClient {
     return await fetchPendingResyncRequests(scopeId, this.httpClient)
   }
 
-  async ackPendingResyncRequest(requestId: string): Promise<void> {
-    await ackPendingResyncRequest(requestId, this.httpClient)
+  async ackPendingResyncRequest(requestId: string, requestToken: string): Promise<void> {
+    await ackPendingResyncRequest(requestId, requestToken, this.httpClient)
   }
 
   async fetchPendingHistoryRequests(scopeId: string): Promise<
@@ -1772,11 +1770,9 @@ export class VesperClient {
     await this.socketClient.joinChannelWithAck(topic, noopListener)
 
     try {
-      if (fireAndForget) {
-        this.socketClient.pushToChannel(topic, event, payload)
-        return true
-      }
-
+      // Always use ack when we're about to leave the channel — fire-and-forget
+      // pushes race with the channel.leave() in the finally block and may not
+      // reach the server before the channel is torn down.
       return await this.socketClient.pushToChannelWithAck(topic, event, payload)
     } finally {
       this.socketClient.leaveChannelListener(topic, noopListener)
@@ -1817,10 +1813,14 @@ export class VesperClient {
       await this.connectUserFeed(userId)
     }
 
-    await this.restoreScopeWatchers()
+    // Parallelize: scope watcher restoration (WebSocket) and delta sync (HTTP)
+    await Promise.all([
+      this.restoreScopeWatchers(),
+      this.syncNow(false)
+    ])
+
     this.setState({ connected: true })
     this.emitter.emit('connected', this.getState())
-    await this.syncNow(false)
   }
 
   private async ensureScopeWatcher(kind: ScopeKind, scopeId: string): Promise<ScopeWatcher> {

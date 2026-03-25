@@ -5,17 +5,23 @@ defmodule Vesper.Encryption do
   """
 
   import Ecto.Query
+  require Logger
   alias Vesper.Repo
 
   alias Vesper.Encryption.{
     KeyPackage,
     MlsEvent,
+    MlsGroupInfo,
     PendingCryptoEviction,
     PendingHistoryBundle,
     PendingHistoryRequest,
     PendingResyncRequest,
     PendingWelcome
   }
+
+  # Maximum allowed epoch jump for non-CAS GroupInfo publishes.
+  # Prevents a compromised client from inflating the epoch to block others.
+  @max_epoch_delta 1000
 
   # --- Key Packages ---
 
@@ -167,51 +173,10 @@ defmodule Vesper.Encryption do
   Store a pending Welcome message for an offline user.
   """
   def store_pending_welcome(attrs) do
-    recipient_id = Map.get(attrs, :recipient_id) || Map.get(attrs, "recipient_id")
-    group_id = Map.get(attrs, :group_id) || Map.get(attrs, "group_id")
-
-    recipient_client_id =
-      Map.get(attrs, :recipient_client_id) || Map.get(attrs, "recipient_client_id")
-
-    has_client_id = is_binary(recipient_client_id) and byte_size(recipient_client_id) > 0
-
     Repo.transaction(fn ->
-      # When targeting a specific device, clean up any leftover generic (nil-device) welcome.
-      # The upsert below handles same-key races, but cross-key cleanup must be explicit.
-      if recipient_id && group_id && has_client_id do
-        from(pw in PendingWelcome,
-          where:
-            pw.recipient_id == ^recipient_id and pw.group_id == ^group_id and
-              is_nil(pw.recipient_client_id)
-        )
-        |> Repo.delete_all()
-      end
-
-      changeset = PendingWelcome.changeset(%PendingWelcome{}, attrs)
-
-      conflict_target =
-        if has_client_id do
-          {:unsafe_fragment,
-           "(recipient_id, group_id, recipient_client_id) WHERE recipient_client_id IS NOT NULL"}
-        else
-          {:unsafe_fragment, "(recipient_id, group_id) WHERE recipient_client_id IS NULL"}
-        end
-
-      case Repo.insert(changeset,
-             on_conflict:
-               {:replace,
-                [
-                  :welcome_data,
-                  :sender_id,
-                  :recipient_key_package_ref,
-                  :channel_id,
-                  :conversation_id
-                ]},
-             conflict_target: conflict_target,
-             returning: true
-           ) do
+      case upsert_pending_welcome(attrs) do
         {:ok, welcome} -> welcome
-        {:error, changeset} -> Repo.rollback(changeset)
+        {:error, reason} -> Repo.rollback(reason)
       end
     end)
     |> case do
@@ -474,9 +439,14 @@ defmodule Vesper.Encryption do
 
   @doc """
   Delete a pending resync request after it has been handled.
+
+  The delete is compare-and-swap safe: callers must provide the `request_id`
+  they fetched so an old ACK cannot delete a newer refreshed request for the
+  same device.
   """
-  def delete_pending_resync_request(id) do
-    from(pr in PendingResyncRequest, where: pr.id == ^id)
+  def delete_pending_resync_request(id, request_id)
+      when is_binary(request_id) and byte_size(request_id) > 0 do
+    from(pr in PendingResyncRequest, where: pr.id == ^id and pr.request_id == ^request_id)
     |> Repo.delete_all()
   end
 
@@ -487,6 +457,26 @@ defmodule Vesper.Encryption do
   """
   def store_mls_event(attrs) do
     insert_mls_event(attrs)
+  end
+
+  @doc """
+  Store a replayable MLS commit event.
+
+  When `idempotency_key` is present, repeated requests with the same
+  group/sender/device/key tuple return the original durable event instead of
+  inserting a duplicate row.
+  """
+  def store_mls_commit_event(attrs) do
+    case normalize_mls_commit_idempotency_key(attrs) do
+      nil ->
+        insert_mls_event(attrs)
+
+      {:error, reason} ->
+        {:error, reason}
+
+      idempotency_key ->
+        store_idempotent_mls_commit_event(attrs, idempotency_key)
+    end
   end
 
   @doc """
@@ -517,6 +507,332 @@ defmodule Vesper.Encryption do
     |> Repo.insert()
   end
 
+  def get_group_info_epoch(group_id) do
+    case Repo.one(from(gi in MlsGroupInfo, where: gi.group_id == ^group_id, select: gi.epoch)) do
+      nil -> {:error, :not_found}
+      epoch -> {:ok, epoch}
+    end
+  end
+
+  @doc """
+  Atomically store an optional remove event, the durable commit event, and an
+  optional pending welcome for a sponsored join/resync transition.
+  """
+  def publish_sponsored_transition(attrs) do
+    group_id = Map.get(attrs, :group_id) || Map.get(attrs, "group_id")
+    group_info_data = Map.get(attrs, :group_info_data) || Map.get(attrs, "group_info_data")
+    new_epoch = Map.get(attrs, :epoch) || Map.get(attrs, "epoch") || 0
+    previous_epoch = Map.get(attrs, :previous_epoch) || Map.get(attrs, "previous_epoch")
+    commit_data = Map.get(attrs, :commit_data) || Map.get(attrs, "commit_data")
+    commit_id = Map.get(attrs, :commit_id) || Map.get(attrs, "commit_id")
+
+    remove_commit_data =
+      Map.get(attrs, :remove_commit_data) || Map.get(attrs, "remove_commit_data")
+
+    recipient_id = Map.get(attrs, :recipient_id) || Map.get(attrs, "recipient_id")
+
+    recipient_client_id =
+      Map.get(attrs, :recipient_client_id) || Map.get(attrs, "recipient_client_id")
+
+    welcome_data = Map.get(attrs, :welcome_data) || Map.get(attrs, "welcome_data")
+
+    key_package_ref =
+      Map.get(attrs, :recipient_key_package_ref) || Map.get(attrs, "recipient_key_package_ref")
+
+    with true <- (is_binary(group_id) and group_id != "") || {:error, :invalid_transition_scope},
+         true <-
+           (is_binary(group_info_data) and group_info_data != "") || {:error, :invalid_group_info},
+         true <- is_integer(previous_epoch) || {:error, :invalid_previous_epoch},
+         true <- (is_binary(commit_data) and commit_data != "") || {:error, :invalid_commit_data},
+         true <- (is_binary(commit_id) and commit_id != "") || {:error, :invalid_idempotency_key},
+         true <- (is_binary(recipient_id) and recipient_id != "") || {:error, :invalid_recipient},
+         {:ok, commit_attrs} <-
+           normalize_mls_commit_event_attrs(
+             %{
+               group_id: group_id,
+               event_type: "mls_commit",
+               payload: %{commit_data: commit_data},
+               sender_id: Map.get(attrs, :sender_id) || Map.get(attrs, "sender_id"),
+               sender_device_id:
+                 Map.get(attrs, :sender_device_id) || Map.get(attrs, "sender_device_id"),
+               channel_id: Map.get(attrs, :channel_id) || Map.get(attrs, "channel_id"),
+               conversation_id:
+                 Map.get(attrs, :conversation_id) || Map.get(attrs, "conversation_id")
+             },
+             commit_id
+           ) do
+      Repo.transaction(fn ->
+        lock_group_info_publish(group_id)
+
+        existing =
+          from(gi in MlsGroupInfo,
+            where: gi.group_id == ^group_id,
+            lock: "FOR UPDATE"
+          )
+          |> Repo.one()
+
+        case existing_sponsored_transition_success(
+               existing,
+               attrs,
+               new_epoch,
+               commit_attrs,
+               recipient_id,
+               recipient_client_id
+             ) do
+          {:ok, result} ->
+            result
+
+          :error ->
+            Repo.rollback(:idempotency_conflict)
+
+          nil ->
+            with {:ok, _group_info} <-
+                   apply_group_info_publish(existing, attrs, new_epoch, previous_epoch),
+                 {:ok, remove_event} <-
+                   maybe_insert_sponsored_remove_event(
+                     attrs,
+                     remove_commit_data,
+                     recipient_id,
+                     recipient_client_id
+                   ),
+                 {:ok, commit_event} <- insert_idempotent_mls_commit_event(commit_attrs),
+                 {:ok, welcome} <-
+                   maybe_upsert_sponsored_welcome(attrs, welcome_data, key_package_ref) do
+              %{
+                fresh: true,
+                remove_event: remove_event,
+                commit_event: commit_event,
+                welcome: welcome
+              }
+            else
+              {:error, %Ecto.Changeset{} = changeset} ->
+                Repo.rollback(changeset)
+
+              {:error, reason} ->
+                Repo.rollback(reason)
+            end
+        end
+      end)
+      |> case do
+        {:ok, transition} -> {:ok, transition}
+        {:error, :epoch_conflict} -> {:error, :epoch_conflict}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:error, reason} -> {:error, reason}
+      false -> {:error, :invalid_sponsored_transition}
+    end
+  end
+
+  defp store_idempotent_mls_commit_event(attrs, idempotency_key) do
+    with {:ok, normalized_attrs} <- normalize_mls_commit_event_attrs(attrs, idempotency_key),
+         {:ok, event} <- insert_idempotent_mls_commit_event(normalized_attrs) do
+      {:ok, event}
+    end
+  end
+
+  defp normalize_mls_commit_event_attrs(attrs, idempotency_key) do
+    group_id = Map.get(attrs, :group_id) || Map.get(attrs, "group_id")
+    sender_id = Map.get(attrs, :sender_id) || Map.get(attrs, "sender_id")
+    sender_device_id = Map.get(attrs, :sender_device_id) || Map.get(attrs, "sender_device_id")
+    payload = Map.get(attrs, :payload) || Map.get(attrs, "payload")
+
+    cond do
+      not (is_binary(group_id) and group_id != "") ->
+        {:error, :invalid_commit_scope}
+
+      not (is_binary(sender_id) and sender_id != "") ->
+        {:error, :invalid_commit_scope}
+
+      not (is_binary(sender_device_id) and sender_device_id != "") ->
+        {:error, :invalid_commit_scope}
+
+      not is_map(payload) ->
+        {:error, :invalid_commit_scope}
+
+      true ->
+        {:ok,
+         attrs
+         |> Map.put(:idempotency_key, idempotency_key)
+         |> Map.put(:payload, stringify_map_keys(payload))}
+    end
+  end
+
+  defp insert_idempotent_mls_commit_event(attrs) do
+    expected_payload = Map.fetch!(attrs, :payload)
+
+    unique_target =
+      {:unsafe_fragment,
+       "(group_id, event_type, sender_id, sender_device_id, idempotency_key) WHERE event_type = 'mls_commit' AND idempotency_key IS NOT NULL"}
+
+    case Repo.insert(%MlsEvent{} |> MlsEvent.changeset(attrs),
+           on_conflict: :nothing,
+           conflict_target: unique_target,
+           returning: true
+         ) do
+      {:ok, %MlsEvent{id: nil}} ->
+        case fetch_mls_commit_event_by_idempotency_key(attrs) do
+          nil -> {:error, :idempotency_conflict}
+          %MlsEvent{payload: payload} = event when payload == expected_payload -> {:ok, event}
+          %MlsEvent{} -> {:error, :idempotency_conflict}
+        end
+
+      {:ok, event} ->
+        {:ok, event}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:error, changeset}
+    end
+  end
+
+  defp fetch_mls_commit_event_by_idempotency_key(attrs) do
+    group_id = Map.fetch!(attrs, :group_id)
+    sender_id = Map.fetch!(attrs, :sender_id)
+    sender_device_id = Map.fetch!(attrs, :sender_device_id)
+    idempotency_key = Map.fetch!(attrs, :idempotency_key)
+
+    from(event in MlsEvent,
+      where:
+        event.group_id == ^group_id and
+          event.event_type == "mls_commit" and
+          event.sender_id == ^sender_id and
+          event.sender_device_id == ^sender_device_id and
+          event.idempotency_key == ^idempotency_key
+    )
+    |> Repo.one()
+  end
+
+  defp normalize_mls_commit_idempotency_key(attrs) do
+    case Map.get(attrs, :idempotency_key) || Map.get(attrs, "idempotency_key") do
+      value when is_binary(value) and value != "" -> value
+      nil -> nil
+      _ -> {:error, :invalid_idempotency_key}
+    end
+  end
+
+  defp upsert_pending_welcome(attrs) do
+    recipient_id = Map.get(attrs, :recipient_id) || Map.get(attrs, "recipient_id")
+    group_id = Map.get(attrs, :group_id) || Map.get(attrs, "group_id")
+
+    recipient_client_id =
+      Map.get(attrs, :recipient_client_id) || Map.get(attrs, "recipient_client_id")
+
+    has_client_id = is_binary(recipient_client_id) and byte_size(recipient_client_id) > 0
+
+    if recipient_id && group_id && has_client_id do
+      from(pw in PendingWelcome,
+        where:
+          pw.recipient_id == ^recipient_id and pw.group_id == ^group_id and
+            is_nil(pw.recipient_client_id)
+      )
+      |> Repo.delete_all()
+    end
+
+    changeset = PendingWelcome.changeset(%PendingWelcome{}, attrs)
+
+    conflict_target =
+      if has_client_id do
+        {:unsafe_fragment,
+         "(recipient_id, group_id, recipient_client_id) WHERE recipient_client_id IS NOT NULL"}
+      else
+        {:unsafe_fragment, "(recipient_id, group_id) WHERE recipient_client_id IS NULL"}
+      end
+
+    Repo.insert(changeset,
+      on_conflict:
+        {:replace,
+         [
+           :welcome_data,
+           :sender_id,
+           :recipient_key_package_ref,
+           :channel_id,
+           :conversation_id
+         ]},
+      conflict_target: conflict_target,
+      returning: true
+    )
+  end
+
+  defp fetch_pending_welcome_for_scope(recipient_id, group_id, recipient_client_id) do
+    query =
+      from(pw in PendingWelcome,
+        where: pw.recipient_id == ^recipient_id and pw.group_id == ^group_id
+      )
+
+    query =
+      if is_binary(recipient_client_id) and byte_size(recipient_client_id) > 0 do
+        from(pw in query, where: pw.recipient_client_id == ^recipient_client_id)
+      else
+        from(pw in query, where: is_nil(pw.recipient_client_id))
+      end
+
+    Repo.one(query)
+  end
+
+  defp maybe_insert_sponsored_remove_event(_attrs, nil, _recipient_id, _recipient_client_id),
+    do: {:ok, nil}
+
+  defp maybe_insert_sponsored_remove_event(
+         attrs,
+         remove_commit_data,
+         recipient_id,
+         recipient_client_id
+       )
+       when is_binary(remove_commit_data) and remove_commit_data != "" do
+    insert_mls_event(%{
+      group_id: Map.get(attrs, :group_id) || Map.get(attrs, "group_id"),
+      channel_id: Map.get(attrs, :channel_id) || Map.get(attrs, "channel_id"),
+      conversation_id: Map.get(attrs, :conversation_id) || Map.get(attrs, "conversation_id"),
+      event_type: "mls_remove",
+      payload:
+        %{
+          removed_user_id: recipient_id,
+          commit_data: remove_commit_data
+        }
+        |> maybe_put_remove_device(recipient_client_id)
+        |> stringify_map_keys(),
+      sender_id: Map.get(attrs, :sender_id) || Map.get(attrs, "sender_id"),
+      sender_device_id: Map.get(attrs, :sender_device_id) || Map.get(attrs, "sender_device_id")
+    })
+  end
+
+  defp maybe_insert_sponsored_remove_event(
+         _attrs,
+         _remove_commit_data,
+         _recipient_id,
+         _recipient_client_id
+       ),
+       do: {:error, :invalid_remove_commit_data}
+
+  defp maybe_upsert_sponsored_welcome(_attrs, nil, _key_package_ref), do: {:ok, nil}
+
+  defp maybe_upsert_sponsored_welcome(attrs, welcome_data, key_package_ref)
+       when is_binary(welcome_data) and byte_size(welcome_data) > 0 do
+    upsert_pending_welcome(
+      attrs
+      |> Map.put(:welcome_data, welcome_data)
+      |> Map.put(:recipient_key_package_ref, key_package_ref)
+    )
+  end
+
+  defp maybe_upsert_sponsored_welcome(_attrs, _welcome_data, _key_package_ref),
+    do: {:error, :invalid_welcome_data}
+
+  defp maybe_put_remove_device(payload, recipient_client_id)
+       when is_binary(recipient_client_id) and byte_size(recipient_client_id) > 0 do
+    Map.put(payload, :removed_device_id, recipient_client_id)
+  end
+
+  defp maybe_put_remove_device(payload, _recipient_client_id), do: payload
+
+  defp stringify_map_keys(map) when is_map(map) do
+    Enum.reduce(map, %{}, fn {key, value}, acc ->
+      Map.put(acc, to_string(key), value)
+    end)
+  end
+
+  defp stringify_map_keys(value), do: value
+
   @doc """
   List replayable MLS control-plane events for a scope after the given local cursor.
   """
@@ -527,6 +843,27 @@ defmodule Vesper.Encryption do
       limit: ^limit
     )
     |> Repo.all()
+  end
+
+  @doc """
+  List the most recent replayable MLS control-plane events for a scope.
+  """
+  def list_recent_mls_events(group_id, limit \\ 50, event_type \\ nil) do
+    query =
+      from(event in MlsEvent,
+        where: event.group_id == ^group_id,
+        order_by: [desc: event.id],
+        limit: ^limit
+      )
+
+    query =
+      if is_binary(event_type) and byte_size(event_type) > 0 do
+        from(event in query, where: event.event_type == ^event_type)
+      else
+        query
+      end
+
+    Repo.all(query)
   end
 
   # --- Pending Crypto Evictions ---
@@ -961,5 +1298,316 @@ defmodule Vesper.Encryption do
       end
 
     Repo.delete_all(query)
+  end
+
+  # --- MLS GroupInfo (for External Commits) ---
+
+  @doc """
+  Publish (upsert) MLS GroupInfo for a scope.
+  Only stores the latest — each publish replaces the previous.
+
+  When `previous_epoch` is provided, uses compare-and-swap (CAS) semantics:
+  the update only succeeds if the stored epoch matches `previous_epoch`.
+  Returns `{:error, :epoch_conflict}` on mismatch. This serializes
+  concurrent External Commit joins — only one joiner can claim a given
+  epoch transition.
+
+  Without `previous_epoch`, uses the original `>=` semantics for backward
+  compatibility (regular post-commit GroupInfo publishes).
+  """
+  def publish_group_info(attrs) do
+    group_id = Map.get(attrs, :group_id) || Map.get(attrs, "group_id")
+    new_epoch = Map.get(attrs, :epoch) || Map.get(attrs, "epoch") || 0
+    previous_epoch = Map.get(attrs, :previous_epoch) || Map.get(attrs, "previous_epoch")
+
+    Repo.transaction(fn ->
+      lock_group_info_publish(group_id)
+
+      existing =
+        from(gi in MlsGroupInfo,
+          where: gi.group_id == ^group_id,
+          lock: "FOR UPDATE"
+        )
+        |> Repo.one()
+
+      case apply_group_info_publish(existing, attrs, new_epoch, previous_epoch) do
+        {:ok, group_info} -> group_info
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+    |> case do
+      {:ok, group_info} -> {:ok, group_info}
+      {:error, :epoch_conflict} -> {:error, :epoch_conflict}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Atomically publish External Commit GroupInfo and store the matching durable
+  `mls_commit` event. Retries with the same commit id return the existing
+  success instead of conflicting.
+  """
+  def publish_external_commit_group_info(attrs) do
+    group_id = Map.get(attrs, :group_id) || Map.get(attrs, "group_id")
+    new_epoch = Map.get(attrs, :epoch) || Map.get(attrs, "epoch") || 0
+    previous_epoch = Map.get(attrs, :previous_epoch) || Map.get(attrs, "previous_epoch")
+    commit_data = Map.get(attrs, :commit_data) || Map.get(attrs, "commit_data")
+    commit_id = Map.get(attrs, :commit_id) || Map.get(attrs, "commit_id")
+
+    with true <- is_integer(previous_epoch) || {:error, :invalid_previous_epoch},
+         true <- (is_binary(commit_data) and commit_data != "") || {:error, :invalid_commit_data},
+         true <- (is_binary(commit_id) and commit_id != "") || {:error, :invalid_idempotency_key},
+         {:ok, commit_attrs} <-
+           normalize_mls_commit_event_attrs(
+             %{
+               group_id: group_id,
+               event_type: "mls_commit",
+               payload: %{commit_data: commit_data},
+               sender_id: Map.get(attrs, :publisher_id) || Map.get(attrs, "publisher_id"),
+               sender_device_id:
+                 Map.get(attrs, :publisher_client_id) || Map.get(attrs, "publisher_client_id"),
+               channel_id: Map.get(attrs, :channel_id) || Map.get(attrs, "channel_id"),
+               conversation_id:
+                 Map.get(attrs, :conversation_id) || Map.get(attrs, "conversation_id")
+             },
+             commit_id
+           ) do
+      Repo.transaction(fn ->
+        lock_group_info_publish(group_id)
+
+        existing =
+          from(gi in MlsGroupInfo,
+            where: gi.group_id == ^group_id,
+            lock: "FOR UPDATE"
+          )
+          |> Repo.one()
+
+        case existing_external_commit_success(existing, attrs, new_epoch, commit_attrs) do
+          {:ok, result} ->
+            result
+
+          :error ->
+            Repo.rollback(:idempotency_conflict)
+
+          nil ->
+            with {:ok, group_info} <-
+                   apply_group_info_publish(existing, attrs, new_epoch, previous_epoch),
+                 {:ok, event} <- insert_idempotent_mls_commit_event(commit_attrs) do
+              %{group_info: group_info, event: event}
+            else
+              {:error, reason} -> Repo.rollback(reason)
+            end
+        end
+      end)
+      |> case do
+        {:ok, result} -> {:ok, result}
+        {:error, :epoch_conflict} -> {:error, :epoch_conflict}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:error, reason} -> {:error, reason}
+      false -> {:error, :invalid_external_commit}
+    end
+  end
+
+  defp apply_group_info_publish(nil, attrs, _new_epoch, previous_epoch)
+       when is_integer(previous_epoch) and previous_epoch == 0 do
+    {:ok,
+     %MlsGroupInfo{}
+     |> MlsGroupInfo.changeset(attrs)
+     |> Repo.insert!()}
+  end
+
+  defp apply_group_info_publish(nil, _attrs, _new_epoch, previous_epoch)
+       when is_integer(previous_epoch) do
+    {:error, :epoch_conflict}
+  end
+
+  defp apply_group_info_publish(
+         %MlsGroupInfo{epoch: stored} = existing,
+         attrs,
+         _new_epoch,
+         previous_epoch
+       )
+       when is_integer(previous_epoch) and stored == previous_epoch do
+    {:ok,
+     existing
+     |> MlsGroupInfo.changeset(attrs)
+     |> Repo.update!()}
+  end
+
+  defp apply_group_info_publish(%MlsGroupInfo{epoch: stored}, _attrs, new_epoch, previous_epoch)
+       when is_integer(previous_epoch) do
+    Logger.warning(
+      "MLS epoch_conflict: stored=#{stored}, new=#{new_epoch}, previous=#{previous_epoch}"
+    )
+
+    {:error, :epoch_conflict}
+  end
+
+  defp apply_group_info_publish(nil, attrs, _new_epoch, _previous_epoch) do
+    {:ok,
+     %MlsGroupInfo{}
+     |> MlsGroupInfo.changeset(attrs)
+     |> Repo.insert!()}
+  end
+
+  defp apply_group_info_publish(
+         %MlsGroupInfo{epoch: stored} = existing,
+         attrs,
+         new_epoch,
+         _previous_epoch
+       )
+       when new_epoch > stored and new_epoch - stored <= @max_epoch_delta do
+    {:ok,
+     existing
+     |> MlsGroupInfo.changeset(attrs)
+     |> Repo.update!()}
+  end
+
+  # Epoch jump exceeds max delta — reject to prevent inflation attacks
+  defp apply_group_info_publish(
+         %MlsGroupInfo{epoch: stored},
+         _attrs,
+         new_epoch,
+         _previous_epoch
+       )
+       when new_epoch > stored do
+    {:error, :epoch_delta_exceeded}
+  end
+
+  defp apply_group_info_publish(
+         %MlsGroupInfo{} = existing,
+         attrs,
+         new_epoch,
+         _previous_epoch
+       )
+       when new_epoch == existing.epoch do
+    if same_group_info_payload?(existing, attrs) do
+      {:ok, existing}
+    else
+      {:ok, existing}
+    end
+  end
+
+  defp apply_group_info_publish(%MlsGroupInfo{} = existing, _attrs, _new_epoch, _previous_epoch) do
+    {:ok, existing}
+  end
+
+  defp existing_external_commit_success(existing, attrs, new_epoch, commit_attrs) do
+    if existing &&
+         existing.epoch == new_epoch &&
+         same_group_info_payload?(existing, attrs) do
+      expected_payload = Map.fetch!(commit_attrs, :payload)
+
+      case fetch_mls_commit_event_by_idempotency_key(commit_attrs) do
+        %MlsEvent{payload: payload} = event when payload == expected_payload ->
+          {:ok, %{group_info: existing, event: event}}
+
+        %MlsEvent{} ->
+          :error
+
+        nil ->
+          nil
+      end
+    end
+  end
+
+  defp existing_sponsored_transition_success(
+         existing,
+         attrs,
+         new_epoch,
+         commit_attrs,
+         recipient_id,
+         recipient_client_id
+       ) do
+    cond do
+      # Exact match: same epoch + same payload = idempotent retry
+      existing && existing.epoch == new_epoch && same_group_info_payload?(existing, attrs) ->
+        expected_payload = Map.fetch!(commit_attrs, :payload)
+
+        case fetch_mls_commit_event_by_idempotency_key(commit_attrs) do
+          %MlsEvent{payload: payload} = commit_event when payload == expected_payload ->
+            {:ok,
+             %{
+               fresh: false,
+               commit_event: commit_event,
+               remove_event: nil,
+               welcome:
+                 fetch_pending_welcome_for_scope(
+                   recipient_id,
+                   existing.group_id,
+                   recipient_client_id
+                 )
+             }}
+
+          %MlsEvent{} ->
+            :error
+
+          nil ->
+            nil
+        end
+
+      # Epoch already advanced past our target: a prior attempt or concurrent
+      # operation already published at this epoch. Treat as success if the
+      # commit event exists (the sponsored transition was applied).
+      existing && existing.epoch >= new_epoch ->
+        case fetch_mls_commit_event_by_idempotency_key(commit_attrs) do
+          %MlsEvent{} = commit_event ->
+            {:ok,
+             %{
+               fresh: false,
+               commit_event: commit_event,
+               remove_event: nil,
+               welcome:
+                 fetch_pending_welcome_for_scope(
+                   recipient_id,
+                   existing.group_id,
+                   recipient_client_id
+                 )
+             }}
+
+          nil ->
+            nil
+        end
+
+      true ->
+        nil
+    end
+  end
+
+  defp same_group_info_payload?(%MlsGroupInfo{} = existing, attrs) do
+    existing.group_info_data ==
+      (Map.get(attrs, :group_info_data) || Map.get(attrs, "group_info_data")) &&
+      existing.ratchet_tree_data ==
+        (Map.get(attrs, :ratchet_tree_data) || Map.get(attrs, "ratchet_tree_data")) &&
+      existing.epoch == (Map.get(attrs, :epoch) || Map.get(attrs, "epoch") || 0)
+  end
+
+  defp lock_group_info_publish(group_id) when is_binary(group_id) do
+    Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1)::bigint)", [group_id])
+    :ok
+  end
+
+  defp lock_group_info_publish(_group_id), do: :ok
+
+  @doc """
+  Fetch the latest MLS GroupInfo for a scope by group_id.
+  """
+  def get_group_info(group_id) do
+    from(gi in MlsGroupInfo,
+      where: gi.group_id == ^group_id
+    )
+    |> Repo.one()
+  end
+
+  @doc """
+  Delete MLS GroupInfo for a scope (e.g., when the group is dissolved).
+  """
+  def delete_group_info(group_id) do
+    from(gi in MlsGroupInfo,
+      where: gi.group_id == ^group_id
+    )
+    |> Repo.delete_all()
   end
 end

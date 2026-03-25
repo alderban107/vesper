@@ -244,6 +244,7 @@ export default function ImageCropModal({
             {/* Submit */}
             <button
               type="button"
+              data-testid="image-crop-submit"
               onClick={() => {
                 void handleSubmit()
               }}

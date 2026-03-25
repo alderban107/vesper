@@ -10,8 +10,8 @@ defmodule Vesper.Voice do
     end
   end
 
-  def join_room(room_id, user_id, channel_pid) do
-    Room.join(room_id, user_id, channel_pid)
+  def join_room(room_id, user_id, channel_pid, opts \\ []) do
+    Room.join(room_id, user_id, channel_pid, opts)
   end
 
   def leave_room(room_id, user_id) do
@@ -59,6 +59,22 @@ defmodule Vesper.Voice do
       Room.call_reject(room_id, user_id)
     catch
       :exit, _ -> :ok
+    end
+  end
+
+  def relay_media_frame(room_id, user_id, slot, data, seq) do
+    case Registry.lookup(Vesper.Voice.Registry, room_id) do
+      [{room_pid, _}] ->
+        case GenServer.call(room_pid, :get_router) do
+          router_pid when is_pid(router_pid) ->
+            Vesper.Voice.Room.Router.relay_media_frame(router_pid, user_id, slot, data, seq)
+
+          _ ->
+            :ok
+        end
+
+      [] ->
+        :ok
     end
   end
 end

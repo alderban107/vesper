@@ -11,6 +11,15 @@ import {
   deleteGroupState,
   getGroupSyncCursor,
   setGroupSyncCursor,
+  getScopeCheckpoint,
+  setScopeCheckpoint,
+  getPendingGroupInfoPublishes,
+  setPendingGroupInfoPublish,
+  deletePendingGroupInfoPublish,
+  getPendingExternalCommitBroadcasts,
+  getPendingSponsoredTransitions,
+  setPendingExternalCommitBroadcast,
+  deletePendingExternalCommitBroadcast,
   getIdentityKeys,
   setIdentityKeys,
   deleteIdentityKeys,
@@ -195,6 +204,86 @@ function registerIpcHandlers(): void {
     'cryptoDb:setGroupSyncCursor',
     (_, groupId: string, lastEventSeq: number) =>
       setGroupSyncCursor(groupId, lastEventSeq)
+  )
+  ipcMain.handle('cryptoDb:getScopeCheckpoint', (_, groupId: string) =>
+    getScopeCheckpoint(groupId)
+  )
+  ipcMain.handle('cryptoDb:getKnownScopeIds', () =>
+    getKnownScopeIds()
+  )
+  ipcMain.handle(
+    'cryptoDb:setScopeCheckpoint',
+    (
+      _,
+      groupId: string,
+      checkpoint: {
+        state: Buffer | null
+        epoch: number
+        last_event_seq: number
+        recent_commit_fingerprints?: string[]
+        recent_history_bundle_fingerprints?: string[]
+        repair_status?: string | null
+        repair_failure_count?: number
+        repair_last_error?: string | null
+        repair_updated_at?: string | null
+        pending_group_info_publish?: {
+          group_info_data: Buffer
+          ratchet_tree_data: Buffer | null
+          epoch: number
+        } | null
+        pending_external_commit_broadcast?: {
+          commit_data: string
+          commit_id: string
+        } | null
+        pending_sponsored_transition?: {
+          recipient_id: string
+          recipient_client_id: string | null
+          recipient_key_package_ref: string | null
+          commit_data: string
+          commit_id: string
+          remove_commit_data: string | null
+          welcome_data: string | null
+          group_info_data: Buffer | null
+          ratchet_tree_data: Buffer | null
+          epoch: number | null
+          previous_epoch: number | null
+          base_state: Buffer | null
+          base_epoch: number | null
+        } | null
+      }
+    ) => setScopeCheckpoint(groupId, checkpoint)
+  )
+  ipcMain.handle('cryptoDb:getPendingGroupInfoPublishes', () =>
+    getPendingGroupInfoPublishes()
+  )
+  ipcMain.handle(
+    'cryptoDb:setPendingGroupInfoPublish',
+    (
+      _,
+      groupId: string,
+      groupInfoData: Buffer,
+      ratchetTreeData: Buffer | null,
+      epoch: number
+    ) => setPendingGroupInfoPublish(groupId, groupInfoData, ratchetTreeData, epoch)
+  )
+  ipcMain.handle(
+    'cryptoDb:deletePendingGroupInfoPublish',
+    (_, groupId: string) => deletePendingGroupInfoPublish(groupId)
+  )
+  ipcMain.handle('cryptoDb:getPendingExternalCommitBroadcasts', () =>
+    getPendingExternalCommitBroadcasts()
+  )
+  ipcMain.handle('cryptoDb:getPendingSponsoredTransitions', () =>
+    getPendingSponsoredTransitions()
+  )
+  ipcMain.handle(
+    'cryptoDb:setPendingExternalCommitBroadcast',
+    (_, groupId: string, commitData: string, commitId: string) =>
+      setPendingExternalCommitBroadcast(groupId, commitData, commitId)
+  )
+  ipcMain.handle(
+    'cryptoDb:deletePendingExternalCommitBroadcast',
+    (_, groupId: string) => deletePendingExternalCommitBroadcast(groupId)
   )
 
   // Key packages

@@ -94,25 +94,43 @@ defmodule Vesper.Servers do
     end)
   end
 
-  def list_user_servers(user) do
+  def list_user_servers(user, opts \\ []) do
+    include_emojis = Keyword.get(opts, :include_emojis, true)
+
+    preloads =
+      if include_emojis do
+        [:channels, [emojis: :creator]]
+      else
+        [:channels]
+      end
+
     from(s in Server,
       join: m in Membership,
       on: m.server_id == s.id,
       where: m.user_id == ^user.id,
-      preload: [:channels, [emojis: :creator]]
+      preload: ^preloads
     )
     |> Repo.all()
   end
 
-  def list_user_servers_by_ids(user, server_ids) when is_list(server_ids) do
+  def list_user_servers_by_ids(user, server_ids, opts \\ []) when is_list(server_ids) do
     if server_ids == [] do
       []
     else
+      include_emojis = Keyword.get(opts, :include_emojis, true)
+
+      preloads =
+        if include_emojis do
+          [:channels, [emojis: :creator]]
+        else
+          [:channels]
+        end
+
       from(s in Server,
         join: m in Membership,
         on: m.server_id == s.id,
         where: m.user_id == ^user.id and s.id in ^server_ids,
-        preload: [:channels, [emojis: :creator]]
+        preload: ^preloads
       )
       |> Repo.all()
     end
@@ -148,106 +166,117 @@ defmodule Vesper.Servers do
     if channels == [] do
       []
     else
-      server_ids = channels |> Enum.map(& &1.server_id) |> Enum.uniq()
+      # DM channels are always viewable by members — no permission check needed
+      {dm_channels, server_channels} =
+        Enum.split_with(channels, fn c -> Channel.dm_type?(c.type) end)
 
-      memberships =
-        from(m in Membership,
-          where: m.user_id == ^user_id and m.server_id in ^server_ids
+      viewable_server_channels = filter_server_channels(server_channels, user_id)
+      dm_channels ++ viewable_server_channels
+    end
+  end
+
+  defp filter_server_channels(channels, _user_id) when channels == [], do: []
+
+  defp filter_server_channels(channels, user_id) do
+    server_ids = channels |> Enum.map(& &1.server_id) |> Enum.uniq()
+
+    memberships =
+      from(m in Membership,
+        where: m.user_id == ^user_id and m.server_id in ^server_ids
+      )
+      |> Repo.all()
+      |> Map.new(&{&1.server_id, &1})
+
+    membership_ids = memberships |> Map.values() |> Enum.map(& &1.id)
+
+    role_ids_by_membership =
+      if membership_ids == [] do
+        %{}
+      else
+        from(mr in MemberRole,
+          where: mr.membership_id in ^membership_ids,
+          select: {mr.membership_id, mr.role_id}
         )
         |> Repo.all()
-        |> Map.new(&{&1.server_id, &1})
+        |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+      end
 
-      membership_ids = memberships |> Map.values() |> Enum.map(& &1.id)
+    channel_ids = Enum.map(channels, & &1.id)
 
-      role_ids_by_membership =
-        if membership_ids == [] do
-          %{}
-        else
-          from(mr in MemberRole,
-            where: mr.membership_id in ^membership_ids,
-            select: {mr.membership_id, mr.role_id}
-          )
-          |> Repo.all()
-          |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
-        end
+    role_overrides_by_channel =
+      if channel_ids == [] do
+        %{}
+      else
+        from(override in ChannelRolePermission,
+          where: override.channel_id in ^channel_ids,
+          select: {override.channel_id, override.role_id, override.allow, override.deny}
+        )
+        |> Repo.all()
+        |> Enum.group_by(&elem(&1, 0))
+      end
 
-      channel_ids = Enum.map(channels, & &1.id)
+    user_overrides_by_channel =
+      if channel_ids == [] do
+        %{}
+      else
+        from(override in ChannelUserPermission,
+          where: override.channel_id in ^channel_ids and override.user_id == ^user_id,
+          select: {override.channel_id, override.allow, override.deny}
+        )
+        |> Repo.all()
+        |> Map.new(fn {channel_id, allow, deny} -> {channel_id, {allow, deny}} end)
+      end
 
-      role_overrides_by_channel =
-        if channel_ids == [] do
-          %{}
-        else
-          from(override in ChannelRolePermission,
-            where: override.channel_id in ^channel_ids,
-            select: {override.channel_id, override.role_id, override.allow, override.deny}
-          )
-          |> Repo.all()
-          |> Enum.group_by(&elem(&1, 0))
-        end
+    server_permissions =
+      server_ids
+      |> Enum.map(fn server_id -> {server_id, PermissionsCache.get(user_id, server_id)} end)
+      |> Map.new()
 
-      user_overrides_by_channel =
-        if channel_ids == [] do
-          %{}
-        else
-          from(override in ChannelUserPermission,
-            where: override.channel_id in ^channel_ids and override.user_id == ^user_id,
-            select: {override.channel_id, override.allow, override.deny}
-          )
-          |> Repo.all()
-          |> Map.new(fn {channel_id, allow, deny} -> {channel_id, {allow, deny}} end)
-        end
+    Enum.filter(channels, fn channel ->
+      case Map.get(memberships, channel.server_id) do
+        nil ->
+          false
 
-      server_permissions =
-        server_ids
-        |> Enum.map(fn server_id -> {server_id, PermissionsCache.get(user_id, server_id)} end)
-        |> Map.new()
+        membership ->
+          server_permission_bits = Map.get(server_permissions, channel.server_id, 0)
 
-      Enum.filter(channels, fn channel ->
-        case Map.get(memberships, channel.server_id) do
-          nil ->
-            false
+          if Permissions.has_permission?(server_permission_bits, Permissions.administrator()) do
+            true
+          else
+            role_ids = Map.get(role_ids_by_membership, membership.id, [])
 
-          membership ->
-            server_permission_bits = Map.get(server_permissions, channel.server_id, 0)
+            {role_allow, role_deny} =
+              Map.get(role_overrides_by_channel, channel.id, [])
+              |> Enum.reduce({0, 0}, fn {_channel_id, role_id, allow, deny},
+                                        {acc_allow, acc_deny} ->
+                if role_id in role_ids do
+                  {acc_allow ||| allow, acc_deny ||| deny}
+                else
+                  {acc_allow, acc_deny}
+                end
+              end)
 
-            if Permissions.has_permission?(server_permission_bits, Permissions.administrator()) do
-              true
-            else
-              role_ids = Map.get(role_ids_by_membership, membership.id, [])
+            base_allowed = true
 
-              {role_allow, role_deny} =
-                Map.get(role_overrides_by_channel, channel.id, [])
-                |> Enum.reduce({0, 0}, fn {_channel_id, role_id, allow, deny},
-                                          {acc_allow, acc_deny} ->
-                  if role_id in role_ids do
-                    {acc_allow ||| allow, acc_deny ||| deny}
-                  else
-                    {acc_allow, acc_deny}
-                  end
-                end)
-
-              base_allowed = true
-
-              role_adjusted =
-                apply_permission_override(
-                  base_allowed,
-                  role_allow,
-                  role_deny,
-                  @channel_override_view_channel
-                )
-
-              {user_allow, user_deny} = Map.get(user_overrides_by_channel, channel.id, {0, 0})
-
+            role_adjusted =
               apply_permission_override(
-                role_adjusted,
-                user_allow,
-                user_deny,
+                base_allowed,
+                role_allow,
+                role_deny,
                 @channel_override_view_channel
               )
-            end
-        end
-      end)
-    end
+
+            {user_allow, user_deny} = Map.get(user_overrides_by_channel, channel.id, {0, 0})
+
+            apply_permission_override(
+              role_adjusted,
+              user_allow,
+              user_deny,
+              @channel_override_view_channel
+            )
+          end
+      end
+    end)
   end
 
   def list_user_servers_since(user, since) do
@@ -474,6 +503,22 @@ defmodule Vesper.Servers do
     |> Repo.all()
   end
 
+  @doc """
+  List member user IDs for a channel. For server-backed channels, returns
+  server members. For DM channels (no server_id), returns channel-direct members.
+  """
+  def list_channel_member_ids(%Channel{server_id: nil, id: channel_id}) do
+    from(m in Membership,
+      where: m.channel_id == ^channel_id,
+      select: m.user_id
+    )
+    |> Repo.all()
+  end
+
+  def list_channel_member_ids(%Channel{server_id: server_id}) do
+    list_member_ids(server_id)
+  end
+
   def get_membership(user_id, server_id) do
     Repo.get_by(Membership, user_id: user_id, server_id: server_id)
   end
@@ -619,9 +664,32 @@ defmodule Vesper.Servers do
     |> Repo.exists?()
   end
 
+  def user_is_member?(_user_id, nil), do: false
+
   def user_is_member?(user_id, server_id) do
     from(m in Membership, where: m.user_id == ^user_id and m.server_id == ^server_id)
     |> Repo.exists?()
+  end
+
+  @doc """
+  Check if a user is a member of a channel. For server-backed channels,
+  checks server membership. For DM channels, checks channel-direct membership.
+  Accepts a Channel struct or a channel_id string.
+  """
+  def user_is_channel_member?(user_id, %Channel{server_id: nil, id: channel_id}) do
+    from(m in Membership, where: m.user_id == ^user_id and m.channel_id == ^channel_id)
+    |> Repo.exists?()
+  end
+
+  def user_is_channel_member?(user_id, %Channel{server_id: server_id}) do
+    user_is_member?(user_id, server_id)
+  end
+
+  def user_is_channel_member?(user_id, channel_id) when is_binary(channel_id) do
+    case get_channel(channel_id) do
+      nil -> false
+      channel -> user_is_channel_member?(user_id, channel)
+    end
   end
 
   def user_role(user_id, server_id) do
@@ -678,12 +746,20 @@ defmodule Vesper.Servers do
   Returns the channel or nil.
   """
   def get_channel_if_member(channel_id, user_id) do
-    from(c in Channel,
-      join: m in Membership,
-      on: m.server_id == c.server_id and m.user_id == ^user_id,
-      where: c.id == ^channel_id
+    # Single query that handles both server-based channels and DM channels.
+    # Server channels: membership via server_id. DM channels: membership via channel_id.
+    Repo.one(
+      from(c in Channel,
+        where: c.id == ^channel_id,
+        left_join: sm in Membership,
+        on:
+          fragment("? = ? AND ? IS NOT NULL", sm.server_id, c.server_id, c.server_id) and
+            sm.user_id == ^user_id,
+        left_join: cm in Membership,
+        on: cm.channel_id == c.id and cm.user_id == ^user_id and is_nil(c.server_id),
+        where: not is_nil(sm.id) or not is_nil(cm.id)
+      )
     )
-    |> Repo.one()
   end
 
   def get_channel!(id) do
@@ -749,7 +825,12 @@ defmodule Vesper.Servers do
   end
 
   def user_can_view_channel?(user_id, %Channel{} = channel) do
-    user_can_channel_permission?(user_id, channel, @channel_override_view_channel)
+    # DM channels have no permission system — membership alone grants access
+    if Channel.dm_type?(channel.type) do
+      true
+    else
+      user_can_channel_permission?(user_id, channel, @channel_override_view_channel)
+    end
   end
 
   def user_can_send_messages_in_channel?(user_id, channel_id) when is_binary(channel_id) do
@@ -760,7 +841,11 @@ defmodule Vesper.Servers do
   end
 
   def user_can_send_messages_in_channel?(user_id, %Channel{} = channel) do
-    user_can_channel_permission?(user_id, channel, Permissions.send_messages())
+    if Channel.dm_type?(channel.type) do
+      true
+    else
+      user_can_channel_permission?(user_id, channel, Permissions.send_messages())
+    end
   end
 
   def list_channel_permission_overrides(channel_id) when is_binary(channel_id) do
@@ -1406,26 +1491,37 @@ defmodule Vesper.Servers do
     end
   end
 
-  def get_user_permissions(user_id, server_id) do
-    membership = get_membership(user_id, server_id)
+  # DM channels have no server — return full permissions (member-only access)
+  def get_user_permissions(_user_id, nil), do: 0
 
-    cond do
-      is_nil(membership) ->
+  def get_user_permissions(user_id, server_id) do
+    # Single query: fetch membership + all role permissions in one round-trip
+    result =
+      from(m in Membership,
+        where: m.user_id == ^user_id and m.server_id == ^server_id,
+        left_join: mr in MemberRole,
+        on: mr.membership_id == m.id,
+        left_join: r in Role,
+        on: r.id == mr.role_id,
+        select: {m.role, r.permissions}
+      )
+      |> Repo.all()
+
+    case result do
+      [] ->
         0
 
-      true ->
-        base_permissions = default_permissions_for_membership_role(membership.role)
+      rows ->
+        {membership_role, _} = hd(rows)
+        base_permissions = default_permissions_for_membership_role(membership_role)
 
-        roles =
-          from(mr in MemberRole,
-            where: mr.membership_id == ^membership.id,
-            join: r in Role,
-            on: r.id == mr.role_id,
-            select: r
-          )
-          |> Repo.all()
+        role_permissions =
+          rows
+          |> Enum.map(fn {_, perms} -> perms end)
+          |> Enum.reject(&is_nil/1)
+          |> Enum.reduce(0, fn perms, acc -> Bitwise.bor(acc, perms) end)
 
-        base_permissions ||| Permissions.compute_permissions(roles)
+        Bitwise.bor(base_permissions, role_permissions)
     end
   end
 

@@ -9,6 +9,7 @@ defmodule Vesper.Encryption.MlsEvent do
     field(:event_type, :string)
     field(:payload, :map, default: %{})
     field(:sender_device_id, :string)
+    field(:idempotency_key, :string)
 
     belongs_to(:sender, Vesper.Accounts.User)
     belongs_to(:channel, Vesper.Servers.Channel)
@@ -25,9 +26,13 @@ defmodule Vesper.Encryption.MlsEvent do
       :payload,
       :sender_id,
       :sender_device_id,
+      :idempotency_key,
       :channel_id,
       :conversation_id
     ])
     |> validate_required([:group_id, :event_type, :payload, :sender_id])
+    |> unique_constraint(:idempotency_key,
+      name: :mls_events_commit_idempotency_index
+    )
   end
 end

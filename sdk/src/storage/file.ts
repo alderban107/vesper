@@ -16,6 +16,50 @@ interface FileCryptoState {
   >
   groupStates: Record<string, { state: string | null; epoch: number }>
   groupSyncCursors: Record<string, number>
+  scopeMetadata: Record<
+    string,
+    {
+      recent_commit_fingerprints: string[]
+      recent_history_bundle_fingerprints: string[]
+      repair_status: string | null
+      repair_failure_count: number
+      repair_last_error: string | null
+      repair_updated_at: string | null
+    }
+  >
+  pendingGroupInfoPublishes: Record<
+    string,
+    {
+      group_info_data: string | null
+      ratchet_tree_data: string | null
+      epoch: number
+    }
+  >
+  pendingExternalCommitBroadcasts: Record<
+    string,
+    {
+      commit_data: string
+      commit_id: string
+    }
+  >
+  pendingSponsoredTransitions: Record<
+    string,
+    {
+      recipient_id: string
+      recipient_client_id: string | null
+      recipient_key_package_ref: string | null
+      commit_data: string
+      commit_id: string
+      remove_commit_data: string | null
+      welcome_data: string | null
+      group_info_data: string | null
+      ratchet_tree_data: string | null
+      epoch: number | null
+      previous_epoch: number | null
+      base_state: string | null
+      base_epoch: number | null
+    }
+  >
   keyPackages: Array<{
     id: number
     key_package_ref: string | null
@@ -99,6 +143,10 @@ function createEmptyCryptoState(): FileCryptoState {
     identityKeys: {},
     groupStates: {},
     groupSyncCursors: {},
+    scopeMetadata: {},
+    pendingGroupInfoPublishes: {},
+    pendingExternalCommitBroadcasts: {},
+    pendingSponsoredTransitions: {},
     keyPackages: [],
     cachedMessages: {},
     cachedDecryptions: {},
@@ -114,6 +162,11 @@ export class FileCryptoStorage implements CryptoDbApi {
   constructor(filePath: string) {
     this.filePath = filePath
     this.state = safeReadJson<FileCryptoState>(filePath, createEmptyCryptoState())
+    this.state.scopeMetadata ??= {}
+    this.state.groupSyncCursors ??= {}
+    this.state.pendingGroupInfoPublishes ??= {}
+    this.state.pendingExternalCommitBroadcasts ??= {}
+    this.state.pendingSponsoredTransitions ??= {}
   }
 
   async getIdentityKeys(userId: string): Promise<{
@@ -197,7 +250,11 @@ export class FileCryptoStorage implements CryptoDbApi {
 
   async deleteGroupState(groupId: string): Promise<void> {
     delete this.state.groupStates[groupId]
-    delete this.state.groupSyncCursors[groupId]
+    // NOTE: intentionally NOT deleting groupSyncCursors — see indexedDbStorage.ts
+    delete this.state.scopeMetadata[groupId]
+    delete this.state.pendingGroupInfoPublishes[groupId]
+    delete this.state.pendingExternalCommitBroadcasts[groupId]
+    delete this.state.pendingSponsoredTransitions[groupId]
     this.persist()
   }
 
@@ -208,6 +265,332 @@ export class FileCryptoStorage implements CryptoDbApi {
   async setGroupSyncCursor(groupId: string, lastEventSeq: number): Promise<void> {
     this.state.groupSyncCursors[groupId] = lastEventSeq
     this.persist()
+  }
+
+  async getScopeCheckpoint(groupId: string): Promise<{
+    group_id: string
+    state: ArrayBuffer | null
+    epoch: number
+    last_event_seq: number
+    recent_commit_fingerprints: string[]
+    recent_history_bundle_fingerprints: string[]
+    repair_status: string | null
+    repair_failure_count: number
+    repair_last_error: string | null
+    repair_updated_at: string | null
+    pending_group_info_publish: {
+      group_info_data: ArrayBuffer
+      ratchet_tree_data: ArrayBuffer | null
+      epoch: number
+    } | null
+    pending_external_commit_broadcast: {
+      commit_data: string
+      commit_id: string
+    } | null
+    pending_sponsored_transition: {
+      recipient_id: string
+      recipient_client_id: string | null
+      recipient_key_package_ref: string | null
+      commit_data: string
+      commit_id: string
+      remove_commit_data: string | null
+      welcome_data: string | null
+      group_info_data: ArrayBuffer | null
+      ratchet_tree_data: ArrayBuffer | null
+      epoch: number | null
+      previous_epoch: number | null
+      base_state: ArrayBuffer | null
+      base_epoch: number | null
+    } | null
+  }> {
+    const groupState = this.state.groupStates[groupId]
+    const metadata = this.state.scopeMetadata[groupId]
+    const pendingGroupInfo = this.state.pendingGroupInfoPublishes[groupId]
+    const pendingExternalCommit = this.state.pendingExternalCommitBroadcasts[groupId]
+    const pendingSponsoredTransition = this.state.pendingSponsoredTransitions[groupId]
+
+    return {
+      group_id: groupId,
+      state: base64ToArrayBuffer(groupState?.state),
+      epoch: groupState?.epoch ?? 0,
+      last_event_seq: this.state.groupSyncCursors[groupId] ?? 0,
+      recent_commit_fingerprints: [...(metadata?.recent_commit_fingerprints ?? [])],
+      recent_history_bundle_fingerprints: [
+        ...(metadata?.recent_history_bundle_fingerprints ?? [])
+      ],
+      repair_status: metadata?.repair_status ?? null,
+      repair_failure_count: metadata?.repair_failure_count ?? 0,
+      repair_last_error: metadata?.repair_last_error ?? null,
+      repair_updated_at: metadata?.repair_updated_at ?? null,
+      pending_group_info_publish: pendingGroupInfo
+        ? {
+            group_info_data: base64ToArrayBuffer(pendingGroupInfo.group_info_data) as ArrayBuffer,
+            ratchet_tree_data: base64ToArrayBuffer(pendingGroupInfo.ratchet_tree_data),
+            epoch: pendingGroupInfo.epoch
+          }
+        : null,
+      pending_external_commit_broadcast: pendingExternalCommit
+        ? {
+            commit_data: pendingExternalCommit.commit_data,
+            commit_id: pendingExternalCommit.commit_id
+          }
+        : null,
+      pending_sponsored_transition: pendingSponsoredTransition
+        ? {
+            recipient_id: pendingSponsoredTransition.recipient_id,
+            recipient_client_id: pendingSponsoredTransition.recipient_client_id,
+            recipient_key_package_ref: pendingSponsoredTransition.recipient_key_package_ref,
+            commit_data: pendingSponsoredTransition.commit_data,
+            commit_id: pendingSponsoredTransition.commit_id,
+            remove_commit_data: pendingSponsoredTransition.remove_commit_data,
+            welcome_data: pendingSponsoredTransition.welcome_data,
+            group_info_data: base64ToArrayBuffer(pendingSponsoredTransition.group_info_data),
+            ratchet_tree_data: base64ToArrayBuffer(pendingSponsoredTransition.ratchet_tree_data),
+            epoch: pendingSponsoredTransition.epoch ?? null,
+            previous_epoch: pendingSponsoredTransition.previous_epoch ?? null,
+            base_state: base64ToArrayBuffer(pendingSponsoredTransition.base_state),
+            base_epoch: pendingSponsoredTransition.base_epoch ?? null
+          }
+        : null
+    }
+  }
+
+  async getKnownScopeIds(): Promise<string[]> {
+    return [...new Set([
+      ...Object.keys(this.state.groupStates),
+      ...Object.keys(this.state.groupSyncCursors),
+      ...Object.keys(this.state.scopeMetadata),
+      ...Object.keys(this.state.pendingGroupInfoPublishes),
+      ...Object.keys(this.state.pendingExternalCommitBroadcasts),
+      ...Object.keys(this.state.pendingSponsoredTransitions)
+    ])].sort()
+  }
+
+  async setScopeCheckpoint(
+    groupId: string,
+    checkpoint: {
+      state: Uint8Array | null
+      epoch: number
+      last_event_seq: number
+      recent_commit_fingerprints?: string[]
+      recent_history_bundle_fingerprints?: string[]
+      repair_status?: string | null
+      repair_failure_count?: number
+      repair_last_error?: string | null
+      repair_updated_at?: string | null
+      pending_group_info_publish?: {
+        group_info_data: Uint8Array
+        ratchet_tree_data: Uint8Array | null
+        epoch: number
+      } | null
+      pending_external_commit_broadcast?: {
+        commit_data: string
+        commit_id: string
+      } | null
+      pending_sponsored_transition?: {
+        recipient_id: string
+        recipient_client_id: string | null
+        recipient_key_package_ref: string | null
+        commit_data: string
+        commit_id: string
+        remove_commit_data: string | null
+        welcome_data: string | null
+        group_info_data: Uint8Array | null
+        ratchet_tree_data: Uint8Array | null
+        epoch: number | null
+        previous_epoch: number | null
+        base_state: Uint8Array | null
+        base_epoch: number | null
+      } | null
+    }
+  ): Promise<void> {
+    if (checkpoint.state) {
+      this.state.groupStates[groupId] = {
+        state: bytesToBase64(checkpoint.state),
+        epoch: checkpoint.epoch
+      }
+    } else {
+      delete this.state.groupStates[groupId]
+    }
+
+    this.state.groupSyncCursors[groupId] = Math.max(
+      this.state.groupSyncCursors[groupId] ?? 0,
+      checkpoint.last_event_seq
+    )
+
+    this.state.scopeMetadata[groupId] = {
+      recent_commit_fingerprints: [...(checkpoint.recent_commit_fingerprints ?? [])],
+      recent_history_bundle_fingerprints: [
+        ...(checkpoint.recent_history_bundle_fingerprints ?? [])
+      ],
+      repair_status: checkpoint.repair_status ?? null,
+      repair_failure_count: checkpoint.repair_failure_count ?? 0,
+      repair_last_error: checkpoint.repair_last_error ?? null,
+      repair_updated_at: checkpoint.repair_updated_at ?? null
+    }
+
+    if (Object.prototype.hasOwnProperty.call(checkpoint, 'pending_group_info_publish')) {
+      if (checkpoint.pending_group_info_publish) {
+        this.state.pendingGroupInfoPublishes[groupId] = {
+          group_info_data: bytesToBase64(checkpoint.pending_group_info_publish.group_info_data),
+          ratchet_tree_data: bytesToBase64(
+            checkpoint.pending_group_info_publish.ratchet_tree_data
+          ),
+          epoch: checkpoint.pending_group_info_publish.epoch
+        }
+      } else {
+        delete this.state.pendingGroupInfoPublishes[groupId]
+      }
+    }
+
+    if (
+      Object.prototype.hasOwnProperty.call(checkpoint, 'pending_external_commit_broadcast')
+    ) {
+      if (checkpoint.pending_external_commit_broadcast) {
+        this.state.pendingExternalCommitBroadcasts[groupId] = {
+          commit_data: checkpoint.pending_external_commit_broadcast.commit_data,
+          commit_id: checkpoint.pending_external_commit_broadcast.commit_id
+        }
+      } else {
+        delete this.state.pendingExternalCommitBroadcasts[groupId]
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(checkpoint, 'pending_sponsored_transition')) {
+      if (checkpoint.pending_sponsored_transition) {
+        this.state.pendingSponsoredTransitions[groupId] = {
+          recipient_id: checkpoint.pending_sponsored_transition.recipient_id,
+          recipient_client_id: checkpoint.pending_sponsored_transition.recipient_client_id,
+          recipient_key_package_ref:
+            checkpoint.pending_sponsored_transition.recipient_key_package_ref,
+          commit_data: checkpoint.pending_sponsored_transition.commit_data,
+          commit_id: checkpoint.pending_sponsored_transition.commit_id,
+          remove_commit_data: checkpoint.pending_sponsored_transition.remove_commit_data,
+          welcome_data: checkpoint.pending_sponsored_transition.welcome_data,
+          group_info_data: bytesToBase64(checkpoint.pending_sponsored_transition.group_info_data),
+          ratchet_tree_data: bytesToBase64(
+            checkpoint.pending_sponsored_transition.ratchet_tree_data
+          ),
+          epoch: checkpoint.pending_sponsored_transition.epoch,
+          previous_epoch: checkpoint.pending_sponsored_transition.previous_epoch,
+          base_state: bytesToBase64(checkpoint.pending_sponsored_transition.base_state),
+          base_epoch: checkpoint.pending_sponsored_transition.base_epoch
+        }
+      } else {
+        delete this.state.pendingSponsoredTransitions[groupId]
+      }
+    }
+
+    this.persist()
+  }
+
+  async getPendingGroupInfoPublishes(): Promise<
+    Array<{
+      group_id: string
+      group_info_data: ArrayBuffer
+      ratchet_tree_data: ArrayBuffer | null
+      epoch: number
+    }>
+  > {
+    return Object.entries(this.state.pendingGroupInfoPublishes).flatMap(([group_id, record]) => {
+      const group_info_data = base64ToArrayBuffer(record.group_info_data)
+      if (!group_info_data) {
+        return []
+      }
+
+      return [{
+        group_id,
+        group_info_data,
+        ratchet_tree_data: base64ToArrayBuffer(record.ratchet_tree_data),
+        epoch: record.epoch
+      }]
+    })
+  }
+
+  async setPendingGroupInfoPublish(
+    groupId: string,
+    groupInfoData: Uint8Array,
+    ratchetTreeData: Uint8Array | null,
+    epoch: number
+  ): Promise<void> {
+    this.state.pendingGroupInfoPublishes[groupId] = {
+      group_info_data: bytesToBase64(groupInfoData),
+      ratchet_tree_data: bytesToBase64(ratchetTreeData),
+      epoch
+    }
+    this.persist()
+  }
+
+  async deletePendingGroupInfoPublish(groupId: string): Promise<void> {
+    delete this.state.pendingGroupInfoPublishes[groupId]
+    this.persist()
+  }
+
+  async getPendingExternalCommitBroadcasts(): Promise<
+    Array<{
+      group_id: string
+      commit_data: string
+      commit_id: string
+    }>
+  > {
+    return Object.entries(this.state.pendingExternalCommitBroadcasts).map(([group_id, record]) => ({
+      group_id,
+      commit_data: record.commit_data,
+      commit_id: record.commit_id
+    }))
+  }
+
+  async setPendingExternalCommitBroadcast(
+    groupId: string,
+    commitData: string,
+    commitId: string
+  ): Promise<void> {
+    this.state.pendingExternalCommitBroadcasts[groupId] = {
+      commit_data: commitData,
+      commit_id: commitId
+    }
+    this.persist()
+  }
+
+  async deletePendingExternalCommitBroadcast(groupId: string): Promise<void> {
+    delete this.state.pendingExternalCommitBroadcasts[groupId]
+    this.persist()
+  }
+
+  async getPendingSponsoredTransitions(): Promise<
+    Array<{
+      group_id: string
+      recipient_id: string
+      recipient_client_id: string | null
+      recipient_key_package_ref: string | null
+      commit_data: string
+      commit_id: string
+      remove_commit_data: string | null
+      welcome_data: string | null
+      group_info_data: ArrayBuffer | null
+      ratchet_tree_data: ArrayBuffer | null
+      epoch: number | null
+      previous_epoch: number | null
+      base_state: ArrayBuffer | null
+      base_epoch: number | null
+    }>
+  > {
+    return Object.entries(this.state.pendingSponsoredTransitions).map(([group_id, record]) => ({
+      group_id,
+      recipient_id: record.recipient_id,
+      recipient_client_id: record.recipient_client_id,
+      recipient_key_package_ref: record.recipient_key_package_ref,
+      commit_data: record.commit_data,
+      commit_id: record.commit_id,
+      remove_commit_data: record.remove_commit_data,
+      welcome_data: record.welcome_data,
+      group_info_data: base64ToArrayBuffer(record.group_info_data),
+      ratchet_tree_data: base64ToArrayBuffer(record.ratchet_tree_data),
+      epoch: record.epoch ?? null,
+      previous_epoch: record.previous_epoch ?? null,
+      base_state: base64ToArrayBuffer(record.base_state),
+      base_epoch: record.base_epoch ?? null
+    }))
   }
 
   async getLocalKeyPackages(): Promise<
@@ -298,6 +681,10 @@ export class FileCryptoStorage implements CryptoDbApi {
 
   async setCachedMessageDecryption(messageId: string, plaintext: string): Promise<void> {
     this.state.cachedDecryptions[messageId] = plaintext
+    const existing = this.state.cachedMessages[messageId]
+    if (existing) {
+      existing.decrypted_content = plaintext
+    }
     this.persist()
   }
 

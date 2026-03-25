@@ -7,6 +7,9 @@ defmodule Vesper.Application do
 
   @impl true
   def start(_type, _args) do
+    # Initialize ETS caches before supervision tree
+    Vesper.Runtime.init_room_cache()
+
     children = [
       VesperWeb.Telemetry,
       Vesper.Repo,

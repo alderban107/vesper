@@ -66,9 +66,11 @@ test.describe('P1: Multi-device encrypted message access', () => {
     await login(alice2, { expectTrustGate: true })
     await approveWithRecoveryKey(alice2.page, recoveryKey)
     await waitForAppShell(alice2.page)
+    await waitForSocketConnected(alice2.page, 30_000)
 
     // Navigate to the DM with Bob on device 2
     await selectDm(alice2.page, USERS.bob.username)
+    await waitForSocketConnected(alice2.page, 30_000)
 
     // Verify messages sent in this session are readable on device 2
     await waitForMessage(alice2.page, 'Device 1 msg — multi alpha', MSG_TIMEOUT)
@@ -115,9 +117,11 @@ test.describe('P1: Multi-device encrypted message access', () => {
     await login(alice2, { expectTrustGate: true })
     await approveWithRecoveryKey(alice2.page, recoveryKey)
     await waitForAppShell(alice2.page)
+    await waitForSocketConnected(alice2.page, 30_000)
 
     await selectServer(alice2.page, 'MultiDev Server')
     await selectChannel(alice2.page, 'multidev-test')
+    await waitForSocketConnected(alice2.page, 30_000)
 
     // Device 1 returns later and should answer the stored history request.
     await selectChannel(alice1.page, 'multidev-test')
@@ -161,8 +165,10 @@ test.describe('P1: Multi-device encrypted message access', () => {
     await login(alice2, { expectTrustGate: true })
     await approveWithRecoveryKey(alice2.page, recoveryKey)
     await waitForAppShell(alice2.page)
+    await waitForSocketConnected(alice2.page, 30_000)
 
     await selectDm(alice2.page, USERS.bob.username)
+    await waitForSocketConnected(alice2.page, 30_000)
 
     // Send from the new device. The encryption retry mechanism in
     // sendDmMessage handles MLS join timing — if encryption isn't ready

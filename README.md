@@ -125,7 +125,7 @@ The client connects to a Vesper server URL. In development, this defaults to `lo
 | Backend | Elixir / Phoenix |
 | Frontend | Electron + React + TypeScript |
 | Database | PostgreSQL |
-| E2EE | MLS via ts-mls |
+| E2EE | MLS via OpenMLS (Rust/WASM) |
 | Voice | WebRTC via ex_webrtc (SFU) |
 | Auth | Argon2 + JWT |
 | State | Zustand (client), ETS + PubSub (server) |
@@ -154,8 +154,8 @@ client/                  Electron + React frontend
   src/main/                Electron main process (encrypted SQLite, IPC)
   src/preload/             context bridge (IPC between main ↔ renderer)
   src/renderer/src/
-    crypto/                E2EE layer (MLS, identity, payloads, key serialization)
-    stores/                Zustand stores (auth, crypto, messages, servers)
+    sdk/                   renderer bootstrap for the SDK and E2EE test hooks
+    stores/                Zustand app state wired to SDK-owned E2EE flows
     components/            React UI components
   e2e/                     Playwright E2E test suite
     tests/                   spec files (p0-smoke, p1-core, p2-edge)
@@ -187,11 +187,14 @@ scripts/                 repo-level tooling
 
 doc/
   DESIGN.md                architecture overview
+  PROTOCOL.md              HTTP + WebSocket protocol reference
+  E2EE-CORRECTNESS-PLAN.md RCA + remaining durability/scale follow-up
   sdk/                     SDK developer guides (quickstart, auth, messaging, etc.)
   e2ee/                    end-to-end encryption documentation
-    REQUIREMENTS-E2EE.md          requirements & design analysis
-    REQUIREMENTS-E2EE-AUDIT.md    implementation status audit
+    README.md                     current E2EE doc index
     E2EE-IMPLEMENTATION.md        developer guide
+    MLS-BOOTSTRAP-AND-EVICTION.md large-room topology notes
+    SDK-CHAOS-SCALE-PLAN.md       chaos + scale validation plan
 
 docker-compose.yml       full stack (PostgreSQL, Phoenix, web client, coturn)
 turnserver.conf          coturn configuration for voice relay

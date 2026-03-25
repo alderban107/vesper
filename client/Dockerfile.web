@@ -8,6 +8,8 @@ RUN npm ci --ignore-scripts
 COPY client/ .
 COPY sdk/ /app/sdk/
 RUN ln -s /app/client/node_modules /app/sdk/node_modules
+# Make the WASM package available for Vite resolution
+RUN ln -s /app/sdk/wasm/pkg /app/client/node_modules/vesper-openmls-wasm
 RUN npm run build:web
 
 # Stage 2: Serve with nginx

@@ -13,7 +13,7 @@ const CHAT_EVENTS = [
   'message_edited', 'message_deleted',
   'message_pinned', 'message_unpinned',
   'mention',
-  'new_conversation', 'dm_message',
+  'new_conversation', 'dm_message', 'dm_activity',
   'dm_typing_start', 'dm_typing_stop',
   'scope_summary_updated',
   'scope_mutation',
@@ -140,7 +140,9 @@ export class VesperSocketClient {
   }
 
   disconnect(): void {
-    this.channels.forEach((channel) => channel.leave())
+    // Closing the transport tears server channels down for us. Issuing
+    // graceful leave pushes here creates Phoenix timeout timers that can
+    // outlive shutdown and pin Node test processes open.
     this.channels.clear()
     this.channelListeners.clear()
     this.socket?.disconnect()
@@ -316,7 +318,11 @@ export class VesperSocketClient {
       return false
     }
 
-    return !this.isChannelClosed(channel) && !this.isChannelLeaving(channel)
+    return (
+      this.isChannelJoined(channel) &&
+      !this.isChannelClosed(channel) &&
+      !this.isChannelLeaving(channel)
+    )
   }
 
   onSocketOpen(listener: () => void): () => void {

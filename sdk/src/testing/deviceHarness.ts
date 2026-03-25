@@ -66,9 +66,6 @@ const FIRE_AND_FORGET_SCOPE_EVENTS = new Set([
   'mls_resync_request',
   'mls_eviction_claim',
   'mls_eviction_skip',
-  'mls_commit',
-  'mls_remove',
-  'mls_welcome',
   'mls_history_request',
   'mls_history_bundle'
 ])

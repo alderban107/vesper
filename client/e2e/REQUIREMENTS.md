@@ -16,8 +16,9 @@ requirement IDs in this file.
 
 Related docs:
 
-- `doc/e2ee/REQUIREMENTS-E2EE.md`
+- `doc/e2ee/README.md`
 - `doc/e2ee/E2EE-IMPLEMENTATION.md`
+- `doc/E2EE-CORRECTNESS-PLAN.md`
 - `doc/MATRIX-CORE-ANALYSIS.md`
 
 ## Product Surfaces This Document Covers

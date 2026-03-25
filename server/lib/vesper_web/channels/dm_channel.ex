@@ -24,6 +24,9 @@ defmodule VesperWeb.DmChannel do
         display_name: socket.assigns[:display_name]
       }
 
+      # Subscribe to participant changes for cache invalidation
+      Phoenix.PubSub.subscribe(Vesper.PubSub, "dm:participants:#{conversation_id}")
+
       socket =
         socket
         |> assign(:conversation_id, conversation_id)
@@ -57,6 +60,7 @@ defmodule VesperWeb.DmChannel do
       attrs =
         %{
           ciphertext: decoded,
+          client_nonce: client_nonce,
           mls_epoch: epoch,
           conversation_id: socket.assigns.conversation_id,
           sender_id: socket.assigns.user_id
@@ -66,7 +70,11 @@ defmodule VesperWeb.DmChannel do
       case Chat.create_message(attrs) do
         {:ok, message} ->
           message = maybe_link_attachments(message, params)
-          append_dm_urgent_events(message, socket.assigns.user_id, socket.assigns.participant_ids)
+
+          # Use cached participant_ids (kept in sync via PubSub invalidation
+          # from :participants_changed handler). Saves 1 DB query per message.
+          participant_ids = socket.assigns.participant_ids
+          append_dm_urgent_events(message, socket.assigns.user_id, participant_ids)
 
           broadcast!(
             socket,
@@ -79,25 +87,25 @@ defmodule VesperWeb.DmChannel do
           )
 
           notify_scope_mutation(
-            socket.assigns.participant_ids,
+            participant_ids,
             "dm",
             socket.assigns.conversation_id
           )
 
           conversation_id = socket.assigns.conversation_id
           sender_id = socket.assigns.user_id
-          participant_ids = socket.assigns.participant_ids
           sender_info = socket.assigns.sender_info
 
-          notify_participants(
+          # Combined per-user broadcast: merges dm_message notification +
+          # scope_summary_updated into a single WS event per participant.
+          # Client handles both unread increment and sidebar update from this.
+          notify_dm_activity(
             conversation_id,
             sender_id,
             participant_ids,
             sender_info,
             message
           )
-
-          ScopeSummary.broadcast_dm_update(conversation_id, message, participant_ids)
 
           {:reply, :ok, socket}
 
@@ -455,23 +463,25 @@ defmodule VesperWeb.DmChannel do
       device_id: Map.get(payload, "device_id") || socket.assigns.device_client_id
     })
 
-    {:noreply, socket}
+    {:reply, :ok, socket}
   end
 
   def handle_in("mls_request_join_all", _payload, socket) do
-    # Store durably so late-joining participants receive the broadcast.
-    # The join handler replays these events to new arrivals.
-    Encryption.store_mls_event(%{
-      group_id: socket.assigns.conversation_id,
-      conversation_id: socket.assigns.conversation_id,
-      event_type: "mls_request_join_all",
-      payload: %{user_id: socket.assigns.user_id},
-      sender_id: socket.assigns.user_id,
-      sender_device_id: socket.assigns.device_client_id
-    })
+    case Encryption.store_mls_event(%{
+           group_id: socket.assigns.conversation_id,
+           conversation_id: socket.assigns.conversation_id,
+           event_type: "mls_request_join_all",
+           payload: %{user_id: socket.assigns.user_id},
+           sender_id: socket.assigns.user_id,
+           sender_device_id: socket.assigns.device_client_id
+         }) do
+      {:ok, event} ->
+        broadcast_from!(socket, "mls_request_join_all", %{user_id: socket.assigns.user_id})
+        {:reply, {:ok, %{seq: event.id}}, socket}
 
-    broadcast_from!(socket, "mls_request_join_all", %{user_id: socket.assigns.user_id})
-    {:noreply, socket}
+      {:error, _changeset} ->
+        {:reply, {:error, %{reason: "could not store join request"}}, socket}
+    end
   end
 
   def handle_in("mls_resync_request", payload, socket) when is_map(payload) do
@@ -512,16 +522,23 @@ defmodule VesperWeb.DmChannel do
     end
   end
 
-  def handle_in("mls_commit", %{"commit_data" => commit_data}, socket)
+  def handle_in("mls_commit", %{"commit_data" => commit_data} = payload, socket)
       when is_binary(commit_data) do
-    case Encryption.store_mls_event(%{
-           group_id: socket.assigns.conversation_id,
-           conversation_id: socket.assigns.conversation_id,
-           event_type: "mls_commit",
-           payload: %{commit_data: commit_data},
-           sender_id: socket.assigns.user_id,
-           sender_device_id: socket.assigns.device_client_id
-         }) do
+    idempotency_key =
+      optional_binary(Map.get(payload, "idempotency_key")) ||
+        optional_binary(Map.get(payload, "commit_id"))
+
+    case Encryption.store_mls_commit_event(
+           %{
+             group_id: socket.assigns.conversation_id,
+             conversation_id: socket.assigns.conversation_id,
+             event_type: "mls_commit",
+             payload: %{commit_data: commit_data},
+             sender_id: socket.assigns.user_id,
+             sender_device_id: socket.assigns.device_client_id
+           }
+           |> maybe_put(:idempotency_key, idempotency_key)
+         ) do
       {:ok, event} ->
         broadcast!(socket, "mls_commit", %{
           seq: event.id,
@@ -530,7 +547,7 @@ defmodule VesperWeb.DmChannel do
           sender_device_id: socket.assigns.device_client_id
         })
 
-        {:noreply, socket}
+        {:reply, {:ok, %{seq: event.id}}, socket}
 
       {:error, _changeset} ->
         {:reply, {:error, %{reason: "could not store commit"}}, socket}
@@ -655,7 +672,7 @@ defmodule VesperWeb.DmChannel do
           request_next_crypto_eviction("dm", socket.assigns.conversation_id)
         end
 
-        {:noreply, socket}
+        {:reply, {:ok, %{seq: event.id}}, socket}
 
       {:error, reason} when is_atom(reason) ->
         {:reply, {:error, %{reason: eviction_error_reason(reason)}}, socket}
@@ -695,7 +712,7 @@ defmodule VesperWeb.DmChannel do
               sender_id: sender_id
             })
 
-            {:noreply, socket}
+            {:reply, {:ok, %{id: welcome.id}}, socket}
 
           {:error, _changeset} ->
             {:reply, {:error, %{reason: "could not store welcome"}}, socket}
@@ -779,7 +796,7 @@ defmodule VesperWeb.DmChannel do
           topic: "dm:#{socket.assigns.conversation_id}"
         })
 
-        {:noreply, socket}
+        {:reply, :ok, socket}
 
       {:error, _changeset} ->
         {:reply, {:error, %{reason: "could not store history bundle"}}, socket}
@@ -797,9 +814,9 @@ defmodule VesperWeb.DmChannel do
     # Replay recent mls_request_join_all events from OTHER participants so that
     # a late-joining client can discover an existing MLS group and converge onto it
     # rather than creating a competing independent group.
-    Encryption.list_mls_events_after(conversation_id, 0, 50)
+    Encryption.list_recent_mls_events(conversation_id, 50, "mls_request_join_all")
     |> Enum.filter(fn event ->
-      event.event_type == "mls_request_join_all" and event.sender_id != user_id
+      event.sender_id != user_id
     end)
     |> Enum.uniq_by(& &1.sender_id)
     |> Enum.each(fn event ->
@@ -810,6 +827,19 @@ defmodule VesperWeb.DmChannel do
 
     {:noreply, socket}
   end
+
+  def handle_info({:participants_changed, new_participant_ids}, socket) do
+    user_id = socket.assigns.user_id
+
+    if user_id not in new_participant_ids do
+      # Current user was removed from the conversation — disconnect
+      {:stop, {:shutdown, :removed_from_conversation}, socket}
+    else
+      {:noreply, assign(socket, :participant_ids, new_participant_ids)}
+    end
+  end
+
+  def handle_info(_msg, socket), do: {:noreply, socket}
 
   defp normalize_resync_request(payload) do
     request_id = Map.get(payload, "request_id")
@@ -836,22 +866,24 @@ defmodule VesperWeb.DmChannel do
     end
   end
 
-  defp notify_participants(conversation_id, sender_id, participant_ids, sender_info, message) do
-    notification = %{
+  defp notify_dm_activity(conversation_id, sender_id, participant_ids, sender_info, message) do
+    payload = %{
       conversation_id: conversation_id,
       message_id: message.id,
       sender_id: sender_id,
       sender: sender_info,
-      inserted_at: message.inserted_at
+      inserted_at: message.inserted_at,
+      # Scope summary data (previously a separate scope_summary_updated event)
+      scope_summary: %{
+        kind: "dm",
+        scope_id: conversation_id,
+        room_seq: message.room_seq,
+        conversation_reset: ScopeSummary.conversation_reset_json(conversation_id, message)
+      }
     }
 
     for uid <- participant_ids, uid != sender_id do
-      VesperWeb.Endpoint.broadcast("user:#{uid}", "dm_message", notification)
-
-      VesperWeb.Endpoint.broadcast("user:#{uid}", "dm_unread_update", %{
-        conversation_id: conversation_id,
-        message_id: message.id
-      })
+      VesperWeb.Endpoint.broadcast("user:#{uid}", "dm_activity", payload)
     end
   end
 
@@ -864,8 +896,8 @@ defmodule VesperWeb.DmChannel do
     :ok
   end
 
-  defp notify_history_request_pending(conversation_id, requester_id, topic) do
-    for user_id <- Chat.list_participant_ids(conversation_id), user_id != requester_id do
+  defp notify_history_request_pending(conversation_id, _requester_id, topic) do
+    for user_id <- Chat.list_participant_ids(conversation_id) do
       VesperWeb.Endpoint.broadcast("user:#{user_id}", "mls_history_request_pending", %{
         scope_id: conversation_id,
         topic: topic

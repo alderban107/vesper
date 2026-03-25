@@ -83,6 +83,49 @@ const SCHEMA_SQL = `
     last_event_seq INTEGER NOT NULL DEFAULT 0
   );
 
+  CREATE TABLE IF NOT EXISTS mls_scope_metadata (
+    group_id TEXT PRIMARY KEY,
+    recent_commit_fingerprints TEXT NOT NULL DEFAULT '[]',
+    recent_history_bundle_fingerprints TEXT NOT NULL DEFAULT '[]',
+    repair_status TEXT,
+    repair_failure_count INTEGER NOT NULL DEFAULT 0,
+    repair_last_error TEXT,
+    repair_updated_at TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS pending_group_info_publishes (
+    group_id TEXT PRIMARY KEY,
+    group_info_data BLOB NOT NULL,
+    ratchet_tree_data BLOB,
+    epoch INTEGER NOT NULL,
+    inserted_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS pending_external_commit_broadcasts (
+    group_id TEXT PRIMARY KEY,
+    commit_data TEXT NOT NULL,
+    commit_id TEXT NOT NULL,
+    inserted_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS pending_sponsored_transitions (
+    group_id TEXT PRIMARY KEY,
+    recipient_id TEXT NOT NULL,
+    recipient_client_id TEXT,
+    recipient_key_package_ref TEXT,
+    commit_data TEXT NOT NULL,
+    commit_id TEXT NOT NULL,
+    remove_commit_data TEXT,
+    welcome_data TEXT,
+    group_info_data BLOB,
+    ratchet_tree_data BLOB,
+    epoch INTEGER,
+    previous_epoch INTEGER,
+    base_state BLOB,
+    base_epoch INTEGER,
+    inserted_at TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS local_key_packages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     key_package_public BLOB NOT NULL,
@@ -153,6 +196,76 @@ function isUnencryptedDb(dbPath: string): boolean {
 
 interface TableRow {
   name: string
+}
+
+interface PendingGroupInfoPublishRow {
+  group_id: string
+  group_info_data: Buffer
+  ratchet_tree_data: Buffer | null
+  epoch: number
+  inserted_at: string
+}
+
+interface PendingExternalCommitBroadcastRow {
+  group_id: string
+  commit_data: string
+  commit_id: string
+  inserted_at: string
+}
+
+interface PendingSponsoredTransitionRow {
+  group_id: string
+  recipient_id: string
+  recipient_client_id: string | null
+  recipient_key_package_ref: string | null
+  commit_data: string
+  commit_id: string
+  remove_commit_data: string | null
+  welcome_data: string | null
+  group_info_data: Buffer | null
+  ratchet_tree_data: Buffer | null
+  epoch: number | null
+  previous_epoch: number | null
+  base_state: Buffer | null
+  base_epoch: number | null
+  inserted_at: string
+}
+
+interface ScopeCheckpointRow {
+  group_id: string
+  state: Buffer | null
+  epoch: number
+  last_event_seq: number
+  recent_commit_fingerprints: string[]
+  recent_history_bundle_fingerprints: string[]
+  repair_status: string | null
+  repair_failure_count: number
+  repair_last_error: string | null
+  repair_updated_at: string | null
+  pending_group_info_publish: {
+    group_info_data: Buffer
+    ratchet_tree_data: Buffer | null
+    epoch: number
+  } | null
+  pending_external_commit_broadcast: {
+    commit_data: string
+    commit_id: string
+  } | null
+    pending_sponsored_transition: {
+      recipient_id: string
+      recipient_client_id: string | null
+      recipient_key_package_ref: string | null
+      commit_data: string
+      commit_id: string
+      remove_commit_data: string | null
+      welcome_data: string | null
+      group_info_data: Buffer | null
+      ratchet_tree_data: Buffer | null
+      epoch: number | null
+      previous_epoch: number | null
+      base_state: Buffer | null
+      base_epoch: number | null
+    } | null
 }
 
 /**
@@ -267,6 +380,17 @@ export function initDb(): void {
 
   db.exec(SCHEMA_SQL)
   ensureMessageCacheColumns()
+  ensureColumn(
+    'mls_scope_metadata',
+    'recent_history_bundle_fingerprints',
+    "TEXT NOT NULL DEFAULT '[]'"
+  )
+  ensureColumn('pending_sponsored_transitions', 'group_info_data', 'BLOB')
+  ensureColumn('pending_sponsored_transitions', 'ratchet_tree_data', 'BLOB')
+  ensureColumn('pending_sponsored_transitions', 'epoch', 'INTEGER')
+  ensureColumn('pending_sponsored_transitions', 'previous_epoch', 'INTEGER')
+  ensureColumn('pending_sponsored_transitions', 'base_state', 'BLOB')
+  ensureColumn('pending_sponsored_transitions', 'base_epoch', 'INTEGER')
   ensureMessageCacheIndexes()
 }
 
@@ -362,8 +486,22 @@ export function setGroupState(groupId: string, state: Buffer, epoch: number): vo
 }
 
 export function deleteGroupState(groupId: string): void {
-  getDb().prepare('DELETE FROM mls_groups WHERE group_id = ?').run(groupId)
-  getDb().prepare('DELETE FROM mls_group_sync_state WHERE group_id = ?').run(groupId)
+  const database = getDb()
+  const cleanup = database.transaction((id: string) => {
+    database.prepare('DELETE FROM mls_groups WHERE group_id = ?').run(id)
+    database.prepare('DELETE FROM mls_group_sync_state WHERE group_id = ?').run(id)
+    database.prepare('DELETE FROM mls_scope_metadata WHERE group_id = ?').run(id)
+    database
+      .prepare('DELETE FROM pending_group_info_publishes WHERE group_id = ?')
+      .run(id)
+    database
+      .prepare('DELETE FROM pending_external_commit_broadcasts WHERE group_id = ?')
+      .run(id)
+    database
+      .prepare('DELETE FROM pending_sponsored_transitions WHERE group_id = ?')
+      .run(id)
+  })
+  cleanup(groupId)
 }
 
 export function getGroupSyncCursor(groupId: string): number {
@@ -383,6 +521,567 @@ export function setGroupSyncCursor(groupId: string, lastEventSeq: number): void 
          last_event_seq = MAX(mls_group_sync_state.last_event_seq, excluded.last_event_seq)`
     )
     .run(groupId, lastEventSeq)
+}
+
+export function getScopeCheckpoint(groupId: string): ScopeCheckpointRow {
+  const database = getDb()
+  const groupState = database
+    .prepare('SELECT state, epoch FROM mls_groups WHERE group_id = ?')
+    .get(groupId) as { state: Buffer; epoch: number } | undefined
+  const syncState = database
+    .prepare('SELECT last_event_seq FROM mls_group_sync_state WHERE group_id = ?')
+    .get(groupId) as { last_event_seq: number } | undefined
+  const metadata = database
+    .prepare(
+      `SELECT
+         recent_commit_fingerprints,
+         recent_history_bundle_fingerprints,
+         repair_status,
+         repair_failure_count,
+         repair_last_error,
+         repair_updated_at
+       FROM mls_scope_metadata
+       WHERE group_id = ?`
+    )
+    .get(groupId) as
+    | {
+        recent_commit_fingerprints: string | null
+        recent_history_bundle_fingerprints: string | null
+        repair_status: string | null
+        repair_failure_count: number
+        repair_last_error: string | null
+        repair_updated_at: string | null
+      }
+    | undefined
+  const pendingGroupInfo = database
+    .prepare(
+      `SELECT group_info_data, ratchet_tree_data, epoch
+       FROM pending_group_info_publishes
+       WHERE group_id = ?`
+    )
+    .get(groupId) as
+    | {
+        group_info_data: Buffer
+        ratchet_tree_data: Buffer | null
+        epoch: number
+      }
+    | undefined
+  const pendingExternalCommit = database
+    .prepare(
+      `SELECT commit_data, commit_id
+       FROM pending_external_commit_broadcasts
+       WHERE group_id = ?`
+    )
+    .get(groupId) as
+    | {
+        commit_data: string
+        commit_id: string
+      }
+    | undefined
+  const pendingSponsoredTransition = database
+    .prepare(
+      `SELECT
+         recipient_id,
+         recipient_client_id,
+         recipient_key_package_ref,
+         commit_data,
+         commit_id,
+         remove_commit_data,
+         welcome_data,
+         group_info_data,
+         ratchet_tree_data,
+         epoch,
+         previous_epoch,
+         base_state,
+         base_epoch
+       FROM pending_sponsored_transitions
+       WHERE group_id = ?`
+    )
+    .get(groupId) as
+    | {
+        recipient_id: string
+        recipient_client_id: string | null
+        recipient_key_package_ref: string | null
+        commit_data: string
+        commit_id: string
+        remove_commit_data: string | null
+        welcome_data: string | null
+        group_info_data: Buffer | null
+        ratchet_tree_data: Buffer | null
+        epoch: number | null
+        previous_epoch: number | null
+        base_state: Buffer | null
+        base_epoch: number | null
+      }
+    | undefined
+
+  let recentCommitFingerprints: string[] = []
+  let recentHistoryBundleFingerprints: string[] = []
+  if (metadata?.recent_commit_fingerprints) {
+    try {
+      const parsed = JSON.parse(metadata.recent_commit_fingerprints)
+      if (Array.isArray(parsed)) {
+        recentCommitFingerprints = parsed.filter(
+          (value): value is string => typeof value === 'string'
+        )
+      }
+    } catch {
+      recentCommitFingerprints = []
+    }
+  }
+
+  if (metadata?.recent_history_bundle_fingerprints) {
+    try {
+      const parsed = JSON.parse(metadata.recent_history_bundle_fingerprints)
+      if (Array.isArray(parsed)) {
+        recentHistoryBundleFingerprints = parsed.filter(
+          (value): value is string => typeof value === 'string'
+        )
+      }
+    } catch {
+      recentHistoryBundleFingerprints = []
+    }
+  }
+
+  return {
+    group_id: groupId,
+    state: groupState?.state ?? null,
+    epoch: groupState?.epoch ?? 0,
+    last_event_seq: syncState?.last_event_seq ?? 0,
+    recent_commit_fingerprints: recentCommitFingerprints,
+    recent_history_bundle_fingerprints: recentHistoryBundleFingerprints,
+    repair_status: metadata?.repair_status ?? null,
+    repair_failure_count: metadata?.repair_failure_count ?? 0,
+    repair_last_error: metadata?.repair_last_error ?? null,
+    repair_updated_at: metadata?.repair_updated_at ?? null,
+    pending_group_info_publish: pendingGroupInfo
+      ? {
+          group_info_data: pendingGroupInfo.group_info_data,
+          ratchet_tree_data: pendingGroupInfo.ratchet_tree_data,
+          epoch: pendingGroupInfo.epoch
+        }
+      : null,
+    pending_external_commit_broadcast: pendingExternalCommit
+      ? {
+          commit_data: pendingExternalCommit.commit_data,
+          commit_id: pendingExternalCommit.commit_id
+        }
+      : null,
+    pending_sponsored_transition: pendingSponsoredTransition
+      ? {
+          recipient_id: pendingSponsoredTransition.recipient_id,
+          recipient_client_id: pendingSponsoredTransition.recipient_client_id,
+          recipient_key_package_ref: pendingSponsoredTransition.recipient_key_package_ref,
+          commit_data: pendingSponsoredTransition.commit_data,
+          commit_id: pendingSponsoredTransition.commit_id,
+          remove_commit_data: pendingSponsoredTransition.remove_commit_data,
+          welcome_data: pendingSponsoredTransition.welcome_data,
+          group_info_data: pendingSponsoredTransition.group_info_data,
+          ratchet_tree_data: pendingSponsoredTransition.ratchet_tree_data,
+          epoch: pendingSponsoredTransition.epoch,
+          previous_epoch: pendingSponsoredTransition.previous_epoch,
+          base_state: pendingSponsoredTransition.base_state,
+          base_epoch: pendingSponsoredTransition.base_epoch
+        }
+      : null
+  }
+}
+
+export function getKnownScopeIds(): string[] {
+  return getDb()
+    .prepare(
+      `SELECT group_id FROM mls_groups
+       UNION
+       SELECT group_id FROM mls_group_sync_state
+       UNION
+       SELECT group_id FROM mls_scope_metadata
+       UNION
+       SELECT group_id FROM pending_group_info_publishes
+       UNION
+       SELECT group_id FROM pending_external_commit_broadcasts
+       UNION
+       SELECT group_id FROM pending_sponsored_transitions
+       ORDER BY group_id ASC`
+    )
+    .all()
+    .map((row) => String((row as { group_id: string }).group_id))
+}
+
+export function setScopeCheckpoint(
+  groupId: string,
+  checkpoint: {
+    state: Buffer | null
+    epoch: number
+    last_event_seq: number
+    recent_commit_fingerprints?: string[]
+    recent_history_bundle_fingerprints?: string[]
+    repair_status?: string | null
+    repair_failure_count?: number
+    repair_last_error?: string | null
+    repair_updated_at?: string | null
+    pending_group_info_publish?: {
+      group_info_data: Buffer
+      ratchet_tree_data: Buffer | null
+      epoch: number
+    } | null
+    pending_external_commit_broadcast?: {
+      commit_data: string
+      commit_id: string
+    } | null
+    pending_sponsored_transition?: {
+      recipient_id: string
+      recipient_client_id: string | null
+      recipient_key_package_ref: string | null
+      commit_data: string
+      commit_id: string
+      remove_commit_data: string | null
+      welcome_data: string | null
+      group_info_data: Buffer | null
+      ratchet_tree_data: Buffer | null
+      epoch: number | null
+      previous_epoch: number | null
+      base_state: Buffer | null
+      base_epoch: number | null
+    } | null
+  }
+): void {
+  const database = getDb()
+  const save = database.transaction(
+    (
+      id: string,
+      payload: {
+        state: Buffer | null
+        epoch: number
+        last_event_seq: number
+        recent_commit_fingerprints?: string[]
+        recent_history_bundle_fingerprints?: string[]
+        repair_status?: string | null
+        repair_failure_count?: number
+        repair_last_error?: string | null
+        repair_updated_at?: string | null
+        pending_group_info_publish?: {
+          group_info_data: Buffer
+          ratchet_tree_data: Buffer | null
+          epoch: number
+        } | null
+        pending_external_commit_broadcast?: {
+          commit_data: string
+          commit_id: string
+        } | null
+        pending_sponsored_transition?: {
+          recipient_id: string
+          recipient_client_id: string | null
+          recipient_key_package_ref: string | null
+          commit_data: string
+          commit_id: string
+          remove_commit_data: string | null
+          welcome_data: string | null
+          group_info_data: Buffer | null
+          ratchet_tree_data: Buffer | null
+          epoch: number | null
+          previous_epoch: number | null
+          base_state: Buffer | null
+          base_epoch: number | null
+        } | null
+      }
+    ) => {
+      if (payload.state) {
+        database
+          .prepare(
+            'INSERT OR REPLACE INTO mls_groups (group_id, state, epoch) VALUES (?, ?, ?)'
+          )
+          .run(id, payload.state, payload.epoch)
+      } else {
+        database.prepare('DELETE FROM mls_groups WHERE group_id = ?').run(id)
+      }
+
+      database
+        .prepare(
+          `INSERT INTO mls_group_sync_state (group_id, last_event_seq)
+           VALUES (?, ?)
+           ON CONFLICT(group_id) DO UPDATE SET
+             last_event_seq = MAX(mls_group_sync_state.last_event_seq, excluded.last_event_seq)`
+        )
+        .run(id, payload.last_event_seq)
+
+      const recentCommitFingerprints = JSON.stringify(
+        Array.isArray(payload.recent_commit_fingerprints)
+          ? payload.recent_commit_fingerprints
+          : []
+      )
+      const recentHistoryBundleFingerprints = JSON.stringify(
+        Array.isArray(payload.recent_history_bundle_fingerprints)
+          ? payload.recent_history_bundle_fingerprints
+          : []
+      )
+
+      database
+        .prepare(
+          `INSERT INTO mls_scope_metadata (
+             group_id,
+             recent_commit_fingerprints,
+             recent_history_bundle_fingerprints,
+             repair_status,
+             repair_failure_count,
+             repair_last_error,
+             repair_updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(group_id) DO UPDATE SET
+             recent_commit_fingerprints = excluded.recent_commit_fingerprints,
+             recent_history_bundle_fingerprints = excluded.recent_history_bundle_fingerprints,
+             repair_status = excluded.repair_status,
+             repair_failure_count = excluded.repair_failure_count,
+             repair_last_error = excluded.repair_last_error,
+             repair_updated_at = excluded.repair_updated_at`
+        )
+        .run(
+          id,
+          recentCommitFingerprints,
+          recentHistoryBundleFingerprints,
+          payload.repair_status ?? null,
+          payload.repair_failure_count ?? 0,
+          payload.repair_last_error ?? null,
+          payload.repair_updated_at ?? null
+        )
+
+      if (Object.prototype.hasOwnProperty.call(payload, 'pending_group_info_publish')) {
+        if (payload.pending_group_info_publish) {
+          database
+            .prepare(
+              `INSERT INTO pending_group_info_publishes (
+                 group_id,
+                 group_info_data,
+                 ratchet_tree_data,
+                 epoch,
+                 inserted_at
+               ) VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(group_id) DO UPDATE SET
+                 group_info_data = excluded.group_info_data,
+                 ratchet_tree_data = excluded.ratchet_tree_data,
+                 epoch = excluded.epoch,
+                 inserted_at = excluded.inserted_at`
+            )
+            .run(
+              id,
+              payload.pending_group_info_publish.group_info_data,
+              payload.pending_group_info_publish.ratchet_tree_data,
+              payload.pending_group_info_publish.epoch,
+              new Date().toISOString()
+            )
+        } else {
+          database
+            .prepare('DELETE FROM pending_group_info_publishes WHERE group_id = ?')
+            .run(id)
+        }
+      }
+
+      if (
+        Object.prototype.hasOwnProperty.call(payload, 'pending_external_commit_broadcast')
+      ) {
+        if (payload.pending_external_commit_broadcast) {
+          database
+            .prepare(
+              `INSERT INTO pending_external_commit_broadcasts (
+                 group_id,
+                 commit_data,
+                 commit_id,
+                 inserted_at
+               ) VALUES (?, ?, ?, ?)
+               ON CONFLICT(group_id) DO UPDATE SET
+                 commit_data = excluded.commit_data,
+                 commit_id = excluded.commit_id,
+                 inserted_at = excluded.inserted_at`
+            )
+            .run(
+              id,
+              payload.pending_external_commit_broadcast.commit_data,
+              payload.pending_external_commit_broadcast.commit_id,
+              new Date().toISOString()
+            )
+        } else {
+          database
+            .prepare('DELETE FROM pending_external_commit_broadcasts WHERE group_id = ?')
+            .run(id)
+        }
+      }
+
+      if (Object.prototype.hasOwnProperty.call(payload, 'pending_sponsored_transition')) {
+        if (payload.pending_sponsored_transition) {
+          database
+            .prepare(
+              `INSERT INTO pending_sponsored_transitions (
+                 group_id,
+                 recipient_id,
+                 recipient_client_id,
+                 recipient_key_package_ref,
+                 commit_data,
+                 commit_id,
+                 remove_commit_data,
+                 welcome_data,
+                 group_info_data,
+                 ratchet_tree_data,
+                 epoch,
+                 previous_epoch,
+                 base_state,
+                 base_epoch,
+                 inserted_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(group_id) DO UPDATE SET
+                 recipient_id = excluded.recipient_id,
+                 recipient_client_id = excluded.recipient_client_id,
+                 recipient_key_package_ref = excluded.recipient_key_package_ref,
+                 commit_data = excluded.commit_data,
+                 commit_id = excluded.commit_id,
+                 remove_commit_data = excluded.remove_commit_data,
+                 welcome_data = excluded.welcome_data,
+                 group_info_data = excluded.group_info_data,
+                 ratchet_tree_data = excluded.ratchet_tree_data,
+                 epoch = excluded.epoch,
+                 previous_epoch = excluded.previous_epoch,
+                 base_state = excluded.base_state,
+                 base_epoch = excluded.base_epoch,
+                 inserted_at = excluded.inserted_at`
+            )
+            .run(
+              id,
+              payload.pending_sponsored_transition.recipient_id,
+              payload.pending_sponsored_transition.recipient_client_id,
+              payload.pending_sponsored_transition.recipient_key_package_ref,
+              payload.pending_sponsored_transition.commit_data,
+              payload.pending_sponsored_transition.commit_id,
+              payload.pending_sponsored_transition.remove_commit_data,
+              payload.pending_sponsored_transition.welcome_data,
+              payload.pending_sponsored_transition.group_info_data,
+              payload.pending_sponsored_transition.ratchet_tree_data,
+              payload.pending_sponsored_transition.epoch,
+              payload.pending_sponsored_transition.previous_epoch,
+              payload.pending_sponsored_transition.base_state,
+              payload.pending_sponsored_transition.base_epoch,
+              new Date().toISOString()
+            )
+        } else {
+          database
+            .prepare('DELETE FROM pending_sponsored_transitions WHERE group_id = ?')
+            .run(id)
+        }
+      }
+    }
+  )
+
+  save(groupId, checkpoint)
+}
+
+// --- MLS Control Outbox ---
+
+export function getPendingGroupInfoPublishes(): PendingGroupInfoPublishRow[] {
+  return getDb()
+    .prepare(
+      `SELECT
+         group_id,
+         group_info_data,
+         ratchet_tree_data,
+         epoch,
+         inserted_at
+       FROM pending_group_info_publishes
+       ORDER BY inserted_at ASC, group_id ASC`
+    )
+    .all() as PendingGroupInfoPublishRow[]
+}
+
+export function setPendingGroupInfoPublish(
+  groupId: string,
+  groupInfoData: Buffer,
+  ratchetTreeData: Buffer | null,
+  epoch: number
+): void {
+  getDb()
+    .prepare(
+      `INSERT INTO pending_group_info_publishes (
+        group_id,
+        group_info_data,
+        ratchet_tree_data,
+        epoch,
+        inserted_at
+      ) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(group_id) DO UPDATE SET
+        group_info_data = excluded.group_info_data,
+        ratchet_tree_data = excluded.ratchet_tree_data,
+        epoch = excluded.epoch,
+        inserted_at = excluded.inserted_at`
+    )
+    .run(groupId, groupInfoData, ratchetTreeData, epoch, new Date().toISOString())
+}
+
+export function deletePendingGroupInfoPublish(groupId: string): void {
+  getDb()
+    .prepare('DELETE FROM pending_group_info_publishes WHERE group_id = ?')
+    .run(groupId)
+}
+
+export function getPendingExternalCommitBroadcasts(): PendingExternalCommitBroadcastRow[] {
+  return getDb()
+    .prepare(
+      `SELECT
+         group_id,
+         commit_data,
+         commit_id,
+         inserted_at
+       FROM pending_external_commit_broadcasts
+       ORDER BY inserted_at ASC, group_id ASC`
+    )
+    .all() as PendingExternalCommitBroadcastRow[]
+}
+
+export function getPendingSponsoredTransitions(): PendingSponsoredTransitionRow[] {
+  return getDb()
+    .prepare(
+      `SELECT
+         group_id,
+         recipient_id,
+         recipient_client_id,
+         recipient_key_package_ref,
+         commit_data,
+         commit_id,
+         remove_commit_data,
+         welcome_data,
+         group_info_data,
+         ratchet_tree_data,
+         epoch,
+         previous_epoch,
+         base_state,
+         base_epoch,
+         inserted_at
+       FROM pending_sponsored_transitions
+       ORDER BY inserted_at ASC, group_id ASC`
+    )
+    .all() as PendingSponsoredTransitionRow[]
+}
+
+export function setPendingExternalCommitBroadcast(
+  groupId: string,
+  commitData: string,
+  commitId: string
+): void {
+  getDb()
+    .prepare(
+      `INSERT INTO pending_external_commit_broadcasts (
+        group_id,
+        commit_data,
+        commit_id,
+        inserted_at
+      ) VALUES (?, ?, ?, ?)
+      ON CONFLICT(group_id) DO UPDATE SET
+        commit_data = excluded.commit_data,
+        commit_id = excluded.commit_id,
+        inserted_at = excluded.inserted_at`
+    )
+    .run(groupId, commitData, commitId, new Date().toISOString())
+}
+
+export function deletePendingExternalCommitBroadcast(groupId: string): void {
+  getDb()
+    .prepare('DELETE FROM pending_external_commit_broadcasts WHERE group_id = ?')
+    .run(groupId)
 }
 
 // --- Local Key Packages ---

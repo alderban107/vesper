@@ -6,6 +6,7 @@ defmodule VesperWeb.AttachmentController do
   alias Vesper.Repo
 
   def create(conn, %{"file" => upload} = params) do
+    user = conn.assigns.current_user
     max_size = FileStorage.max_upload_size()
 
     file_size =
@@ -32,7 +33,8 @@ defmodule VesperWeb.AttachmentController do
             size_bytes: file_size,
             storage_key: storage_key,
             encrypted: params["encrypted"] == "true",
-            expires_at: expires_at
+            expires_at: expires_at,
+            uploader_id: user.id
           }
 
           # Link to message if provided (optional now)
@@ -76,11 +78,19 @@ defmodule VesperWeb.AttachmentController do
           path = FileStorage.get_path(attachment.storage_key)
 
           if File.exists?(path) do
-            safe_filename = String.replace(attachment.filename, ~r/["\r\n\\]/, "_")
+            # For encrypted attachments, don't leak filename or content_type
+            # in HTTP headers — the client decrypts metadata from the message.
+            {resp_type, resp_filename} =
+              if attachment.encrypted do
+                {"application/octet-stream", attachment.id}
+              else
+                safe_filename = String.replace(attachment.filename, ~r/["\r\n\\]/, "_")
+                {attachment.content_type || "application/octet-stream", safe_filename}
+              end
 
             conn
-            |> put_resp_content_type(attachment.content_type || "application/octet-stream")
-            |> put_resp_header("content-disposition", ~s(attachment; filename="#{safe_filename}"))
+            |> put_resp_content_type(resp_type)
+            |> put_resp_header("content-disposition", ~s(attachment; filename="#{resp_filename}"))
             |> send_file(200, path)
           else
             conn |> put_status(:not_found) |> json(%{error: "file not found"})
@@ -91,9 +101,13 @@ defmodule VesperWeb.AttachmentController do
     end
   end
 
-  # Attachment not yet linked to a message — allow the uploader
-  # (we can't verify uploader without tracking it, so allow any authed user
-  # for unlinked attachments since they're transient pre-send uploads)
+  # Attachment not yet linked to a message — only allow the original uploader
+  defp authorized_for_attachment?(user_id, %{message: nil, uploader_id: uploader_id})
+       when is_binary(uploader_id) do
+    user_id == uploader_id
+  end
+
+  # Legacy attachments without uploader_id — allow any authenticated user
   defp authorized_for_attachment?(_user_id, %{message: nil}), do: true
 
   defp authorized_for_attachment?(user_id, %{message: message}) do
@@ -101,7 +115,7 @@ defmodule VesperWeb.AttachmentController do
       message.channel_id ->
         case Servers.get_channel(message.channel_id) do
           nil -> false
-          channel -> Servers.user_is_member?(user_id, channel.server_id)
+          channel -> Servers.user_is_channel_member?(user_id, channel)
         end
 
       message.conversation_id ->

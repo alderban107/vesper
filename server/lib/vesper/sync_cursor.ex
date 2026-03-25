@@ -38,7 +38,8 @@ defmodule Vesper.SyncCursor do
       %{
         # Shift back 1s to catch events inserted in the same truncated second
         synced_at: DateTime.add(synced_at, -1, :second),
-        user_sync_event_id: decode_integer(Map.get(parsed, "user_sync_event_id"))
+        user_sync_event_id: decode_integer(Map.get(parsed, "user_sync_event_id")),
+        scope_sync_event_id: decode_integer(Map.get(parsed, "scope_sync_event_id"))
       }
     else
       _ ->

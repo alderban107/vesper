@@ -22,7 +22,8 @@ export async function uploadCustomEmoji(
   // The file input is intentionally hidden (class="hidden") — wait for it to exist in DOM
   await page.waitForSelector('[data-testid="emoji-upload"]', { state: 'attached', timeout: 5_000 })
 
-  // Convert base64 to a temporary file and upload
+  // Convert base64 to a temporary file and upload via hidden input.
+  // This triggers the EmojiUploadModal (ImageCropModal wrapper) to open.
   const buffer = Buffer.from(imageBase64, 'base64')
   const fileInput = page.locator('[data-testid="emoji-upload"]')
 
@@ -32,16 +33,18 @@ export async function uploadCustomEmoji(
     buffer,
   })
 
-  // Fill emoji name
+  // Wait for the crop modal to appear
+  await page.waitForSelector('[data-testid="image-crop-submit"]', { timeout: 10_000 })
+
+  // Fill emoji name (the input inside EmojiUploadModal)
   const nameInput = page.locator('[data-testid="emoji-name-input"]')
-  if (await nameInput.isVisible()) {
-    await nameInput.fill(name)
-  }
+  await nameInput.waitFor({ state: 'visible', timeout: 5_000 })
+  await nameInput.fill(name)
 
-  // Submit
-  await page.click('[data-testid="emoji-save"]')
+  // Click the submit button inside the crop modal ("Finish")
+  await page.click('[data-testid="image-crop-submit"]')
 
-  // Wait for emoji to appear in the list
+  // Wait for emoji to appear in the list (modal closes, settings page shows updated list)
   await page.waitForSelector(`[data-testid="custom-emoji-list"] :text("${name}")`, {
     timeout: 15_000,
   })

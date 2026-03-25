@@ -2,15 +2,15 @@ defmodule Vesper.Servers.PermissionsCache do
   @moduledoc """
   ETS-backed permissions cache with PubSub invalidation.
 
-  Key: {user_id, server_id} → permissions bitfield (integer).
+  Key: {user_id, server_id} -> permissions bitfield (integer).
 
   Channel processes read directly from ETS on permission-gated actions
-  (pin, unpin, @everyone mentions). Cache misses are populated via GenServer.
+  (pin, unpin, @everyone mentions). Cache misses are populated directly
+  from DB by the calling process (no GenServer serialization).
 
   Invalidation: when any role is created/updated/deleted or member roles change,
   the Servers context broadcasts on `"server:permissions:<server_id>"`.
   This GenServer receives that and wipes all entries for that server.
-  The wipe is O(n) over the table but role changes are rare admin actions.
   """
 
   use GenServer
@@ -18,12 +18,13 @@ defmodule Vesper.Servers.PermissionsCache do
   require Logger
 
   @table :vesper_permissions_cache
+  @sweep_interval :timer.hours(1)
 
   # --- Public API (direct ETS reads — no GenServer call on hot path) ---
 
   @doc """
   Get permissions for a user in a server. Reads directly from ETS.
-  On cache miss, populates from DB via the GenServer.
+  On cache miss, populates from DB directly (no GenServer bottleneck).
   """
   def get(user_id, server_id) do
     if sandbox_pool?() do
@@ -34,14 +35,25 @@ defmodule Vesper.Servers.PermissionsCache do
           permissions
 
         [] ->
-          GenServer.call(__MODULE__, {:populate, user_id, server_id})
+          # Direct DB read + ETS write from caller process.
+          # Avoids GenServer serialization on cold start.
+          permissions = Vesper.Servers.get_user_permissions(user_id, server_id)
+          :ets.insert(@table, {{user_id, server_id}, permissions})
+
+          # Ensure PubSub subscription for this server (async, idempotent)
+          GenServer.cast(__MODULE__, {:ensure_subscribed, server_id})
+
+          permissions
       end
     end
   end
 
   @doc """
   Check if a user has a specific permission. Convenience wrapper.
+  Returns true for nil server_id (DM channels have no permission system).
   """
+  def has_permission?(_user_id, nil, _permission), do: true
+
   def has_permission?(user_id, server_id, permission) do
     perms = get(user_id, server_id)
     Vesper.Servers.Permissions.has_permission?(perms, permission)
@@ -64,26 +76,18 @@ defmodule Vesper.Servers.PermissionsCache do
   @impl true
   def init([]) do
     :ets.new(@table, [:set, :public, :named_table, read_concurrency: true])
-    {:ok, %{}}
+    schedule_sweep()
+    {:ok, %{subscribed: MapSet.new()}}
   end
 
   @impl true
-  def handle_call({:populate, user_id, server_id}, _from, state) do
-    # Subscribe lazily per server (idempotent — PubSub deduplicates)
-    Phoenix.PubSub.subscribe(Vesper.PubSub, "server:permissions:#{server_id}")
-    permissions = fetch_and_cache(user_id, server_id)
-    {:reply, permissions, state}
-  end
-
-  @impl true
-  def handle_info({:permissions_changed, server_id}, state) do
-    :ets.match_delete(@table, {{:_, server_id}, :_})
-    {:noreply, state}
-  end
-
-  @impl true
-  def handle_info(_msg, state) do
-    {:noreply, state}
+  def handle_cast({:ensure_subscribed, server_id}, %{subscribed: subs} = state) do
+    if MapSet.member?(subs, server_id) do
+      {:noreply, state}
+    else
+      Phoenix.PubSub.subscribe(Vesper.PubSub, "server:permissions:#{server_id}")
+      {:noreply, %{state | subscribed: MapSet.put(subs, server_id)}}
+    end
   end
 
   @impl true
@@ -92,12 +96,27 @@ defmodule Vesper.Servers.PermissionsCache do
     {:noreply, state}
   end
 
+  @impl true
+  def handle_info({:permissions_changed, server_id}, state) do
+    :ets.match_delete(@table, {{:_, server_id}, :_})
+    {:noreply, state}
+  end
+
+  def handle_info(:sweep, state) do
+    :ets.delete_all_objects(@table)
+    schedule_sweep()
+    {:noreply, %{state | subscribed: MapSet.new()}}
+  end
+
+  @impl true
+  def handle_info(_msg, state) do
+    {:noreply, state}
+  end
+
   # --- Private ---
 
-  defp fetch_and_cache(user_id, server_id) do
-    permissions = Vesper.Servers.get_user_permissions(user_id, server_id)
-    :ets.insert(@table, {{user_id, server_id}, permissions})
-    permissions
+  defp schedule_sweep do
+    Process.send_after(self(), :sweep, @sweep_interval)
   end
 
   defp sandbox_pool? do

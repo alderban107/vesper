@@ -1,16 +1,39 @@
 import { test, expect } from '@playwright/test'
 import { saveRecoveryKey } from '../harness/state'
 import { signup, createUserContext, type UserContext } from '../helpers/auth'
+import { createDm, selectDm, sendDmMessage } from '../helpers/dm'
 import { USERS, DM_MESSAGES } from '../fixtures/test-data'
 import { getMlsDiagnostics, assertMlsBudget } from '../helpers/mls-diagnostics'
+import { waitForMessage } from '../helpers/wait'
 
 let alice: UserContext
 let bob: UserContext
 
+const DEBUG_USERS = {
+  alice: {
+    ...USERS.alice,
+    username: `${USERS.alice.username}_debug`
+  },
+  bob: {
+    ...USERS.bob,
+    username: `${USERS.bob.username}_debug`
+  }
+} as const
+
 test.describe('DM Debug', () => {
   test.beforeAll(async ({ browser }) => {
-    alice = await createUserContext(browser, 'alice', USERS.alice.username, USERS.alice.password)
-    bob = await createUserContext(browser, 'bob', USERS.bob.username, USERS.bob.password)
+    alice = await createUserContext(
+      browser,
+      'alice-debug',
+      DEBUG_USERS.alice.username,
+      DEBUG_USERS.alice.password
+    )
+    bob = await createUserContext(
+      browser,
+      'bob-debug',
+      DEBUG_USERS.bob.username,
+      DEBUG_USERS.bob.password
+    )
   })
 
   test.afterAll(async () => {
@@ -53,53 +76,15 @@ test.describe('DM Debug', () => {
       }, name)
     }
 
-    // Alice creates DM
-    await alice.page.locator('[data-testid="sidebar"] button[title="Direct Messages"]').click()
-    await alice.page.waitForSelector('text=Direct Messages', { timeout: 5_000 })
-    await alice.page.click('[data-testid="sidebar"] button[title="New Message"]')
-    await alice.page.waitForSelector('text=New Message', { timeout: 5_000 })
-    await alice.page.locator('input[placeholder="Enter exact username"]').fill(USERS.bob.username)
-    await alice.page.click('button:has-text("Start Chat")')
-    await alice.page.waitForSelector('text=New Message', { state: 'hidden', timeout: 5_000 })
-    await alice.page.waitForSelector('.vesper-composer-textarea', { timeout: 5_000 })
-
-    // Bob opens DM
-    await bob.page.locator('[data-testid="sidebar"] button[title="Direct Messages"]').click()
-    await bob.page.waitForSelector('text=Direct Messages', { timeout: 5_000 })
-    await bob.page.waitForFunction((name: string) => {
-      return Array.from(document.querySelectorAll('[data-testid="dm-row"]')).some(el =>
-        el.textContent?.includes(name)
-      )
-    }, USERS.alice.username, { timeout: 10_000 })
-    const dmRows = bob.page.getByTestId('dm-row')
-    for (let i = 0; i < await dmRows.count(); i++) {
-      if ((await dmRows.nth(i).textContent())?.includes(USERS.alice.username)) {
-        await dmRows.nth(i).click()
-        break
-      }
-    }
-    await bob.page.waitForSelector('.vesper-composer-textarea', { timeout: 5_000 })
-
-    // Wait for MLS handshake to converge
-    await alice.page.waitForTimeout(5_000)
-
-    // Alice sends message
-    const textarea = alice.page.locator('.vesper-composer-textarea')
-    await textarea.fill(DM_MESSAGES.aliceToBob1)
-    await textarea.press('Enter')
+    await createDm(alice.page, DEBUG_USERS.bob.username)
+    await sendDmMessage(alice.page, DM_MESSAGES.aliceToBob1)
+    await selectDm(bob.page, DEBUG_USERS.alice.username)
 
     // Wait for Bob to receive and decrypt
-    const bobDecrypted = await bob.page.waitForFunction(
-      (expectedText: string) => {
-        const rows = document.querySelectorAll('[data-testid="message-row"]')
-        for (const row of rows) {
-          const content = row.querySelector('[data-testid="message-content"]')
-          if (content?.textContent?.includes(expectedText)) return true
-        }
-        return false
-      },
+    const bobDecrypted = await waitForMessage(
+      bob.page,
       DM_MESSAGES.aliceToBob1,
-      { timeout: 15_000 }
+      15_000
     ).then(() => true).catch(() => false)
 
     // Dump trace on failure for diagnostics

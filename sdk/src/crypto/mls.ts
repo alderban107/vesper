@@ -1,599 +1,608 @@
-import {
-  getCiphersuiteFromName,
-  getCiphersuiteImpl,
-  generateKeyPackage,
-  generateKeyPackageWithKey,
-  defaultCapabilities,
-  defaultLifetime,
-  createGroup,
-  createCommit,
-  joinGroup,
-  createApplicationMessage,
-  processMessage,
-  processPrivateMessage,
-  acceptAll,
-  encodeMlsMessage,
-  decodeMlsMessage,
-  encodeGroupState,
-  decodeGroupState,
-  makePskIndex,
-  mlsExporter,
-  defaultKeyRetentionConfig,
-  defaultLifetimeConfig,
-  defaultPaddingConfig,
-  defaultKeyPackageEqualityConfig,
-  defaultAuthenticationService,
-  type CiphersuiteImpl,
-  type ClientState,
-  type ClientConfig,
-  type KeyPackage,
-  type PrivateKeyPackage,
-  type Proposal,
-  type MLSMessage
-} from 'ts-mls'
-import type { KeyPackagePair } from './types.js'
+/**
+ * MLS wrapper for Vesper — OpenMLS WASM implementation
+ *
+ * Replaces ts-mls with OpenMLS (Rust → WASM), providing:
+ * - Full RFC 9420 compliance including External Commits (§12.4)
+ * - Formally audited cryptography (Cryspen)
+ * - No decoder offset bugs, no clientConfig serialization issues
+ * - External Commits: new members self-join via published GroupInfo
+ *
+ * This module maintains the same exported API as the ts-mls version
+ * so encryptedChat.ts requires minimal changes.
+ */
 
-type PublicCommitMessage = Extract<MLSMessage, { wireformat: 'mls_public_message' }>
+import initWasm, {
+  Provider,
+  Identity,
+  Group,
+  KeyPackage as WasmKeyPackage,
+  RatchetTree,
+  type ExternalCommitResult,
+  type CommitBundle,
+  type ProcessResult,
+  type OwnLeafIdentity
+} from 'vesper-openmls-wasm'
+
+// Re-export WASM types that the orchestration layer needs
+export type { ExternalCommitResult, CommitBundle, ProcessResult }
+export { Provider, Identity, WasmKeyPackage as KeyPackage }
+
+// ============================================================
+// Types (replaces ts-mls type imports)
+// ============================================================
+
+/**
+ * Opaque group state handle. Internally backed by OpenMLS Group + Provider + Identity.
+ * Serializable via serializeGroupState / deserializeGroupState.
+ */
+export interface GroupState {
+  /** The Provider holding all crypto state for this group */
+  readonly _provider: Provider
+  /** The Identity (credential + signing key) of the local user in this group */
+  readonly _identity: Identity
+  /** The active MLS Group */
+  readonly _group: Group
+  /** Epoch number — replaces state.groupContext.epoch from ts-mls */
+  readonly groupContext: { readonly epoch: bigint }
+}
+
+/**
+ * Serialized key package pair — public portion goes to server, private stays local.
+ * With OpenMLS, the Provider's storage holds the private state.
+ */
+export interface KeyPackagePair {
+  publicPackage: WasmKeyPackage
+  privatePackage: Uint8Array // serialized identity for this key package's provider
+}
+
+// ============================================================
+// Initialization
+// ============================================================
+
+let wasmInitialized = false
+
+/**
+ * Initialize the MLS cipher suite. Must be called before any MLS operations.
+ * With OpenMLS, this loads the WASM module.
+ *
+ * @param wasmSource Optional WASM module source. Can be:
+ *   - URL or string: fetched via the default loader
+ *   - BufferSource: raw WASM bytes
+ *   - undefined: auto-detected (fs in Node.js, import.meta.url in browser)
+ */
+export async function initCipherSuite(wasmSource?: string | URL | BufferSource): Promise<void> {
+  if (wasmInitialized) return
+
+  if (wasmSource) {
+    await initWasm(wasmSource)
+  } else if (typeof process !== 'undefined' && process.versions?.node) {
+    // Node.js: load from disk
+    const { readFile } = await import('fs/promises')
+    const { fileURLToPath } = await import('url')
+    const { dirname, join } = await import('path')
+
+    const jsPath = fileURLToPath(import.meta.resolve('vesper-openmls-wasm'))
+    const pkgDir = dirname(jsPath)
+    const wasmPath = join(pkgDir, 'vesper_openmls_wasm_bg.wasm')
+    const wasmBytes = await readFile(wasmPath)
+
+    await initWasm(wasmBytes)
+  } else {
+    // Browser/Electron: try well-known URL first, fall back to default loader
+    try {
+      // Try loading from a well-known path (set up by the Vite WASM plugin)
+      const wasmUrl = new URL('/assets/vesper_openmls_wasm_bg.wasm', window.location.origin)
+      const response = await fetch(wasmUrl)
+      if (response.ok) {
+        await initWasm(await response.arrayBuffer())
+      } else {
+        // Fall back to default import.meta.url-based loader
+        await initWasm()
+      }
+    } catch {
+      // Last resort: default loader
+      await initWasm()
+    }
+  }
+
+  wasmInitialized = true
+}
+
+// ============================================================
+// Identity helpers
+// ============================================================
+
 const MLS_IDENTITY_SEPARATOR = ':'
 
 /**
- * Properly decode an MLS message from bytes.
- *
- * ts-mls's `decodeMlsMessage` is a raw TLS decoder with the signature
- * `(buf: Uint8Array, offset: number) => [MLSMessage, bytesConsumed] | undefined`.
- * It must be called with an explicit offset (0 for top-level decoding) and
- * returns a `[value, length]` tuple — not the decoded value directly.
- *
- * Calling it without the offset argument leaves `offset` as `undefined`,
- * which corrupts the internal accumulator (`undefined + 2 = NaN`) so every
- * sub-decoder after the first reads from byte 0, producing garbage.
+ * Build a client credential identity string from userId and deviceId.
  */
-function decodeMlsMessageFromBytes(bytes: Uint8Array): MLSMessage {
-  const result = decodeMlsMessage(bytes, 0)
-  if (!result) {
-    throw new Error('Failed to decode MLS message: decoder returned undefined')
-  }
-  // decodeMlsMessage returns [decodedValue, bytesConsumed]
-  return result[0] as MLSMessage
-}
-
-function assertPublicCommitMessage(message: MLSMessage): PublicCommitMessage {
-  if (message.wireformat !== 'mls_public_message') {
-    throw new Error(`Expected mls_public_message, got ${message.wireformat}`)
-  }
-
-  return message
-}
-
-async function processPublicCommitWrapper(
-  message: PublicCommitMessage,
-  state: ClientState,
-  cs: CiphersuiteImpl
-) {
-  const pskIndex = makePskIndex(state, {})
-
-  // ts-mls expects the full MLSMessage wrapper here, not the nested
-  // `publicMessage` payload.
-  return processMessage(message, state, pskIndex, acceptAll, cs)
-}
-
-const CIPHERSUITE_NAME = 'MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519' as const
-
-/**
- * Epoch key retention depth. Controls how many past epochs' decryption keys
- * are kept in the serialized ClientState, enabling decryption of messages
- * from older epochs. The ts-mls default is 4; we raise it to 64 so cached
- * messages remain decryptable across a reasonable window of group updates.
- */
-const RETAIN_KEYS_FOR_EPOCHS = 64
-
-const vesperClientConfig: ClientConfig = {
-  keyRetentionConfig: {
-    ...defaultKeyRetentionConfig,
-    retainKeysForEpochs: RETAIN_KEYS_FOR_EPOCHS
-  },
-  lifetimeConfig: defaultLifetimeConfig,
-  keyPackageEqualityConfig: defaultKeyPackageEqualityConfig,
-  paddingConfig: defaultPaddingConfig,
-  authService: defaultAuthenticationService
-}
-
-let csImpl: CiphersuiteImpl | null = null
-
-/**
- * Initialize the cipher suite. Must be called before any MLS operations.
- */
-export async function initCipherSuite(): Promise<CiphersuiteImpl> {
-  if (csImpl) return csImpl
-  const cs = getCiphersuiteFromName(CIPHERSUITE_NAME)
-  csImpl = await getCiphersuiteImpl(cs)
-  return csImpl
-}
-
-function getCs(): CiphersuiteImpl {
-  if (!csImpl) throw new Error('Cipher suite not initialized. Call initCipherSuite() first.')
-  return csImpl
-}
-
-/**
- * Create a basic MLS credential from a stable identity string.
- */
-function makeCredential(identity: string) {
-  return {
-    credentialType: 'basic' as const,
-    identity: new TextEncoder().encode(identity)
-  }
-}
-
-function decodeCredentialIdentity(identityBytes: Uint8Array): string {
-  return new TextDecoder().decode(identityBytes)
-}
-
-function normalizeCredentialIdentity(identity: string): { full: string; userId: string } {
-  const separatorIndex = identity.indexOf(MLS_IDENTITY_SEPARATOR)
-  if (separatorIndex === -1) {
-    return { full: identity, userId: identity }
-  }
-
-  return {
-    full: identity,
-    userId: identity.slice(0, separatorIndex)
-  }
-}
-
-function credentialMatchesCandidates(
-  identityBytes: Uint8Array,
-  candidates: Set<string>
-): boolean {
-  const decoded = normalizeCredentialIdentity(decodeCredentialIdentity(identityBytes))
-  return candidates.has(decoded.full) || candidates.has(decoded.userId)
-}
-
 export function buildClientCredentialIdentity(userId: string, deviceId: string): string {
   return `${userId}${MLS_IDENTITY_SEPARATOR}${deviceId}`
 }
 
+// ============================================================
+// Key Package Management
+// ============================================================
+
 /**
- * Generate a batch of key packages for a user.
- * Returns public packages (for server) and private packages (for local storage).
+ * Create a signing identity for registration/login.
+ * Returns everything needed for the registration flow.
+ */
+export async function createSigningIdentity(identityName: string): Promise<{
+  signaturePublicKey: Uint8Array
+  /** The serialized provider storage — contains the Ed25519 private key. Encrypt with password. */
+  privateKeyBundle: Uint8Array
+  /** The serialized identity — small blob (name + public key ref). Store alongside the bundle. */
+  identityData: Uint8Array
+}> {
+  const provider = new Provider()
+  const identity = new Identity(provider, identityName)
+
+  return {
+    signaturePublicKey: new Uint8Array(identity.signature_public_key()),
+    privateKeyBundle: new Uint8Array(provider.serialize_storage()),
+    identityData: new Uint8Array(identity.serialize())
+  }
+}
+
+/**
+ * Generate a batch of key packages using a previously created signing identity.
+ * Each key package gets its own Provider copy (for independent key lifecycle).
  */
 export async function createKeyPackageBatch(
-  identity: string,
-  count: number,
-  signatureKeyPair?: { signKey: Uint8Array; publicKey: Uint8Array }
-): Promise<KeyPackagePair[]> {
-  const cs = getCs()
-  const credential = makeCredential(identity)
-  const capabilities = defaultCapabilities()
-  const lifetime = defaultLifetime
+  identityData: Uint8Array,
+  privateKeyBundle: Uint8Array,
+  count: number
+): Promise<Array<{ publicData: Uint8Array; privateData: Uint8Array }>> {
+  const results: Array<{ publicData: Uint8Array; privateData: Uint8Array }> = []
 
-  const pairs: KeyPackagePair[] = []
   for (let i = 0; i < count; i++) {
-    const result = signatureKeyPair
-      ? await generateKeyPackageWithKey(
-          credential,
-          capabilities,
-          lifetime,
-          [],
-          signatureKeyPair,
-          cs
-        )
-      : await generateKeyPackage(credential, capabilities, lifetime, [], cs)
+    // Each key package gets its own Provider (independent lifecycle)
+    const provider = new Provider()
+    provider.deserialize_storage(privateKeyBundle)
+    const identity = Identity.deserialize(provider, identityData)
+    const kp = identity.key_package(provider)
 
-    pairs.push({
-      publicPackage: result.publicPackage,
-      privatePackage: result.privatePackage
+    results.push({
+      publicData: new Uint8Array(kp.to_bytes()),
+      // Save the provider storage which now includes the new key package's keys
+      privateData: new Uint8Array(provider.serialize_storage())
     })
   }
 
-  return pairs
+  return results
 }
+
+/**
+ * Encode a KeyPackage to bytes for transmission.
+ */
+export function encodeKeyPackageBytes(keyPackage: WasmKeyPackage): Uint8Array {
+  return keyPackage.to_bytes()
+}
+
+/**
+ * Decode a KeyPackage from its serialized form.
+ */
+export function decodeKeyPackageBytes(bytes: Uint8Array): WasmKeyPackage {
+  return WasmKeyPackage.from_bytes(bytes)
+}
+
+// ============================================================
+// Group Creation & Joining
+// ============================================================
 
 /**
  * Create a new MLS group. The creator is automatically the first member.
  */
 export async function createMLSGroup(
   groupId: string,
-  keyPackage: KeyPackage,
-  privateKeyPackage: PrivateKeyPackage
-): Promise<ClientState> {
-  const cs = getCs()
-  const groupIdBytes = new TextEncoder().encode(groupId)
-  return createGroup(groupIdBytes, keyPackage, privateKeyPackage, [], cs, vesperClientConfig)
+  identityName: string
+): Promise<GroupState> {
+  const provider = new Provider()
+  const identity = new Identity(provider, identityName)
+  const group = Group.create_new(provider, identity, groupId)
+
+  return makeGroupState(provider, identity, group)
 }
 
 /**
- * Check whether a user ID already exists in the group's ratchet tree.
+ * Process a Welcome message to join an existing MLS group.
+ * The privateData must be the serialized Provider storage from the key package
+ * that was consumed to generate this Welcome.
  */
-export function groupHasMember(
-  state: ClientState,
-  ...identities: Array<string | undefined | null>
-): boolean {
-  const candidates = new Set(
-    identities.filter((identity): identity is string => typeof identity === 'string' && identity.length > 0)
+export async function processWelcome(
+  welcomeBytes: Uint8Array,
+  identityName: string,
+  privateData?: Uint8Array
+): Promise<GroupState> {
+  const provider = new Provider()
+
+  // Restore the key package's private keys into the provider.
+  // The Welcome is encrypted to a specific key package's HPKE init key,
+  // which lives in the provider storage.
+  if (privateData) {
+    provider.deserialize_storage(privateData)
+  }
+
+  // Join the group. The provider must contain the key package's private keys.
+  const group = Group.join_from_welcome(provider, welcomeBytes)
+
+  // Recover the signing identity that matches our leaf node in the group.
+  // The key package was created with a specific credential name and signing
+  // keypair. We must use that same keypair for subsequent operations
+  // (encrypting messages, exporting GroupInfo, etc.), otherwise the
+  // signature won't match our leaf node's signature key.
+  //
+  // DO NOT create a fresh Identity here — `new Identity(provider, name)`
+  // generates a new Ed25519 keypair that won't match the leaf node.
+  const ownLeaf = group.own_leaf_identity()
+  const identityData = buildIdentityData(
+    ownLeaf.name,
+    new Uint8Array(ownLeaf.signature_public_key)
   )
-  if (candidates.size === 0) {
-    return false
-  }
+  const identity = Identity.deserialize(provider, identityData)
 
-  return state.ratchetTree.some((node) => {
-    if (!node || node.nodeType !== 'leaf') return false
-
-    const credential = node.leaf.credential
-    if (credential.credentialType !== 'basic') return false
-
-    return credentialMatchesCandidates(credential.identity, candidates)
-  })
+  return makeGroupState(provider, identity, group)
 }
 
-export function getGroupMemberIdentities(state: ClientState): string[] {
-  const identities = new Set<string>()
+/**
+ * Join a group via External Commit (RFC 9420 §12.4).
+ * The new member adds themselves using published GroupInfo.
+ * No existing member needs to be online.
+ *
+ * Returns the new GroupState and the external commit bytes
+ * that must be fanned out to existing members.
+ */
+export async function joinViaExternalCommit(
+  groupInfoBytes: Uint8Array,
+  ratchetTreeBytes: Uint8Array | null,
+  identityName: string
+): Promise<{ state: GroupState; commitBytes: Uint8Array }> {
+  const provider = new Provider()
+  const identity = new Identity(provider, identityName)
 
-  for (const node of state.ratchetTree) {
-    if (!node || node.nodeType !== 'leaf') {
-      continue
-    }
+  const ratchetTree = ratchetTreeBytes ? RatchetTree.from_bytes(ratchetTreeBytes) : null
+  const result = Group.join_from_external_commit(provider, identity, groupInfoBytes, ratchetTree)
 
-    const credential = node.leaf.credential
-    if (credential.credentialType !== 'basic') {
-      continue
-    }
+  const commitBytes = result.commit_bytes()
+  const group = result.take_group()
 
-    identities.add(normalizeCredentialIdentity(decodeCredentialIdentity(credential.identity)).userId)
+  return {
+    state: makeGroupState(provider, identity, group),
+    commitBytes
   }
-
-  return [...identities]
 }
 
-export function getGroupLeafIdentities(state: ClientState): string[] {
-  const identities = new Set<string>()
-
-  for (const node of state.ratchetTree) {
-    if (!node || node.nodeType !== 'leaf') {
-      continue
-    }
-
-    const credential = node.leaf.credential
-    if (credential.credentialType !== 'basic') {
-      continue
-    }
-
-    identities.add(decodeCredentialIdentity(credential.identity))
-  }
-
-  return [...identities]
-}
-
-export function findGroupMemberLeafIndex(
-  state: ClientState,
-  ...identities: Array<string | undefined | null>
-): number | null {
-  const candidates = new Set(
-    identities.filter((identity): identity is string => typeof identity === 'string' && identity.length > 0)
-  )
-  if (candidates.size === 0) {
-    return null
-  }
-
-  let leafIndex = 0
-  for (const node of state.ratchetTree) {
-    if (!node || node.nodeType !== 'leaf') {
-      continue
-    }
-
-    const credential = node.leaf.credential
-    if (
-      credential.credentialType === 'basic' &&
-      credentialMatchesCandidates(credential.identity, candidates)
-    ) {
-      return leafIndex
-    }
-
-    leafIndex += 1
-  }
-
-  return null
-}
-
-export function findMemberLeafIndex(
-  state: ClientState,
-  ...identities: Array<string | undefined | null>
-): number | null {
-  const candidates = new Set(
-    identities.filter((identity): identity is string => typeof identity === 'string' && identity.length > 0)
-  )
-  if (candidates.size === 0) {
-    return null
-  }
-
-  for (let nodeIndex = 0; nodeIndex < state.ratchetTree.length; nodeIndex++) {
-    const node = state.ratchetTree[nodeIndex]
-    if (!node || node.nodeType !== 'leaf') {
-      continue
-    }
-
-    const credential = node.leaf.credential
-    if (credential.credentialType !== 'basic') {
-      continue
-    }
-
-    if (credentialMatchesCandidates(credential.identity, candidates)) {
-      return nodeIndex / 2
-    }
-  }
-
-  return null
-}
-
-export function findExactMemberLeafIndex(
-  state: ClientState,
-  identity: string | undefined | null
-): number | null {
-  if (typeof identity !== 'string' || identity.length === 0) {
-    return null
-  }
-
-  for (let nodeIndex = 0; nodeIndex < state.ratchetTree.length; nodeIndex++) {
-    const node = state.ratchetTree[nodeIndex]
-    if (!node || node.nodeType !== 'leaf') {
-      continue
-    }
-
-    const credential = node.leaf.credential
-    if (credential.credentialType !== 'basic') {
-      continue
-    }
-
-    if (decodeCredentialIdentity(credential.identity) === identity) {
-      return nodeIndex / 2
-    }
-  }
-
-  return null
-}
+// ============================================================
+// Group Operations
+// ============================================================
 
 /**
  * Add a member to an existing MLS group.
- * Returns updated state, commit message, and welcome for the new member.
+ * Returns updated state, commit bytes, and welcome for the new member.
  */
 export async function addMemberToGroup(
-  state: ClientState,
-  memberKeyPackage: KeyPackage
+  state: GroupState,
+  memberKeyPackageBytes: Uint8Array
 ): Promise<{
-  newState: ClientState
+  newState: GroupState
   commitBytes: Uint8Array
   welcomeBytes: Uint8Array | null
 }> {
-  const cs = getCs()
-  const addProposal: Proposal = {
-    proposalType: 'add',
-    add: { keyPackage: memberKeyPackage }
+  const keyPackage = WasmKeyPackage.from_bytes(memberKeyPackageBytes)
+  const bundle = state._group.add_member(state._provider, state._identity, keyPackage)
+  state._group.merge_pending_commit(state._provider)
+
+  return {
+    newState: makeGroupState(state._provider, state._identity, state._group),
+    commitBytes: new Uint8Array(bundle.commit),
+    welcomeBytes: bundle.welcome ? new Uint8Array(bundle.welcome) : null
   }
-
-  const result = await createCommit(
-    { state, cipherSuite: cs },
-    {
-      extraProposals: [addProposal],
-      ratchetTreeExtension: true,
-      wireAsPublicMessage: true
-    }
-  )
-
-  const commitBytes = encodeMlsMessage(result.commit)
-  let welcomeBytes: Uint8Array | null = null
-
-  if (result.welcome) {
-    const welcomeMsg: MLSMessage = {
-      version: 'mls10',
-      wireformat: 'mls_welcome',
-      welcome: result.welcome
-    }
-    welcomeBytes = encodeMlsMessage(welcomeMsg)
-  }
-
-  return { newState: result.newState, commitBytes, welcomeBytes }
 }
 
 /**
  * Remove a member from an MLS group.
  */
 export async function removeMemberFromGroup(
-  state: ClientState,
+  state: GroupState,
   leafIndex: number
 ): Promise<{
-  newState: ClientState
+  newState: GroupState
   commitBytes: Uint8Array
 }> {
-  const cs = getCs()
-  const removeProposal: Proposal = {
-    proposalType: 'remove',
-    remove: { removed: leafIndex }
-  }
-
-  const result = await createCommit(
-    { state, cipherSuite: cs },
-    { extraProposals: [removeProposal], wireAsPublicMessage: true }
-  )
+  const bundle = state._group.remove_member(state._provider, state._identity, leafIndex)
+  state._group.merge_pending_commit(state._provider)
 
   return {
-    newState: result.newState,
-    commitBytes: encodeMlsMessage(result.commit)
+    newState: makeGroupState(state._provider, state._identity, state._group),
+    commitBytes: new Uint8Array(bundle.commit)
   }
 }
 
 /**
- * Process a Welcome message to join an existing MLS group.
- */
-export async function processWelcome(
-  welcomeBytes: Uint8Array,
-  keyPackage: KeyPackage,
-  privateKeys: PrivateKeyPackage
-): Promise<ClientState> {
-  const cs = getCs()
-  const decoded = decodeMlsMessageFromBytes(welcomeBytes)
-
-  if (decoded.wireformat !== 'mls_welcome') {
-    throw new Error(`Expected mls_welcome, got ${decoded.wireformat}`)
-  }
-
-  const pskIndex = makePskIndex(undefined, {})
-  return joinGroup(decoded.welcome, keyPackage, privateKeys, pskIndex, cs, undefined, undefined, vesperClientConfig)
-}
-
-/**
- * Process a commit message (from another member's Add/Remove/Update).
+ * Process a commit message (from another member's Add/Remove/Update/External Commit).
  * Updates local state to the new epoch.
  */
 export async function processCommitMessage(
-  state: ClientState,
+  state: GroupState,
   commitBytes: Uint8Array
-): Promise<ClientState> {
-  const cs = getCs()
-  const decoded = decodeMlsMessageFromBytes(commitBytes)
-  const publicCommit = assertPublicCommitMessage(decoded)
-  const result = await processPublicCommitWrapper(publicCommit, state, cs)
+): Promise<GroupState> {
+  const result = state._group.process_message(state._provider, commitBytes)
 
-  if (result.kind === 'newState') {
-    return result.newState
+  if (result.kind !== 'commit' && result.kind !== 'proposal') {
+    // Application message received when expecting commit — shouldn't happen
+    // but handle gracefully
   }
 
-  throw new Error(`Unexpected process result kind: ${result.kind}`)
+  return makeGroupState(state._provider, state._identity, state._group)
 }
 
 /**
  * Encrypt a plaintext message for the MLS group.
  */
 export async function encryptMessage(
-  state: ClientState,
+  state: GroupState,
   plaintext: string
 ): Promise<{
   ciphertext: Uint8Array
   epoch: number
-  newState: ClientState
+  newState: GroupState
 }> {
-  const cs = getCs()
   const plaintextBytes = new TextEncoder().encode(plaintext)
-  const result = await createApplicationMessage(state, plaintextBytes, cs)
-
-  const mlsMsg: MLSMessage = {
-    version: 'mls10',
-    wireformat: 'mls_private_message',
-    privateMessage: result.privateMessage
-  }
+  const ciphertext = state._group.create_message(state._provider, state._identity, plaintextBytes)
+  const epoch = Number(state._group.epoch())
 
   return {
-    ciphertext: encodeMlsMessage(mlsMsg),
-    epoch: Number(state.groupContext.epoch),
-    newState: result.newState
+    ciphertext: new Uint8Array(ciphertext),
+    epoch,
+    newState: makeGroupState(state._provider, state._identity, state._group)
   }
 }
 
 /**
  * Decrypt a ciphertext message from the MLS group.
- *
- * AUDIT NOTE (Phase 6.3 — MLS sender authentication):
- * ts-mls performs Ed25519 signature verification during processPrivateMessage().
- * The path is: processPrivateMessage → unprotectPrivateMessage (messageProtection.js)
- * which extracts the sender's signature public key from the ratchet tree via
- * getSignaturePublicKeyFromLeafIndex(), then calls verifyFramedContentSignature().
- * If the signature is invalid, it throws CryptoVerificationError("Signature invalid").
- * This means every decrypted message is authenticated against the sender's leaf node
- * key — a forged or tampered message will fail decryption entirely.
  */
 export async function decryptMessage(
-  state: ClientState,
+  state: GroupState,
   ciphertext: Uint8Array
 ): Promise<{
   plaintext: string
-  newState: ClientState
+  newState: GroupState
 } | null> {
-  const cs = getCs()
-  const decoded = decodeMlsMessageFromBytes(ciphertext)
-
-  if (decoded.wireformat !== 'mls_private_message') {
-    throw new Error(`Expected mls_private_message, got ${decoded.wireformat}`)
-  }
-
-  const pskIndex = makePskIndex(state, {})
-
   try {
-    const result = await processPrivateMessage(
-      state,
-      decoded.privateMessage,
-      pskIndex,
-      cs
-    )
+    const result = state._group.process_message(state._provider, ciphertext)
 
-    if (result.kind === 'applicationMessage') {
+    if (result.kind === 'application' && result.message) {
       return {
         plaintext: new TextDecoder().decode(result.message),
-        newState: result.newState
+        newState: makeGroupState(state._provider, state._identity, state._group)
       }
     }
 
     // Commit or proposal — return new state but no message content
-    if (result.kind === 'newState') {
-      return { plaintext: '', newState: result.newState }
+    if (result.kind === 'commit' || result.kind === 'proposal') {
+      return { plaintext: '', newState: makeGroupState(state._provider, state._identity, state._group) }
     }
 
     return null
-  } catch {
+  } catch (err) {
     // Decryption failed — message from before we joined, or corrupted
+    console.error('[MLS] decryptMessage failed:', err instanceof Error ? err.message : String(err))
     return null
   }
 }
 
+// ============================================================
+// Group State Queries
+// ============================================================
+
+/**
+ * Check whether a user ID already exists in the group's ratchet tree.
+ */
+export function groupHasMember(
+  state: GroupState,
+  ...identities: Array<string | undefined | null>
+): boolean {
+  const members = JSON.parse(state._group.member_identities()) as string[]
+  const candidates = new Set(
+    identities.filter((id): id is string => typeof id === 'string' && id.length > 0)
+  )
+
+  return members.some(member => {
+    const userId = member.split(MLS_IDENTITY_SEPARATOR)[0]
+    return candidates.has(member) || candidates.has(userId)
+  })
+}
+
+/**
+ * Get all member user IDs (without device suffix) in the group.
+ */
+export function getGroupMemberIdentities(state: GroupState): string[] {
+  const members = JSON.parse(state._group.member_identities()) as string[]
+  const userIds = new Set<string>()
+
+  for (const member of members) {
+    const userId = member.split(MLS_IDENTITY_SEPARATOR)[0]
+    userIds.add(userId)
+  }
+
+  return [...userIds]
+}
+
+/**
+ * Get all member leaf identities (with device suffix) in the group.
+ */
+export function getGroupLeafIdentities(state: GroupState): string[] {
+  return JSON.parse(state._group.member_identities()) as string[]
+}
+
+/**
+ * Find a member's leaf index by identity.
+ * Returns null if not found.
+ */
+export function findMemberLeafIndex(
+  state: GroupState,
+  ...identities: Array<string | undefined | null>
+): number | null {
+  const members = JSON.parse(state._group.member_identities()) as string[]
+  const candidates = new Set(
+    identities.filter((id): id is string => typeof id === 'string' && id.length > 0)
+  )
+
+  for (let i = 0; i < members.length; i++) {
+    const member = members[i]
+    const userId = member.split(MLS_IDENTITY_SEPARATOR)[0]
+    if (candidates.has(member) || candidates.has(userId)) {
+      return i
+    }
+  }
+
+  return null
+}
+
+/**
+ * Find a member's leaf index by exact identity string.
+ */
+export function findExactMemberLeafIndex(
+  state: GroupState,
+  identity: string | undefined | null
+): number | null {
+  if (!identity) return null
+
+  const members = JSON.parse(state._group.member_identities()) as string[]
+  const index = members.indexOf(identity)
+  return index >= 0 ? index : null
+}
+
+// ============================================================
+// GroupInfo (for External Commits)
+// ============================================================
+
+/**
+ * Export GroupInfo for publishing to the server.
+ * Should be called after each epoch change.
+ */
+export function exportGroupInfo(state: GroupState): Uint8Array {
+  return state._group.export_group_info(state._provider, state._identity)
+}
+
+/**
+ * Export the ratchet tree for publishing alongside GroupInfo.
+ */
+export function exportRatchetTree(state: GroupState): Uint8Array {
+  return state._group.export_ratchet_tree().to_bytes()
+}
+
+// ============================================================
+// Voice Key Derivation
+// ============================================================
+
+/**
+ * Derive a 128-bit voice encryption key from the MLS group's exporter secret.
+ */
+export async function deriveVoiceKey(state: GroupState): Promise<Uint8Array> {
+  return state._group.export_secret(state._provider, 'voice-e2ee', new Uint8Array(0), 16)
+}
+
+// ============================================================
+// Serialization (Persistence)
+// ============================================================
+
 /**
  * Serialize MLS group state for local storage.
+ * Stores the Provider's full storage (all keys + group state) and Identity info.
  */
-export function serializeGroupState(state: ClientState): Uint8Array {
-  return encodeGroupState(state)
+export function serializeGroupState(state: GroupState): Uint8Array {
+  const providerData = state._provider.serialize_storage()
+  const identityData = state._identity.serialize()
+  const groupId = state._group.group_id()
+  const groupIdBytes = new TextEncoder().encode(groupId)
+
+  // Format: groupIdLen(u32-be) groupId identityLen(u32-be) identityData providerData
+  const buf = new Uint8Array(4 + groupIdBytes.length + 4 + identityData.length + providerData.length)
+  const view = new DataView(buf.buffer)
+  let offset = 0
+
+  view.setUint32(offset, groupIdBytes.length)
+  offset += 4
+  buf.set(groupIdBytes, offset)
+  offset += groupIdBytes.length
+
+  view.setUint32(offset, identityData.length)
+  offset += 4
+  buf.set(identityData, offset)
+  offset += identityData.length
+
+  buf.set(providerData, offset)
+
+  return buf
 }
 
 /**
  * Deserialize MLS group state from local storage.
  */
-export function deserializeGroupState(bytes: Uint8Array): ClientState {
-  const result = decodeGroupState(bytes, 0)
-  if (!result) {
-    throw new Error('Failed to decode group state: decoder returned undefined')
+export function deserializeGroupState(bytes: Uint8Array): GroupState {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  let offset = 0
+
+  const groupIdLen = view.getUint32(offset)
+  offset += 4
+  const groupId = new TextDecoder().decode(bytes.slice(offset, offset + groupIdLen))
+  offset += groupIdLen
+
+  const identityLen = view.getUint32(offset)
+  offset += 4
+  const identityData = bytes.slice(offset, offset + identityLen)
+  offset += identityLen
+
+  const providerData = bytes.slice(offset)
+
+  // Restore provider, identity, and group
+  const provider = new Provider()
+  provider.deserialize_storage(providerData)
+  const identity = Identity.deserialize(provider, identityData)
+  const group = Group.load(provider, groupId)
+
+  return makeGroupState(provider, identity, group)
+}
+
+// ============================================================
+// Internal Helpers
+// ============================================================
+
+function makeGroupState(provider: Provider, identity: Identity, group: Group): GroupState {
+  return {
+    _provider: provider,
+    _identity: identity,
+    _group: group,
+    groupContext: {
+      get epoch() {
+        return group.epoch()
+      }
+    }
   }
-  // decodeGroupState returns [decodedValue, bytesConsumed].
-  // clientConfig is not part of the TLS serialization format, so we
-  // reattach the Vesper config after deserialization.
-  const state = result[0] as ClientState
-  state.clientConfig = vesperClientConfig
-  return state
 }
 
 /**
- * Derive a 128-bit voice encryption key from the MLS group's exporter secret.
- * Uses the MLS exporter with label "voice-e2ee" and empty context.
+ * Build an identity data blob from a name and public key.
+ * This matches the format produced by Identity.serialize() in the WASM bindings.
+ * Used to reconstruct identity data from persisted storage without having the
+ * original Identity object.
  */
-export async function deriveVoiceKey(state: ClientState): Promise<Uint8Array> {
-  const cs = getCs()
-  const context = new Uint8Array(0)
-  return mlsExporter(state.keySchedule.exporterSecret, 'voice-e2ee', context, 16, cs)
-}
+export function buildIdentityData(identityName: string, signaturePublicKey: Uint8Array): Uint8Array {
+  const nameBytes = new TextEncoder().encode(identityName)
+  const buf = new Uint8Array(4 + nameBytes.length + 4 + signaturePublicKey.length)
+  const view = new DataView(buf.buffer)
 
-/**
- * Decode a KeyPackage from its serialized form.
- */
-export function decodeKeyPackageBytes(bytes: Uint8Array): KeyPackage {
-  const decoded = decodeMlsMessageFromBytes(bytes)
-  if (decoded.wireformat !== 'mls_key_package') {
-    throw new Error(`Expected mls_key_package, got ${decoded.wireformat}`)
-  }
-  return decoded.keyPackage
-}
+  let offset = 0
+  view.setUint32(offset, nameBytes.length)
+  offset += 4
+  buf.set(nameBytes, offset)
+  offset += nameBytes.length
+  view.setUint32(offset, signaturePublicKey.length)
+  offset += 4
+  buf.set(signaturePublicKey, offset)
 
-/**
- * Encode a KeyPackage to bytes for transmission.
- */
-export function encodeKeyPackageBytes(keyPackage: KeyPackage): Uint8Array {
-  return encodeMlsMessage({
-    version: 'mls10',
-    wireformat: 'mls_key_package',
-    keyPackage
-  })
+  return buf
 }

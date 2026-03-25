@@ -14,6 +14,8 @@ defmodule Vesper.Chat do
     PinnedMessage
   }
 
+  alias Vesper.Servers.{Channel, Membership}
+
   alias Vesper.Runtime
   alias Vesper.Runtime.{Room, RoomEvent}
   alias Vesper.Sync
@@ -67,8 +69,45 @@ defmodule Vesper.Chat do
         |> Repo.insert!()
       end
 
-      Repo.preload(conversation, participants: :user)
+      # Create backing DM channel for unified MLS path
+      channel = create_backing_dm_channel!(conversation, type, user_ids, now)
+
+      conversation
+      |> Ecto.Changeset.change(%{channel_id: channel.id})
+      |> Repo.update!()
+      |> Repo.preload(participants: :user)
     end)
+  end
+
+  defp create_backing_dm_channel!(conversation, type, user_ids, now) do
+    channel_type = if type == "direct", do: "dm", else: "group_dm"
+
+    channel =
+      %Channel{}
+      |> Channel.dm_changeset(%{
+        type: channel_type,
+        disappearing_ttl: conversation.disappearing_ttl
+      })
+      |> Repo.insert!()
+
+    # Create Room for the channel (MLS uses the channel room, not the conversation room)
+    case Runtime.ensure_room_for_channel(channel) do
+      {:ok, _room} -> :ok
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+
+    # Create channel-direct memberships for all participants
+    for user_id <- user_ids do
+      %Membership{
+        user_id: user_id,
+        channel_id: channel.id,
+        role: "member",
+        joined_at: now
+      }
+      |> Repo.insert!()
+    end
+
+    channel
   end
 
   defp find_direct_conversation(user_a_id, user_b_id) do
@@ -89,12 +128,19 @@ defmodule Vesper.Chat do
   def list_conversations(user_id, opts \\ []) do
     limit = Keyword.get(opts, :limit, 100)
 
+    # Custom preload: join participants + users in a single query
+    participants_with_users =
+      from(p in DmParticipant,
+        join: u in assoc(p, :user),
+        preload: [user: u]
+      )
+
     conversations =
       from(c in DmConversation,
         join: p in DmParticipant,
         on: p.conversation_id == c.id,
         where: p.user_id == ^user_id,
-        preload: [participants: :user],
+        preload: [participants: ^participants_with_users],
         order_by: [desc: c.inserted_at],
         limit: ^limit
       )
@@ -211,6 +257,22 @@ defmodule Vesper.Chat do
   end
 
   @doc """
+  Look up the DmConversation linked to a DM channel.
+  Returns {conversation_id, participant_ids} or nil.
+  """
+  def get_dm_context_for_channel(channel_id) do
+    case Repo.one(
+           from(c in DmConversation,
+             where: c.channel_id == ^channel_id,
+             select: c.id
+           )
+         ) do
+      nil -> nil
+      conversation_id -> {conversation_id, list_participant_ids(conversation_id)}
+    end
+  end
+
+  @doc """
   Check if a user is a participant in a conversation.
   """
   def user_is_participant?(user_id, conversation_id) do
@@ -220,16 +282,33 @@ defmodule Vesper.Chat do
     |> Repo.exists?()
   end
 
+  @doc """
+  Look up the backing channel_id for a DM conversation.
+  Returns {:ok, channel_id} or :error.
+  """
+  def get_dm_context_for_channel_by_conversation(conversation_id) do
+    case Repo.one(
+           from(c in DmConversation,
+             where: c.id == ^conversation_id and not is_nil(c.channel_id),
+             select: c.channel_id
+           )
+         ) do
+      nil -> :error
+      channel_id -> {:ok, channel_id}
+    end
+  end
+
   defp conversations_with_last_message(conversations) do
     conv_ids = Enum.map(conversations, & &1.id)
 
     last_messages =
       if conv_ids != [] do
         from(m in Message,
+          join: sender in assoc(m, :sender),
           where: m.conversation_id in ^conv_ids,
           distinct: m.conversation_id,
           order_by: [m.conversation_id, desc: m.inserted_at],
-          preload: [:sender]
+          preload: [sender: sender]
         )
         |> Repo.all()
         |> Map.new(&{&1.conversation_id, &1})
@@ -363,29 +442,110 @@ defmodule Vesper.Chat do
     end
   end
 
-  def create_message(attrs) do
+  @doc """
+  Create and project a message atomically. If any step fails, the entire
+  operation rolls back — no orphaned messages in the DB.
+
+  Supports idempotent retries via `client_nonce`. If a message with the same
+  (scope, sender, nonce) already exists, returns the existing message without
+  re-broadcasting.
+
+  Options:
+  - `:preload` — associations to preload (default: `[:sender, :attachments]`, use `[]` to skip)
+  """
+  def create_message(attrs, opts \\ []) do
     attrs = maybe_set_expires_at(attrs)
+    preload = Keyword.get(opts, :preload, [:sender, :attachments])
+    changeset = Message.encrypted_changeset(%Message{}, attrs)
 
-    %Message{}
-    |> Message.encrypted_changeset(attrs)
-    |> Repo.insert()
-    |> case do
-      {:ok, message} ->
-        case Runtime.project_message(message) do
-          {:ok, event} ->
-            {:ok, Repo.preload(%{message | room_seq: event.room_seq}, [:sender, :attachments])}
+    Repo.transaction(fn ->
+      case insert_or_fetch_existing(changeset, attrs) do
+        {:new, message} ->
+          case Runtime.project_message(message) do
+            {:ok, event} ->
+              message = %{message | room_seq: event.room_seq}
+              maybe_preload_message(message, preload)
 
-          {:error, reason} ->
-            Logger.warning(
-              "Failed to project message #{message.id} into room events: #{inspect(reason)}"
-            )
+            {:error, reason} ->
+              Repo.rollback({:projection_failed, reason})
+          end
 
-            {:ok, Repo.preload(message, [:sender, :attachments])}
-        end
+        {:existing, message} ->
+          # Idempotent retry — message already created and projected
+          maybe_preload_message(message, preload)
+      end
+    end)
+  end
 
-      error ->
-        error
+  defp insert_or_fetch_existing(changeset, attrs) do
+    client_nonce = attrs[:client_nonce] || attrs["client_nonce"]
+
+    if is_binary(client_nonce) and client_nonce != "" do
+      # Idempotent path: use ON CONFLICT with nonce index
+      conflict_target = nonce_conflict_target(attrs)
+
+      case Repo.insert(changeset,
+             on_conflict: :nothing,
+             conflict_target: {:unsafe_fragment, conflict_target}
+           ) do
+        {:ok, %{id: nil}} ->
+          # Conflict — fetch the existing message
+          existing = fetch_by_nonce(attrs)
+
+          if existing do
+            # Load room_seq from the existing room event
+            event = Repo.get_by(Vesper.Runtime.RoomEvent, message_id: existing.id)
+            room_seq = if event, do: event.room_seq, else: nil
+            {:existing, %{existing | room_seq: room_seq}}
+          else
+            raise "nonce conflict but existing message not found"
+          end
+
+        {:ok, message} ->
+          {:new, message}
+
+        {:error, changeset} ->
+          Repo.rollback(changeset)
+      end
+    else
+      # No nonce — standard insert (no idempotency)
+      case Repo.insert(changeset) do
+        {:ok, message} -> {:new, message}
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
     end
+  end
+
+  defp nonce_conflict_target(attrs) do
+    channel_id = attrs[:channel_id] || attrs["channel_id"]
+
+    if channel_id do
+      "(channel_id, sender_id, client_nonce) WHERE client_nonce IS NOT NULL AND channel_id IS NOT NULL"
+    else
+      "(conversation_id, sender_id, client_nonce) WHERE client_nonce IS NOT NULL AND conversation_id IS NOT NULL"
+    end
+  end
+
+  defp fetch_by_nonce(attrs) do
+    nonce = attrs[:client_nonce] || attrs["client_nonce"]
+    sender_id = attrs[:sender_id] || attrs["sender_id"]
+    channel_id = attrs[:channel_id] || attrs["channel_id"]
+    conversation_id = attrs[:conversation_id] || attrs["conversation_id"]
+
+    query =
+      from(m in Message,
+        where: m.sender_id == ^sender_id and m.client_nonce == ^nonce,
+        limit: 1
+      )
+
+    query =
+      if channel_id do
+        from(m in query, where: m.channel_id == ^channel_id)
+      else
+        from(m in query, where: m.conversation_id == ^conversation_id)
+      end
+
+    Repo.one(query)
   end
 
   def update_conversation_ttl(conversation_id, ttl) do
@@ -456,21 +616,28 @@ defmodule Vesper.Chat do
         end
 
       true ->
-        query =
+        non_sender = non_sender_preloads(preload)
+
+        messages =
           from(m in Message,
             left_join: event in RoomEvent,
             on: event.message_id == m.id,
+            join: sender in assoc(m, :sender),
             where: m.channel_id == ^channel_id,
             order_by: [desc: m.inserted_at, desc: m.id],
             limit: ^limit,
             select_merge: %{room_seq: event.room_seq},
-            preload: ^preload
+            preload: [sender: sender]
           )
+          |> apply_before_cursor(before)
+          |> apply_after_cursor(after_cursor)
+          |> Repo.all()
 
-        query = apply_before_cursor(query, before)
-        query = apply_after_cursor(query, after_cursor)
-
-        Repo.all(query)
+        if non_sender == [] do
+          messages
+        else
+          Repo.preload(messages, non_sender)
+        end
     end
   end
 
@@ -488,21 +655,28 @@ defmodule Vesper.Chat do
         end
 
       true ->
-        query =
+        non_sender = non_sender_preloads(preload)
+
+        messages =
           from(m in Message,
             left_join: event in RoomEvent,
             on: event.message_id == m.id,
+            join: sender in assoc(m, :sender),
             where: m.conversation_id == ^conversation_id,
             order_by: [desc: m.inserted_at, desc: m.id],
             limit: ^limit,
             select_merge: %{room_seq: event.room_seq},
-            preload: ^preload
+            preload: [sender: sender]
           )
+          |> apply_before_cursor(before)
+          |> apply_after_cursor(after_cursor)
+          |> Repo.all()
 
-        query = apply_before_cursor(query, before)
-        query = apply_after_cursor(query, after_cursor)
-
-        Repo.all(query)
+        if non_sender == [] do
+          messages
+        else
+          Repo.preload(messages, non_sender)
+        end
     end
   end
 
@@ -677,7 +851,12 @@ defmodule Vesper.Chat do
     end
   end
 
+  defp non_sender_preloads(preload) do
+    Enum.reject(preload, &(&1 == :sender))
+  end
+
   defp maybe_preload_message(nil, _preload), do: nil
+  defp maybe_preload_message(message, []), do: message
   defp maybe_preload_message(message, preload), do: Repo.preload(message, preload)
 
   defp preload_messages_with_room_seq(message_pairs, preload) do
@@ -893,6 +1072,95 @@ defmodule Vesper.Chat do
     |> Enum.uniq()
   end
 
+  @doc """
+  Get both channel and DM unread counts in a single DB round-trip using UNION ALL.
+  Returns `%{channels: %{channel_id => count}, conversations: %{conversation_id => count}}`.
+  """
+  def get_all_unread_counts(user_id, channel_ids, conversation_ids)
+      when is_list(channel_ids) and is_list(conversation_ids) do
+    if channel_ids == [] and conversation_ids == [] do
+      %{channels: %{}, conversations: %{}}
+    else
+      {sql, params} =
+        build_unread_union_query(user_id, channel_ids, conversation_ids)
+
+      case Repo.query(sql, params) do
+        {:ok, %{rows: rows}} ->
+          {channels, conversations} =
+            Enum.reduce(rows, {%{}, %{}}, fn [kind, scope_id, count], {ch, dm} ->
+              id = Ecto.UUID.cast!(scope_id)
+
+              case kind do
+                "channel" -> {Map.put(ch, id, count), dm}
+                "dm" -> {ch, Map.put(dm, id, count)}
+              end
+            end)
+
+          %{channels: channels, conversations: conversations}
+
+        {:error, _} ->
+          %{channels: %{}, conversations: %{}}
+      end
+    end
+  end
+
+  defp build_unread_union_query(user_id, channel_ids, conversation_ids) do
+    parts = []
+    params = []
+    param_idx = 1
+
+    {parts, params, param_idx} =
+      if channel_ids != [] do
+        placeholders =
+          Enum.map_join(1..length(channel_ids), ", ", fn i -> "$#{param_idx + i}" end)
+
+        sql = """
+        SELECT 'channel' AS kind, m.channel_id::text AS scope_id, COUNT(m.id) AS cnt
+        FROM messages m
+        JOIN room_events event ON event.message_id = m.id AND event.event_type = 'vesper.message'
+        LEFT JOIN channel_read_positions p ON p.channel_id = m.channel_id AND p.user_id = $#{param_idx}
+        WHERE m.channel_id IN (#{placeholders})
+          AND m.sender_id != $#{param_idx}
+          AND (p.last_read_seq IS NULL OR event.room_seq > p.last_read_seq)
+        GROUP BY m.channel_id
+        HAVING COUNT(m.id) > 0
+        """
+
+        new_params = [Ecto.UUID.dump!(user_id) | Enum.map(channel_ids, &Ecto.UUID.dump!/1)]
+        {[sql | parts], params ++ new_params, param_idx + 1 + length(channel_ids)}
+      else
+        {parts, params, param_idx}
+      end
+
+    {parts, params, _param_idx} =
+      if conversation_ids != [] do
+        placeholders =
+          Enum.map_join(1..length(conversation_ids), ", ", fn i -> "$#{param_idx + i}" end)
+
+        sql = """
+        SELECT 'dm' AS kind, m.conversation_id::text AS scope_id, COUNT(m.id) AS cnt
+        FROM messages m
+        JOIN room_events event ON event.message_id = m.id AND event.event_type = 'vesper.message'
+        LEFT JOIN dm_read_positions p ON p.conversation_id = m.conversation_id AND p.user_id = $#{param_idx}
+        WHERE m.conversation_id IN (#{placeholders})
+          AND m.sender_id != $#{param_idx}
+          AND (p.last_read_seq IS NULL OR event.room_seq > p.last_read_seq)
+        GROUP BY m.conversation_id
+        HAVING COUNT(m.id) > 0
+        """
+
+        new_params =
+          [Ecto.UUID.dump!(user_id) | Enum.map(conversation_ids, &Ecto.UUID.dump!/1)]
+
+        {[sql | parts], params ++ new_params, param_idx + 1 + length(conversation_ids)}
+      else
+        {parts, params, param_idx}
+      end
+
+    final_sql = Enum.join(Enum.reverse(parts), " UNION ALL ")
+    {final_sql, params}
+  end
+
   def get_channel_unread_counts(user_id, channel_ids) when is_list(channel_ids) do
     if channel_ids == [] do
       %{}
@@ -951,6 +1219,67 @@ defmodule Vesper.Chat do
     conversation_ids
     |> Enum.uniq()
     |> Map.new(fn conversation_id -> {conversation_id, Map.get(counts, conversation_id, 0)} end)
+  end
+
+  @doc """
+  Combined unread counts for channels and DMs in a single DB round-trip.
+  Uses UNION ALL to merge both queries, saving 1 query per sync cycle.
+  """
+  def get_combined_unread_counts(user_id, channel_ids, conversation_ids)
+      when is_list(channel_ids) and is_list(conversation_ids) do
+    channel_fragment =
+      if channel_ids == [] do
+        nil
+      else
+        from(m in Message,
+          join: event in RoomEvent,
+          on: event.message_id == m.id and event.event_type == "vesper.message",
+          left_join: p in ChannelReadPosition,
+          on: p.channel_id == m.channel_id and p.user_id == ^user_id,
+          where:
+            m.channel_id in ^channel_ids and
+              m.sender_id != ^user_id and
+              (is_nil(p.last_read_seq) or event.room_seq > p.last_read_seq),
+          group_by: m.channel_id,
+          select: %{scope_kind: "channel", scope_id: m.channel_id, count: count(m.id)}
+        )
+      end
+
+    dm_fragment =
+      if conversation_ids == [] do
+        nil
+      else
+        from(m in Message,
+          join: event in RoomEvent,
+          on: event.message_id == m.id and event.event_type == "vesper.message",
+          left_join: p in DmReadPosition,
+          on: p.conversation_id == m.conversation_id and p.user_id == ^user_id,
+          where:
+            m.conversation_id in ^conversation_ids and
+              m.sender_id != ^user_id and
+              (is_nil(p.last_read_seq) or event.room_seq > p.last_read_seq),
+          group_by: m.conversation_id,
+          select: %{scope_kind: "dm", scope_id: m.conversation_id, count: count(m.id)}
+        )
+      end
+
+    results =
+      case {channel_fragment, dm_fragment} do
+        {nil, nil} -> []
+        {q, nil} -> Repo.all(q)
+        {nil, q} -> Repo.all(q)
+        {cq, dq} -> Repo.all(union_all(cq, ^dq))
+      end
+
+    results
+    |> Enum.filter(fn %{count: count} -> count > 0 end)
+    |> Enum.split_with(fn %{scope_kind: kind} -> kind == "channel" end)
+    |> then(fn {channels, dms} ->
+      %{
+        channels: Map.new(channels, fn %{scope_id: id, count: c} -> {id, c} end),
+        conversations: Map.new(dms, fn %{scope_id: id, count: c} -> {id, c} end)
+      }
+    end)
   end
 
   defp get_channel_message_room_seq(channel_id, message_id) do
@@ -1022,25 +1351,14 @@ defmodule Vesper.Chat do
   defp maybe_set_expires_at(%{expires_at: %DateTime{}} = attrs), do: attrs
 
   defp maybe_set_expires_at(attrs) do
-    channel_id = attrs[:channel_id] || attrs["channel_id"]
-    conversation_id = attrs[:conversation_id] || attrs["conversation_id"]
+    # If the caller provides disappearing_ttl directly, skip the DB lookup
+    ttl = attrs[:disappearing_ttl] || attrs["disappearing_ttl"]
 
     ttl =
-      cond do
-        channel_id ->
-          case Vesper.Repo.get(Vesper.Servers.Channel, channel_id) do
-            %{disappearing_ttl: ttl} when is_integer(ttl) and ttl > 0 -> ttl
-            _ -> nil
-          end
-
-        conversation_id ->
-          case Vesper.Repo.get(DmConversation, conversation_id) do
-            %{disappearing_ttl: ttl} when is_integer(ttl) and ttl > 0 -> ttl
-            _ -> nil
-          end
-
-        true ->
-          nil
+      if is_nil(ttl) do
+        lookup_scope_ttl(attrs)
+      else
+        if is_integer(ttl) and ttl > 0, do: ttl, else: nil
       end
 
     if ttl do
@@ -1049,9 +1367,33 @@ defmodule Vesper.Chat do
         |> DateTime.add(ttl, :second)
         |> DateTime.truncate(:second)
 
-      Map.put(attrs, :expires_at, expires_at)
-    else
       attrs
+      |> Map.put(:expires_at, expires_at)
+      |> Map.delete(:disappearing_ttl)
+    else
+      Map.delete(attrs, :disappearing_ttl)
+    end
+  end
+
+  defp lookup_scope_ttl(attrs) do
+    channel_id = attrs[:channel_id] || attrs["channel_id"]
+    conversation_id = attrs[:conversation_id] || attrs["conversation_id"]
+
+    cond do
+      channel_id ->
+        case Vesper.Repo.get(Vesper.Servers.Channel, channel_id) do
+          %{disappearing_ttl: ttl} when is_integer(ttl) and ttl > 0 -> ttl
+          _ -> nil
+        end
+
+      conversation_id ->
+        case Vesper.Repo.get(DmConversation, conversation_id) do
+          %{disappearing_ttl: ttl} when is_integer(ttl) and ttl > 0 -> ttl
+          _ -> nil
+        end
+
+      true ->
+        nil
     end
   end
 end

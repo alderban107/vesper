@@ -1,4 +1,7 @@
-import type { ClientState, KeyPackage, PrivateKeyPackage } from 'ts-mls'
+import type { GroupState, KeyPackagePair } from './mls.js'
+
+// Re-export the new types from mls.ts
+export type { GroupState, KeyPackagePair }
 
 /** Identity key pair for signing and key exchange */
 export interface IdentityKeys {
@@ -15,12 +18,6 @@ export interface EncryptedKeyBundle {
   salt: Uint8Array
 }
 
-/** A key package pair — public portion goes to server, private stays local */
-export interface KeyPackagePair {
-  publicPackage: KeyPackage
-  privatePackage: PrivateKeyPackage
-}
-
 /** Serializable MLS group info for persistence */
 export interface MLSGroupInfo {
   groupId: string
@@ -32,13 +29,13 @@ export interface MLSGroupInfo {
 export interface EncryptedMessage {
   ciphertext: Uint8Array
   epoch: number
-  newState: ClientState
+  newState: GroupState
 }
 
 /** Result of decrypting an application message */
 export interface DecryptedMessage {
   plaintext: string
-  newState: ClientState
+  newState: GroupState
 }
 
 /** Recovery key data returned during registration */

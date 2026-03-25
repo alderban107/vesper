@@ -10,56 +10,44 @@ defmodule VesperWeb.SyncController do
   def index(conn, params) do
     user = conn.assigns.current_user
     cursor = parse_since(params["since"])
-    since = cursor && cursor.synced_at
+    scope_sync_event_id = cursor && cursor[:scope_sync_event_id]
     user_sync_event_id = cursor && cursor.user_sync_event_id
-    full_sync = is_nil(since)
+    has_event_cursor = is_integer(scope_sync_event_id) or is_integer(user_sync_event_id)
+    full_sync = is_nil(cursor) or not has_event_cursor
 
     scope_changes =
       cond do
+        is_integer(scope_sync_event_id) and is_integer(user_sync_event_id) ->
+          Sync.list_scope_changes_with_cursors(
+            user.id,
+            scope_sync_event_id,
+            user_sync_event_id
+          )
+
+        is_integer(scope_sync_event_id) ->
+          Sync.list_scope_changes_since(user.id, scope_sync_event_id)
+
         is_integer(user_sync_event_id) ->
           Sync.list_scope_changes_since(user.id, user_sync_event_id)
 
-        is_nil(since) ->
-          %{channel_ids: [], conversation_ids: [], read_changes: []}
-
         true ->
-          %{
-            channel_ids: Servers.list_changed_channel_ids_since(user.id, since),
-            conversation_ids: Chat.list_changed_conversation_ids_since(user.id, since),
-            read_changes:
-              Enum.map(
-                Chat.list_channels_with_read_changes_since(user.id, since),
-                &{:channel, &1}
-              ) ++
-                Enum.map(
-                  Chat.list_conversations_with_read_changes_since(user.id, since),
-                  &{:dm, &1}
-                )
-          }
+          %{channel_ids: [], conversation_ids: [], read_changes: []}
       end
 
     servers =
-      cond do
-        is_nil(since) ->
-          Servers.list_user_servers(user)
-
-        is_integer(user_sync_event_id) ->
-          Servers.list_user_servers_by_ids(user, scope_changes.server_ids)
-
-        true ->
-          Servers.list_user_servers_since(user, since)
+      if full_sync do
+        Servers.list_user_servers(user)
+      else
+        # Delta sync: skip emoji preload — client already has them from full sync.
+        # Saves 2 queries (emojis + emoji creators) per delta sync.
+        Servers.list_user_servers_by_ids(user, scope_changes.server_ids, include_emojis: false)
       end
 
     conversations =
-      cond do
-        is_nil(since) ->
-          Chat.list_conversations(user.id)
-
-        is_integer(user_sync_event_id) ->
-          Chat.list_conversations_by_ids(user.id, scope_changes.conversation_ids)
-
-        true ->
-          Chat.list_conversations_since(user.id, since)
+      if full_sync do
+        Chat.list_conversations(user.id)
+      else
+        Chat.list_conversations_by_ids(user.id, scope_changes.conversation_ids)
       end
 
     changed_conversation_ids = scope_changes.conversation_ids
@@ -90,56 +78,55 @@ defmodule VesperWeb.SyncController do
       end)
 
     {channel_activity, unread_counts} =
-      case since do
-        nil ->
-          channel_ids = Servers.list_user_channel_ids(user.id)
+      if full_sync do
+        channel_ids = Servers.list_user_channel_ids(user.id)
 
-          unread_counts = %{
-            channels: Chat.get_channel_unread_counts(user.id, channel_ids),
-            conversations:
-              Chat.get_dm_unread_counts(user.id, Chat.list_user_conversation_ids(user.id))
-          }
+        conversation_ids =
+          Enum.map(conversations, fn %{conversation: c} -> c.id end)
 
-          {Servers.list_channel_activity_snapshots(user.id, channel_ids), unread_counts}
+        unread_counts =
+          Chat.get_combined_unread_counts(user.id, channel_ids, conversation_ids)
 
-        _value ->
-          changed_channel_ids = scope_changes.channel_ids
-          changed = Servers.list_channel_activity_snapshots(user.id, changed_channel_ids)
+        {Servers.list_channel_activity_snapshots(user.id, channel_ids), unread_counts}
+      else
+        changed_channel_ids = scope_changes.channel_ids
+        changed = Servers.list_channel_activity_snapshots(user.id, changed_channel_ids)
 
-          unread_channel_ids =
-            changed_channel_ids
-            |> Kernel.++(
-              scope_changes.read_changes
-              |> Enum.flat_map(fn
-                {:channel, channel_id} -> [channel_id]
-                _ -> []
-              end)
-            )
-            |> Enum.uniq()
+        unread_channel_ids =
+          changed_channel_ids
+          |> Kernel.++(
+            scope_changes.read_changes
+            |> Enum.flat_map(fn
+              {:channel, channel_id} -> [channel_id]
+              _ -> []
+            end)
+          )
+          |> Enum.uniq()
 
-          unread_conversation_ids =
-            changed_conversation_ids
-            |> Kernel.++(
-              scope_changes.read_changes
-              |> Enum.flat_map(fn
-                {:dm, conversation_id} -> [conversation_id]
-                _ -> []
-              end)
-            )
-            |> Enum.uniq()
+        unread_conversation_ids =
+          changed_conversation_ids
+          |> Kernel.++(
+            scope_changes.read_changes
+            |> Enum.flat_map(fn
+              {:dm, conversation_id} -> [conversation_id]
+              _ -> []
+            end)
+          )
+          |> Enum.uniq()
 
-          unread_counts = %{
-            channels: Chat.get_channel_unread_counts_snapshot(user.id, unread_channel_ids),
-            conversations: Chat.get_dm_unread_counts_snapshot(user.id, unread_conversation_ids)
-          }
+        unread_counts = %{
+          channels: Chat.get_channel_unread_counts_snapshot(user.id, unread_channel_ids),
+          conversations: Chat.get_dm_unread_counts_snapshot(user.id, unread_conversation_ids)
+        }
 
-          {changed, unread_counts}
+        {changed, unread_counts}
       end
 
     token =
       SyncCursor.encode(%{
         synced_at: DateTime.utc_now(),
-        user_sync_event_id: Sync.latest_event_id_for_user(user.id)
+        user_sync_event_id: Sync.latest_event_id_for_user(user.id),
+        scope_sync_event_id: Sync.latest_scope_event_id()
       })
 
     json(conn, %{
@@ -228,6 +215,7 @@ defmodule VesperWeb.SyncController do
       id: conversation.id,
       type: conversation.type,
       name: conversation.name,
+      channel_id: conversation.channel_id,
       disappearing_ttl: conversation.disappearing_ttl,
       inserted_at: conversation.inserted_at,
       participants:
@@ -253,6 +241,7 @@ defmodule VesperWeb.SyncController do
       id: message.id,
       conversation_id: message.conversation_id,
       channel_id: message.channel_id,
+      client_nonce: message.client_nonce,
       sender_id: message.sender_id,
       sender: sender_json(message.sender),
       inserted_at: message.inserted_at

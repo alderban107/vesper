@@ -1,5 +1,9 @@
 import type { Page } from '@playwright/test'
-import { waitForServerInSidebar, waitForChannel } from './wait'
+import {
+  waitForServerInSidebar,
+  waitForChannel,
+  waitForSocketConnected
+} from './wait'
 
 export async function createServer(page: Page, name: string): Promise<void> {
   await page.click('[data-testid="sidebar"] button[title="Create Server"]')
@@ -75,20 +79,29 @@ export async function createVoiceChannel(page: Page, name: string): Promise<void
 export async function getInviteCode(page: Page): Promise<string> {
   await page.click('.vesper-guild-header-button')
   await page.waitForSelector('.vesper-guild-header-menu', { timeout: 5_000 })
-  await page.click('.vesper-guild-header-menu >> text=Copy Invite Code')
+  const [response] = await Promise.all([
+    page.waitForResponse(
+      (res) =>
+        res.url().includes('/invite-code') &&
+        res.request().method() === 'GET',
+      { timeout: 10_000 }
+    ),
+    page.click('.vesper-guild-header-menu >> text=Copy Invite Code'),
+  ])
 
-  const deadline = Date.now() + 10_000
-  while (Date.now() < deadline) {
-    const code = await page.evaluate(async () => await navigator.clipboard.readText())
-      .catch(() => '')
-    if (code.trim().length > 0) {
-      return code.trim()
-    }
-
-    await page.waitForTimeout(200)
+  if (!response.ok()) {
+    const body = await response.text().catch(() => 'no body')
+    throw new Error(`Could not get invite code (${response.status()}): ${body}`)
   }
 
-  throw new Error('Could not get invite code')
+  const data = await response.json().catch(() => null) as { invite_code?: string } | null
+  const inviteCode = data?.invite_code?.trim()
+
+  if (!inviteCode) {
+    throw new Error('Could not get invite code: missing invite_code payload')
+  }
+
+  return inviteCode
 }
 
 export async function joinServerWithCode(page: Page, inviteCode: string): Promise<void> {
@@ -99,11 +112,49 @@ export async function joinServerWithCode(page: Page, inviteCode: string): Promis
   await page.click('button:has-text("Join")')
 
   await page.waitForSelector('text=Join a Server', { state: 'hidden', timeout: 15_000 })
+  await waitForSocketConnected(page)
 }
 
 export async function selectServer(page: Page, serverName: string): Promise<void> {
-  await page.click(`[data-testid="sidebar"] button[title="${serverName}"]`)
-  await page.waitForSelector('.vesper-channel-sidebar-title', { timeout: 10_000 })
+  await waitForServerInSidebar(page, serverName)
+
+  const deadline = Date.now() + 10_000
+
+  while (Date.now() < deadline) {
+    const state = await page.evaluate((name) => {
+      const activeTitle = document
+        .querySelector('.vesper-channel-sidebar-title')
+        ?.textContent
+        ?.trim()
+      if (activeTitle === name) {
+        return 'open'
+      }
+
+      const railButtons = Array.from(
+        document.querySelectorAll<HTMLButtonElement>(
+          '[data-testid="sidebar"] .vesper-server-rail button[title]'
+        )
+      )
+
+      return railButtons.some((button) => button.title === name) ? 'listed' : 'missing'
+    }, serverName).catch(() => 'missing')
+
+    if (state === 'open') {
+      return
+    }
+
+    if (state === 'listed') {
+      await page
+        .locator(`[data-testid="sidebar"] .vesper-server-rail button[title="${serverName}"]`)
+        .first()
+        .click({ timeout: 2_000 })
+        .catch(() => {})
+    }
+
+    await page.waitForTimeout(200)
+  }
+
+  throw new Error(`Server "${serverName}" did not become active within 10000ms`)
 }
 
 export async function selectChannel(page: Page, channelName: string): Promise<void> {

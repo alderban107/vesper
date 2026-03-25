@@ -1,12 +1,45 @@
 defmodule Vesper.Runtime do
   import Ecto.Query
 
-  alias Vesper.{Chat, Sync}
+  alias Vesper.Sync
   alias Vesper.Chat.{DmConversation, Message}
   alias Vesper.Repo
   alias Vesper.Runtime.{Room, RoomEvent, RoomRelation}
-  alias Vesper.Servers
   alias Vesper.Servers.Channel
+
+  @room_cache :vesper_room_cache
+
+  def init_room_cache do
+    if :ets.info(@room_cache) == :undefined do
+      :ets.new(@room_cache, [:set, :public, :named_table, read_concurrency: true])
+    end
+
+    # Pre-warm cache with all rooms — avoids DB hit on first message per channel.
+    # Uses only immutable fields (id, kind, server_id, channel_id, conversation_id).
+    warm_room_cache()
+  end
+
+  defp warm_room_cache do
+    rooms = Repo.all(from(r in Room, select: r))
+
+    for room <- rooms do
+      case room.kind do
+        :channel when is_binary(room.channel_id) ->
+          :ets.insert(@room_cache, {{:channel, room.channel_id}, room})
+
+        :dm when is_binary(room.conversation_id) ->
+          :ets.insert(@room_cache, {{:dm, room.conversation_id}, room})
+
+        _ ->
+          :ok
+      end
+    end
+
+    :ok
+  rescue
+    # DB not ready yet (migrations pending) — cache will populate lazily
+    _ -> :ok
+  end
 
   def get_room(id), do: Repo.get(Room, id)
 
@@ -16,6 +49,51 @@ defmodule Vesper.Runtime do
 
   def get_room_for_conversation(conversation_id) do
     Repo.get_by(Room, conversation_id: conversation_id)
+  end
+
+  @doc """
+  Cached room lookup for the message send hot path.
+  Only uses immutable fields (id, kind, server_id, channel_id, conversation_id).
+  Do NOT use for reads that need fresh last_message_* or current_seq fields.
+  """
+  def get_room_for_message_send(channel_id: channel_id) do
+    case lookup_room_cache(:channel, channel_id) do
+      {:ok, room} -> room
+      :miss -> cache_and_return(:channel, channel_id, Repo.get_by(Room, channel_id: channel_id))
+    end
+  end
+
+  def get_room_for_message_send(conversation_id: conversation_id) do
+    case lookup_room_cache(:dm, conversation_id) do
+      {:ok, room} ->
+        room
+
+      :miss ->
+        cache_and_return(
+          :dm,
+          conversation_id,
+          Repo.get_by(Room, conversation_id: conversation_id)
+        )
+    end
+  end
+
+  defp lookup_room_cache(kind, scope_id) do
+    if :ets.info(@room_cache) != :undefined do
+      case :ets.lookup(@room_cache, {kind, scope_id}) do
+        [{{^kind, ^scope_id}, room}] -> {:ok, room}
+        [] -> :miss
+      end
+    else
+      :miss
+    end
+  end
+
+  defp cache_and_return(kind, scope_id, room) do
+    if room && :ets.info(@room_cache) != :undefined do
+      :ets.insert(@room_cache, {{kind, scope_id}, room})
+    end
+
+    room
   end
 
   def ensure_room_for_channel(%Channel{} = channel) do
@@ -49,28 +127,20 @@ defmodule Vesper.Runtime do
     end
   end
 
-  def project_message(%Message{} = message) do
-    with {:ok, room} <- room_for_message(message) do
-      Repo.transaction(fn ->
-        with {:ok, event} <- ensure_message_event(room, message) do
-          case maybe_create_thread_relation(event, message) do
-            {:ok, _event} = result ->
-              update_room_last_message(room.id, message.id, message.inserted_at, event.room_seq)
-              append_user_sync_events(room, "message")
-              result
+  @doc """
+  Project a message into the room event stream.
 
-            error ->
-              Repo.rollback(error)
-          end
-        else
-          error ->
-            Repo.rollback(error)
-        end
-      end)
-      |> case do
-        {:ok, {:ok, event}} -> {:ok, event}
-        {:error, error} -> error
-      end
+  IMPORTANT: This function MUST be called inside a Repo.transaction.
+  It does not wrap itself in a transaction — the caller (Chat.create_message)
+  provides the outer transaction for all-or-nothing atomicity.
+  """
+  def project_message(%Message{} = message) do
+    with {:ok, room} <- room_for_message(message),
+         {:ok, event} <- ensure_message_event(room, message),
+         {:ok, _} <- maybe_create_thread_relation(event, message) do
+      update_room_last_message(room.id, message.id, message.inserted_at, event.room_seq)
+      append_user_sync_events(room, "message")
+      {:ok, event}
     end
   end
 
@@ -205,7 +275,7 @@ defmodule Vesper.Runtime do
   def refresh_room_last_message_for_scope(_scope_kind, _scope_id), do: :ok
 
   defp room_for_message(%Message{channel_id: channel_id}) when not is_nil(channel_id) do
-    case get_room_for_channel(channel_id) do
+    case get_room_for_message_send(channel_id: channel_id) do
       %Room{} = room -> {:ok, room}
       nil -> {:error, :room_not_found}
     end
@@ -213,7 +283,7 @@ defmodule Vesper.Runtime do
 
   defp room_for_message(%Message{conversation_id: conversation_id})
        when not is_nil(conversation_id) do
-    case get_room_for_conversation(conversation_id) do
+    case get_room_for_message_send(conversation_id: conversation_id) do
       %Room{} = room -> {:ok, room}
       nil -> {:error, :room_not_found}
     end
@@ -243,21 +313,53 @@ defmodule Vesper.Runtime do
         {:ok, event}
 
       nil ->
-        room_seq = next_room_seq!(room.id)
+        # Combine next_room_seq + event insert into a single round-trip
+        now = DateTime.utc_now() |> DateTime.truncate(:second)
+        event_id = Ecto.UUID.generate()
+        content = message_content(message)
+        algo = if(message.ciphertext, do: "mls", else: nil)
 
-        %RoomEvent{}
-        |> RoomEvent.changeset(%{
-          room_id: room.id,
-          room_seq: room_seq,
-          sender_id: message.sender_id,
-          message_id: message.id,
-          event_type: "vesper.message",
-          content: message_content(message),
-          ciphertext: message.ciphertext,
-          encryption_algorithm: if(message.ciphertext, do: "mls"),
-          mls_epoch: message.mls_epoch
-        })
-        |> Repo.insert()
+        sql = """
+        WITH seq AS (
+          UPDATE rooms SET current_seq = current_seq + 1, updated_at = $2
+          WHERE id = $1 RETURNING current_seq
+        )
+        INSERT INTO room_events (id, room_id, room_seq, sender_id, message_id, event_type, content, ciphertext, encryption_algorithm, mls_epoch, inserted_at, updated_at)
+        SELECT $3, $1, seq.current_seq, $4, $5, 'vesper.message', $6, $7, $8, $9, $2, $2
+        FROM seq
+        RETURNING id, room_seq
+        """
+
+        params = [
+          Ecto.UUID.dump!(room.id),
+          now,
+          Ecto.UUID.dump!(event_id),
+          Ecto.UUID.dump!(message.sender_id),
+          Ecto.UUID.dump!(message.id),
+          content,
+          message.ciphertext,
+          algo,
+          message.mls_epoch
+        ]
+
+        case Repo.query(sql, params) do
+          {:ok, %Postgrex.Result{rows: [[raw_id, room_seq]]}} ->
+            {:ok,
+             %RoomEvent{
+               id: Ecto.UUID.cast!(raw_id),
+               room_id: room.id,
+               room_seq: room_seq,
+               sender_id: message.sender_id,
+               message_id: message.id,
+               event_type: "vesper.message"
+             }}
+
+          {:ok, %Postgrex.Result{rows: []}} ->
+            {:error, :room_not_found}
+
+          {:error, error} ->
+            {:error, error}
+        end
     end
   end
 
@@ -309,35 +411,38 @@ defmodule Vesper.Runtime do
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp update_room_last_message(room_id, message_id, inserted_at, room_seq) do
-    from(room in Room,
-      where:
-        room.id == ^room_id and
-          (is_nil(room.last_message_seq) or room.last_message_seq <= ^room_seq)
-    )
-    |> Repo.update_all(
-      set: [
-        last_message_id: message_id,
-        last_message_at: inserted_at,
-        last_message_seq: room_seq,
-        updated_at: DateTime.utc_now() |> DateTime.truncate(:second)
-      ]
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    # Race-free: GREATEST ensures the highest seq wins regardless of execution order.
+    # CASE expressions update message_id/at only when this seq is actually the highest,
+    # preventing a lower-seq concurrent message from overwriting a higher-seq one.
+    Repo.query!(
+      """
+      UPDATE rooms SET
+        last_message_id = CASE WHEN COALESCE(last_message_seq, 0) < $3 THEN $1 ELSE last_message_id END,
+        last_message_at = CASE WHEN COALESCE(last_message_seq, 0) < $3 THEN $2 ELSE last_message_at END,
+        last_message_seq = GREATEST(COALESCE(last_message_seq, 0), $3),
+        updated_at = $4
+      WHERE id = $5
+      """,
+      [Ecto.UUID.dump!(message_id), inserted_at, room_seq, now, Ecto.UUID.dump!(room_id)]
     )
 
     :ok
   end
 
   defp update_room_last_mutation(room_id, inserted_at, room_seq) do
-    from(room in Room,
-      where:
-        room.id == ^room_id and
-          (is_nil(room.last_mutation_seq) or room.last_mutation_seq < ^room_seq)
-    )
-    |> Repo.update_all(
-      set: [
-        last_mutation_at: inserted_at,
-        last_mutation_seq: room_seq,
-        updated_at: DateTime.utc_now() |> DateTime.truncate(:second)
-      ]
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    Repo.query!(
+      """
+      UPDATE rooms SET
+        last_mutation_at = CASE WHEN COALESCE(last_mutation_seq, 0) < $2 THEN $1 ELSE last_mutation_at END,
+        last_mutation_seq = GREATEST(COALESCE(last_mutation_seq, 0), $2),
+        updated_at = $3
+      WHERE id = $4
+      """,
+      [inserted_at, room_seq, now, Ecto.UUID.dump!(room_id)]
     )
 
     :ok
@@ -403,8 +508,8 @@ defmodule Vesper.Runtime do
          event_type
        )
        when is_binary(server_id) and is_binary(channel_id) do
-    user_ids = Servers.list_member_ids(server_id)
-    Sync.append_scope_events(user_ids, event_type, "channel", channel_id)
+    # append_scope_events writes to shared ScopeSyncEvent log (O(1), no user_ids needed)
+    Sync.append_scope_event(event_type, "channel", channel_id)
   end
 
   defp append_user_sync_events(
@@ -412,8 +517,7 @@ defmodule Vesper.Runtime do
          event_type
        )
        when is_binary(conversation_id) do
-    user_ids = Chat.list_participant_ids(conversation_id)
-    Sync.append_scope_events(user_ids, event_type, "dm", conversation_id)
+    Sync.append_scope_event(event_type, "dm", conversation_id)
   end
 
   defp append_user_sync_events(_room, _event_type), do: :ok

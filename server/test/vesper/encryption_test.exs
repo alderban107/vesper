@@ -100,6 +100,45 @@ defmodule Vesper.EncryptionTest do
       assert Enum.map(requests, & &1.requester_client_id) == ["client-a", "client-b"]
       assert Enum.map(requests, & &1.request_id) == ["request-a", "request-b"]
     end
+
+    test "stale delete does not remove a refreshed request for the same device" do
+      requester = insert_user()
+      group_id = Ecto.UUID.generate()
+
+      assert {:ok, initial_request} =
+               Encryption.store_pending_resync_request(%{
+                 group_id: group_id,
+                 request_id: "request-a",
+                 requester_id: requester.id,
+                 requester_username: requester.username,
+                 requester_client_id: "client-a"
+               })
+
+      assert {:ok, _refreshed_request} =
+               Encryption.store_pending_resync_request(%{
+                 group_id: group_id,
+                 request_id: "request-b",
+                 requester_id: requester.id,
+                 requester_username: requester.username,
+                 requester_client_id: "client-a"
+               })
+
+      [refreshed_request] = Encryption.get_pending_resync_requests(group_id)
+      assert refreshed_request.id == initial_request.id
+      assert refreshed_request.request_id == "request-b"
+
+      assert {0, nil} =
+               Encryption.delete_pending_resync_request(initial_request.id, "request-a")
+
+      [pending_request] = Encryption.get_pending_resync_requests(group_id)
+      assert pending_request.id == initial_request.id
+      assert pending_request.request_id == "request-b"
+
+      assert {1, nil} =
+               Encryption.delete_pending_resync_request(initial_request.id, "request-b")
+
+      assert Encryption.get_pending_resync_requests(group_id) == []
+    end
   end
 
   describe "durable MLS events" do
@@ -130,6 +169,307 @@ defmodule Vesper.EncryptionTest do
       assert Enum.map(events, & &1.id) == [second_event.id]
       assert Enum.map(events, & &1.event_type) == ["mls_remove"]
       assert Enum.map(events, & &1.payload["commit_data"]) == ["commit-b"]
+    end
+
+    test "lists the newest replayable MLS events first" do
+      sender = insert_user()
+      group_id = Ecto.UUID.generate()
+
+      assert {:ok, old_event} =
+               Encryption.store_mls_event(%{
+                 group_id: group_id,
+                 event_type: "mls_request_join_all",
+                 payload: %{user_id: sender.id},
+                 sender_id: sender.id,
+                 sender_device_id: "device-a"
+               })
+
+      assert {:ok, new_event} =
+               Encryption.store_mls_event(%{
+                 group_id: group_id,
+                 event_type: "mls_request_join_all",
+                 payload: %{user_id: sender.id},
+                 sender_id: sender.id,
+                 sender_device_id: "device-b"
+               })
+
+      assert Enum.map(Encryption.list_recent_mls_events(group_id, 1), & &1.id) == [new_event.id]
+
+      assert Enum.map(Encryption.list_recent_mls_events(group_id, 2), & &1.id) == [
+               new_event.id,
+               old_event.id
+             ]
+    end
+  end
+
+  describe "group info publishing" do
+    test "serializes concurrent first CAS publishes into one success and conflicts" do
+      publisher = insert_user()
+      group_id = Ecto.UUID.generate()
+      parent = self()
+      start_ref = make_ref()
+
+      base_attrs = %{
+        group_id: group_id,
+        group_info_data: <<1, 2, 3>>,
+        ratchet_tree_data: <<4, 5, 6>>,
+        epoch: 1,
+        previous_epoch: 0,
+        publisher_id: publisher.id
+      }
+
+      tasks =
+        1..8
+        |> Enum.map(fn index ->
+          Task.async(fn ->
+            Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
+            send(parent, {:ready, self()})
+
+            receive do
+              {:go, ^start_ref} -> :ok
+            end
+
+            Encryption.publish_group_info(
+              Map.put(base_attrs, :publisher_client_id, "client-#{index}")
+            )
+          end)
+        end)
+
+      for _ <- tasks do
+        assert_receive {:ready, _pid}, 1_000
+      end
+
+      Enum.each(tasks, fn task ->
+        send(task.pid, {:go, start_ref})
+      end)
+
+      results = Enum.map(tasks, &Task.await(&1, 5_000))
+
+      assert Enum.count(results, &match?({:ok, _group_info}, &1)) == 1
+      assert Enum.count(results, &(&1 == {:error, :epoch_conflict})) == 7
+      assert %{epoch: 1} = Encryption.get_group_info(group_id)
+    end
+
+    test "same-epoch non-CAS publish keeps the existing payload" do
+      publisher = insert_user()
+      group_id = Ecto.UUID.generate()
+
+      assert {:ok, first_publish} =
+               Encryption.publish_group_info(%{
+                 group_id: group_id,
+                 group_info_data: <<1, 2, 3>>,
+                 ratchet_tree_data: <<4, 5, 6>>,
+                 epoch: 1,
+                 publisher_id: publisher.id,
+                 publisher_client_id: "client-a"
+               })
+
+      assert {:ok, second_publish} =
+               Encryption.publish_group_info(%{
+                 group_id: group_id,
+                 group_info_data: <<9, 9, 9>>,
+                 ratchet_tree_data: <<8, 8, 8>>,
+                 epoch: 1,
+                 publisher_id: publisher.id,
+                 publisher_client_id: "client-b"
+               })
+
+      stored = Encryption.get_group_info(group_id)
+
+      assert stored.id == first_publish.id
+      assert second_publish.id == first_publish.id
+      assert stored.group_info_data == <<1, 2, 3>>
+      assert stored.ratchet_tree_data == <<4, 5, 6>>
+    end
+
+    test "atomically stores external commit GroupInfo and durable commit event" do
+      publisher = insert_user()
+      group_id = Ecto.UUID.generate()
+
+      attrs = %{
+        group_id: group_id,
+        group_info_data: <<1, 2, 3>>,
+        ratchet_tree_data: <<4, 5, 6>>,
+        epoch: 1,
+        previous_epoch: 0,
+        publisher_id: publisher.id,
+        publisher_client_id: "client-a",
+        commit_data: "commit-a",
+        commit_id: "commit-1"
+      }
+
+      assert {:ok, %{group_info: group_info, event: event}} =
+               Encryption.publish_external_commit_group_info(attrs)
+
+      assert group_info.epoch == 1
+      assert event.event_type == "mls_commit"
+      assert event.payload["commit_data"] == "commit-a"
+
+      assert [%{id: commit_event_id, payload: %{"commit_data" => "commit-a"}}] =
+               Encryption.list_mls_events_after(group_id, 0)
+
+      assert commit_event_id == event.id
+
+      assert {:ok, %{group_info: replayed_group_info, event: replayed_event}} =
+               Encryption.publish_external_commit_group_info(attrs)
+
+      assert replayed_group_info.id == group_info.id
+      assert replayed_event.id == event.id
+      assert length(Encryption.list_mls_events_after(group_id, 0)) == 1
+    end
+
+    test "atomically stores sponsored transitions and replays them idempotently" do
+      sponsor = insert_user()
+      recipient = insert_user()
+      group_id = Ecto.UUID.generate()
+
+      assert {:ok, _group_info} =
+               Encryption.publish_group_info(%{
+                 group_id: group_id,
+                 group_info_data: <<0, 0, 0>>,
+                 ratchet_tree_data: <<0, 0, 1>>,
+                 epoch: 0,
+                 publisher_id: sponsor.id,
+                 publisher_client_id: "sponsor-a"
+               })
+
+      attrs = %{
+        group_id: group_id,
+        group_info_data: <<1, 2, 3>>,
+        ratchet_tree_data: <<4, 5, 6>>,
+        epoch: 1,
+        previous_epoch: 0,
+        recipient_id: recipient.id,
+        recipient_client_id: "recipient-a",
+        recipient_key_package_ref: "kp-ref",
+        remove_commit_data: "remove-a",
+        commit_data: "commit-a",
+        commit_id: "commit-1",
+        welcome_data: <<1, 2, 3>>,
+        sender_id: sponsor.id,
+        sender_device_id: "sponsor-a"
+      }
+
+      assert {:ok,
+              %{
+                fresh: true,
+                remove_event: remove_event,
+                commit_event: commit_event,
+                welcome: welcome
+              }} =
+               Encryption.publish_sponsored_transition(attrs)
+
+      assert remove_event.event_type == "mls_remove"
+      assert remove_event.payload["removed_user_id"] == recipient.id
+      assert remove_event.payload["removed_device_id"] == "recipient-a"
+      assert remove_event.payload["commit_data"] == "remove-a"
+
+      assert commit_event.event_type == "mls_commit"
+      assert commit_event.payload["commit_data"] == "commit-a"
+
+      assert welcome.recipient_id == recipient.id
+      assert welcome.recipient_client_id == "recipient-a"
+      assert welcome.recipient_key_package_ref == "kp-ref"
+
+      assert Enum.map(Encryption.list_mls_events_after(group_id, 0), & &1.event_type) == [
+               "mls_remove",
+               "mls_commit"
+             ]
+
+      assert {:ok,
+              %{
+                fresh: false,
+                remove_event: nil,
+                commit_event: replayed_commit,
+                welcome: replayed_welcome
+              }} =
+               Encryption.publish_sponsored_transition(attrs)
+
+      assert replayed_commit.id == commit_event.id
+      assert replayed_welcome.id == welcome.id
+      assert length(Encryption.list_mls_events_after(group_id, 0)) == 2
+      assert length(Encryption.get_pending_welcomes(recipient.id, group_id, "recipient-a")) == 1
+    end
+
+    test "serializes concurrent sponsored transitions from the same prior epoch" do
+      sponsor = insert_user()
+      recipient_a = insert_user()
+      recipient_b = insert_user()
+      group_id = Ecto.UUID.generate()
+      parent = self()
+      start_ref = make_ref()
+
+      assert {:ok, _group_info} =
+               Encryption.publish_group_info(%{
+                 group_id: group_id,
+                 group_info_data: <<0, 0, 0>>,
+                 ratchet_tree_data: <<0, 0, 1>>,
+                 epoch: 0,
+                 publisher_id: sponsor.id,
+                 publisher_client_id: "sponsor-base"
+               })
+
+      attrs_list = [
+        %{
+          group_id: group_id,
+          group_info_data: <<1, 1, 1>>,
+          ratchet_tree_data: <<1, 1, 2>>,
+          epoch: 1,
+          previous_epoch: 0,
+          recipient_id: recipient_a.id,
+          recipient_client_id: "recipient-a",
+          recipient_key_package_ref: "kp-a",
+          commit_data: "commit-a",
+          commit_id: "commit-a",
+          welcome_data: <<1, 2, 3>>,
+          sender_id: sponsor.id,
+          sender_device_id: "sponsor-a"
+        },
+        %{
+          group_id: group_id,
+          group_info_data: <<2, 2, 2>>,
+          ratchet_tree_data: <<2, 2, 3>>,
+          epoch: 1,
+          previous_epoch: 0,
+          recipient_id: recipient_b.id,
+          recipient_client_id: "recipient-b",
+          recipient_key_package_ref: "kp-b",
+          commit_data: "commit-b",
+          commit_id: "commit-b",
+          welcome_data: <<4, 5, 6>>,
+          sender_id: sponsor.id,
+          sender_device_id: "sponsor-b"
+        }
+      ]
+
+      tasks =
+        Enum.map(attrs_list, fn attrs ->
+          Task.async(fn ->
+            Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
+            send(parent, {:ready, self()})
+
+            receive do
+              {:go, ^start_ref} -> :ok
+            end
+
+            Encryption.publish_sponsored_transition(attrs)
+          end)
+        end)
+
+      for _ <- tasks do
+        assert_receive {:ready, _pid}, 1_000
+      end
+
+      Enum.each(tasks, fn task ->
+        send(task.pid, {:go, start_ref})
+      end)
+
+      results = Enum.map(tasks, &Task.await(&1, 5_000))
+
+      assert Enum.count(results, &match?({:ok, %{fresh: true}}, &1)) == 1
+      assert Enum.count(results, &(&1 == {:error, :epoch_conflict})) == 1
+      assert %{epoch: 1} = Encryption.get_group_info(group_id)
+      assert length(Encryption.list_mls_events_after(group_id, 0)) == 1
     end
   end
 

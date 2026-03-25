@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { useServerStore } from './serverStore'
+import { registerDmChannelMapping } from './messageStore'
 import type { DmConversation } from './dmStore'
 import { getRendererClient, getRendererEncryptedChat } from '../sdk/client'
 import { fireAndForget } from '../utils/async'
@@ -334,9 +335,14 @@ function handleUserFeedEvent(topic: string, event: string, payload: unknown): vo
   }
 
   if (event === 'new_conversation') {
+    const data = payload as { conversation: DmConversation & { channel_id?: string | null } }
+    // Register channel mapping SYNCHRONOUSLY before the async dmStore import
+    // so joinDmChat can resolve it even if the import hasn't completed
+    if (data.conversation?.channel_id && data.conversation?.id) {
+      registerDmChannelMapping(data.conversation.id, data.conversation.channel_id)
+    }
     import('./dmStore').then(({ useDmStore }) => {
-      const data = payload as { conversation: DmConversation }
-      useDmStore.getState().addConversation(data.conversation)
+      useDmStore.getState().addConversation(data.conversation as DmConversation)
     })
     return
   }
@@ -370,7 +376,62 @@ function handleUserFeedEvent(topic: string, event: string, payload: unknown): vo
     return
   }
 
+  if (event === 'dm_activity') {
+    // Combined event: replaces separate dm_message + scope_summary_updated
+    const data = payload as {
+      conversation_id: string
+      message_id: string
+      sender_id: string | null
+      sender?: { id: string; username: string; display_name?: string | null; avatar_url?: string | null } | null
+      inserted_at: string
+      scope_summary?: {
+        kind: 'dm'
+        scope_id: string
+        room_seq?: number | null
+        conversation_reset?: { conversation_id: string; last_message?: unknown } | null
+      } | null
+    }
+
+    Promise.all([
+      import('./dmStore'),
+      import('./unreadStore')
+    ]).then(([{ useDmStore }, { useUnreadStore }]) => {
+      // dm_message functionality: update conversation activity + unread
+      const applied = useDmStore.getState().applyConversationActivity({
+        conversationId: data.conversation_id,
+        messageId: data.message_id,
+        senderId: data.sender_id,
+        sender: data.sender ?? null,
+        insertedAt: data.inserted_at
+      })
+
+      if (!applied) {
+        void useDmStore.getState().fetchConversations()
+      }
+
+      if (
+        useDmStore.getState().selectedConversationId !== data.conversation_id &&
+        claimUnreadMessageKey('dm', data.conversation_id, data.message_id)
+      ) {
+        useUnreadStore.getState().incrementDm(data.conversation_id)
+      }
+
+      // scope_summary_updated functionality: update sidebar last message
+      if (data.scope_summary?.conversation_reset?.conversation_id) {
+        useDmStore.getState().syncConversationLastMessage({
+          conversationId: data.scope_summary.conversation_reset.conversation_id,
+          lastMessage: (data.scope_summary.conversation_reset as Record<string, unknown>).last_message ?? null
+        })
+      }
+    })
+    return
+  }
+
   if (event === 'dm_message') {
+    // dm_message is only emitted by the dm:* topic broadcast (all participants
+    // receive this on the DM channel). Per-user notification is handled by
+    // dm_activity above. This handler covers the case where the user is
+    // actively viewing the DM and receives the broadcast directly.
     Promise.all([
       import('./dmStore'),
       import('./unreadStore')
@@ -471,19 +532,58 @@ function handleUserFeedEvent(topic: string, event: string, payload: unknown): vo
     return
   }
 
-  if (event === 'mls_history_request_pending' || event === 'mls_history_bundle_pending') {
-    import('./messageStore').then(({ processPendingHistoryScope }) => {
-      const data = payload as {
+  if (event === 'channel_activity') {
+    // Combined event: replaces separate unread_update + scope_summary_updated
+    const data = payload as {
+      channel_id: string
+      message_id: string
+      inserted_at?: string
+      sender_id: string | null
+      sender?: { id: string; username: string; display_name?: string | null; avatar_url?: string | null } | null
+      scope_summary?: {
+        kind: 'channel'
         scope_id: string
-        topic: string
+        room_seq?: number | null
+        channel_activity?: Record<string, unknown> | null
+      } | null
+    }
+    Promise.all([
+      import('./serverStore'),
+      import('./unreadStore')
+    ]).then(([{ useServerStore }, { useUnreadStore }]) => {
+      // Unread + channel activity update
+      if (data.inserted_at) {
+        useServerStore.getState().applyChannelActivity({
+          channelId: data.channel_id,
+          messageId: data.message_id,
+          insertedAt: data.inserted_at,
+          senderId: data.sender_id,
+          sender: data.sender ?? null
+        })
+      }
+      if (useServerStore.getState().activeChannelId !== data.channel_id) {
+        useUnreadStore.getState().incrementChannel(data.channel_id)
       }
 
-      fireAndForget(processPendingHistoryScope(data.scope_id, data.topic))
+      // Scope summary sidebar update
+      if (data.scope_summary?.channel_activity) {
+        useServerStore.getState().syncChannelLastMessage({
+          channelId: data.scope_summary.scope_id,
+          lastMessage: data.scope_summary.channel_activity as {
+            channel_id: string
+            message_id: string | null
+            inserted_at: string | null
+            sender_id: string | null
+            sender: { id: string; username: string; display_name?: string | null; avatar_url?: string | null } | null
+          }
+        })
+      }
     })
     return
   }
 
   if (event === 'unread_update') {
+    // Legacy — kept for non-message unread events (e.g., edit-based resets)
     const data = payload as {
       channel_id: string
       message_id: string
@@ -521,25 +621,39 @@ function handleUserFeedEvent(topic: string, event: string, payload: unknown): vo
     return
   }
 
-  if (event === 'dm_unread_update') {
-    const data = payload as { conversation_id: string; message_id: string }
-    Promise.all([
-      import('./dmStore'),
-      import('./unreadStore')
-    ]).then(([{ useDmStore }, { useUnreadStore }]) => {
-      if (
-        useDmStore.getState().selectedConversationId !== data.conversation_id &&
-        claimUnreadMessageKey('dm', data.conversation_id, data.message_id)
-      ) {
-        useUnreadStore.getState().incrementDm(data.conversation_id)
-      }
-    })
-    return
-  }
-
   if (event === 'scope_mutation') {
-    const data = payload as { kind: 'channel' | 'dm'; scope_id: string }
+    const data = payload as {
+      kind: 'channel' | 'dm'
+      scope_id: string
+      activity?: {
+        message_id?: string
+        sender_id?: string | null
+        sender?: { id: string; username: string; display_name?: string | null; avatar_url?: string | null } | null
+        inserted_at?: string
+        room_seq?: number | null
+      } | null
+    }
     queueScopeMutation(data.kind, data.scope_id)
+
+    // If activity data is embedded, update unread + sidebar immediately
+    // without waiting for the HTTP sync round-trip.
+    if (data.kind === 'channel' && data.activity?.message_id && data.activity.inserted_at) {
+      Promise.all([
+        import('./serverStore'),
+        import('./unreadStore')
+      ]).then(([{ useServerStore }, { useUnreadStore }]) => {
+        useServerStore.getState().applyChannelActivity({
+          channelId: data.scope_id,
+          messageId: data.activity!.message_id!,
+          insertedAt: data.activity!.inserted_at!,
+          senderId: data.activity!.sender_id ?? null,
+          sender: data.activity!.sender ?? null
+        })
+        if (useServerStore.getState().activeChannelId !== data.scope_id) {
+          useUnreadStore.getState().incrementChannel(data.scope_id)
+        }
+      })
+    }
     return
   }
 
@@ -712,8 +826,37 @@ export const usePresenceStore = create<PresenceState>((set, get) => ({
             void useServerStore.getState().refreshServerChannels(serverId)
           }
         } else if (event === 'scope_mutation') {
-          const data = payload as { kind: 'channel' | 'dm'; scope_id: string }
+          const data = payload as {
+            kind: 'channel' | 'dm'
+            scope_id: string
+            activity?: {
+              message_id?: string
+              sender_id?: string | null
+              sender?: { id: string; username: string; display_name?: string | null; avatar_url?: string | null } | null
+              inserted_at?: string
+              room_seq?: number | null
+            } | null
+          }
           queueScopeMutation(data.kind, data.scope_id)
+
+          // Immediately increment unread from embedded activity data
+          if (data.kind === 'channel' && data.activity?.message_id && data.activity.inserted_at) {
+            Promise.all([
+              import('./serverStore'),
+              import('./unreadStore')
+            ]).then(([{ useServerStore }, { useUnreadStore }]) => {
+              useServerStore.getState().applyChannelActivity({
+                channelId: data.scope_id,
+                messageId: data.activity!.message_id!,
+                insertedAt: data.activity!.inserted_at!,
+                senderId: data.activity!.sender_id ?? null,
+                sender: data.activity!.sender ?? null
+              })
+              if (useServerStore.getState().activeChannelId !== data.scope_id) {
+                useUnreadStore.getState().incrementChannel(data.scope_id)
+              }
+            })
+          }
         }
       })
 

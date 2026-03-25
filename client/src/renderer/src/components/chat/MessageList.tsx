@@ -13,7 +13,22 @@ interface Props {
 }
 
 export default function MessageList({ scope }: Props): React.JSX.Element {
-  const scopeId = scope.id
+  // For DMs with a backing channel, use the channelId as the scope.
+  // All messages, MLS state, and broadcasts go through the channel topic.
+  // Subscribe to dmStore so this re-evaluates when conversations sync.
+  const dmChannelId = useDmStore((s) => {
+    if (scope.kind !== 'dm') return null
+    return s.conversations.find(c => c.id === scope.id)?.channel_id ?? null
+  })
+
+  const resolvedScope = useMemo(() => {
+    if (scope.kind === 'dm' && dmChannelId) {
+      return { kind: 'channel' as const, id: dmChannelId }
+    }
+    return scope
+  }, [scope, dmChannelId])
+
+  const scopeId = resolvedScope.id
   const allMessages = useMessageStore((s) =>
     s.messagesByChannel[scopeId] ?? EMPTY_MESSAGES
   )
@@ -52,20 +67,23 @@ export default function MessageList({ scope }: Props): React.JSX.Element {
   const prevScopeRef = useRef<string | null>(null)
 
   useEffect(() => {
+    // Use original scope.id for join/leave (joinDmChat resolves channelId internally)
     const leave = scope.kind === 'channel' ? leaveChannelChat : leaveDmChat
     const join = scope.kind === 'channel' ? joinChannelChat : joinDmChat
+    const joinId = scope.id
 
     if (prevScopeRef.current) {
       leave(prevScopeRef.current)
     }
-    activateScope(scopeId, scope.kind)
-    join(scopeId)
-    prevScopeRef.current = scopeId
-  }, [activateScope, joinChannelChat, joinDmChat, leaveChannelChat, leaveDmChat, scope.kind, scopeId])
+    // Activate with the resolved scopeId (channelId for DMs with channel)
+    activateScope(scopeId, resolvedScope.kind)
+    join(joinId)
+    prevScopeRef.current = joinId
+  }, [activateScope, joinChannelChat, joinDmChat, leaveChannelChat, leaveDmChat, resolvedScope.kind, scope.id, scope.kind, scopeId])
 
   const handleLoadMore = (): void => {
     if (hasMore) {
-      const fetch = scope.kind === 'channel' ? fetchOlderMessages : fetchOlderDmMessages
+      const fetch = resolvedScope.kind === 'channel' ? fetchOlderMessages : fetchOlderDmMessages
       fetch(scopeId)
     }
   }
@@ -94,8 +112,8 @@ export default function MessageList({ scope }: Props): React.JSX.Element {
             markChannelRead(scopeId, messageId)
           }
         } else {
-          if (useDmStore.getState().selectedConversationId === scopeId) {
-            markDmRead(scopeId, messageId)
+          if (useDmStore.getState().selectedConversationId === scope.id) {
+            markDmRead(scope.id, messageId)
           }
         }
       }}

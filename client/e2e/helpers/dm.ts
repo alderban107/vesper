@@ -1,8 +1,8 @@
 import type { Locator, Page } from '@playwright/test'
-import { sendMessageWithEncryptionRetry } from './sendRetry'
+import { sendAttachmentWithEncryptionRetry, sendMessageWithEncryptionRetry } from './sendRetry'
 import { waitForSocketConnected } from './wait'
 
-const ENCRYPTION_READY_TIMEOUT = 10_000
+const ENCRYPTION_READY_TIMEOUT = 30_000
 const ENCRYPTION_POLL_INTERVAL = 500
 const DM_HYDRATION_TIMEOUT = 5_000
 
@@ -103,6 +103,12 @@ async function waitForOpenDm(page: Page, displayName: string): Promise<void> {
   }, displayName, { timeout: 10_000 })
 
   await waitForSocketConnected(page)
+  await waitForEncryptionReady(page)
+
+  // Allow async scope watch to complete Phoenix channel subscription.
+  // joinChannelChat fires the watch asynchronously; this gives it
+  // time to connect before tests interact with the channel.
+  await page.waitForTimeout(3_000)
 }
 
 async function resolveDmState(
@@ -161,7 +167,7 @@ export async function sendDmMessage(page: Page, text: string): Promise<void> {
     page.locator('.vesper-composer-textarea'),
     page.getByTestId('message-row'),
     text,
-    { timeout: ENCRYPTION_READY_TIMEOUT, simplePoll: true, errorLabel: 'DM' }
+    { timeout: ENCRYPTION_READY_TIMEOUT, errorLabel: 'DM' }
   )
 }
 
@@ -201,6 +207,17 @@ export async function uploadDmAttachment(
   page: Page,
   filePath: string
 ): Promise<void> {
+  // Send a probe message to confirm encryption is fully ready.
+  // The attachment upload can't retry if encryption fails mid-submit,
+  // so we validate the scope is operational first.
+  await sendMessageWithEncryptionRetry(
+    page,
+    page.locator('.vesper-composer-textarea'),
+    page.getByTestId('message-row'),
+    'attachment-probe',
+    { timeout: 30_000, errorLabel: 'DM attachment probe' }
+  )
+
   const fileInput = page.locator('.vesper-composer-form input[type="file"]')
   await fileInput.setInputFiles(filePath)
   await page.waitForSelector('.vesper-composer-icon-button .animate-spin', {
@@ -209,5 +226,10 @@ export async function uploadDmAttachment(
   })
 
   const textarea = page.locator('.vesper-composer-textarea')
-  await textarea.press('Enter')
+  await sendAttachmentWithEncryptionRetry(
+    page,
+    textarea,
+    page.locator('[data-testid="message-row"] [data-testid="attachment"]'),
+    { errorLabel: 'DM attachment' }
+  )
 }

@@ -8,6 +8,7 @@
   "types": "./dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json --noCheck",
+    "build:wasm": "cd wasm && wasm-pack build --target web --release && rm -f pkg/.gitignore",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:db:start": "sh ./scripts/start-test-postgres.sh",
     "test:db:stop": "sh ./scripts/stop-test-postgres.sh",
@@ -85,7 +86,7 @@
     "@noble/hashes": "^2.0.1",
     "hash-wasm": "^4.12.0",
     "phoenix": "^1.8.4",
-    "ts-mls": "^1.6.1"
+    "vesper-openmls-wasm": "file:./wasm/pkg"
   },
   "devDependencies": {
     "@types/node": "^24.5.2",

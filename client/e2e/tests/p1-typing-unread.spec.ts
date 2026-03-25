@@ -21,6 +21,28 @@ import { USERS } from '../fixtures/test-data'
 let alice: UserContext
 let bob: UserContext
 
+async function ensureTypingTestChannelFixture(): Promise<void> {
+  const hasTypingTestServer = await alice.page.evaluate(() =>
+    Array.from(
+      document.querySelectorAll<HTMLButtonElement>(
+        '[data-testid="sidebar"] .vesper-server-rail button[title]'
+      )
+    ).some((button) => button.title === 'Typing Test Server')
+  ).catch(() => false)
+
+  if (!hasTypingTestServer) {
+    await createServer(alice.page, 'Typing Test Server')
+    const code = await getInviteCode(alice.page)
+    await joinServerWithCode(bob.page, code)
+    await createChannel(alice.page, 'typing-test')
+  }
+
+  await selectServer(alice.page, 'Typing Test Server')
+  await selectChannel(alice.page, 'typing-test')
+  await selectServer(bob.page, 'Typing Test Server')
+  await selectChannel(bob.page, 'typing-test')
+}
+
 test.describe('P1: Typing and unread behavior', () => {
   test.beforeAll(async ({ browser }) => {
     alice = await createUserContext(browser, 'alice', USERS.alice.username, USERS.alice.password)
@@ -78,15 +100,7 @@ test.describe('P1: Typing and unread behavior', () => {
   })
 
   test('Channel typing indicator appears (R-CHANNEL-4)', async () => {
-    // Create server and channel
-    await createServer(alice.page, 'Typing Test Server')
-    const code = await getInviteCode(alice.page)
-    await joinServerWithCode(bob.page, code)
-
-    await createChannel(alice.page, 'typing-test')
-    await selectChannel(alice.page, 'typing-test')
-    await selectServer(bob.page, 'Typing Test Server')
-    await selectChannel(bob.page, 'typing-test')
+    await ensureTypingTestChannelFixture()
 
     // Alice types
     await startChannelTyping(alice.page)
@@ -102,6 +116,8 @@ test.describe('P1: Typing and unread behavior', () => {
   })
 
   test('Channel unread badges accumulate and clear (R-CHANNEL-3)', async () => {
+    await ensureTypingTestChannelFixture()
+
     // Bob navigates to a different channel or DM
     await bob.page.click('[data-testid="sidebar"] button[title="Direct Messages"]')
 
