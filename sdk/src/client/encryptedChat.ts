@@ -747,29 +747,30 @@ export class VesperEncryptedChat {
     scope: EncryptedScope,
     force = false
   ): Promise<void> {
-    const inflight = this.pendingRepairFetches.get(scope.id)
+    const groupId = this.resolveMlsGroupId(scope)
+    const inflight = this.pendingRepairFetches.get(groupId)
     if (inflight) {
       await inflight
       return
     }
 
-    const lastFetchAt = this.lastRepairFetchAt.get(scope.id) ?? 0
+    const lastFetchAt = this.lastRepairFetchAt.get(groupId) ?? 0
     if (!force && Date.now() - lastFetchAt < REPAIR_FETCH_COOLDOWN_MS) {
       return
     }
 
-    const run = this.withLockedScopeOperation(scope.id, async () => {
-      this.scopeKinds.set(scope.id, scope.kind)
-      this.lastRepairFetchAt.set(scope.id, Date.now())
+    const run = this.withLockedScopeOperation(groupId, async () => {
+      this.scopeKinds.set(groupId, scope.channelId ? 'channel' : scope.kind)
+      this.lastRepairFetchAt.set(groupId, Date.now())
 
       await this.processPendingResyncRequests(scope)
       await this.processPendingHistoryRequests(scope)
       await this.processPendingHistoryBundles(scope)
     }, 'urgent').finally(() => {
-      this.pendingRepairFetches.delete(scope.id)
+      this.pendingRepairFetches.delete(groupId)
     })
 
-    this.pendingRepairFetches.set(scope.id, run)
+    this.pendingRepairFetches.set(groupId, run)
     await run
   }
 
@@ -918,7 +919,8 @@ export class VesperEncryptedChat {
     event: string,
     payload: Record<string, unknown> | null
   ): Promise<EncryptedScopeWatchEvent | null> {
-    return await withGroupLock(scope.id, async () => {
+    const groupId = this.resolveMlsGroupId(scope)
+    return await withGroupLock(groupId, async () => {
       return await this.withStorageContext(async () => {
         return await this.handleScopeEvent(scope, event, payload)
       })
@@ -1178,14 +1180,15 @@ export class VesperEncryptedChat {
     scope: EncryptedScope,
     plaintext: string
   ): Promise<{ ciphertext: string; epoch: number }> {
-    return await this.withLockedScopeOperation(scope.id, async () => {
-      this.scopeKinds.set(scope.id, scope.kind)
-      const ready = await this.ensureGroupMembership(scope.id)
+    const groupId = this.resolveMlsGroupId(scope)
+    return await this.withLockedScopeOperation(groupId, async () => {
+      this.scopeKinds.set(groupId, scope.channelId ? 'channel' : scope.kind)
+      const ready = await this.ensureGroupMembership(groupId)
       if (!ready) {
         throw new Error(`${scope.kind} group is still syncing`)
       }
 
-      return await this.encryptForScope(scope.id, plaintext)
+      return await this.encryptForScope(groupId, plaintext)
     })
   }
 
@@ -1194,8 +1197,9 @@ export class VesperEncryptedChat {
     ciphertext: string,
     messageEpoch: number | null = null
   ): Promise<string | null> {
-    return await this.withLockedScopeOperation(scope.id, async () => {
-      this.scopeKinds.set(scope.id, scope.kind)
+    const groupId = this.resolveMlsGroupId(scope)
+    return await this.withLockedScopeOperation(groupId, async () => {
+      this.scopeKinds.set(groupId, scope.channelId ? 'channel' : scope.kind)
       return await this.decryptForScopeWithRecovery(scope, ciphertext, messageEpoch)
     })
   }
@@ -1204,8 +1208,9 @@ export class VesperEncryptedChat {
     scope: EncryptedScope,
     items: Array<{ ciphertext: string; messageEpoch?: number | null }>
   ): Promise<Array<string | null>> {
-    return await this.withLockedScopeOperation(scope.id, async () => {
-      this.scopeKinds.set(scope.id, scope.kind)
+    const groupId = this.resolveMlsGroupId(scope)
+    return await this.withLockedScopeOperation(groupId, async () => {
+      this.scopeKinds.set(groupId, scope.channelId ? 'channel' : scope.kind)
       const decrypted: Array<string | null> = []
 
       for (const item of items) {
@@ -1247,10 +1252,11 @@ export class VesperEncryptedChat {
   }
 
   async requestJoinAll(scope: EncryptedScope): Promise<void> {
-    await this.withLockedScopeOperation(scope.id, async () => {
-      this.scopeKinds.set(scope.id, scope.kind)
+    const groupId = this.resolveMlsGroupId(scope)
+    await this.withLockedScopeOperation(groupId, async () => {
+      this.scopeKinds.set(groupId, scope.channelId ? 'channel' : scope.kind)
 
-      if (this.hasGroup(scope.id) && !await this.ensureCurrentGroupInfoPublished(scope.id)) {
+      if (this.hasGroup(groupId) && !await this.ensureCurrentGroupInfoPublished(groupId)) {
         throw new Error(`Failed to publish GroupInfo for ${scopeTopic(scope)}`)
       }
 
@@ -1269,9 +1275,10 @@ export class VesperEncryptedChat {
       username?: string | null
     } = {}
   ): Promise<void> {
+    const groupId = this.resolveMlsGroupId(scope)
     await this.withStorageContext(async () => {
       if (
-        !await this.pushResyncRequestForScope(scope.id, scope.kind, {
+        !await this.pushResyncRequestForScope(groupId, scope.channelId ? 'channel' : scope.kind, {
           lastKnownEpoch: options.lastKnownEpoch ?? null,
           reason: options.reason ?? null,
           username: options.username ?? null
@@ -1288,8 +1295,9 @@ export class VesperEncryptedChat {
       force?: boolean
     } = {}
   ): Promise<void> {
-    await this.withLockedScopeOperation(scope.id, async () => {
-      this.scopeKinds.set(scope.id, scope.kind)
+    const groupId = this.resolveMlsGroupId(scope)
+    await this.withLockedScopeOperation(groupId, async () => {
+      this.scopeKinds.set(groupId, scope.channelId ? 'channel' : scope.kind)
       await this.requestScopeHistorySync(scope, options.force ?? false)
     })
   }
@@ -1298,7 +1306,8 @@ export class VesperEncryptedChat {
     scope: EncryptedScope,
     options: ScopeRepairDrainOptions = {}
   ): Promise<void> {
-    this.scopeKinds.set(scope.id, scope.kind)
+    const groupId = this.resolveMlsGroupId(scope)
+    this.scopeKinds.set(groupId, scope.channelId ? 'channel' : scope.kind)
     await this.processPendingRepairArtifacts(scope, options.force ?? false)
   }
 
@@ -1306,27 +1315,29 @@ export class VesperEncryptedChat {
     scope: EncryptedScope,
     options: ScopePreparationOptions = {}
   ): Promise<boolean> {
-    const existing = this.inFlightScopePreparations.get(scope.id)
+    const groupId = this.resolveMlsGroupId(scope)
+    const existing = this.inFlightScopePreparations.get(groupId)
     if (existing) {
       return await existing
     }
 
     const run = this.prepareScopeForReadInternal(scope, options).finally(() => {
-      this.inFlightScopePreparations.delete(scope.id)
+      this.inFlightScopePreparations.delete(groupId)
     })
 
-    this.inFlightScopePreparations.set(scope.id, run)
+    this.inFlightScopePreparations.set(groupId, run)
     return await run
   }
 
   async createScopeGroup(scope: EncryptedScope): Promise<boolean> {
-    return await this.withLockedScopeOperation(scope.id, async () => {
-      this.scopeKinds.set(scope.id, scope.kind)
-      await this.createGroup(scope.id)
-      if (!this.hasGroup(scope.id)) {
+    const groupId = this.resolveMlsGroupId(scope)
+    return await this.withLockedScopeOperation(groupId, async () => {
+      this.scopeKinds.set(groupId, scope.channelId ? 'channel' : scope.kind)
+      await this.createGroup(groupId)
+      if (!this.hasGroup(groupId)) {
         return false
       }
-      if (!await this.ensureCurrentGroupInfoPublished(scope.id)) {
+      if (!await this.ensureCurrentGroupInfoPublished(groupId)) {
         return false
       }
       return true
@@ -1478,8 +1489,9 @@ export class VesperEncryptedChat {
     welcomeBytes: string | null
     keyPackageRef: string
   } | null> {
-    return await this.withLockedScopeOperation(scope.id, async () => {
-      const draft = await this.prepareResyncRequest(scope.id, userId, deviceId)
+    const groupId = this.resolveMlsGroupId(scope)
+    return await this.withLockedScopeOperation(groupId, async () => {
+      const draft = await this.prepareResyncRequest(groupId, userId, deviceId)
       return draft ? this.rawSponsoredTransitionResult(draft) : null
     })
   }
@@ -1514,7 +1526,8 @@ export class VesperEncryptedChat {
     scope: EncryptedScope,
     payload: Record<string, unknown> | null
   ): Promise<boolean> {
-    return await this.withLockedScopeOperation(scope.id, async () => {
+    const groupId = this.resolveMlsGroupId(scope)
+    return await this.withLockedScopeOperation(groupId, async () => {
       return await this.handleEvictionRequestEvent(scope, payload)
     })
   }
@@ -1606,6 +1619,8 @@ export class VesperEncryptedChat {
     event: string,
     payload: Record<string, unknown> | null
   ): Promise<EncryptedScopeWatchEvent | null> {
+    const groupId = this.resolveMlsGroupId(scope)
+
     if (event === 'new_message') {
       const message = await this.processIncomingMessage(scope, payload as unknown as VesperMessage)
       this.upsertScopeMessage(scope.id, message)
@@ -1652,13 +1667,13 @@ export class VesperEncryptedChat {
       const localUserId = this.client.getAuthSession()?.user.id ?? this.client.getState().user?.id
 
       if (scope.kind === 'dm' && senderId && localUserId) {
-        if (!this.hasGroup(scope.id)) {
+        if (!this.hasGroup(groupId)) {
           // No group yet — the messageStore will create one and send its own
           // requestJoinAll. Leader election happens once both sides have groups.
           return { scope, event, payload }
         }
 
-        const currentState = this.groupStates.get(scope.id)
+        const currentState = this.groupStates.get(groupId)
 
         // Both sides independently created MLS groups for this DM.
         // Use deterministic leader election (lower user ID wins) to break
@@ -1667,7 +1682,7 @@ export class VesperEncryptedChat {
         if (localUserId < senderId) {
           // We're the leader — keep our group. Ensure GroupInfo is published
           // so the sender can External Commit in.
-          await this.ensureCurrentGroupInfoPublished(scope.id)
+          await this.ensureCurrentGroupInfoPublished(groupId)
           return { scope, event, payload }
         }
 
@@ -1676,13 +1691,13 @@ export class VesperEncryptedChat {
           groupHasMember(currentState, localUserId) &&
           groupHasMember(currentState, senderId)
         ) {
-          this.welcomeReceivedScopes.add(scope.id)
+          this.welcomeReceivedScopes.add(groupId)
           return { scope, event, payload }
         }
 
         // We're not the leader — but if we already joined the leader's group
         // via External Commit or Welcome, we're done.
-        if (this.welcomeReceivedScopes.has(scope.id)) {
+        if (this.welcomeReceivedScopes.has(groupId)) {
           return { scope, event, payload }
         }
 
@@ -1690,24 +1705,24 @@ export class VesperEncryptedChat {
         // "joined via Welcome/EC" marker. If the current DM group already
         // includes the sender, the request is stale and resetting would tear
         // down a converged group for no reason.
-        if (this.dmGroupAlreadyConverged(scope.id, senderId)) {
+        if (this.dmGroupAlreadyConverged(groupId, senderId)) {
           return { scope, event, payload }
         }
 
         // We independently created this group — drop it and External Commit
         // into the leader's group.
-        this.yieldedDmScopes.add(scope.id)
-        await this.resetScopeState(scope.id)
-        await this.tryJoinViaExternalCommit(scope.id)
+        this.yieldedDmScopes.add(groupId)
+        await this.resetScopeState(groupId)
+        await this.tryJoinViaExternalCommit(groupId)
         return { scope, event, payload }
       }
 
       // Non-DM scope (channel) — External Commit into the sender's group.
       // Retry once after a short delay if the first attempt fails — the
       // GroupInfo publish may still be in flight when this event arrives.
-      if (!await this.tryJoinViaExternalCommit(scope.id)) {
+      if (!await this.tryJoinViaExternalCommit(groupId)) {
         await new Promise(r => setTimeout(r, 500))
-        await this.tryJoinViaExternalCommit(scope.id)
+        await this.tryJoinViaExternalCommit(groupId)
       }
       return { scope, event, payload }
     }
@@ -1729,7 +1744,7 @@ export class VesperEncryptedChat {
         localUserId &&
         localDeviceId &&
         !(requesterId === localUserId && requesterDeviceId === localDeviceId) &&
-        this.canSendHistoryBundleToRequester(scope.id, requesterId, requesterDeviceId)
+        this.canSendHistoryBundleToRequester(groupId, requesterId, requesterDeviceId)
       ) {
         await this.sendHistoryBundle(
           scope,
@@ -1775,7 +1790,7 @@ export class VesperEncryptedChat {
 
       if (senderId !== localUserId || senderDeviceId !== localDeviceId) {
         const result = await this.handleCommit(
-          scope.id,
+          groupId,
           this.getString(payload, 'commit_data'),
           'liveEvent'
         )
@@ -1810,7 +1825,7 @@ export class VesperEncryptedChat {
         (!recipientDeviceId || recipientDeviceId === localDeviceId)
       ) {
         const processed = await this.handleWelcome(
-          scope.id,
+          groupId,
           this.getString(payload, 'welcome_data'),
           this.getString(payload, 'key_package_ref')
         )
@@ -1833,6 +1848,7 @@ export class VesperEncryptedChat {
     scope: EncryptedScope,
     payload: Record<string, unknown> | null
   ): Promise<void> {
+    const groupId = this.resolveMlsGroupId(scope)
     const senderId = this.getString(payload, 'sender_id')
     const senderDeviceId = this.getString(payload, 'sender_device_id')
     const removedUserId = this.getString(payload, 'removed_user_id')
@@ -1845,12 +1861,12 @@ export class VesperEncryptedChat {
       (removedDeviceId == null || removedDeviceId === localDeviceId)
 
     if (isLocalTarget && !isLocalSender) {
-      await this.resetScopeState(scope.id)
+      await this.resetScopeState(groupId)
       return
     }
 
     if (!isLocalSender) {
-      await this.handleCommit(scope.id, this.getString(payload, 'commit_data'), 'removeEvent')
+      await this.handleCommit(groupId, this.getString(payload, 'commit_data'), 'removeEvent')
     }
   }
 
@@ -1858,6 +1874,7 @@ export class VesperEncryptedChat {
     scope: EncryptedScope,
     payload: Record<string, unknown> | null
   ): Promise<boolean> {
+    const groupId = this.resolveMlsGroupId(scope)
     const evictionId =
       this.getString(payload, 'eviction_id') ??
       this.getString(payload, 'request_id') ??
@@ -1896,10 +1913,10 @@ export class VesperEncryptedChat {
     }
 
     let handled = false
-    const prev = this.evictionLocks.get(scope.id) ?? Promise.resolve()
+    const prev = this.evictionLocks.get(groupId) ?? Promise.resolve()
     const current = prev
       .then(async () => {
-        const state = this.groupStates.get(scope.id)
+        const state = this.groupStates.get(groupId)
         if (!state) {
           return
         }
@@ -1942,7 +1959,7 @@ export class VesperEncryptedChat {
         }
 
         const removed = await removeMemberFromGroup(this.cloneGroupState(state), leafIndex)
-        await this.setGroupState(scope.id, removed.newState)
+        await this.setGroupState(groupId, removed.newState)
 
         const pushed = await this.pushScopeEventResolved(scope, 'mls_remove', {
           removed_user_id: targetUserId,
@@ -1958,11 +1975,11 @@ export class VesperEncryptedChat {
       })
       .finally(() => {
         this.pendingEvictionRequests.delete(evictionId)
-        this.evictionLocks.delete(scope.id)
+        this.evictionLocks.delete(groupId)
       })
 
     this.pendingEvictionRequests.set(evictionId, current)
-    this.evictionLocks.set(scope.id, current)
+    this.evictionLocks.set(groupId, current)
     await current
     return handled
   }
@@ -2180,42 +2197,44 @@ export class VesperEncryptedChat {
     scope: EncryptedScope,
     timeoutMs: number
   ): Promise<boolean> {
+    const groupId = this.resolveMlsGroupId(scope)
     const deadline = Date.now() + timeoutMs
 
     while (Date.now() < deadline) {
       const ready = await this.ensureMembership(scope).catch(() => false)
-      if (ready || this.hasGroup(scope.id)) {
+      if (ready || this.hasGroup(groupId)) {
         return true
       }
 
       await new Promise((resolve) => setTimeout(resolve, 100))
     }
 
-    return this.hasGroup(scope.id)
+    return this.hasGroup(groupId)
   }
 
   private async maybeRequestScopeResync(
     scope: EncryptedScope,
     options: ScopePreparationOptions
   ): Promise<boolean> {
+    const groupId = this.resolveMlsGroupId(scope)
     const localIdentity = this.getLocalSessionIdentity()
     if (!localIdentity) {
       return false
     }
 
     const now = Date.now()
-    const lastRequestAt = this.recentScopeResyncRequests.get(scope.id) ?? 0
+    const lastRequestAt = this.recentScopeResyncRequests.get(groupId) ?? 0
     if (now - lastRequestAt < VOICE_RESYNC_REQUEST_COOLDOWN_MS) {
       return true
     }
 
-    const pushed = await this.pushResyncRequestForScope(scope.id, scope.kind, {
-      lastKnownEpoch: options.lastKnownEpoch ?? this.getGroupEpoch(scope.id),
+    const pushed = await this.pushResyncRequestForScope(groupId, scope.channelId ? 'channel' : scope.kind, {
+      lastKnownEpoch: options.lastKnownEpoch ?? this.getGroupEpoch(groupId),
       reason: options.reason ?? 'missing_state',
       username: localIdentity.username
     })
     if (pushed) {
-      this.recentScopeResyncRequests.set(scope.id, now)
+      this.recentScopeResyncRequests.set(groupId, now)
     }
 
     return pushed
@@ -3117,7 +3136,8 @@ export class VesperEncryptedChat {
     scope: EncryptedScope,
     force = false
   ): Promise<void> {
-    if (!this.hasGroup(scope.id)) {
+    const groupId = this.resolveMlsGroupId(scope)
+    if (!this.hasGroup(groupId)) {
       return
     }
 
@@ -3127,7 +3147,7 @@ export class VesperEncryptedChat {
     }
 
     const now = Date.now()
-    const lastRequestAt = this.recentScopeHistoryRequests.get(scope.id) ?? 0
+    const lastRequestAt = this.recentScopeHistoryRequests.get(groupId) ?? 0
     if (!force && now - lastRequestAt < HISTORY_SYNC_REQUEST_COOLDOWN_MS) {
       await this.processPendingHistoryBundles(scope)
       return
@@ -3141,14 +3161,15 @@ export class VesperEncryptedChat {
     }
 
     if (pushed) {
-      this.recentScopeHistoryRequests.set(scope.id, now)
+      this.recentScopeHistoryRequests.set(groupId, now)
     }
 
     await this.processPendingHistoryBundles(scope)
   }
 
   private async processPendingResyncRequests(scope: EncryptedScope): Promise<void> {
-    if (!this.hasGroup(scope.id)) {
+    const groupId = this.resolveMlsGroupId(scope)
+    if (!this.hasGroup(groupId)) {
       return
     }
 
@@ -3160,7 +3181,7 @@ export class VesperEncryptedChat {
 
     let requests: Awaited<ReturnType<typeof fetchPendingResyncRequests>> = []
     try {
-      requests = await fetchPendingResyncRequests(scope.id, this.client.getHttpClient())
+      requests = await fetchPendingResyncRequests(groupId, this.client.getHttpClient())
     } catch {
       return
     }
@@ -3175,11 +3196,11 @@ export class VesperEncryptedChat {
 
       const requesterAlreadyJoined =
         request.requester_client_id != null &&
-        this.hasMemberDevice(scope.id, request.requester_id, request.requester_client_id)
+        this.hasMemberDevice(groupId, request.requester_id, request.requester_client_id)
 
       if (requesterAlreadyJoined) {
         if (this.canSendHistoryBundleToRequester(
-          scope.id,
+          groupId,
           request.requester_id,
           request.requester_client_id
         )) {
@@ -3199,7 +3220,7 @@ export class VesperEncryptedChat {
       }
 
       const sponsored = await this.sponsorScopeResync(
-        scope.id,
+        groupId,
         request.requester_id,
         request.requester_client_id ?? null
       )
@@ -3208,7 +3229,7 @@ export class VesperEncryptedChat {
       }
 
       if (this.canSendHistoryBundleToRequester(
-        scope.id,
+        groupId,
         request.requester_id,
         request.requester_client_id
       )) {
@@ -3228,7 +3249,8 @@ export class VesperEncryptedChat {
   }
 
   private async processPendingHistoryRequests(scope: EncryptedScope): Promise<void> {
-    if (!this.hasGroup(scope.id)) {
+    const groupId = this.resolveMlsGroupId(scope)
+    if (!this.hasGroup(groupId)) {
       return
     }
 
@@ -3240,7 +3262,7 @@ export class VesperEncryptedChat {
 
     let requests: Awaited<ReturnType<typeof fetchPendingHistoryRequests>> = []
     try {
-      requests = await fetchPendingHistoryRequests(scope.id, this.client.getHttpClient())
+      requests = await fetchPendingHistoryRequests(groupId, this.client.getHttpClient())
     } catch {
       return
     }
@@ -3258,7 +3280,7 @@ export class VesperEncryptedChat {
       }
 
       const canSend = this.canSendHistoryBundleToRequester(
-        scope.id,
+        groupId,
         request.requester_id,
         request.requester_client_id
       )
@@ -3276,6 +3298,7 @@ export class VesperEncryptedChat {
   }
 
   private async processPendingHistoryBundles(scope: EncryptedScope): Promise<void> {
+    const groupId = this.resolveMlsGroupId(scope)
     const localUserId = this.client.getAuthSession()?.user.id ?? this.client.getState().user?.id
     const localDeviceId = this.client.deviceIdentity?.id ?? null
     if (!localUserId || !localDeviceId) {
@@ -3284,7 +3307,7 @@ export class VesperEncryptedChat {
 
     let bundles: Awaited<ReturnType<typeof fetchPendingHistoryBundles>> = []
     try {
-      bundles = await fetchPendingHistoryBundles(scope.id, this.client.getHttpClient())
+      bundles = await fetchPendingHistoryBundles(groupId, this.client.getHttpClient())
     } catch {
       return
     }
@@ -3311,6 +3334,7 @@ export class VesperEncryptedChat {
     recipientDeviceId: string,
     pendingRequestId: string | null = null
   ): Promise<void> {
+    const groupId = this.resolveMlsGroupId(scope)
     const scopeId = scope.id
     const cachedMessages = await this.storage.loadCachedMessages(scopeId).catch(() => [])
     const knownMessages = this.scopeMessages.get(scopeId) ?? []
@@ -3392,7 +3416,7 @@ export class VesperEncryptedChat {
       type: 'text',
       text: JSON.stringify(items)
     })
-    const encrypted = await this.encryptForScope(scopeId, bundlePayload)
+    const encrypted = await this.encryptForScope(groupId, bundlePayload)
 
     const pushed = await this.pushScopeEventResolved(scope, 'mls_history_bundle', {
       ciphertext: encrypted.ciphertext,
@@ -3427,14 +3451,15 @@ export class VesperEncryptedChat {
       mlsEpoch: number | null
     }
   ): Promise<void> {
-    const fingerprint = await this.computeHistoryBundleFingerprint(scope.id, input.ciphertext)
+    const groupId = this.resolveMlsGroupId(scope)
+    const fingerprint = await this.computeHistoryBundleFingerprint(groupId, input.ciphertext)
 
-    if (this.hasRecentHistoryBundleFingerprint(scope.id, fingerprint)) {
+    if (this.hasRecentHistoryBundleFingerprint(groupId, fingerprint)) {
       await this.ackHistoryBundleIfNeeded(input.id)
       return
     }
 
-    const processKey = `${scope.id}:${fingerprint}`
+    const processKey = `${groupId}:${fingerprint}`
     const existingProcess = this.inFlightHistoryBundleProcesses.get(processKey)
     if (existingProcess) {
       if (await existingProcess) {
@@ -3466,6 +3491,7 @@ export class VesperEncryptedChat {
     },
     fingerprint: string
   ): Promise<boolean> {
+    const groupId = this.resolveMlsGroupId(scope)
     const decrypted = await this.decryptHistoryBundle(scope, input.ciphertext, input.mlsEpoch)
     if (!decrypted) {
       return false
@@ -3629,8 +3655,8 @@ export class VesperEncryptedChat {
       })
     )
 
-    await this.persistHistoryBundleAppliedState(scope.id, fingerprint)
-    this.setScopeRepairState(scope.id, 'healthy', null, { persist: true })
+    await this.persistHistoryBundleAppliedState(groupId, fingerprint)
+    this.setScopeRepairState(groupId, 'healthy', null, { persist: true })
     return true
   }
 
@@ -3649,12 +3675,13 @@ export class VesperEncryptedChat {
     ciphertext: string,
     mlsEpoch: number | null
   ): Promise<string | null> {
-    const decrypted = await this.decryptForScope(scope.id, ciphertext)
+    const groupId = this.resolveMlsGroupId(scope)
+    const decrypted = await this.decryptForScope(groupId, ciphertext)
     if (decrypted) {
       return decrypted
     }
 
-    const localEpoch = this.getGroupEpoch(scope.id)
+    const localEpoch = this.getGroupEpoch(groupId)
     const shouldReplay =
       localEpoch != null &&
       (mlsEpoch == null || !Number.isFinite(mlsEpoch) || mlsEpoch >= localEpoch)
@@ -3663,8 +3690,8 @@ export class VesperEncryptedChat {
       return null
     }
 
-    await this.replayDurableEvents(scope.id)
-    return await this.decryptForScope(scope.id, ciphertext)
+    await this.replayDurableEvents(groupId)
+    return await this.decryptForScope(groupId, ciphertext)
   }
 
   private async processPendingCommits(scopeId: string): Promise<void> {
@@ -3804,8 +3831,9 @@ export class VesperEncryptedChat {
       waitForHistoryRecovery?: boolean
     } = {}
   ): Promise<string | null> {
-    const initialEpoch = this.getGroupEpoch(scope.id)
-    const initialPlaintext = await this.decryptForScope(scope.id, ciphertext)
+    const groupId = this.resolveMlsGroupId(scope)
+    const initialEpoch = this.getGroupEpoch(groupId)
+    const initialPlaintext = await this.decryptForScope(groupId, ciphertext)
     const waitForHistoryRecovery = options.waitForHistoryRecovery ?? true
     if (initialPlaintext) {
       return initialPlaintext
@@ -3821,7 +3849,7 @@ export class VesperEncryptedChat {
       messageEpoch < initialEpoch
 
     if (isOlderEpochMessage) {
-      this.setScopeRepairState(scope.id, 'waiting_for_same_user_bundle', 'decrypt_failed', {
+      this.setScopeRepairState(groupId, 'waiting_for_same_user_bundle', 'decrypt_failed', {
         incrementFailure: true,
         persist: true
       })
@@ -3833,7 +3861,7 @@ export class VesperEncryptedChat {
       }
       const olderRecovered = await this.waitForHistoryBundleRecovery(scope, ciphertext, messageId)
       if (!olderRecovered) {
-        this.setScopeRepairState(scope.id, 'healthy', 'recovery_timeout', { persist: true })
+        this.setScopeRepairState(groupId, 'healthy', 'recovery_timeout', { persist: true })
       }
       return olderRecovered
     }
@@ -3844,22 +3872,22 @@ export class VesperEncryptedChat {
       messageEpoch >= initialEpoch
 
     if (!shouldReplay) {
-      this.setScopeRepairState(scope.id, 'waiting_for_same_user_bundle', 'decrypt_failed', {
+      this.setScopeRepairState(groupId, 'waiting_for_same_user_bundle', 'decrypt_failed', {
         incrementFailure: true,
         persist: true
       })
       return null
     }
 
-    this.setScopeRepairState(scope.id, 'replaying', null, { persist: true })
-    await this.replayDurableEvents(scope.id)
-    const replayed = await this.decryptForScope(scope.id, ciphertext)
+    this.setScopeRepairState(groupId, 'replaying', null, { persist: true })
+    await this.replayDurableEvents(groupId)
+    const replayed = await this.decryptForScope(groupId, ciphertext)
     if (replayed) {
-      this.setScopeRepairState(scope.id, 'healthy', null, { persist: true })
+      this.setScopeRepairState(groupId, 'healthy', null, { persist: true })
       return replayed
     }
 
-    this.setScopeRepairState(scope.id, 'waiting_for_same_user_bundle', 'decrypt_failed', {
+    this.setScopeRepairState(groupId, 'waiting_for_same_user_bundle', 'decrypt_failed', {
       incrementFailure: true,
       persist: true
     })
@@ -3871,13 +3899,13 @@ export class VesperEncryptedChat {
     }
     const recovered = await this.waitForHistoryBundleRecovery(scope, ciphertext, messageId)
     if (recovered) {
-      this.setScopeRepairState(scope.id, 'healthy', null, { persist: true })
+      this.setScopeRepairState(groupId, 'healthy', null, { persist: true })
     } else {
       // Recovery timed out. Clear repair state so the scope isn't permanently
       // stuck in 'waiting_for_same_user_bundle'. Normal operations (send,
       // encrypt) can proceed; the message stays undecrypted but the scope
       // remains functional for new messages.
-      this.setScopeRepairState(scope.id, 'healthy', 'recovery_timeout', { persist: true })
+      this.setScopeRepairState(groupId, 'healthy', 'recovery_timeout', { persist: true })
     }
     return recovered
   }
@@ -3887,10 +3915,11 @@ export class VesperEncryptedChat {
     ciphertext: string,
     messageId: string | null
   ): Promise<string | null> {
+    const groupId = this.resolveMlsGroupId(scope)
     if (messageId) {
       const cachedPlaintext = await this.storage.loadCachedMessageDecryption(messageId)
       if (cachedPlaintext) {
-        this.setScopeRepairState(scope.id, 'healthy', null, { persist: true })
+        this.setScopeRepairState(groupId, 'healthy', null, { persist: true })
         return cachedPlaintext
       }
     }
@@ -3900,14 +3929,14 @@ export class VesperEncryptedChat {
     if (messageId) {
       const cachedPlaintext = await this.storage.loadCachedMessageDecryption(messageId)
       if (cachedPlaintext) {
-        this.setScopeRepairState(scope.id, 'healthy', null, { persist: true })
+        this.setScopeRepairState(groupId, 'healthy', null, { persist: true })
         return cachedPlaintext
       }
     }
 
-    const recovered = await this.decryptForScope(scope.id, ciphertext)
+    const recovered = await this.decryptForScope(groupId, ciphertext)
     if (recovered) {
-      this.setScopeRepairState(scope.id, 'healthy', null, { persist: true })
+      this.setScopeRepairState(groupId, 'healthy', null, { persist: true })
       return recovered
     }
 
@@ -3919,13 +3948,14 @@ export class VesperEncryptedChat {
     ciphertext: string,
     messageId: string | null
   ): Promise<string | null> {
+    const groupId = this.resolveMlsGroupId(scope)
     const deadline = Date.now() + HISTORY_BUNDLE_WAIT_MS
 
     while (Date.now() < deadline) {
       if (messageId) {
         const cachedPlaintext = await this.storage.loadCachedMessageDecryption(messageId)
         if (cachedPlaintext) {
-          this.setScopeRepairState(scope.id, 'healthy', null, { persist: true })
+          this.setScopeRepairState(groupId, 'healthy', null, { persist: true })
           return cachedPlaintext
         }
       }
@@ -3934,14 +3964,14 @@ export class VesperEncryptedChat {
       if (messageId) {
         const cachedPlaintext = await this.storage.loadCachedMessageDecryption(messageId)
         if (cachedPlaintext) {
-          this.setScopeRepairState(scope.id, 'healthy', null, { persist: true })
+          this.setScopeRepairState(groupId, 'healthy', null, { persist: true })
           return cachedPlaintext
         }
       }
 
-      const recovered = await this.decryptForScope(scope.id, ciphertext)
+      const recovered = await this.decryptForScope(groupId, ciphertext)
       if (recovered) {
-        this.setScopeRepairState(scope.id, 'healthy', null, { persist: true })
+        this.setScopeRepairState(groupId, 'healthy', null, { persist: true })
         return recovered
       }
 
@@ -3952,6 +3982,10 @@ export class VesperEncryptedChat {
   }
 
   private async fetchScopeMessages(scope: EncryptedScope, limit: number): Promise<VesperMessage[]> {
+    if (scope.channelId) {
+      return await this.client.fetchChannelMessages(scope.channelId, limit)
+    }
+
     if (scope.kind === 'channel') {
       return await this.client.fetchChannelMessages(scope.id, limit)
     }
@@ -3968,18 +4002,20 @@ export class VesperEncryptedChat {
     events: ScopeSyncEvent[]
     hasMore: boolean
   }> {
+    const syncKind = scope.channelId ? 'channel' : scope.kind
+    const syncId = scope.channelId ?? scope.id
     const syncState = await this.client.fetchScopeSync({
       scopes: [
         {
-          kind: scope.kind,
-          id: scope.id,
+          kind: syncKind,
+          id: syncId,
           after_seq: afterSeq
         }
       ],
       limit
     })
 
-    const entry = syncState.scopes.find((candidate) => candidate.scope_id === scope.id) ?? null
+    const entry = syncState.scopes.find((candidate) => candidate.scope_id === syncId) ?? null
 
     return {
       messages: sortRawMessages(entry?.messages ?? []),

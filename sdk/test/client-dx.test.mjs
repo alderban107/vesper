@@ -839,7 +839,7 @@ test('sdk ignores stale dm join-all replay after restart when the peer is alread
         setTimeout(resolve, 750)
       })
 
-      assert.equal(restartedFollowerChat.hasGroup(scope.id), true)
+      assert.equal(restartedFollowerChat.hasGroup(scope.channelId || scope.id), true)
       assert.equal(restartedFollowerChat.isMemberOfGroup(scope.channelId || scope.id, leader.userId), true)
       assert.equal(restartedFollowerChat.getGroupEpoch(scope.channelId || scope.id), 1)
       assert.equal(leaderChat.getGroupEpoch(scope.channelId || scope.id), 1)
