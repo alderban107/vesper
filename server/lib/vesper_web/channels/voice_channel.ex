@@ -118,7 +118,9 @@ defmodule VesperWeb.VoiceChannel do
             caller_id: caller_id,
             conversation_id: room_id
           })
-        _ -> :ok
+
+        _ ->
+          :ok
       end
 
       {:noreply, socket}

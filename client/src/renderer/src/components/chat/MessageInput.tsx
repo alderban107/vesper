@@ -139,9 +139,14 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
     const replyTo = useMessageStore.getState().replyingTo
     const parentId = replyTo?.id || undefined
 
+    // Resolve channelId for DM scopes so the SDK routes through the channel MLS path
+    const resolvedScope = scope.kind === 'dm'
+      ? { ...scope, channelId: conversations.find(c => c.id === scope.id)?.channel_id ?? undefined }
+      : scope
+
     try {
       await getRendererEncryptedChat().sendPayload(
-        scope,
+        resolvedScope,
         {
           v: 1,
           type: 'file',

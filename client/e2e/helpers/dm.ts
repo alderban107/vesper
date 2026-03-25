@@ -207,9 +207,16 @@ export async function uploadDmAttachment(
   page: Page,
   filePath: string
 ): Promise<void> {
-  // Ensure encryption is ready before staging the file — otherwise the
-  // submit will fail and the file input is consumed without retry.
-  await waitForEncryptionReady(page)
+  // Send a probe message to confirm encryption is fully ready.
+  // The attachment upload can't retry if encryption fails mid-submit,
+  // so we validate the scope is operational first.
+  await sendMessageWithEncryptionRetry(
+    page,
+    page.locator('.vesper-composer-textarea'),
+    page.getByTestId('message-row'),
+    'attachment-probe',
+    { timeout: 30_000, errorLabel: 'DM attachment probe' }
+  )
 
   const fileInput = page.locator('.vesper-composer-form input[type="file"]')
   await fileInput.setInputFiles(filePath)
