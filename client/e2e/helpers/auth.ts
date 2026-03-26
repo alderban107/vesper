@@ -82,7 +82,7 @@ export async function signup(user: UserContext): Promise<void> {
 
   // Fill registration form
   const form = page.locator('[data-testid="register-form"]')
-  await form.locator('input[type="text"]').fill(username)
+  await form.locator('input[autocomplete="username"]').fill(username)
   await form.locator('input[type="password"]').first().fill(password)
   await form.locator('input[type="password"]').last().fill(password)
   await form.locator('button[type="submit"]').click()
@@ -125,7 +125,7 @@ export async function login(
   await page.waitForSelector('[data-testid="login-form"]', { timeout: 10_000 })
 
   const form = page.locator('[data-testid="login-form"]')
-  await form.locator('input[type="text"]').fill(username)
+  await form.locator('input[autocomplete="username"]').fill(username)
   await form.locator('input[type="password"]').fill(password)
   await form.locator('button[type="submit"]').click()
 
@@ -189,7 +189,7 @@ export async function unlockTrustedDevice(
   const gate = page.locator('[data-testid="device-trust-gate"]')
 
   await gate.locator('input[type="password"]').fill(password)
-  await gate.locator('button:has-text("Unlock encrypted chats")').click()
+  await gate.locator('button:has-text("Unlock")').click()
 
   await page.waitForSelector('[data-testid="device-trust-gate"]', {
     state: 'hidden',
