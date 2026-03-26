@@ -8973,3 +8973,45 @@ body,
 [data-theme="light"] .vesper-profile-popout {
   box-shadow: 0 20px 38px rgba(24, 29, 37, 0.08);
 }
+
+/* Screen Share Indicator */
+.vesper-screen-share-indicator {
+  position: fixed;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border-subtle);
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.vesper-screen-share-indicator-text {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+
+.vesper-screen-share-indicator-stop {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  color: white;
+  background: var(--color-danger);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.vesper-screen-share-indicator-stop:hover {
+  background: color-mix(in srgb, var(--color-danger) 85%, black 15%);
+}

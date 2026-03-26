@@ -146,6 +146,22 @@ if config_env() == :prod do
   # recreation. Default to a stable path that Docker volumes can mount.
   config :vesper, :upload_dir, System.get_env("UPLOAD_DIR") || "/app/priv/uploads"
 
+  # VAPID keys for Web Push notifications.
+  # Generate a key pair with: mix generate.vapid.keys
+  # Without these, push notifications are disabled (not an error).
+  vapid_public = System.get_env("VAPID_PUBLIC_KEY")
+  vapid_private = System.get_env("VAPID_PRIVATE_KEY")
+  vapid_subject = System.get_env("VAPID_SUBJECT")
+
+  if vapid_public && vapid_private do
+    config :web_push_elixir,
+      vapid_public_key: vapid_public,
+      vapid_private_key: vapid_private,
+      vapid_subject: vapid_subject || "mailto:admin@#{host}"
+  end
+
+  config :vesper, :web_push_enabled, !!(vapid_public && vapid_private)
+
   # CORS — restrict to the configured origin in production.
   # Set CORS_ORIGIN to your frontend URL (e.g. "https://app.example.com").
   # WARNING: leaving CORS_ORIGIN unset allows all origins ("*"), which is

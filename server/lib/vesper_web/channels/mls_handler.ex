@@ -24,14 +24,16 @@ defmodule VesperWeb.MlsHandler do
   end
 
   def handle_mls_request_join_all(socket, scope) do
-    case Encryption.store_mls_event(%{
-           group_id: scope.id,
-           event_type: "mls_request_join_all",
-           payload: %{user_id: socket.assigns.user_id},
-           sender_id: socket.assigns.user_id,
-           sender_device_id: socket.assigns.device_client_id
-         }
-         |> Map.put(scope.id_key, scope.id)) do
+    case Encryption.store_mls_event(
+           %{
+             group_id: scope.id,
+             event_type: "mls_request_join_all",
+             payload: %{user_id: socket.assigns.user_id},
+             sender_id: socket.assigns.user_id,
+             sender_device_id: socket.assigns.device_client_id
+           }
+           |> Map.put(scope.id_key, scope.id)
+         ) do
       {:ok, event} ->
         broadcast_from!(socket, "mls_request_join_all", %{user_id: socket.assigns.user_id})
         {:reply, {:ok, %{seq: event.id}}, socket}

@@ -6,6 +6,7 @@ import { useUIStore } from '../../stores/uiStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useVoiceStore } from '../../stores/voiceStore'
 import { useAuthStore } from '../../stores/authStore'
+import { isPushEnabled, subscribeToPush, unsubscribeFromPush } from '../../utils/pushSubscription'
 import Avatar from '../ui/Avatar'
 import ImageCropModal from '../ui/ImageCropModal'
 import SettingsShell, { type SettingsSectionGroup } from './SettingsShell'
@@ -294,6 +295,9 @@ export default function SettingsModal(): React.JSX.Element {
   const [notificationsEnabled, setNotificationsEnabled] = useState(
     () => getStoredValue('notifications') !== 'disabled'
   )
+  const [pushEnabled, setPushEnabled] = useState(() => isPushEnabled())
+  const [pushBusy, setPushBusy] = useState(false)
+  const pushAvailable = typeof window !== 'undefined' && !window.cryptoDb && 'PushManager' in window
 
   const { inputs, outputs, loading: devicesLoading, reload: reloadDevices } = useAudioDevices()
   const { level: microphoneLevel, supported: micMeterSupported } = useMicrophoneLevel({
@@ -344,6 +348,22 @@ export default function SettingsModal(): React.JSX.Element {
     const enabled = !notificationsEnabled
     setNotificationsEnabled(enabled)
     setStoredValue('notifications', enabled ? 'enabled' : 'disabled')
+  }
+
+  const handlePushToggle = async (): Promise<void> => {
+    if (pushBusy) return
+    setPushBusy(true)
+    try {
+      if (pushEnabled) {
+        await unsubscribeFromPush()
+        setPushEnabled(false)
+      } else {
+        const ok = await subscribeToPush()
+        setPushEnabled(ok)
+      }
+    } finally {
+      setPushBusy(false)
+    }
   }
 
   const handleLinkPreviewToggle = (): void => {
@@ -669,6 +689,35 @@ export default function SettingsModal(): React.JSX.Element {
               <span>{notificationsEnabled ? 'Notifications are enabled.' : 'Notifications are disabled.'}</span>
             </div>
           </div>
+
+          {pushAvailable && (
+            <div className="vesper-settings-card">
+              <div className="vesper-settings-row">
+                <div>
+                  <div className="vesper-settings-row-title">Push Notifications</div>
+                  <div className="vesper-settings-row-copy">Receive notifications for @mentions and DMs even when the browser tab is closed.</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void handlePushToggle()}
+                  disabled={pushBusy}
+                  className={pushEnabled ? 'vesper-settings-toggle vesper-settings-toggle-on' : 'vesper-settings-toggle'}
+                  aria-pressed={pushEnabled}
+                >
+                  <span className="vesper-settings-toggle-knob" />
+                </button>
+              </div>
+
+              <div className="vesper-settings-note-pill">
+                <Globe className="w-4 h-4" />
+                <span>
+                  {pushEnabled
+                    ? 'Push notifications are on. You will be notified when @mentioned or receiving DMs while offline.'
+                    : 'Push notifications are off. Enable to get notified even when the tab is closed.'}
+                </span>
+              </div>
+            </div>
+          )}
 
           <div className="vesper-settings-card">
             <div className="vesper-settings-row">

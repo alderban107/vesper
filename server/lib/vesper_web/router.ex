@@ -69,6 +69,7 @@ defmodule VesperWeb.Router do
     get("/banners/:user_id", AvatarController, :show_banner)
     get("/servers/:server_id/icon", ServerController, :show_icon)
     get("/servers/:server_id/emojis/:emoji_id/file", EmojiController, :show)
+    get("/push/vapid-key", PushController, :vapid_key)
   end
 
   # Authenticated routes

@@ -28,7 +28,11 @@ defmodule Vesper.Workers.PurgeSyncEvents do
       |> Repo.delete_all()
 
     total = scope_count + user_count
-    if total > 0, do: Logger.info("Purged #{total} old sync events (#{scope_count} scope, #{user_count} user)")
+
+    if total > 0,
+      do:
+        Logger.info("Purged #{total} old sync events (#{scope_count} scope, #{user_count} user)")
+
     :ok
   end
 end
