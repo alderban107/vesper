@@ -103,6 +103,10 @@ export default function AuthShell({
 
         <section className="vesper-auth-form-card glass-card">
           <div className="vesper-auth-form-header">
+            <div className="vesper-auth-form-logo">
+              <Star className="w-6 h-6" />
+              <span className="vesper-auth-form-logo-name">Vesper</span>
+            </div>
             {formEyebrow ? <div className="vesper-auth-form-kicker">{formEyebrow}</div> : null}
             <h2 className="vesper-auth-form-title">{formTitle}</h2>
             <p className="vesper-auth-form-description">{formDescription}</p>

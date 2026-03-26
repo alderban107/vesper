@@ -181,7 +181,7 @@ export default function ComposerForm({
             className="vesper-composer-icon-button"
             title="Attach file"
           >
-            {uploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Paperclip className="w-5 h-5" />}
+            {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Paperclip className="w-4 h-4" />}
           </button>
           <input
             ref={fileInputRef}
@@ -198,7 +198,7 @@ export default function ComposerForm({
               className="vesper-composer-icon-button"
               title="Emoji"
             >
-              <Smile className="w-5 h-5" />
+              <Smile className="w-4 h-4" />
             </button>
             {showEmojiPicker && (
               <EmojiPicker
@@ -241,7 +241,7 @@ export default function ComposerForm({
             disabled={!canSend || uploading}
             className="vesper-composer-send"
           >
-            <SendHorizonal className="w-5 h-5" />
+            <SendHorizonal className="w-4 h-4" />
           </button>
         </div>
       </ComposerShell>

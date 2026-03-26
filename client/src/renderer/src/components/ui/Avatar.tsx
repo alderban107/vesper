@@ -7,7 +7,7 @@ interface Props {
   userId: string
   avatarUrl?: string | null
   displayName: string
-  size?: 'xs' | 'sm' | 'md' | 'lg'
+  size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl'
   status?: PresenceStatus
   speaking?: boolean
 }
@@ -16,7 +16,8 @@ const SIZES = {
   xs: 'vesper-avatar vesper-avatar-xs text-[8px]',
   sm: 'vesper-avatar vesper-avatar-sm text-[10px]',
   md: 'vesper-avatar vesper-avatar-md text-xs',
-  lg: 'vesper-avatar vesper-avatar-lg text-lg'
+  lg: 'vesper-avatar vesper-avatar-lg text-lg',
+  xl: 'vesper-avatar vesper-avatar-xl text-xl'
 }
 
 function resolveAvatarUrl(avatarUrl?: string | null): string | null {

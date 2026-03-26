@@ -75,12 +75,6 @@ export default function DeviceTrustGate(): React.JSX.Element | null {
     return null
   }
 
-  const handleRefresh = async (): Promise<void> => {
-    setBusy('refresh')
-    await fetchDevices().catch(() => {})
-    setBusy(null)
-  }
-
   const handleApproveCurrent = async (): Promise<void> => {
     setBusy('recovery')
     const approved = await approveCurrentDeviceWithRecovery(recoveryKey)
@@ -161,33 +155,20 @@ export default function DeviceTrustGate(): React.JSX.Element | null {
 
   return (
     <div data-testid="device-trust-gate" className="fixed inset-0 z-[120] bg-bg-base/82 backdrop-blur-md flex items-center justify-center p-6">
-      <div className="glass-card rounded-3xl max-w-3xl w-full p-8 animate-scale-in border border-border/60 shadow-2xl">
+      <div className="glass-card rounded-3xl max-w-md w-full p-8 animate-scale-in border border-border/60 shadow-2xl">
         <div className="flex items-start gap-4 mb-6">
           <div className="w-12 h-12 rounded-2xl bg-accent/15 text-accent flex items-center justify-center">
             {needsUnlock ? <CheckCircle2 className="w-6 h-6" /> : <Laptop2 className="w-6 h-6" />}
           </div>
           <div>
             <h2 className="text-2xl font-semibold text-text-primary">
-              {needsUnlock ? 'Finish setting up this device' : 'Approve this device'}
+              {needsUnlock ? 'Unlock this device' : 'Approve this device'}
             </h2>
             <p className="text-text-muted mt-2">
               {needsUnlock
-                ? 'This device is approved. Enter your password once to unlock encrypted chats and calls here.'
-                : 'Use another device you already trust, or use your recovery key here if this is your only device.'}
+                ? 'Enter your password to unlock encrypted chats and calls.'
+                : 'Use another trusted device or enter your recovery key.'}
             </p>
-            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-              <span className="rounded-full border border-border/60 bg-bg-base/40 px-3 py-1 text-text-secondary">
-                This device: {currentDevice.name}
-              </span>
-              <span className="rounded-full border border-border/60 bg-bg-base/40 px-3 py-1 text-text-secondary">
-                Status: {needsUnlock ? 'Trusted, waiting for unlock' : 'Waiting for trust'}
-              </span>
-              {pendingDevices.length > 0 ? (
-                <span className="rounded-full border border-amber-400/25 bg-amber-500/10 px-3 py-1 text-amber-100">
-                  {pendingDevices.length} pending {pendingDevices.length === 1 ? 'device' : 'devices'}
-                </span>
-              ) : null}
-            </div>
           </div>
         </div>
 
@@ -198,10 +179,7 @@ export default function DeviceTrustGate(): React.JSX.Element | null {
         )}
 
         {needsUnlock ? (
-          <div className="rounded-2xl border border-border/60 bg-bg-base/40 p-5">
-            <div className="mb-4 rounded-2xl border border-emerald-400/15 bg-emerald-500/8 px-4 py-3 text-sm text-text-secondary">
-              Approval already landed. Unlock happens locally on this device and does not need another round-trip from your other clients.
-            </div>
+          <div>
             <label className="block text-sm text-text-muted mb-2">Password</label>
             <input
               type="password"
@@ -211,121 +189,44 @@ export default function DeviceTrustGate(): React.JSX.Element | null {
               placeholder="Enter your account password"
               autoComplete="current-password"
             />
-            <div className="mt-4 flex items-center gap-3">
+            <div className="mt-4">
               <button
                 type="button"
                 onClick={() => void handleUnlock()}
                 disabled={!password.trim() || busy !== null}
-                className="glow-accent hover:glow-accent-hover disabled:opacity-40 disabled:shadow-none text-bg-base font-semibold px-5 py-2.5 rounded-xl transition-all"
+                className="w-full glow-accent hover:glow-accent-hover disabled:opacity-40 disabled:shadow-none text-bg-base font-semibold px-5 py-2.5 rounded-xl transition-all"
               >
-                {busy === 'unlock' ? 'Unlocking...' : 'Unlock encrypted chats'}
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleRefresh()}
-                disabled={busy !== null}
-                className="px-4 py-2.5 rounded-xl border border-border text-text-secondary hover:text-text-primary hover:border-border-strong transition-colors"
-              >
-                Refresh
+                {busy === 'unlock' ? 'Unlocking...' : 'Unlock'}
               </button>
             </div>
           </div>
         ) : (
-          <div className="grid gap-5 lg:grid-cols-[1.2fr,0.8fr]">
-            <div className="rounded-2xl border border-border/60 bg-bg-base/40 p-5">
-              <div className="mb-4 rounded-2xl border border-border/60 bg-bg-base/45 px-4 py-3 text-sm text-text-secondary">
-                If another trusted device approves this one, this screen switches to the unlock step automatically.
-              </div>
-              <div className="flex items-center gap-2 text-text-primary font-medium mb-3">
-                <KeyRound className="w-4 h-4" />
-                Use your recovery key on this device
-              </div>
-              <textarea
-                value={recoveryKey}
-                onChange={(event) => setRecoveryKey(event.target.value)}
-                rows={4}
-                className="block w-full rounded-xl bg-bg-base/60 border border-border text-text-primary px-4 py-3 input-focus resize-none"
-                placeholder="Paste your 24-word recovery key"
-                spellCheck={false}
-              />
-              <div className="mt-4 flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => void handleApproveCurrent()}
-                  disabled={!recoveryKey.trim() || busy !== null}
-                  className="glow-accent hover:glow-accent-hover disabled:opacity-40 disabled:shadow-none text-bg-base font-semibold px-5 py-2.5 rounded-xl transition-all"
-                >
-                  {busy === 'recovery' ? 'Approving...' : 'Use recovery key'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void handleRefresh()}
-                  disabled={busy !== null}
-                  className="px-4 py-2.5 rounded-xl border border-border text-text-secondary hover:text-text-primary hover:border-border-strong transition-colors"
-                >
-                  Refresh
-                </button>
-              </div>
+          <div>
+            <div className="flex items-center gap-2 text-text-primary font-medium mb-3">
+              <KeyRound className="w-4 h-4" />
+              Recovery Key
             </div>
-
-            <div className="rounded-2xl border border-border/60 bg-bg-base/40 p-5">
-              <div className="flex items-center gap-2 text-text-primary font-medium mb-3">
-                <ShieldAlert className="w-4 h-4" />
-                Device trust
-              </div>
-              <p className="mb-3 text-sm text-text-muted">
-                Any trusted device can approve pending ones. Revoking a device removes its access and forces chat re-setup there.
-              </p>
-              <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
-                {devices.length === 0 ? (
-                  <div className="text-sm text-text-faint">No device info yet.</div>
-                ) : (
-                  devices.map((device) => (
-                    <div
-                      key={device.id}
-                      className="rounded-xl border border-border/50 bg-bg-base/50 px-4 py-3"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="text-sm font-medium text-text-primary">{device.name}</div>
-                          <div className="text-xs text-text-faint mt-1">
-                            {device.trust_state === 'trusted'
-                              ? 'Trusted'
-                              : device.trust_state === 'pending'
-                                ? 'Waiting for approval'
-                                : 'Removed'}
-                          </div>
-                        </div>
-                        {device.id === currentDevice.id ? (
-                          <span className="text-xs text-accent-text">This device</span>
-                        ) : (
-                          <div className="flex items-center gap-2">
-                            {device.trust_state === 'pending' && (
-                              <button
-                                type="button"
-                                onClick={() => void approveDevice(device.id)}
-                                className="text-xs px-3 py-1.5 rounded-lg border border-border text-text-secondary hover:text-text-primary hover:border-border-strong transition-colors"
-                              >
-                                Approve
-                              </button>
-                            )}
-                            {device.trust_state !== 'revoked' && (
-                              <button
-                                type="button"
-                                onClick={() => void revokeDevice(device.id)}
-                                className="text-xs px-3 py-1.5 rounded-lg border border-border text-text-secondary hover:text-text-primary hover:border-border-strong transition-colors"
-                              >
-                                Remove
-                              </button>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
+            <textarea
+              value={recoveryKey}
+              onChange={(event) => setRecoveryKey(event.target.value)}
+              rows={3}
+              className="block w-full rounded-xl bg-bg-base/60 border border-border text-text-primary px-4 py-3 input-focus resize-none"
+              placeholder="Paste your 24-word recovery key"
+              spellCheck={false}
+            />
+            <div className="mt-4 flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => void handleApproveCurrent()}
+                disabled={!recoveryKey.trim() || busy !== null}
+                className="flex-1 glow-accent hover:glow-accent-hover disabled:opacity-40 disabled:shadow-none text-bg-base font-semibold px-5 py-2.5 rounded-xl transition-all"
+              >
+                {busy === 'recovery' ? 'Approving...' : 'Use recovery key'}
+              </button>
             </div>
+            <p className="mt-3 text-xs text-text-faint text-center">
+              Or approve from another trusted device. This screen updates automatically.
+            </p>
           </div>
         )}
       </div>

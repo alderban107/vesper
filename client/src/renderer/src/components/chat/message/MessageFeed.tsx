@@ -302,7 +302,6 @@ export default function MessageFeed({
     ) : (
       <Virtuoso
         ref={virtuosoRef}
-        key={feedIdentity}
         data={messages}
         alignToBottom={!isThreadView}
         firstItemIndex={firstItemIndex}

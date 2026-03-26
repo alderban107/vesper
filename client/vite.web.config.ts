@@ -69,6 +69,21 @@ export default defineConfig({
     fs: {
       // Allow serving the WASM binary from the SDK package
       allow: ['..', resolve(__dirname, '../sdk')]
+    },
+    proxy: {
+      '/socket': {
+        target: 'https://vesper.irrigate.cc',
+        changeOrigin: true,
+        ws: true
+      },
+      '/api': {
+        target: 'https://vesper.irrigate.cc',
+        changeOrigin: true
+      },
+      '/uploads': {
+        target: 'https://vesper.irrigate.cc',
+        changeOrigin: true
+      }
     }
   },
   plugins: [react(), openmlsWasmPlugin(), serviceWorkerPlugin()],

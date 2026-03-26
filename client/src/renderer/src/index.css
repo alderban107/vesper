@@ -297,6 +297,148 @@ body,
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+.vesper-auth-server-cog {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.5rem;
+  color: var(--color-text-faint);
+  transition: color 0.15s, background 0.15s;
+}
+
+.vesper-auth-server-cog:hover {
+  color: var(--color-text-primary);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.vesper-auth-server-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+}
+
+.vesper-auth-server-modal {
+  width: 100%;
+  max-width: 24rem;
+}
+
+.vesper-server-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1.5rem;
+  border-radius: 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+  background: var(--color-bg-base);
+}
+
+.vesper-server-card-title {
+  color: var(--color-text-primary);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.vesper-server-card-copy {
+  color: var(--color-text-faint);
+  font-size: 0.8rem;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.vesper-server-card-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.vesper-server-card-label {
+  color: var(--color-text-secondary);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.vesper-server-card-input {
+  width: 100%;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  border-radius: 0.35rem;
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+  font-size: 0.85rem;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.vesper-server-card-input:focus {
+  border-color: var(--color-accent);
+}
+
+.vesper-server-card-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.vesper-server-card-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.85rem;
+  border: none;
+  border-radius: 0.3rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.vesper-server-card-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.vesper-server-card-btn-primary {
+  background: var(--color-accent);
+  color: #fff;
+}
+
+.vesper-server-card-btn-secondary {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 80%, transparent);
+  color: var(--color-text-secondary);
+}
+
+.vesper-server-card-btn-secondary:hover:not(:disabled) {
+  color: var(--color-text-primary);
+}
+
+.vesper-server-card-feedback {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+}
+
+.vesper-server-card-feedback-ok {
+  color: #22c55e;
+}
+
+.vesper-server-card-feedback-err {
+  color: var(--color-error, #ef4444);
+}
+
 .vesper-auth-panel {
   min-height: 42rem;
   padding: 2rem;
@@ -325,16 +467,32 @@ body,
 }
 
 .vesper-auth-layout-centered {
-  grid-template-columns: minmax(0, 30rem);
+  grid-template-columns: minmax(0, 48rem);
   justify-content: center;
   max-width: none;
 }
 
 .vesper-auth-layout-centered .vesper-auth-form-card {
-  padding: 2rem 1.75rem 1.6rem;
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 2rem;
+  align-items: start;
+  padding: 2.5rem;
   border-radius: 0.55rem;
   background: #313338;
   box-shadow: 0 14px 36px rgba(0, 0, 0, 0.28);
+}
+
+@media (max-width: 640px) {
+  .vesper-auth-layout-centered {
+    grid-template-columns: minmax(0, 30rem);
+  }
+
+  .vesper-auth-layout-centered .vesper-auth-form-card {
+    grid-template-columns: 1fr;
+    gap: 1.25rem;
+    padding: 2rem 1.75rem 1.6rem;
+  }
 }
 
 .vesper-auth-layout-centered .vesper-auth-form-card::before {
@@ -487,6 +645,24 @@ body,
 .vesper-auth-form-header {
   position: relative;
   z-index: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.vesper-auth-form-logo {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 1.25rem;
+  color: var(--color-accent);
+}
+
+.vesper-auth-form-logo-name {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  letter-spacing: -0.01em;
 }
 
 .vesper-auth-form-title {
@@ -629,7 +805,7 @@ body,
   align-items: center;
   justify-content: center;
   gap: 0.55rem;
-  color: var(--color-bg-base);
+  color: #fff;
   min-height: 2.75rem;
   border-radius: 0.2rem;
   background: #5865f2;
@@ -773,7 +949,7 @@ body,
 }
 
 [data-theme="light"] .vesper-auth-layout-centered .vesper-auth-form-card {
-  background: #ffffff;
+  background: #fff;
 }
 
 [data-theme="light"] .vesper-auth-feature,
@@ -840,7 +1016,7 @@ body,
   gap: 0.75rem;
   min-width: 0;
   padding: 0.2rem 0.25rem 0.3rem 0.15rem;
-  border-radius: 1rem;
+  border-radius: 0;
   transition: background-color 0.16s ease;
 }
 
@@ -891,6 +1067,17 @@ body,
 .vesper-avatar-lg {
   width: 4rem;
   height: 4rem;
+}
+
+.vesper-avatar-xl {
+  width: 7rem;
+  height: 7rem;
+}
+
+.vesper-avatar-shell-xl .vesper-avatar-status {
+  width: 1.4rem;
+  height: 1.4rem;
+  border-width: 4px;
 }
 
 .vesper-avatar-status {
@@ -1434,7 +1621,7 @@ body,
 }
 
 .vesper-message-time {
-  font-size: 0.72rem;
+  font-size: 0.65rem;
   color: var(--color-text-faintest);
 }
 
@@ -1484,6 +1671,11 @@ body,
 
 .vesper-markdown-paragraph + .vesper-markdown-paragraph {
   margin-top: 0.18rem;
+}
+
+.vesper-markdown-emoji-only {
+  font-size: 2.5rem;
+  line-height: 1.2;
 }
 
 .vesper-markdown-strong {
@@ -1750,7 +1942,8 @@ body,
 }
 
 .vesper-message-row-thread-active {
-  background: color-mix(in srgb, var(--color-accent) 10%, var(--color-bg-secondary));
+  border-left: 2px solid var(--color-accent);
+  background: none;
 }
 
 .vesper-message-row-focused {
@@ -1853,6 +2046,14 @@ body,
 
 .vesper-thread-parent {
   padding: 0.55rem 0.8rem 0.15rem;
+}
+
+.vesper-thread-parent .vesper-message-row {
+  background: none;
+}
+
+.vesper-thread-parent .vesper-message-row:hover {
+  background: none;
 }
 
 .vesper-thread-divider {
@@ -2386,7 +2587,7 @@ body,
 
 .vesper-settings-content-inner {
   min-width: 0;
-  max-width: 740px;
+  max-width: 100%;
 }
 
 .vesper-settings-close-cluster {
@@ -2431,13 +2632,15 @@ body,
 }
 
 .vesper-settings-page-header {
-  margin-bottom: 1.4rem;
+  margin-bottom: 1.2rem;
+  padding-bottom: 1.2rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 40%, transparent);
 }
 
 .vesper-settings-page-title {
   color: var(--color-text-primary);
-  font-size: 1.45rem;
-  font-weight: 700;
+  font-size: 1.25rem;
+  font-weight: 600;
 }
 
 .vesper-settings-page-description {
@@ -2550,6 +2753,12 @@ body,
 
 .vesper-settings-form-grid {
   display: grid;
+  gap: 1rem;
+}
+
+.vesper-settings-form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 1rem;
 }
 
@@ -2923,18 +3132,41 @@ body,
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
+  padding: 0.65rem 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 40%, transparent);
+}
+
+.vesper-settings-row:last-child {
+  border-bottom: none;
 }
 
 .vesper-settings-row-title {
   color: var(--color-text-primary);
-  font-size: 0.95rem;
+  font-size: 0.88rem;
   font-weight: 600;
 }
 
 .vesper-settings-row-copy {
-  margin-top: 0.2rem;
+  margin-top: 0.15rem;
   color: var(--color-text-faint);
-  font-size: 0.83rem;
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.vesper-settings-section-heading {
+  color: var(--color-text-secondary);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding-bottom: 0.5rem;
+  margin-top: 1.5rem;
+  margin-bottom: 0.25rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 40%, transparent);
+}
+
+.vesper-settings-section-heading:first-child {
+  margin-top: 0;
 }
 
 .vesper-settings-toggle {
@@ -3487,19 +3719,24 @@ body,
   position: absolute;
   top: 3.2rem;
   left: 1rem;
+  border-radius: 999px;
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--color-bg-secondary) 80%, black);
 }
 
-.vesper-profile-popout-avatar-ring {
-  padding: 0.22rem;
+.vesper-profile-popout-avatar-wrap .vesper-avatar-shell {
+  display: block;
+}
+
+.vesper-profile-popout-avatar-wrap .vesper-avatar {
+  display: block;
   border-radius: 999px;
-  background: var(--color-bg-secondary);
 }
 
 .vesper-profile-popout-body {
   display: flex;
   flex-direction: column;
   gap: 0.85rem;
-  padding: 3.5rem 1rem 1rem;
+  padding: 3.8rem 1rem 1rem;
 }
 
 .vesper-profile-popout-name {
@@ -3917,7 +4154,7 @@ body,
 
 .vesper-composer-icon-button,
 .vesper-composer-send {
-  width: 2rem;
+  width: 2.25rem;
   height: var(--vesper-composer-textarea-height);
   min-height: 0;
   flex: 0 0 auto;
@@ -3926,7 +4163,7 @@ body,
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: 0.8rem;
+  border-radius: 0.6rem;
   background: transparent;
   color: var(--color-text-faint);
   cursor: pointer;
@@ -3946,6 +4183,7 @@ body,
 
 .vesper-composer-send {
   color: var(--color-accent);
+  border-radius: 0.6rem;
 }
 
 .vesper-composer-send:hover {
@@ -8940,7 +9178,8 @@ body,
 }
 
 [data-theme="light"] .vesper-message-row-thread-active {
-  background: color-mix(in srgb, var(--color-accent) 14%, var(--color-bg-secondary));
+  border-left: 2px solid var(--color-accent);
+  background: none;
 }
 
 [data-theme="light"] .vesper-message-actions {

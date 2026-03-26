@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Loader2 } from 'lucide-react'
+import { Loader2, Settings } from 'lucide-react'
 import AuthShell from '../components/auth/AuthShell'
 import ServerConnectionCard from '../components/auth/ServerConnectionCard'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -16,6 +16,7 @@ export default function LoginPage({ onSwitchToRegister, onSwitchToRecovery }: Pr
   const { login, error } = useAuthStore()
   const serverUrl = useSettingsStore((state) => state.serverUrl)
   const [loading, setLoading] = useState(false)
+  const [showServerModal, setShowServerModal] = useState(false)
   const hasServerUrl = serverUrl.trim().length > 0
 
   const handleSubmit = async (event: React.FormEvent): Promise<void> => {
@@ -28,17 +29,37 @@ export default function LoginPage({ onSwitchToRegister, onSwitchToRecovery }: Pr
   return (
     <AuthShell
       centered
-      formEyebrow="Sign in"
       formTitle="Welcome back"
-      formDescription="Point this client at your server, then pick up your account, devices, and encrypted history."
+      formDescription="Sign in to pick up your account, devices, and encrypted history."
       panelEyebrow=""
       panelTitle=""
       panelDescription=""
       features={[]}
     >
+      <button
+        type="button"
+        onClick={() => setShowServerModal(true)}
+        className="vesper-auth-server-cog"
+        title="Server settings"
+      >
+        <Settings className="w-4 h-4" />
+      </button>
+
+      {showServerModal && (
+        <div className="vesper-auth-server-modal-backdrop" onClick={() => setShowServerModal(false)}>
+          <div className="vesper-auth-server-modal" onClick={(e) => e.stopPropagation()}>
+            <ServerConnectionCard />
+          </div>
+        </div>
+      )}
+
       <form onSubmit={handleSubmit} data-testid="login-form" className="vesper-auth-form">
         {error && <div className="vesper-auth-error">{error}</div>}
-        <ServerConnectionCard />
+        {!hasServerUrl && (
+          <div className="vesper-auth-error" style={{ borderColor: 'var(--color-border)' }}>
+            No server configured. <button type="button" onClick={() => setShowServerModal(true)} className="vesper-auth-inline-link">Set one up</button> to continue.
+          </div>
+        )}
 
         <label className="vesper-auth-field">
           <span className="vesper-auth-label">Username</span>

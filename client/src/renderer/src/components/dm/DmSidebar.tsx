@@ -28,8 +28,8 @@ export default function DmSidebar(): React.JSX.Element {
   }
 
   const getPreview = (conv: DmConversation): string => {
-    if (!conv.last_message) return 'No messages yet'
-    if (conv.last_message.ciphertext) return 'Message'
+    if (!conv.last_message) return ''
+    if (conv.last_message.ciphertext) return 'Encrypted message'
     return conv.last_message.content || ''
   }
 

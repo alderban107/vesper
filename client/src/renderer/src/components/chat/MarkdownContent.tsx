@@ -162,10 +162,15 @@ export default function MarkdownContent({ content }: Props): React.JSX.Element {
 
     return null
   })()
+  const EMOJI_ONLY_RE = /^[\p{Emoji_Presentation}\p{Extended_Pictographic}\uFE0F\u200D\s]+$/u
   const components: Components = {
-    p: ({ children }) => (
-      <p className="vesper-markdown-paragraph">{children}</p>
-    ),
+    p: ({ children }) => {
+      const text = typeof children === 'string' ? children : Array.isArray(children) ? children.filter((c) => typeof c === 'string').join('') : ''
+      const isEmojiOnly = typeof text === 'string' && text.trim().length > 0 && text.trim().length <= 30 && EMOJI_ONLY_RE.test(text.trim())
+      return (
+        <p className={`vesper-markdown-paragraph${isEmojiOnly ? ' vesper-markdown-emoji-only' : ''}`}>{children}</p>
+      )
+    },
     strong: ({ children }) => <strong className="vesper-markdown-strong">{children}</strong>,
     em: ({ children }) => <em className="vesper-markdown-emphasis">{children}</em>,
     del: ({ children }) => <del className="vesper-markdown-strike">{children}</del>,
