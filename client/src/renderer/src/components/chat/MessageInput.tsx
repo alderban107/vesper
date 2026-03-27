@@ -170,7 +170,7 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
   const autocompleteItems = trigger
     ? (
         trigger.type === 'mention'
-          ? buildMentionSuggestions(trigger.query, useServerStore.getState().members, isChannel ? undefined : activeConversation)
+          ? buildMentionSuggestions(trigger.query, members, isChannel ? undefined : activeConversation)
           : trigger.type === 'channel' && isChannel
             ? buildChannelSuggestions(trigger.query, activeServer)
             : trigger.type === 'emoji'
