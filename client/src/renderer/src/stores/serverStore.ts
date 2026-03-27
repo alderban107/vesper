@@ -315,6 +315,7 @@ interface ServerState {
   activeServerId: string | null
   activeChannelId: string | null
   members: Member[]
+  membersByServer: Record<string, Member[]>
   rolesByServer: Record<string, ServerRole[]>
   bansByServer: Record<string, ServerBan[]>
   auditLogByServer: Record<string, AuditLogEntry[]>
@@ -419,6 +420,7 @@ export const useServerStore = create<ServerState>((set, get) => ({
   activeServerId: readStoredValue(LAST_SERVER_KEY),
   activeChannelId: readStoredValue(LAST_CHANNEL_KEY),
   members: [],
+  membersByServer: {},
   rolesByServer: {},
   bansByServer: {},
   auditLogByServer: {},
@@ -587,7 +589,7 @@ export const useServerStore = create<ServerState>((set, get) => ({
     set({
       activeServerId: id,
       activeChannelId: firstChannel?.id || null,
-      members: []
+      members: get().membersByServer[id ?? ''] ?? []
     })
     if (id) {
       get().fetchMembers(id)
@@ -694,7 +696,13 @@ export const useServerStore = create<ServerState>((set, get) => ({
 
   fetchMembers: async (serverId) => {
     try {
-      set({ members: await getRendererClient().fetchServerMembers(serverId) })
+      const fetched = await getRendererClient().fetchServerMembers(serverId)
+      const state = get()
+      set({
+        membersByServer: { ...state.membersByServer, [serverId]: fetched },
+        // Update flat members if this is still the active server
+        ...(state.activeServerId === serverId ? { members: fetched } : {})
+      })
     } catch {
       // ignore
     }
