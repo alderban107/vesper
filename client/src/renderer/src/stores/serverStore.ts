@@ -88,6 +88,10 @@ function sortChannels(channels: Channel[]): Channel[] {
   )
 }
 
+function buildMembersByUserId(members: Member[]): Map<string, Member> {
+  return new Map(members.map((m) => [m.user_id, m]))
+}
+
 function parseActivityTimestamp(value: string | null | undefined): number {
   if (!value) {
     return 0
@@ -315,6 +319,8 @@ interface ServerState {
   activeServerId: string | null
   activeChannelId: string | null
   members: Member[]
+  membersByUserId: Map<string, Member>
+  membersByServer: Record<string, Member[]>
   rolesByServer: Record<string, ServerRole[]>
   bansByServer: Record<string, ServerBan[]>
   auditLogByServer: Record<string, AuditLogEntry[]>
@@ -419,6 +425,8 @@ export const useServerStore = create<ServerState>((set, get) => ({
   activeServerId: readStoredValue(LAST_SERVER_KEY),
   activeChannelId: readStoredValue(LAST_CHANNEL_KEY),
   members: [],
+  membersByUserId: new Map(),
+  membersByServer: {},
   rolesByServer: {},
   bansByServer: {},
   auditLogByServer: {},
@@ -559,6 +567,7 @@ export const useServerStore = create<ServerState>((set, get) => ({
         activeServerId: activeServerRemoved ? null : state.activeServerId,
         activeChannelId: activeServerRemoved ? null : state.activeChannelId,
         members: activeServerRemoved ? [] : state.members,
+        membersByUserId: activeServerRemoved ? new Map() : state.membersByUserId,
         rolesByServer,
         bansByServer,
         auditLogByServer,
@@ -584,10 +593,12 @@ export const useServerStore = create<ServerState>((set, get) => ({
     }
     writeStoredValue(LAST_SERVER_KEY, id)
     writeStoredValue(LAST_CHANNEL_KEY, firstChannel?.id ?? null)
+    const nextMembers = get().membersByServer[id ?? ''] ?? []
     set({
       activeServerId: id,
       activeChannelId: firstChannel?.id || null,
-      members: []
+      members: nextMembers,
+      membersByUserId: buildMembersByUserId(nextMembers)
     })
     if (id) {
       get().fetchMembers(id)
@@ -694,7 +705,13 @@ export const useServerStore = create<ServerState>((set, get) => ({
 
   fetchMembers: async (serverId) => {
     try {
-      set({ members: await getRendererClient().fetchServerMembers(serverId) })
+      const fetched = await getRendererClient().fetchServerMembers(serverId)
+      const state = get()
+      const isActive = state.activeServerId === serverId
+      set({
+        membersByServer: { ...state.membersByServer, [serverId]: fetched },
+        ...(isActive ? { members: fetched, membersByUserId: buildMembersByUserId(fetched) } : {})
+      })
     } catch {
       // ignore
     }
@@ -737,9 +754,10 @@ export const useServerStore = create<ServerState>((set, get) => ({
   banMember: async (serverId, userId, reason) => {
     try {
       await getRendererClient().banServerMember(serverId, userId, reason)
-      set((s) => ({
-        members: s.members.filter((member) => member.user_id !== userId)
-      }))
+      set((s) => {
+        const next = s.members.filter((member) => member.user_id !== userId)
+        return { members: next, membersByUserId: buildMembersByUserId(next) }
+      })
       await get().fetchBans(serverId)
       return true
     } catch {
@@ -892,9 +910,10 @@ export const useServerStore = create<ServerState>((set, get) => ({
   kickMember: async (serverId, userId) => {
     try {
       await getRendererClient().kickServerMember(serverId, userId)
-      set((s) => ({
-        members: s.members.filter((m) => m.user_id !== userId)
-      }))
+      set((s) => {
+        const next = s.members.filter((m) => m.user_id !== userId)
+        return { members: next, membersByUserId: buildMembersByUserId(next) }
+      })
       return true
     } catch {
       // ignore
@@ -928,11 +947,12 @@ export const useServerStore = create<ServerState>((set, get) => ({
   changeMemberRole: async (serverId, userId, role) => {
     try {
       await getRendererClient().updateServerMemberRole(serverId, userId, role)
-      set((s) => ({
-        members: s.members.map((m) =>
+      set((s) => {
+        const next = s.members.map((m) =>
           m.user_id === userId ? { ...m, role } : m
         )
-      }))
+        return { members: next, membersByUserId: buildMembersByUserId(next) }
+      })
       return true
     } catch {
       // ignore
@@ -1047,8 +1067,8 @@ export const useServerStore = create<ServerState>((set, get) => ({
   },
 
   updateMemberUser: (userId, userData) => {
-    set((s) => ({
-      members: s.members.map((m) =>
+    set((s) => {
+      const next = s.members.map((m) =>
         m.user_id === userId
           ? {
               ...m,
@@ -1062,7 +1082,8 @@ export const useServerStore = create<ServerState>((set, get) => ({
             }
           : m
       )
-    }))
+      return { members: next, membersByUserId: buildMembersByUserId(next) }
+    })
   },
 
   updateChannelTtl: (channelId, ttl) => {

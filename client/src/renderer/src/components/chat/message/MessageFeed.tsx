@@ -71,6 +71,7 @@ export default function MessageFeed({
   const previousMessagesRef = useRef<Message[]>(messages)
   const previousIdentityRef = useRef<string | null>(null)
   const isAtBottomRef = useRef(true)
+  const awaitingInitialScrollRef = useRef(false)
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null)
   const [firstItemIndex, setFirstItemIndex] = useState(PREPEND_BASE_INDEX)
 
@@ -128,6 +129,22 @@ export default function MessageFeed({
       setHighlightedMessageId(null)
       jumpAttemptsRef.current = 0
       isAtBottomRef.current = true
+      awaitingInitialScrollRef.current = messages.length === 0
+      return
+    }
+
+    // When messages arrive after a feed identity change, scroll to bottom
+    if (awaitingInitialScrollRef.current && messages.length > 0 && !isThreadView) {
+      awaitingInitialScrollRef.current = false
+      setFirstItemIndex(PREPEND_BASE_INDEX - messages.length)
+      previousMessagesRef.current = messages
+      requestAnimationFrame(() => {
+        virtuosoRef.current?.scrollToIndex({
+          index: PREPEND_BASE_INDEX - 1,
+          align: 'end',
+          behavior: 'auto'
+        })
+      })
       return
     }
 

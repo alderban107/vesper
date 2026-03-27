@@ -32,7 +32,7 @@ export async function addReaction(
   await row.locator('[data-testid="react-button"]').click()
 
   await page.waitForSelector('[data-testid="emoji-picker"]', { timeout: 5_000 })
-  await page.click(`[data-testid="emoji-picker"] button:has-text("${emoji}")`)
+  await page.click(`[data-testid="emoji-picker"] button:has(img[alt="${emoji}"])`)
   await page.waitForSelector('[data-testid="emoji-picker"]', {
     state: 'hidden',
     timeout: 5_000,
@@ -51,11 +51,18 @@ export async function getReactions(
   const reactions = new Map<string, number>()
   for (let i = 0; i < count; i++) {
     const chip = reactionButtons.nth(i)
-    const text = await chip.textContent()
-    if (!text) continue
-    const match = text.match(/(.+?)\s*(\d+)/)
-    if (match) {
-      reactions.set(match[1].trim(), parseInt(match[2], 10))
+    // Emoji is rendered as an <img alt="👍"> (Twemoji SVG) or <span> fallback
+    const emojiImg = chip.locator('img.vesper-emoji-image')
+    const emojiSpan = chip.locator('span.vesper-emoji-text')
+    let emoji: string | null = null
+    if (await emojiImg.count() > 0) {
+      emoji = await emojiImg.first().getAttribute('alt')
+    } else if (await emojiSpan.count() > 0) {
+      emoji = await emojiSpan.first().textContent()
+    }
+    const countText = await chip.locator('.vesper-message-reaction-count').textContent()
+    if (emoji && countText) {
+      reactions.set(emoji.trim(), parseInt(countText.trim(), 10))
     }
   }
 

@@ -63,6 +63,24 @@ function serviceWorkerPlugin(): Plugin {
   }
 }
 
+/**
+ * Vite plugin to set immutable cache headers for self-hosted twemoji SVGs.
+ * These files never change, so browsers should cache them permanently.
+ */
+function twemojiCachePlugin(): Plugin {
+  return {
+    name: 'twemoji-cache-headers',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (req.url?.startsWith('/twemoji/')) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+        }
+        next()
+      })
+    }
+  }
+}
+
 export default defineConfig({
   root: 'src/renderer',
   server: {
@@ -86,7 +104,7 @@ export default defineConfig({
       }
     }
   },
-  plugins: [react(), openmlsWasmPlugin(), serviceWorkerPlugin()],
+  plugins: [react(), openmlsWasmPlugin(), serviceWorkerPlugin(), twemojiCachePlugin()],
   resolve: {
     alias: {
       '@vesper/sdk/api': resolve(__dirname, '../sdk/src/api/index.ts'),

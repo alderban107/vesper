@@ -513,8 +513,8 @@ defmodule VesperWeb.DmChannel do
   def handle_in("mls_history_request", payload, socket) do
     MlsHandler.handle_mls_history_request(payload, socket, mls_scope(socket), fn ->
       notify_history_request_pending(
+        socket.assigns.participant_ids,
         socket.assigns.conversation_id,
-        socket.assigns.user_id,
         "dm:#{socket.assigns.conversation_id}"
       )
     end)
@@ -583,8 +583,9 @@ defmodule VesperWeb.DmChannel do
     :ok
   end
 
-  defp notify_history_request_pending(conversation_id, _requester_id, topic) do
-    for user_id <- Chat.list_participant_ids(conversation_id) do
+  defp notify_history_request_pending(participant_ids, conversation_id, topic)
+       when is_list(participant_ids) do
+    for user_id <- participant_ids do
       VesperWeb.Endpoint.broadcast("user:#{user_id}", "mls_history_request_pending", %{
         scope_id: conversation_id,
         topic: topic

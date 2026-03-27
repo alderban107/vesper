@@ -16,6 +16,7 @@ client/out/
 client/dist/
 client/dist-web/
 client/src/renderer/public/config.js
+client/src/renderer/public/twemoji/
 client/coverage/
 client/test-results/
 client/playwright-report/
