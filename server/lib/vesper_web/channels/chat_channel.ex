@@ -668,26 +668,25 @@ defmodule VesperWeb.ChatChannel do
   defp notify_scope_mutation(server_id, kind, scope_id, activity \\ nil)
 
   defp notify_scope_mutation(nil, _kind, scope_id, activity) do
-    case Servers.get_channel(scope_id) do
-      %Channel{} = channel ->
-        # Resolve DM conversation_id so clients get kind=dm, scope_id=conversation_id
-        {dm_kind, dm_scope_id} =
-          case Chat.get_dm_context_for_channel(scope_id) do
-            {conversation_id, _} -> {"dm", conversation_id}
-            _ -> {"channel", scope_id}
-          end
+    # Resolve DM conversation_id so clients get kind=dm, scope_id=conversation_id
+    {dm_kind, dm_scope_id} =
+      case Chat.get_dm_context_for_channel(scope_id) do
+        {conversation_id, _} -> {"dm", conversation_id}
+        _ -> {"channel", scope_id}
+      end
 
-        payload = %{kind: dm_kind, scope_id: dm_scope_id}
-        payload = if activity, do: Map.put(payload, :activity, activity), else: payload
+    payload = %{kind: dm_kind, scope_id: dm_scope_id}
+    payload = if activity, do: Map.put(payload, :activity, activity), else: payload
 
-        Servers.list_channel_member_ids(channel)
-        |> Enum.each(fn user_id ->
-          VesperWeb.Endpoint.broadcast("user:#{user_id}", "scope_mutation", payload)
-        end)
+    # Broadcast to the DM scope topic (clients subscribe for warm scopes)
+    VesperWeb.Endpoint.broadcast("scope:dm:#{dm_scope_id}", "scope_mutation", payload)
 
-      _ ->
-        :ok
-    end
+    # Also notify each member's user channel for sidebar/unread on non-warm scopes.
+    member_ids = fetch_dm_member_ids(scope_id)
+
+    Enum.each(member_ids, fn user_id ->
+      VesperWeb.Endpoint.broadcast("user:#{user_id}", "scope_mutation", payload)
+    end)
 
     :ok
   end
@@ -850,5 +849,9 @@ defmodule VesperWeb.ChatChannel do
       end)
 
     Sync.append_urgent_events(urgent_events)
+  end
+
+  defp fetch_dm_member_ids(channel_id) do
+    Servers.list_dm_channel_member_ids(channel_id)
   end
 end

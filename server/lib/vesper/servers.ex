@@ -508,15 +508,22 @@ defmodule Vesper.Servers do
   server members. For DM channels (no server_id), returns channel-direct members.
   """
   def list_channel_member_ids(%Channel{server_id: nil, id: channel_id}) do
+    list_dm_channel_member_ids(channel_id)
+  end
+
+  def list_channel_member_ids(%Channel{server_id: server_id}) do
+    list_member_ids(server_id)
+  end
+
+  @doc """
+  List member user IDs for a DM channel by channel_id (no struct required).
+  """
+  def list_dm_channel_member_ids(channel_id) when is_binary(channel_id) do
     from(m in Membership,
       where: m.channel_id == ^channel_id,
       select: m.user_id
     )
     |> Repo.all()
-  end
-
-  def list_channel_member_ids(%Channel{server_id: server_id}) do
-    list_member_ids(server_id)
   end
 
   def get_membership(user_id, server_id) do
@@ -1334,14 +1341,11 @@ defmodule Vesper.Servers do
       |> List.insert_at(position, (channel && channel.id) || "__new__")
       |> Enum.with_index()
 
-    Enum.each(reordered_ids, fn
-      {"__new__", _index} ->
-        :ok
+    updates =
+      reordered_ids
+      |> Enum.reject(fn {id, _} -> id == "__new__" end)
 
-      {id, index} ->
-        from(c in Channel, where: c.id == ^id)
-        |> Repo.update_all(set: [position: index])
-    end)
+    batch_update_positions(updates)
 
     Map.put(attrs, :position, position)
   end
@@ -1351,21 +1355,41 @@ defmodule Vesper.Servers do
   defp normalize_scope_positions(_server_id, nil, _exclude_id), do: :ok
 
   defp normalize_scope_positions(server_id, scope, exclude_id) do
-    sibling_query(server_id, scope, exclude_id)
-    |> Repo.all()
-    |> Enum.with_index()
-    |> Enum.each(fn {channel, index} ->
-      if channel.position != index do
-        from(c in Channel, where: c.id == ^channel.id)
-        |> Repo.update_all(set: [position: index])
-      end
-    end)
+    updates =
+      sibling_query(server_id, scope, exclude_id)
+      |> Repo.all()
+      |> Enum.with_index()
+      |> Enum.reject(fn {channel, index} -> channel.position == index end)
+      |> Enum.map(fn {channel, index} -> {channel.id, index} end)
+
+    batch_update_positions(updates)
   end
 
   defp sibling_scope(%Channel{type: "category"}), do: %{kind: :categories}
 
   defp sibling_scope(%Channel{category_id: category_id}),
     do: %{kind: :channels, category_id: category_id}
+
+  # Batch-update channel positions in a single query using UPDATE FROM VALUES.
+  defp batch_update_positions([]), do: :ok
+
+  defp batch_update_positions(updates) do
+    {params, placeholders} =
+      updates
+      |> Enum.with_index()
+      |> Enum.reduce({[], []}, fn {{id, position}, idx}, {params, fragments} ->
+        id_idx = idx * 2 + 1
+        pos_idx = idx * 2 + 2
+        {params ++ [Ecto.UUID.dump!(id), position], fragments ++ ["($#{id_idx}::uuid, $#{pos_idx}::integer)"]}
+      end)
+
+    values = Enum.join(placeholders, ", ")
+
+    Repo.query!(
+      "UPDATE channels SET position = v.pos FROM (VALUES #{values}) AS v(id, pos) WHERE channels.id = v.id",
+      params
+    )
+  end
 
   defp sibling_query(server_id, %{kind: :categories}, exclude_id) do
     from(c in Channel,

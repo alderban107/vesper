@@ -1,4 +1,4 @@
-import { Suspense, useState, useRef, useEffect } from 'react'
+import { memo, Suspense, useState, useRef, useEffect, useMemo } from 'react'
 import { Copy, Lock, MessageSquare, Pencil, Pin, Reply, Trash2 } from 'lucide-react'
 import type { Message } from '../../stores/messageStore'
 import { useMessageStore, parseMessageContent } from '../../stores/messageStore'
@@ -21,6 +21,7 @@ import { formatCustomEmojiToken, type CustomEmoji } from '../../utils/emoji'
 import lazyWithRetry from '../../utils/lazyWithRetry'
 
 const MarkdownContent = lazyWithRetry(() => import('./MarkdownContent'))
+const EMPTY_EMOJIS: CustomEmoji[] = []
 
 interface Props {
   message: Message
@@ -162,7 +163,7 @@ function useExpiryLabel(expiresAt: string | null): string | null {
   return formatExpiryTooltip(expiresAt, nowMs)
 }
 
-export default function MessageItem({
+export default memo(function MessageItem({
   message,
   messages,
   previousMessage,
@@ -172,13 +173,15 @@ export default function MessageItem({
   const [editText, setEditText] = useState('')
   const editRef = useRef<HTMLTextAreaElement>(null)
   const reactionAnchorRef = useRef<HTMLDivElement>(null)
-  const members = useServerStore((s) => s.members)
+  const membersByUserId = useServerStore((s) => s.membersByUserId)
+  const liveMember = membersByUserId.get(message.sender_id ?? '')
   const myUser = useAuthStore((s) => s.user)
   const myId = myUser?.id
-  const activeServer = useServerStore((s) => s.servers.find((server) => server.id === s.activeServerId))
-  const customEmojis: CustomEmoji[] = activeServer?.emojis ?? []
+  const customEmojis = useServerStore((s) => {
+    const srv = s.servers.find((server) => server.id === s.activeServerId)
+    return srv?.emojis ?? EMPTY_EMOJIS
+  })
   const isMe = message.sender_id === myId
-  const liveMember = members.find((m) => m.user_id === message.sender_id)
   const displayName = isMe
     ? (myUser?.display_name || myUser?.username || 'Unknown')
     : (liveMember?.user?.display_name || liveMember?.user?.username || message.sender?.display_name || message.sender?.username || 'Unknown')
@@ -215,6 +218,10 @@ export default function MessageItem({
 
   // Parse content for file messages
   const parsed = parseMessageContent(message.content)
+  const urls = useMemo(
+    () => parsed.type === 'text' ? extractUrls(parsed.text) : [],
+    [message.content]
+  )
 
   useEffect(() => {
     if (isEditing && editRef.current) {
@@ -386,7 +393,7 @@ export default function MessageItem({
       return myUser?.display_name || myUser?.username || 'Unknown'
     }
 
-    const pm = members.find((m) => m.user_id === parentMessage.sender_id)
+    const pm = membersByUserId.get(parentMessage.sender_id ?? '')
     return pm?.user?.display_name || pm?.user?.username || parentMessage.sender?.display_name || parentMessage.sender?.username || 'Unknown'
   })()
   const isUnavailableMessage = displayText === 'Message unavailable - decryption failed'
@@ -524,7 +531,7 @@ export default function MessageItem({
               <FilePreview file={parsed.file} />
             )}
 
-            {parsed.type === 'text' && extractUrls(parsed.text).map((url) => (
+            {urls.map((url) => (
               <LinkPreview key={url} url={url} />
             ))}
 
@@ -597,4 +604,4 @@ export default function MessageItem({
       )}
     </div>
   )
-}
+})
