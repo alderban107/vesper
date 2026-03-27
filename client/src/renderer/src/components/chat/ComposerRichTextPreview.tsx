@@ -16,6 +16,7 @@ import type { Components } from 'react-markdown'
 import type { DmConversation } from '../../stores/dmStore'
 import type { Member, Server } from '../../stores/serverStore'
 import { findCustomEmoji, parseCustomEmojiToken, type CustomEmoji } from '../../utils/emoji'
+import { emojiToCodepoints } from '../../utils/twemoji'
 import { serializeComposerMentions, type ComposerMentionDraft } from './composerAutocompleteUtils'
 import { extractMarkdownCodeBlock } from './MarkdownCodeBlock'
 import EmojiGlyph from './message/EmojiGlyph'
@@ -135,6 +136,15 @@ function preprocessCustomEmoji(text: string, customEmojis: CustomEmoji[]): strin
   })
 }
 
+const UNICODE_EMOJI_RE = /(\p{Emoji_Presentation}|\p{Extended_Pictographic}\uFE0F?)(\u200D(\p{Emoji_Presentation}|\p{Extended_Pictographic}\uFE0F?))*/gu
+
+function preprocessUnicodeEmoji(text: string): string {
+  return text.replace(UNICODE_EMOJI_RE, (match) => {
+    const codepoints = emojiToCodepoints(match)
+    return `![${match}](twemoji:${codepoints})`
+  })
+}
+
 function buildMentionUsers(
   members: Member[],
   conversation: DmConversation | null | undefined
@@ -198,9 +208,11 @@ export default function ComposerRichTextPreview({
   const channels = server?.channels ?? []
   const mentionUsers = buildMentionUsers(members, conversation)
   const serializedContent = serializeComposerMentions(content, mentionDrafts)
-  const processed = preprocessCustomEmoji(
-    preprocessChannels(preprocessMentions(serializedContent, mentionUsers), channels),
-    customEmojis
+  const processed = preprocessUnicodeEmoji(
+    preprocessCustomEmoji(
+      preprocessChannels(preprocessMentions(serializedContent, mentionUsers), channels),
+      customEmojis
+    )
   )
 
   const components: Components = {
@@ -263,6 +275,18 @@ export default function ComposerRichTextPreview({
       return <span className="vesper-composer-markdown-link">{children}</span>
     },
     img: ({ src, alt }) => {
+      if (src?.startsWith('twemoji:')) {
+        const codepoints = src.slice('twemoji:'.length)
+        return (
+          <img
+            src={`/twemoji/${codepoints}.svg`}
+            alt={alt || ''}
+            draggable={false}
+            className="vesper-twemoji-inline"
+          />
+        )
+      }
+
       if (src?.startsWith('emoji:')) {
         const token = decodeURIComponent(src.slice('emoji:'.length))
         return (
@@ -287,7 +311,11 @@ export default function ComposerRichTextPreview({
       className={className ? `vesper-composer-rich-preview ${className}` : 'vesper-composer-rich-preview'}
     >
       <div className="vesper-composer-rich-markdown">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          urlTransform={(url) => url.startsWith('emoji:') || url.startsWith('twemoji:') ? url : url}
+          components={components}
+        >
           {processed}
         </ReactMarkdown>
       </div>

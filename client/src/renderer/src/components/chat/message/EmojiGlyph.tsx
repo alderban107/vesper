@@ -1,5 +1,6 @@
 import type { CustomEmoji } from '../../../utils/emoji'
 import { findCustomEmoji } from '../../../utils/emoji'
+import { emojiToTwemojiUrl, twemojiFallback } from '../../../utils/twemoji'
 
 interface Props {
   value: string
@@ -17,6 +18,7 @@ export default function EmojiGlyph({
   title
 }: Props): React.JSX.Element {
   const customEmoji = findCustomEmoji(value, customEmojis)
+  const twemojiUrl = !customEmoji ? emojiToTwemojiUrl(value) : null
   const accessibleLabel = customEmoji ? `:${customEmoji.name}:` : title ?? value
   const content = customEmoji ? (
     <img
@@ -25,6 +27,15 @@ export default function EmojiGlyph({
       draggable={false}
       className="vesper-emoji-image"
       data-emoji-name={customEmoji.name}
+    />
+  ) : twemojiUrl ? (
+    <img
+      src={twemojiUrl}
+      alt={value}
+      draggable={false}
+      className="vesper-emoji-image"
+      loading="lazy"
+      onError={twemojiFallback}
     />
   ) : (
     <span className="vesper-emoji-text" aria-hidden="true">

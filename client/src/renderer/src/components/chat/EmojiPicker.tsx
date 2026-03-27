@@ -4,6 +4,7 @@ import { CATEGORIES, EMOJIS, type EmojiCategory } from '../../data/emojis'
 import { useServerStore } from '../../stores/serverStore'
 import { getStoredJson, setStoredJson } from '../../utils/localStorage'
 import type { CustomEmoji } from '../../utils/emoji'
+import { emojiToTwemojiUrl } from '../../utils/twemoji'
 import FloatingSurface from '../ui/FloatingSurface'
 
 const CATEGORY_ICONS: Record<EmojiCategory, string> = {
@@ -283,7 +284,7 @@ export default function EmojiPicker({
                 onClick={() => handleCategoryClick(category.id)}
                 title={category.label}
               >
-                <span>{category.icon}</span>
+                <span><img src={emojiToTwemojiUrl(category.icon)!} alt={category.icon} className="vesper-emoji-picker-twemoji" draggable={false} /></span>
               </button>
             ))}
           </div>
@@ -325,7 +326,7 @@ export default function EmojiPicker({
                             className="vesper-emoji-picker-custom-image"
                           />
                         ) : (
-                          <span className="vesper-emoji-picker-glyph">{item.value}</span>
+                          <img src={emojiToTwemojiUrl(item.value)!} alt={item.value} className="vesper-emoji-picker-twemoji" draggable={false} loading="lazy" />
                         )}
                       </button>
                     ))}
@@ -347,9 +348,12 @@ export default function EmojiPicker({
                     className="vesper-emoji-picker-inspector-image"
                   />
                 ) : (
-                  <span className="vesper-emoji-picker-inspector-glyph">
-                    {hoveredEmoji.value}
-                  </span>
+                  <img
+                    src={emojiToTwemojiUrl(hoveredEmoji.value)!}
+                    alt={hoveredEmoji.value}
+                    className="vesper-emoji-picker-inspector-image"
+                    draggable={false}
+                  />
                 )}
               </div>
               <div className="vesper-emoji-picker-inspector-copy">
