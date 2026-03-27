@@ -8,6 +8,8 @@ import {
 } from './sdk/bootstrap'
 import lazyWithRetry from './utils/lazyWithRetry'
 import ToastContainer from './components/ui/ToastContainer'
+import { getStoredValue } from './utils/localStorage'
+import { applyTheme } from './utils/theme'
 const LoginPage = lazyWithRetry(() => import('./pages/LoginPage'))
 const RegisterPage = lazyWithRetry(() => import('./pages/RegisterPage'))
 const RecoveryPage = lazyWithRetry(() => import('./pages/RecoveryPage'))
@@ -116,6 +118,11 @@ function App(): React.JSX.Element {
   useEffect(() => {
     checkAuth()
   }, [checkAuth])
+
+  useEffect(() => {
+    const stored = getStoredValue('theme') || 'auto'
+    applyTheme(stored as 'dark' | 'light' | 'auto')
+  }, [])
 
   useEffect(() => {
     const syncSessionNotice = (): void => {

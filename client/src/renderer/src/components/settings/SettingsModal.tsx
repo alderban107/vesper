@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Bell, Globe, Laptop2, Mic, Moon, Palette, Shield, Sun, UserRound, Volume2 } from 'lucide-react'
+import { Bell, Globe, Laptop2, Mic, Moon, Palette, Pencil, Shield, Sun, UserRound, Volume2 } from 'lucide-react'
 import { getLocalDeviceIdentity } from '@vesper/sdk/auth'
 import { usePresenceStore } from '../../stores/presenceStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -10,7 +10,8 @@ import { isPushEnabled, subscribeToPush, unsubscribeFromPush } from '../../utils
 import Avatar from '../ui/Avatar'
 import ImageCropModal from '../ui/ImageCropModal'
 import SettingsShell, { type SettingsSectionGroup } from './SettingsShell'
-import { getStoredValue, setStoredValue } from '../../utils/localStorage'
+import { getStoredValue, setStoredValue, getStoredJson, setStoredJson } from '../../utils/localStorage'
+import { type ThemeOption, applyTheme, watchSystemTheme } from '../../utils/theme'
 
 type UserSettingsSection = 'profile' | 'appearance' | 'notifications' | 'voice' | 'advanced'
 
@@ -180,8 +181,8 @@ export default function SettingsModal(): React.JSX.Element {
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle')
   const [displayName, setDisplayName] = useState(user?.display_name || '')
   const [profileSaved, setProfileSaved] = useState(false)
-  const [theme, setTheme] = useState<'dark' | 'light'>(
-    () => (getStoredValue('theme') as 'dark' | 'light') || 'dark'
+  const [theme, setTheme] = useState<ThemeOption>(
+    () => (getStoredValue('theme') as ThemeOption) || 'auto'
   )
   const [notificationsEnabled, setNotificationsEnabled] = useState(
     () => getStoredValue('notifications') !== 'disabled'
@@ -192,6 +193,11 @@ export default function SettingsModal(): React.JSX.Element {
 
   const { inputs, outputs } = useAudioDevices()
   const [testingSpeaker, setTestingSpeaker] = useState(false)
+  const [deviceNicknames, setDeviceNicknames] = useState<Record<string, string>>(
+    () => getStoredJson('deviceNicknames', {})
+  )
+  const [editingDeviceId, setEditingDeviceId] = useState<string | null>(null)
+  const [editingDeviceName, setEditingDeviceName] = useState('')
 
   useEffect(() => {
     setDisplayName(user?.display_name || '')
@@ -222,10 +228,17 @@ export default function SettingsModal(): React.JSX.Element {
     }
   }
 
-  const handleThemeChange = (nextTheme: 'dark' | 'light'): void => {
+  const handleThemeChange = (nextTheme: ThemeOption): void => {
     setTheme(nextTheme)
     setStoredValue('theme', nextTheme)
-    document.documentElement.setAttribute('data-theme', nextTheme)
+    applyTheme(nextTheme)
+
+    // Watch system changes when auto is selected
+    if (nextTheme === 'auto') {
+      watchSystemTheme((resolved) => {
+        document.documentElement.setAttribute('data-theme', resolved)
+      })
+    }
   }
 
   const handleNotificationToggle = (): void => {
@@ -440,6 +453,14 @@ export default function SettingsModal(): React.JSX.Element {
           </div>
 
           <div className="vesper-settings-radio-grid">
+            <button
+              type="button"
+              onClick={() => handleThemeChange('auto')}
+              className={theme === 'auto' ? 'vesper-settings-choice vesper-settings-choice-active' : 'vesper-settings-choice'}
+            >
+              <Laptop2 className="w-4 h-4" />
+              <span>Auto</span>
+            </button>
             <button
               type="button"
               onClick={() => handleThemeChange('dark')}
@@ -744,8 +765,53 @@ export default function SettingsModal(): React.JSX.Element {
                     <Laptop2 className="w-4 h-4 text-text-faint shrink-0" />
                     <div>
                       <div className="vesper-settings-row-title">
-                        {device.name}
-                        {device.client_id === localDevice.id ? ' · This device' : ''}
+                        {editingDeviceId === device.id ? (
+                          <form
+                            className="flex items-center gap-2"
+                            onSubmit={(e) => {
+                              e.preventDefault()
+                              const trimmed = editingDeviceName.trim()
+                              if (trimmed) {
+                                const next = { ...deviceNicknames, [device.id]: trimmed }
+                                setDeviceNicknames(next)
+                                setStoredJson('deviceNicknames', next)
+                              } else {
+                                const next = { ...deviceNicknames }
+                                delete next[device.id]
+                                setDeviceNicknames(next)
+                                setStoredJson('deviceNicknames', next)
+                              }
+                              setEditingDeviceId(null)
+                            }}
+                          >
+                            <input
+                              type="text"
+                              value={editingDeviceName}
+                              onChange={(e) => setEditingDeviceName(e.target.value)}
+                              className="vesper-settings-input"
+                              style={{ padding: '0.3rem 0.5rem', fontSize: '0.85rem', width: '14rem' }}
+                              autoFocus
+                              onBlur={() => setEditingDeviceId(null)}
+                              onKeyDown={(e) => { if (e.key === 'Escape') setEditingDeviceId(null) }}
+                            />
+                          </form>
+                        ) : (
+                          <>
+                            {deviceNicknames[device.id] || device.name}
+                            {device.client_id === localDevice.id ? ' · This device' : ''}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingDeviceId(device.id)
+                                setEditingDeviceName(deviceNicknames[device.id] || device.name)
+                              }}
+                              className="vesper-settings-inline-action"
+                              title="Rename device"
+                            >
+                              <Pencil className="w-3 h-3" />
+                            </button>
+                          </>
+                        )}
                       </div>
                       <div className="vesper-settings-row-copy">
                         {[device.platform, device.trust_state === 'trusted'

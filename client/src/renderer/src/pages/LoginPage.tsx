@@ -97,7 +97,7 @@ export default function LoginPage({ onSwitchToRegister, onSwitchToRecovery }: Pr
         <button
           type="submit"
           disabled={loading || !username || !password || !hasServerUrl}
-          className="vesper-auth-submit disabled:opacity-40"
+          className="vesper-auth-submit"
         >
           {loading ? (
             <>
