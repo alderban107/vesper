@@ -10,6 +10,8 @@ COPY sdk/ /app/sdk/
 RUN ln -s /app/client/node_modules /app/sdk/node_modules
 # Make the WASM package available for Vite resolution
 RUN ln -s /app/sdk/wasm/pkg /app/client/node_modules/vesper-openmls-wasm
+# Copy twemoji SVGs from npm package (postinstall doesn't run with --ignore-scripts)
+RUN node -e "const fs=require('fs');const src='node_modules/twemoji-emojis/vendor/svg';const dst='src/renderer/public/twemoji';if(fs.existsSync(src)){fs.mkdirSync(dst,{recursive:true});for(const f of fs.readdirSync(src))fs.copyFileSync(src+'/'+f,dst+'/'+f)}"
 RUN npm run build:web
 
 # Stage 2: Serve with nginx
@@ -18,11 +20,24 @@ FROM nginx:alpine
 COPY --from=build /app/client/dist-web /usr/share/nginx/html
 COPY --from=build /app/client/docker-entrypoint.sh /docker-entrypoint.sh
 
-# SPA fallback — route all paths to index.html
+# SPA fallback + cache headers
 RUN printf 'server {\n\
     listen 80;\n\
     root /usr/share/nginx/html;\n\
     index index.html;\n\
+    \n\
+    # Twemoji SVGs — immutable, cache forever\n\
+    location /twemoji/ {\n\
+        add_header Cache-Control "public, max-age=31536000, immutable";\n\
+        try_files $uri =404;\n\
+    }\n\
+    \n\
+    # Vite hashed assets — immutable\n\
+    location /assets/ {\n\
+        add_header Cache-Control "public, max-age=31536000, immutable";\n\
+        try_files $uri =404;\n\
+    }\n\
+    \n\
     location / {\n\
         try_files $uri $uri/ /index.html;\n\
     }\n\
