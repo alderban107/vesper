@@ -15,6 +15,7 @@ client/node_modules/
 client/out/
 client/dist/
 client/dist-web/
+client/src/renderer/public/config.js
 client/coverage/
 client/test-results/
 client/playwright-report/
