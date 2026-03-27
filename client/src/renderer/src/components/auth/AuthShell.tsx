@@ -39,13 +39,15 @@ export default function AuthShell({
 }: Props): React.JSX.Element {
   return (
     <div className="vesper-auth-screen">
-      <div className="vesper-auth-background" aria-hidden="true">
-        <div className="vesper-auth-background-orb vesper-auth-background-orb-primary" />
-        <div className="vesper-auth-background-orb vesper-auth-background-orb-secondary" />
-        <div className="vesper-auth-background-cloud vesper-auth-background-cloud-primary" />
-        <div className="vesper-auth-background-cloud vesper-auth-background-cloud-secondary" />
-        <div className="vesper-auth-background-grid" />
-      </div>
+      {!centered && (
+        <div className="vesper-auth-background" aria-hidden="true">
+          <div className="vesper-auth-background-orb vesper-auth-background-orb-primary" />
+          <div className="vesper-auth-background-orb vesper-auth-background-orb-secondary" />
+          <div className="vesper-auth-background-cloud vesper-auth-background-cloud-primary" />
+          <div className="vesper-auth-background-cloud vesper-auth-background-cloud-secondary" />
+          <div className="vesper-auth-background-grid" />
+        </div>
+      )}
 
       <div className={`vesper-auth-layout animate-scale-in${centered ? ' vesper-auth-layout-centered' : ''}`}>
         {!centered && (
@@ -101,7 +103,7 @@ export default function AuthShell({
           </aside>
         )}
 
-        <section className="vesper-auth-form-card glass-card">
+        <section className={`vesper-auth-form-card${centered ? '' : ' glass-card'}`}>
           <div className="vesper-auth-form-header">
             <div className="vesper-auth-form-logo">
               <Star className="w-6 h-6" />

@@ -254,7 +254,7 @@ export default function MessageFeed({
     })
 
     if (date.toDateString() === now.toDateString()) {
-      return `Today - ${fullDateLabel}`
+      return fullDateLabel
     }
 
     if (date.toDateString() === yesterday.toDateString()) {
