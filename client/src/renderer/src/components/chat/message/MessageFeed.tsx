@@ -1,6 +1,7 @@
 import { forwardRef, type HTMLAttributes, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { useMessageStore, type Message } from '../../../stores/messageStore'
+import MessageSkeleton from './MessageSkeleton'
 import { useAuthStore } from '../../../stores/authStore'
 import { useServerStore } from '../../../stores/serverStore'
 import { useDmStore } from '../../../stores/dmStore'
@@ -294,9 +295,13 @@ export default function MessageFeed({
   return (
     messages.length === 0 ? (
       <div className="vesper-message-feed">
-        <div className="vesper-message-empty-state">
-          <p>{isLoading ? 'Loading messages...' : emptyState}</p>
-        </div>
+        {isLoading ? (
+          <MessageSkeleton />
+        ) : (
+          <div className="vesper-message-empty-state">
+            <p>{emptyState}</p>
+          </div>
+        )}
         <TypingIndicator typingUsers={typingUsers} />
       </div>
     ) : (

@@ -50,7 +50,7 @@ export default function ContextMenu({
       onClose={onClose}
       ariaLabel="Context menu"
     >
-      <div className="vesper-context-menu">
+      <div className="vesper-context-menu" role="menu">
         {header && (
           <>
             <div className="vesper-context-menu-header">
@@ -74,6 +74,7 @@ export default function ContextMenu({
             {item.divider && <div className="border-t border-border my-1" />}
             <button
               data-testid={item.testId}
+              role="menuitem"
               onClick={(e) => {
                 e.stopPropagation()
                 if (!item.disabled) {

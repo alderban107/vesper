@@ -479,6 +479,7 @@ export default function SettingsModal(): React.JSX.Element {
                 onClick={handleNotificationToggle}
                 className={notificationsEnabled ? 'vesper-settings-toggle vesper-settings-toggle-on' : 'vesper-settings-toggle'}
                 aria-pressed={notificationsEnabled}
+                aria-label="Desktop Notifications"
               >
                 <span className="vesper-settings-toggle-knob" />
               </button>
@@ -496,6 +497,7 @@ export default function SettingsModal(): React.JSX.Element {
                   disabled={pushBusy}
                   className={pushEnabled ? 'vesper-settings-toggle vesper-settings-toggle-on' : 'vesper-settings-toggle'}
                   aria-pressed={pushEnabled}
+                  aria-label="Push Notifications"
                 >
                   <span className="vesper-settings-toggle-knob" />
                 </button>
@@ -512,6 +514,7 @@ export default function SettingsModal(): React.JSX.Element {
                 onClick={handleLinkPreviewToggle}
                 className={linkPreviewsEnabled ? 'vesper-settings-toggle vesper-settings-toggle-on' : 'vesper-settings-toggle'}
                 aria-pressed={linkPreviewsEnabled}
+                aria-label="Link Previews"
               >
                 <span className="vesper-settings-toggle-knob" />
               </button>
@@ -580,6 +583,7 @@ export default function SettingsModal(): React.JSX.Element {
                 onClick={() => setEchoCancellation(!echoCancellation)}
                 className={echoCancellation ? 'vesper-settings-toggle vesper-settings-toggle-on' : 'vesper-settings-toggle'}
                 aria-pressed={echoCancellation}
+                aria-label="Echo Cancellation"
               >
                 <span className="vesper-settings-toggle-knob" />
               </button>
@@ -594,6 +598,7 @@ export default function SettingsModal(): React.JSX.Element {
                 onClick={() => setNoiseSuppression(!noiseSuppression)}
                 className={noiseSuppression ? 'vesper-settings-toggle vesper-settings-toggle-on' : 'vesper-settings-toggle'}
                 aria-pressed={noiseSuppression}
+                aria-label="Noise Suppression"
               >
                 <span className="vesper-settings-toggle-knob" />
               </button>
@@ -608,6 +613,7 @@ export default function SettingsModal(): React.JSX.Element {
                 onClick={() => setAutoGainControl(!autoGainControl)}
                 className={autoGainControl ? 'vesper-settings-toggle vesper-settings-toggle-on' : 'vesper-settings-toggle'}
                 aria-pressed={autoGainControl}
+                aria-label="Auto Gain Control"
               >
                 <span className="vesper-settings-toggle-knob" />
               </button>
@@ -622,6 +628,7 @@ export default function SettingsModal(): React.JSX.Element {
                 onClick={() => setNoiseGateEnabled(!noiseGateEnabled)}
                 className={noiseGateEnabled ? 'vesper-settings-toggle vesper-settings-toggle-on' : 'vesper-settings-toggle'}
                 aria-pressed={noiseGateEnabled}
+                aria-label="Noise Gate"
               >
                 <span className="vesper-settings-toggle-knob" />
               </button>

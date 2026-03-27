@@ -69,7 +69,13 @@ export default function Avatar({
           {initials}
         </div>
       )}
-      {statusClassName && <span className={statusClassName} aria-hidden="true" />}
+      {statusClassName && (
+        <span
+          className={statusClassName}
+          aria-label={status === 'online' ? 'Online' : status === 'idle' ? 'Idle' : status === 'dnd' ? 'Do not disturb' : 'Offline'}
+          role="img"
+        />
+      )}
     </div>
   )
 }

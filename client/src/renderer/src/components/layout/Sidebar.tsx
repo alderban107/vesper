@@ -24,6 +24,8 @@ import { useVoiceStore } from '../../stores/voiceStore'
 import { useContextMenu } from '../../hooks/useContextMenu'
 import { getRendererClient } from '../../sdk/client'
 import { getStoredJson, setStoredJson } from '../../utils/localStorage'
+import { useMediaQuery } from '../../hooks/useMediaQuery'
+import { useToastStore } from '../../stores/toastStore'
 import DmSidebar from '../dm/DmSidebar'
 import ProfilePopout from '../profile/ProfilePopout'
 import ContextMenu, { type ContextMenuItem } from '../ui/ContextMenu'
@@ -187,7 +189,7 @@ export default function Sidebar(): React.JSX.Element {
 
   const currentView: View = !activeServerId ? 'dm' : 'server'
   const activeServer = servers.find((server) => server.id === activeServerId)
-  const isMobileLayout = typeof window !== 'undefined' && window.innerWidth <= 768
+  const isMobileLayout = useMediaQuery('(max-width: 768px)')
   const isServerOwner = activeServer?.owner_id === user?.id
   const members = useServerStore((s) => s.members)
   const myMembership = members.find((member) => member.user_id === user?.id)
@@ -276,9 +278,10 @@ export default function Sidebar(): React.JSX.Element {
       const inviteCode = await getRendererClient().fetchServerInviteCode(serverId)
       if (inviteCode.length > 0) {
         await navigator.clipboard.writeText(inviteCode)
+        useToastStore.getState().addToast('Invite code copied', 'success')
       }
     } catch {
-      // ignore
+      useToastStore.getState().addToast('Failed to copy invite code', 'error')
     }
   }
 
@@ -350,7 +353,10 @@ export default function Sidebar(): React.JSX.Element {
       {
         label: 'Copy Server ID',
         icon: Copy,
-        onClick: () => navigator.clipboard.writeText(serverId)
+        onClick: () => {
+          navigator.clipboard.writeText(serverId)
+          useToastStore.getState().addToast('Server ID copied', 'success')
+        }
       },
       {
         label: 'Leave Server',
@@ -388,7 +394,10 @@ export default function Sidebar(): React.JSX.Element {
       {
         label: 'Copy ID',
         icon: Copy,
-        onClick: () => navigator.clipboard.writeText(channelId),
+        onClick: () => {
+          navigator.clipboard.writeText(channelId)
+          useToastStore.getState().addToast('Channel ID copied', 'success')
+        },
         divider: isOwner
       }
     ]
@@ -507,6 +516,7 @@ export default function Sidebar(): React.JSX.Element {
                         className="vesper-guild-header-menu-item"
                         onClick={() => {
                           navigator.clipboard.writeText(activeServer.id)
+                          useToastStore.getState().addToast('Server ID copied', 'success')
                           setServerHeaderOpen(false)
                         }}
                         role="menuitem"
