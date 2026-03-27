@@ -1923,6 +1923,12 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
     startLiveScopeWatch(scope, set)
 
+    // Start message fetch immediately — don't wait for encryption prep.
+    // fetchMessages loads cached messages first, then fetches from server.
+    // The encrypted SDK fetch inside fetchMessages will block on its own
+    // prepareScopeForRead if needed, but cached messages show instantly.
+    void get().fetchMessages(channelId)
+
     if (canUseEncryptedFeatures()) {
       if (getRendererEncryptedChat().consumeWelcomeApplied(channelId)) {
         fireAndForget(handleWelcomeProcessedForScope(scope))
@@ -1934,14 +1940,11 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         .catch(() => {
           // Continue without encryption
         })
-        .finally(() => {
+        .then(() => {
           if (getRendererEncryptedChat().consumeWelcomeApplied(channelId)) {
             fireAndForget(handleWelcomeProcessedForScope(scope))
           }
-          get().fetchMessages(channelId)
         })
-    } else {
-      void get().fetchMessages(channelId)
     }
   },
 
@@ -2617,6 +2620,9 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
     startLiveScopeWatch(scope, set)
 
+    // Start message fetch immediately — don't wait for encryption prep
+    void get().fetchDmMessages(conversationId)
+
     if (canUseEncryptedFeatures()) {
       if (getRendererEncryptedChat().consumeWelcomeApplied(conversationId)) {
         fireAndForget(handleWelcomeProcessedForScope(scope))
@@ -2628,14 +2634,11 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         .catch(() => {
           // Continue without encryption
         })
-        .finally(() => {
+        .then(() => {
           if (getRendererEncryptedChat().consumeWelcomeApplied(conversationId)) {
             fireAndForget(handleWelcomeProcessedForScope(scope))
           }
-          get().fetchDmMessages(conversationId)
         })
-    } else {
-      void get().fetchDmMessages(conversationId)
     }
   },
 
