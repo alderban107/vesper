@@ -7,6 +7,7 @@ import {
   type SessionNotice
 } from './sdk/bootstrap'
 import lazyWithRetry from './utils/lazyWithRetry'
+import ToastContainer from './components/ui/ToastContainer'
 const LoginPage = lazyWithRetry(() => import('./pages/LoginPage'))
 const RegisterPage = lazyWithRetry(() => import('./pages/RegisterPage'))
 const RecoveryPage = lazyWithRetry(() => import('./pages/RecoveryPage'))
@@ -192,6 +193,7 @@ function AppWithErrorBoundary(): React.JSX.Element {
   return (
     <ErrorBoundary>
       <App />
+      <ToastContainer />
     </ErrorBoundary>
   )
 }

@@ -527,6 +527,7 @@ export default function MainPage(): React.JSX.Element {
 
   return (
     <div data-testid="main-page" className="h-screen bg-bg-primary flex overflow-hidden">
+      <a href="#vesper-main-content" className="vesper-skip-link">Skip to messages</a>
       <Sidebar />
 
       <div className="vesper-desktop-shell flex-1 flex flex-col min-w-0">
@@ -537,7 +538,7 @@ export default function MainPage(): React.JSX.Element {
           lastError={connectionState.lastError}
         />
 
-        <div className="vesper-desktop-body flex-1 flex min-h-0">
+        <div id="vesper-main-content" className="vesper-desktop-body flex-1 flex min-h-0" role="main" tabIndex={-1}>
           <div className="vesper-main-chat-column flex-1 flex flex-col min-w-0">
             {isChannelView ? (
               <>

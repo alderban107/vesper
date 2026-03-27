@@ -362,8 +362,7 @@ export default function MessageItem({
     ]
   }
 
-  // Text content for display (caption for file messages, full text for text messages)
-  const displayText = parsed.type === 'file' ? parsed.text : parsed.text
+  const displayText = parsed.text
   const replyPreview = (() => {
     if (!parentMessage) {
       return 'View message'

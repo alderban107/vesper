@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ArrowRight, KeyRound, Laptop2, Loader2, ShieldCheck, User } from 'lucide-react'
+import { ArrowRight, KeyRound, Laptop2, Loader2, Settings, ShieldCheck, User } from 'lucide-react'
 import AuthShell from '../components/auth/AuthShell'
 import ServerConnectionCard from '../components/auth/ServerConnectionCard'
 import { useAuthStore } from '../stores/authStore'
@@ -35,6 +35,7 @@ export default function RegisterPage({ onSwitchToLogin }: Props): React.JSX.Elem
   const serverUrl = useSettingsStore((state) => state.serverUrl)
   const [loading, setLoading] = useState(false)
   const [localError, setLocalError] = useState<string | null>(null)
+  const [showServerModal, setShowServerModal] = useState(false)
 
   const handleSubmit = async (event: React.FormEvent): Promise<void> => {
     event.preventDefault()
@@ -62,9 +63,25 @@ export default function RegisterPage({ onSwitchToLogin }: Props): React.JSX.Elem
       panelDescription="Registering creates the foundation for fast device approvals, recovery, and sync that behaves like a real chat app."
       features={registerFeatures}
     >
+      <button
+        type="button"
+        onClick={() => setShowServerModal(true)}
+        className="vesper-auth-server-cog"
+        title="Server settings"
+      >
+        <Settings className="w-4 h-4" />
+      </button>
+
+      {showServerModal && (
+        <div className="vesper-auth-server-modal-backdrop" onClick={() => setShowServerModal(false)}>
+          <div className="vesper-auth-server-modal" onClick={(e) => e.stopPropagation()}>
+            <ServerConnectionCard />
+          </div>
+        </div>
+      )}
+
       <form onSubmit={handleSubmit} data-testid="register-form" className="vesper-auth-form">
         {displayError && <div className="vesper-auth-error">{displayError}</div>}
-        <ServerConnectionCard />
 
         <label className="vesper-auth-field">
           <span className="vesper-auth-label">Username</span>
@@ -116,7 +133,7 @@ export default function RegisterPage({ onSwitchToLogin }: Props): React.JSX.Elem
         <button
           type="submit"
           disabled={loading || !username || !password || !confirmPassword || !serverUrl.trim()}
-          className="vesper-auth-submit glow-accent hover:glow-accent-hover disabled:opacity-40 disabled:shadow-none"
+          className="vesper-auth-submit disabled:opacity-40"
         >
           {loading ? (
             <>

@@ -10,10 +10,10 @@
   /* Text — warm off-whites */
   --color-text-primary: #e8e6f0;
   --color-text-secondary: #b8b5c8;
-  --color-text-muted: #8a86a0;
-  --color-text-faint: #6b6780;
-  --color-text-faintest: #4e4a65;
-  --color-text-disabled: #3a3650;
+  --color-text-muted: #9490a8;
+  --color-text-faint: #817d93;
+  --color-text-faintest: #6e6a82;
+  --color-text-disabled: #565272;
 
   /* Accent — warm amber/gold ("evening star") */
   --color-accent: #c8a24e;
@@ -51,14 +51,14 @@
   --color-bg-tertiary: #dfdce8;
   --color-text-primary: #1c1a2e;
   --color-text-secondary: #3e3a54;
-  --color-text-muted: #6e6a84;
-  --color-text-faint: #928ea6;
-  --color-text-faintest: #b4b0c6;
-  --color-text-disabled: #d2d0dd;
+  --color-text-muted: #5e5a74;
+  --color-text-faint: #737083;
+  --color-text-faintest: #8a889a;
+  --color-text-disabled: #aaa8b5;
   --color-accent: #a88530;
   --color-accent-hover: #8d6f20;
   --color-accent-disabled: #d4c8a0;
-  --color-accent-text: #8d6f20;
+  --color-accent-text: #7a6023;
   --color-accent-text-hover: #705818;
   --color-accent-focus: #a88530;
   --color-error: #dc2626;
@@ -94,6 +94,11 @@ body,
 @keyframes pulse-ring {
   0%, 100% { box-shadow: 0 0 0 0 rgba(200, 162, 78, 0.4); }
   50% { box-shadow: 0 0 0 8px rgba(200, 162, 78, 0); }
+}
+
+@keyframes slide-in-right {
+  from { opacity: 0; transform: translateX(1.5rem); }
+  to   { opacity: 1; transform: translateX(0); }
 }
 
 /* Utility: Glass card */
@@ -172,6 +177,39 @@ body,
   color: #e8e6f0;
 }
 
+/* Global focus ring for keyboard navigation */
+*:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
+/* Skip-to-content link for keyboard users */
+.vesper-skip-link {
+  position: absolute;
+  top: -9999px;
+  left: 0;
+  z-index: 999;
+  padding: 0.5rem 1rem;
+  background: var(--color-accent);
+  color: var(--color-bg-base);
+  font-size: 0.86rem;
+  font-weight: 600;
+  border-radius: 0 0 0.5rem 0;
+  text-decoration: none;
+}
+
+.vesper-skip-link:focus {
+  top: 0;
+  outline: none;
+}
 .vesper-auth-screen {
   position: relative;
   min-height: 100vh;
@@ -297,6 +335,148 @@ body,
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+.vesper-auth-server-cog {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.5rem;
+  color: var(--color-text-faint);
+  transition: color 0.15s, background 0.15s;
+}
+
+.vesper-auth-server-cog:hover {
+  color: var(--color-text-primary);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.vesper-auth-server-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+}
+
+.vesper-auth-server-modal {
+  width: 100%;
+  max-width: 24rem;
+}
+
+.vesper-server-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1.5rem;
+  border-radius: 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+  background: var(--color-bg-base);
+}
+
+.vesper-server-card-title {
+  color: var(--color-text-primary);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.vesper-server-card-copy {
+  color: var(--color-text-faint);
+  font-size: 0.8rem;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.vesper-server-card-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.vesper-server-card-label {
+  color: var(--color-text-secondary);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.vesper-server-card-input {
+  width: 100%;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  border-radius: 0.35rem;
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+  font-size: 0.85rem;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.vesper-server-card-input:focus {
+  border-color: var(--color-accent);
+}
+
+.vesper-server-card-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.vesper-server-card-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.85rem;
+  border: none;
+  border-radius: 0.3rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.vesper-server-card-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.vesper-server-card-btn-primary {
+  background: var(--color-accent);
+  color: #fff;
+}
+
+.vesper-server-card-btn-secondary {
+  background: color-mix(in srgb, var(--color-bg-tertiary) 80%, transparent);
+  color: var(--color-text-secondary);
+}
+
+.vesper-server-card-btn-secondary:hover:not(:disabled) {
+  color: var(--color-text-primary);
+}
+
+.vesper-server-card-feedback {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+}
+
+.vesper-server-card-feedback-ok {
+  color: #22c55e;
+}
+
+.vesper-server-card-feedback-err {
+  color: var(--color-error, #ef4444);
+}
+
 .vesper-auth-panel {
   min-height: 42rem;
   padding: 2rem;
@@ -325,16 +505,32 @@ body,
 }
 
 .vesper-auth-layout-centered {
-  grid-template-columns: minmax(0, 30rem);
+  grid-template-columns: minmax(0, 48rem);
   justify-content: center;
   max-width: none;
 }
 
 .vesper-auth-layout-centered .vesper-auth-form-card {
-  padding: 2rem 1.75rem 1.6rem;
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 2rem;
+  align-items: start;
+  padding: 2.5rem;
   border-radius: 0.55rem;
-  background: #313338;
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.28);
+  background: color-mix(in srgb, var(--color-bg-secondary) 96%, transparent);
+  box-shadow: 0 14px 36px rgba(8, 9, 20, 0.52);
+}
+
+@media (max-width: 640px) {
+  .vesper-auth-layout-centered {
+    grid-template-columns: minmax(0, 30rem);
+  }
+
+  .vesper-auth-layout-centered .vesper-auth-form-card {
+    grid-template-columns: 1fr;
+    gap: 1.25rem;
+    padding: 2rem 1.75rem 1.6rem;
+  }
 }
 
 .vesper-auth-layout-centered .vesper-auth-form-card::before {
@@ -487,6 +683,24 @@ body,
 .vesper-auth-form-header {
   position: relative;
   z-index: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.vesper-auth-form-logo {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 1.25rem;
+  color: var(--color-accent);
+}
+
+.vesper-auth-form-logo-name {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  letter-spacing: -0.01em;
 }
 
 .vesper-auth-form-title {
@@ -527,14 +741,14 @@ body,
 }
 
 .vesper-auth-inline-link {
-  color: #00a8fc;
+  color: var(--color-accent-text);
   font-size: 0.82rem;
   font-weight: 600;
   transition: color 0.2s ease;
 }
 
 .vesper-auth-inline-link:hover {
-  color: #33b9ff;
+  color: var(--color-accent-text-hover);
 }
 
 .vesper-auth-input-wrap,
@@ -629,10 +843,10 @@ body,
   align-items: center;
   justify-content: center;
   gap: 0.55rem;
-  color: var(--color-bg-base);
   min-height: 2.75rem;
   border-radius: 0.2rem;
-  background: #5865f2;
+  background: var(--color-accent);
+  color: var(--color-bg-base);
   box-shadow: none;
 }
 
@@ -660,7 +874,7 @@ body,
 }
 
 .vesper-auth-submit:hover:not(:disabled) {
-  background: #4752c4;
+  background: var(--color-accent-hover);
 }
 
 .vesper-auth-actions {
@@ -700,14 +914,14 @@ body,
 }
 
 .vesper-auth-server-toggle {
-  color: #00a8fc;
+  color: var(--color-accent-text);
   font-size: 0.82rem;
   font-weight: 600;
   transition: color 0.2s ease;
 }
 
 .vesper-auth-server-toggle:hover {
-  color: #33b9ff;
+  color: var(--color-accent-text-hover);
 }
 
 .vesper-auth-server-current {
@@ -735,12 +949,12 @@ body,
 }
 
 .vesper-auth-server-feedback {
-  color: #43b581;
+  color: var(--color-success);
   font-size: 0.8rem;
 }
 
 .vesper-auth-server-feedback-error {
-  color: #ed4245;
+  color: var(--color-error);
 }
 
 [data-theme="light"] .vesper-auth-screen {
@@ -773,7 +987,7 @@ body,
 }
 
 [data-theme="light"] .vesper-auth-layout-centered .vesper-auth-form-card {
-  background: #ffffff;
+  background: var(--color-bg-primary);
 }
 
 [data-theme="light"] .vesper-auth-feature,
@@ -840,7 +1054,7 @@ body,
   gap: 0.75rem;
   min-width: 0;
   padding: 0.2rem 0.25rem 0.3rem 0.15rem;
-  border-radius: 1rem;
+  border-radius: 0;
   transition: background-color 0.16s ease;
 }
 
@@ -893,6 +1107,17 @@ body,
   height: 4rem;
 }
 
+.vesper-avatar-xl {
+  width: 7rem;
+  height: 7rem;
+}
+
+.vesper-avatar-shell-xl .vesper-avatar-status {
+  width: 1.4rem;
+  height: 1.4rem;
+  border-width: 4px;
+}
+
 .vesper-avatar-status {
   position: absolute;
   right: -2px;
@@ -926,14 +1151,33 @@ body,
 
 .vesper-avatar-status-idle {
   background: #f59e0b;
+  clip-path: polygon(0% 0%, 100% 0%, 100% 100%, 0% 100%, 0% 0%, 35% 15%, 15% 35%, 15% 15%);
 }
 
 .vesper-avatar-status-dnd {
   background: #ef4444;
+  position: relative;
+}
+
+.vesper-avatar-status-dnd::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 50%;
+  height: 2px;
+  background: var(--color-bg-base);
+  border-radius: 1px;
+  transform: translate(-50%, -50%);
 }
 
 .vesper-avatar-status-offline {
-  background: #94a3b8;
+  background: transparent;
+  border-color: var(--color-bg-base);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--color-bg-secondary) 88%, transparent),
+    inset 0 0 0 2px #94a3b8,
+    0 4px 10px rgba(0, 0, 0, 0.28);
 }
 
 .vesper-avatar-speaking::after {
@@ -1173,7 +1417,7 @@ body,
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: 1rem;
+  border-radius: 50%;
   cursor: pointer;
   transition:
     border-radius 0.18s ease,
@@ -1183,8 +1427,12 @@ body,
 }
 
 .vesper-rail-button:hover {
-  transform: translateY(-1px);
-  border-radius: 1rem;
+  border-radius: 30%;
+}
+
+.vesper-rail-button:active {
+  transform: scale(0.94);
+  transition-duration: 0.06s;
 }
 
 .vesper-rail-button-neutral {
@@ -1197,6 +1445,7 @@ body,
 }
 
 .vesper-rail-button-active {
+  border-radius: 30%;
   background: color-mix(in srgb, var(--color-bg-tertiary) 92%, transparent);
   color: var(--color-text-primary);
   box-shadow:
@@ -1234,7 +1483,7 @@ body,
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 0.6rem;
+  font-size: 0.68rem;
   font-weight: 800;
   line-height: 1;
   box-shadow: 0 4px 12px rgba(239, 68, 68, 0.35);
@@ -1299,7 +1548,7 @@ body,
   top: 0.1rem;
   right: 0.15rem;
   width: 2.3rem;
-  font-size: 0.4rem;
+  font-size: 0.68rem;
   color: var(--color-text-faintest);
   line-height: 1;
   display: block;
@@ -1350,7 +1599,7 @@ body,
   box-shadow: 0 16px 34px rgba(0, 0, 0, 0.34);
   opacity: 0;
   transform: translateY(6px);
-  transition: opacity 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
+  transition: opacity 0.12s cubic-bezier(0.16, 1, 0.3, 1), transform 0.12s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.12s ease;
   backdrop-filter: blur(16px);
 }
 
@@ -1379,7 +1628,6 @@ body,
 .vesper-message-action-button:hover {
   background: color-mix(in srgb, var(--color-bg-tertiary) 72%, transparent);
   color: var(--color-text-primary);
-  transform: translateY(-1px);
 }
 
 .vesper-message-action-button-danger:hover {
@@ -1434,7 +1682,7 @@ body,
 }
 
 .vesper-message-time {
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   color: var(--color-text-faintest);
 }
 
@@ -1478,12 +1726,17 @@ body,
 
 .vesper-markdown-paragraph {
   margin: 0;
-  color: var(--color-text-secondary);
+  color: var(--color-text-primary);
   white-space: break-spaces;
 }
 
 .vesper-markdown-paragraph + .vesper-markdown-paragraph {
   margin-top: 0.18rem;
+}
+
+.vesper-markdown-emoji-only {
+  font-size: 2.5rem;
+  line-height: 1.2;
 }
 
 .vesper-markdown-strong {
@@ -1750,7 +2003,8 @@ body,
 }
 
 .vesper-message-row-thread-active {
-  background: color-mix(in srgb, var(--color-accent) 10%, var(--color-bg-secondary));
+  border-left: 2px solid var(--color-accent);
+  background: none;
 }
 
 .vesper-message-row-focused {
@@ -1797,8 +2051,8 @@ body,
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0)),
     color-mix(in srgb, var(--color-bg-base) 90%, transparent);
+  animation: slide-in-right 0.22s cubic-bezier(0.16, 1, 0.3, 1);
 }
-
 .vesper-thread-header {
   display: flex;
   align-items: center;
@@ -1853,6 +2107,14 @@ body,
 
 .vesper-thread-parent {
   padding: 0.55rem 0.8rem 0.15rem;
+}
+
+.vesper-thread-parent .vesper-message-row {
+  background: none;
+}
+
+.vesper-thread-parent .vesper-message-row:hover {
+  background: none;
 }
 
 .vesper-thread-divider {
@@ -2046,7 +2308,7 @@ body,
   gap: 0.2rem;
   padding: 0.7rem 0.55rem 0.35rem;
   color: var(--color-text-faintest);
-  font-size: 0.63rem;
+  font-size: 0.66rem;
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -2287,8 +2549,8 @@ body,
     linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent),
     color-mix(in srgb, var(--color-bg-secondary) 94%, transparent);
   box-shadow: 0 36px 90px rgba(0, 0, 0, 0.34);
+  animation: scale-in 0.18s cubic-bezier(0.16, 1, 0.3, 1);
 }
-
 .vesper-settings-sidebar {
   flex: 0 0 264px;
   width: 264px;
@@ -2386,7 +2648,7 @@ body,
 
 .vesper-settings-content-inner {
   min-width: 0;
-  max-width: 740px;
+  max-width: 100%;
 }
 
 .vesper-settings-close-cluster {
@@ -2431,13 +2693,15 @@ body,
 }
 
 .vesper-settings-page-header {
-  margin-bottom: 1.4rem;
+  margin-bottom: 1.2rem;
+  padding-bottom: 1.2rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 40%, transparent);
 }
 
 .vesper-settings-page-title {
   color: var(--color-text-primary);
-  font-size: 1.45rem;
-  font-weight: 700;
+  font-size: 1.25rem;
+  font-weight: 600;
 }
 
 .vesper-settings-page-description {
@@ -2550,6 +2814,12 @@ body,
 
 .vesper-settings-form-grid {
   display: grid;
+  gap: 1rem;
+}
+
+.vesper-settings-form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 1rem;
 }
 
@@ -2923,18 +3193,41 @@ body,
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
+  padding: 0.65rem 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 40%, transparent);
+}
+
+.vesper-settings-row:last-child {
+  border-bottom: none;
 }
 
 .vesper-settings-row-title {
   color: var(--color-text-primary);
-  font-size: 0.95rem;
+  font-size: 0.88rem;
   font-weight: 600;
 }
 
 .vesper-settings-row-copy {
-  margin-top: 0.2rem;
+  margin-top: 0.15rem;
   color: var(--color-text-faint);
-  font-size: 0.83rem;
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.vesper-settings-section-heading {
+  color: var(--color-text-secondary);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding-bottom: 0.5rem;
+  margin-top: 1.5rem;
+  margin-bottom: 0.25rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 40%, transparent);
+}
+
+.vesper-settings-section-heading:first-child {
+  margin-top: 0;
 }
 
 .vesper-settings-toggle {
@@ -3448,6 +3741,7 @@ body,
   box-shadow: 0 24px 48px rgba(0, 0, 0, 0.3);
   pointer-events: auto;
   backdrop-filter: blur(18px);
+  animation: scale-in 0.14s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .vesper-profile-popout-banner {
@@ -3487,19 +3781,24 @@ body,
   position: absolute;
   top: 3.2rem;
   left: 1rem;
+  border-radius: 999px;
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--color-bg-secondary) 80%, black);
 }
 
-.vesper-profile-popout-avatar-ring {
-  padding: 0.22rem;
+.vesper-profile-popout-avatar-wrap .vesper-avatar-shell {
+  display: block;
+}
+
+.vesper-profile-popout-avatar-wrap .vesper-avatar {
+  display: block;
   border-radius: 999px;
-  background: var(--color-bg-secondary);
 }
 
 .vesper-profile-popout-body {
   display: flex;
   flex-direction: column;
   gap: 0.85rem;
-  padding: 3.5rem 1rem 1rem;
+  padding: 3.8rem 1rem 1rem;
 }
 
 .vesper-profile-popout-name {
@@ -3676,6 +3975,7 @@ body,
     color-mix(in srgb, var(--color-bg-secondary) 96%, transparent);
   box-shadow: 0 18px 40px rgba(0, 0, 0, 0.34);
   backdrop-filter: blur(20px);
+  animation: scale-in 0.12s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .vesper-mobile-main {
@@ -3917,7 +4217,7 @@ body,
 
 .vesper-composer-icon-button,
 .vesper-composer-send {
-  width: 2rem;
+  width: 2.25rem;
   height: var(--vesper-composer-textarea-height);
   min-height: 0;
   flex: 0 0 auto;
@@ -3926,7 +4226,7 @@ body,
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: 0.8rem;
+  border-radius: 0.6rem;
   background: transparent;
   color: var(--color-text-faint);
   cursor: pointer;
@@ -3946,6 +4246,7 @@ body,
 
 .vesper-composer-send {
   color: var(--color-accent);
+  border-radius: 0.6rem;
 }
 
 .vesper-composer-send:hover {
@@ -4348,6 +4649,7 @@ body,
     linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent),
     color-mix(in srgb, var(--color-bg-secondary) 96%, transparent);
   box-shadow: 0 28px 72px rgba(0, 0, 0, 0.42);
+  animation: slide-up 0.16s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .vesper-quick-switcher-header {
@@ -5518,6 +5820,7 @@ body,
     color-mix(in srgb, var(--color-bg-secondary) 94%, transparent);
   box-shadow: 0 18px 48px rgba(0, 0, 0, 0.34);
   backdrop-filter: blur(18px);
+  animation: scale-in 0.14s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .vesper-emoji-picker-header {
@@ -5641,7 +5944,6 @@ body,
 
 .vesper-emoji-picker-item:hover {
   background: color-mix(in srgb, var(--color-bg-tertiary) 82%, transparent);
-  transform: translateY(-1px);
 }
 
 .vesper-emoji-picker-glyph {
@@ -6031,8 +6333,8 @@ body,
 
 .vesper-channel-row-active {
   color: var(--color-text-primary);
-  background: transparent;
-  box-shadow: none;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 72%, transparent);
+  box-shadow: inset 2px 0 0 var(--color-accent);
 }
 
 .vesper-channel-row-unread {
@@ -6662,7 +6964,7 @@ body,
   border-radius: 0.45rem;
   background: #d22c39;
   color: #fff;
-  font-size: 0.58rem;
+  font-size: 0.66rem;
   font-weight: 800;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -7108,7 +7410,7 @@ body,
   border-radius: 999px;
   background: rgba(3, 5, 10, 0.62);
   color: white;
-  font-size: 0.58rem;
+  font-size: 0.66rem;
   font-weight: 800;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -7140,7 +7442,7 @@ body,
 .vesper-call-overlay-video-state {
   flex: 0 0 auto;
   color: rgba(255, 255, 255, 0.84);
-  font-size: 0.58rem;
+  font-size: 0.66rem;
   font-weight: 800;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -7230,7 +7532,7 @@ body,
 
 .vesper-call-overlay-presence-meta {
   color: var(--color-text-faint);
-  font-size: 0.58rem;
+  font-size: 0.66rem;
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -7906,7 +8208,7 @@ body,
   padding: 0.95rem;
   border-radius: 1.5rem;
   background:
-    radial-gradient(circle at top, rgba(88, 101, 242, 0.11), transparent 40%),
+    radial-gradient(circle at top, rgba(200, 162, 78, 0.11), transparent 40%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent),
     color-mix(in srgb, var(--color-bg-secondary) 94%, transparent);
   border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
@@ -8146,11 +8448,11 @@ body,
 .vesper-call-overlay-discord .vesper-call-overlay-control {
   min-height: 2.7rem;
   border-radius: 0.82rem;
-  background: #2b2d31;
+  background: color-mix(in srgb, var(--color-bg-secondary) 88%, transparent);
 }
 
 .vesper-call-overlay-discord .vesper-call-overlay-control:hover:not(:disabled) {
-  background: #35373c;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 72%, transparent);
 }
 
 .vesper-call-overlay-discord .vesper-call-overlay-share-audio {
@@ -8160,7 +8462,7 @@ body,
 
 .vesper-voice-room-discord {
   background:
-    radial-gradient(circle at top, rgba(88, 101, 242, 0.08), transparent 34%),
+    radial-gradient(circle at top, rgba(200, 162, 78, 0.08), transparent 34%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent),
     color-mix(in srgb, var(--color-bg-primary) 96%, transparent);
 }
@@ -8279,8 +8581,8 @@ body,
 }
 
 .vesper-voice-room-discord .vesper-voice-call-tile-active {
-  border-color: rgba(88, 101, 242, 0.55);
-  box-shadow: inset 0 0 0 1px rgba(88, 101, 242, 0.22);
+  border-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 22%, transparent);
 }
 
 .vesper-voice-room-discord .vesper-voice-call-tile-media,
@@ -8433,7 +8735,7 @@ body,
   border-radius: 0.45rem;
   background: #d22c39;
   color: white;
-  font-size: 0.58rem;
+  font-size: 0.66rem;
   font-weight: 800;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -8504,20 +8806,20 @@ body,
 .vesper-voice-room-discord .vesper-voice-room-button {
   min-height: 2.55rem;
   border-radius: 0.9rem;
-  background: #2b2d31;
+  background: color-mix(in srgb, var(--color-bg-secondary) 88%, transparent);
 }
 
 .vesper-voice-room-discord .vesper-voice-room-button:hover {
-  background: #35373c;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 72%, transparent);
 }
 
 .vesper-voice-room-discord .vesper-voice-room-button-primary {
-  background: #5865f2;
-  color: white;
+  background: var(--color-accent);
+  color: var(--color-bg-base);
 }
 
 .vesper-voice-room-discord .vesper-voice-room-button-primary:hover {
-  background: #4f5bda;
+  background: var(--color-accent-hover);
 }
 
 .vesper-voice-room-discord .vesper-voice-room-button-danger {
@@ -8621,7 +8923,7 @@ body,
   border-radius: 999px;
   background: color-mix(in srgb, #ef4444 88%, transparent);
   color: white;
-  font-size: 0.63rem;
+  font-size: 0.66rem;
   font-weight: 700;
   flex: 0 0 auto;
 }
@@ -8930,8 +9232,19 @@ body,
 }
 
 @media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* Re-allow safe opacity-only fades */
+  .vesper-message-actions,
   .vesper-typing-indicator {
-    transition: none;
+    transition: opacity 0.1s ease !important;
   }
 }
 
@@ -8940,7 +9253,8 @@ body,
 }
 
 [data-theme="light"] .vesper-message-row-thread-active {
-  background: color-mix(in srgb, var(--color-accent) 14%, var(--color-bg-secondary));
+  border-left: 2px solid var(--color-accent);
+  background: none;
 }
 
 [data-theme="light"] .vesper-message-actions {
@@ -9014,4 +9328,156 @@ body,
 
 .vesper-screen-share-indicator-stop:hover {
   background: color-mix(in srgb, var(--color-danger) 85%, black 15%);
+}
+
+/* Message loading skeleton */
+.vesper-message-skeleton {
+  padding: 0.8rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.2rem;
+}
+
+.vesper-message-skeleton-row {
+  display: grid;
+  grid-template-columns: 2.5rem 1fr;
+  gap: 0.75rem;
+  animation: fade-in 0.3s ease-out both;
+  animation-delay: calc(var(--skeleton-delay, 0) * 80ms);
+}
+
+.vesper-message-skeleton-row:nth-child(1) { --skeleton-delay: 0; }
+.vesper-message-skeleton-row:nth-child(2) { --skeleton-delay: 1; }
+.vesper-message-skeleton-row:nth-child(3) { --skeleton-delay: 2; }
+.vesper-message-skeleton-row:nth-child(4) { --skeleton-delay: 3; }
+.vesper-message-skeleton-row:nth-child(5) { --skeleton-delay: 4; }
+.vesper-message-skeleton-row:nth-child(6) { --skeleton-delay: 5; }
+
+.vesper-message-skeleton-avatar {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+}
+
+.vesper-message-skeleton-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding-top: 0.15rem;
+}
+
+.vesper-message-skeleton-name {
+  width: 6rem;
+  height: 0.75rem;
+  border-radius: 0.25rem;
+}
+
+.vesper-message-skeleton-line {
+  width: min(80%, 24rem);
+  height: 0.6rem;
+  border-radius: 0.25rem;
+}
+
+.vesper-message-skeleton-line-short {
+  width: min(50%, 16rem);
+  height: 0.6rem;
+  border-radius: 0.25rem;
+}
+
+/* Toast notification system */
+.vesper-toast-container {
+  position: fixed;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  z-index: 300;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  pointer-events: none;
+}
+
+.vesper-toast {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+  border-radius: 0.85rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent),
+    color-mix(in srgb, var(--color-bg-secondary) 96%, transparent);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.34);
+  backdrop-filter: blur(16px);
+  color: var(--color-text-primary);
+  font-size: 0.86rem;
+  pointer-events: auto;
+  animation: slide-up 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  max-width: 22rem;
+}
+
+.vesper-toast-exit {
+  opacity: 0;
+  transform: translateX(1rem);
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.vesper-toast-icon {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+}
+
+.vesper-toast-info .vesper-toast-icon {
+  color: var(--color-accent-text);
+}
+
+.vesper-toast-success .vesper-toast-icon {
+  color: var(--color-success);
+}
+
+.vesper-toast-error .vesper-toast-icon {
+  color: var(--color-error);
+}
+
+.vesper-toast-message {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.35;
+}
+
+.vesper-toast-close {
+  width: 1.5rem;
+  height: 1.5rem;
+  border: 0;
+  border-radius: 0.5rem;
+  background: transparent;
+  color: var(--color-text-faint);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition: color 0.16s ease;
+}
+
+.vesper-toast-close:hover {
+  color: var(--color-text-primary);
+}
+
+/* Loading skeleton utility */
+@keyframes vesper-shimmer {
+  from { background-position: -200% 0; }
+  to   { background-position: 200% 0; }
+}
+
+@utility skeleton {
+  border-radius: 0.4rem;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--color-bg-tertiary) 80%, transparent) 25%,
+    color-mix(in srgb, var(--color-bg-tertiary) 40%, transparent) 50%,
+    color-mix(in srgb, var(--color-bg-tertiary) 80%, transparent) 75%
+  );
+  background-size: 200% 100%;
+  animation: vesper-shimmer 1.6s ease-in-out infinite;
 }
