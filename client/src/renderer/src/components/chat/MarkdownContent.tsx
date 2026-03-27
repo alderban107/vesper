@@ -9,6 +9,7 @@ import { useDmStore } from '../../stores/dmStore'
 import { useAuthStore } from '../../stores/authStore'
 import { usePresenceStore } from '../../stores/presenceStore'
 import { findCustomEmoji, parseCustomEmojiToken, type CustomEmoji } from '../../utils/emoji'
+import { emojiToCodepoints } from '../../utils/twemoji'
 import ProfilePopout from '../profile/ProfilePopout'
 import { extractMarkdownCodeBlock } from './MarkdownCodeBlock'
 import MermaidBlock from './MermaidBlock'
@@ -63,6 +64,16 @@ function preprocessCustomEmoji(text: string, customEmojis: CustomEmoji[]): strin
   })
 }
 
+// Match Unicode emoji: presentation emoji, extended pictographic with optional FE0F/ZWJ sequences
+const UNICODE_EMOJI_RE = /(\p{Emoji_Presentation}|\p{Extended_Pictographic}\uFE0F?)(\u200D(\p{Emoji_Presentation}|\p{Extended_Pictographic}\uFE0F?))*/gu
+
+function preprocessUnicodeEmoji(text: string): string {
+  return text.replace(UNICODE_EMOJI_RE, (match) => {
+    const codepoints = emojiToCodepoints(match)
+    return `![${match}](twemoji:${codepoints})`
+  })
+}
+
 export default function MarkdownContent({ content }: Props): React.JSX.Element {
   const members = useServerStore((s) => s.members)
   const activeServer = useServerStore((s) => s.servers.find((server) => server.id === s.activeServerId))
@@ -113,9 +124,11 @@ export default function MarkdownContent({ content }: Props): React.JSX.Element {
     (entry, index, collection) =>
       collection.findIndex((candidate) => candidate.id === entry.id) === index
   )
-  const processed = preprocessCustomEmoji(
-    preprocessChannels(preprocessMentions(content, dedupedMentionUsers), channels),
-    customEmojis
+  const processed = preprocessUnicodeEmoji(
+    preprocessCustomEmoji(
+      preprocessChannels(preprocessMentions(content, dedupedMentionUsers), channels),
+      customEmojis
+    )
   )
   const mentionedUser = (() => {
     if (!mentionUserId) {
@@ -162,11 +175,17 @@ export default function MarkdownContent({ content }: Props): React.JSX.Element {
 
     return null
   })()
-  const EMOJI_ONLY_RE = /^[\p{Emoji_Presentation}\p{Extended_Pictographic}\uFE0F\u200D\s]+$/u
   const components: Components = {
     p: ({ children }) => {
-      const text = typeof children === 'string' ? children : Array.isArray(children) ? children.filter((c) => typeof c === 'string').join('') : ''
-      const isEmojiOnly = typeof text === 'string' && text.trim().length > 0 && text.trim().length <= 30 && EMOJI_ONLY_RE.test(text.trim())
+      const childArray = Array.isArray(children) ? children : [children]
+      const isEmojiOnly = childArray.length > 0 && childArray.length <= 10 &&
+        childArray.every((child) =>
+          (typeof child === 'object' && child !== null && 'props' in child &&
+           typeof (child as { props?: { src?: string } }).props?.src === 'string' &&
+           ((child as { props: { src: string } }).props.src.startsWith('twemoji:') ||
+            (child as { props: { src: string } }).props.src.startsWith('/twemoji/'))) ||
+          (typeof child === 'string' && child.trim() === '')
+        )
       return (
         <p className={`vesper-markdown-paragraph${isEmojiOnly ? ' vesper-markdown-emoji-only' : ''}`}>{children}</p>
       )
@@ -260,6 +279,24 @@ export default function MarkdownContent({ content }: Props): React.JSX.Element {
       )
     },
     img: ({ src, alt }) => {
+      if (src?.startsWith('twemoji:')) {
+        const codepoints = src.slice('twemoji:'.length)
+        return (
+          <img
+            src={`/twemoji/${codepoints}.svg`}
+            alt={alt || ''}
+            draggable={false}
+            className="vesper-twemoji-inline"
+            loading="lazy"
+            onError={(e) => {
+              const span = document.createElement('span')
+              span.textContent = alt || ''
+              ;(e.target as HTMLElement).replaceWith(span)
+            }}
+          />
+        )
+      }
+
       if (src?.startsWith('emoji:')) {
         const token = decodeURIComponent(src.slice('emoji:'.length))
         const customEmoji = findCustomEmoji(token, customEmojis)
@@ -291,7 +328,7 @@ export default function MarkdownContent({ content }: Props): React.JSX.Element {
         <ReactMarkdown
           remarkPlugins={[remarkGfm, remarkMath]}
           rehypePlugins={[rehypeKatex]}
-          urlTransform={(url) => url.startsWith('emoji:') ? url : defaultUrlTransform(url)}
+          urlTransform={(url) => url.startsWith('emoji:') || url.startsWith('twemoji:') ? url : defaultUrlTransform(url)}
           components={components}
         >
           {processed}

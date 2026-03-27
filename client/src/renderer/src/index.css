@@ -1735,8 +1735,14 @@ select:focus-visible {
 }
 
 .vesper-markdown-emoji-only {
-  font-size: 2.5rem;
   line-height: 1.2;
+}
+
+.vesper-markdown-emoji-only .vesper-twemoji-inline {
+  width: 2.5rem;
+  height: 2.5rem;
+  vertical-align: -0.5rem;
+  margin: 0 0.1rem;
 }
 
 .vesper-markdown-strong {
@@ -4616,6 +4622,12 @@ select:focus-visible {
   height: 100%;
 }
 
+.vesper-composer-autocomplete-emoji-img {
+  width: 1.25rem;
+  height: 1.25rem;
+  object-fit: contain;
+}
+
 .vesper-search-result-icon {
   width: 2rem;
   height: 2rem;
@@ -5159,6 +5171,15 @@ select:focus-visible {
   height: 100%;
   object-fit: contain;
   aspect-ratio: 1 / 1;
+}
+
+.vesper-twemoji-inline {
+  display: inline-block;
+  width: 1.375em;
+  height: 1.375em;
+  vertical-align: -0.3em;
+  margin: 0 0.05em;
+  object-fit: contain;
 }
 
 .vesper-inline-custom-emoji {
@@ -5949,6 +5970,13 @@ select:focus-visible {
 .vesper-emoji-picker-glyph {
   font-size: 1.5rem;
   line-height: 1;
+}
+
+.vesper-emoji-picker-twemoji {
+  width: 1.5rem;
+  height: 1.5rem;
+  object-fit: contain;
+  pointer-events: none;
 }
 
 .vesper-emoji-picker-custom-image,

@@ -20,7 +20,8 @@
     "test:e2e:p0": "npx playwright test -c e2e/playwright.config.ts --project=p0-smoke",
     "test:e2e:watch": "npx playwright test -c e2e/playwright.config.ts --ui",
     "test:sdk:e2e": "npm run test:integration -w @vesper/sdk",
-    "test:sdk:e2e:watch": "npm run test:integration:watch -w @vesper/sdk"
+    "test:sdk:e2e:watch": "npm run test:integration:watch -w @vesper/sdk",
+    "postinstall": "node -e \"const fs=require('fs');const src='node_modules/twemoji-emojis/vendor/svg';const dst='src/renderer/public/twemoji';if(fs.existsSync(src)){fs.mkdirSync(dst,{recursive:true});for(const f of fs.readdirSync(src))fs.copyFileSync(src+'/'+f,dst+'/'+f)}\""
   },
   "keywords": [
     "messaging",
@@ -48,6 +49,7 @@
     "electron": "^40.6.1",
     "electron-builder": "^26.8.1",
     "electron-vite": "^5.0.0",
+    "twemoji-emojis": "^14.1.0",
     "typescript": "^5.9.3"
   },
   "dependencies": {

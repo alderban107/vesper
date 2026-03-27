@@ -3,6 +3,7 @@ import { AtSign, Hash, Megaphone, Smile, Volume2 } from 'lucide-react'
 import Avatar from '../ui/Avatar'
 import FloatingSurface from '../ui/FloatingSurface'
 import type { PresenceStatus } from '../../stores/presenceStore'
+import { emojiToTwemojiUrl } from '../../utils/twemoji'
 
 export interface ComposerAutocompleteItem {
   id: string
@@ -89,6 +90,18 @@ function ItemIcon({ item }: { item: ComposerAutocompleteItem }): React.JSX.Eleme
     return (
       <span className="vesper-composer-autocomplete-icon-glyph">
         <Hash className="w-4 h-4" />
+      </span>
+    )
+  }
+
+  const twemojiUrl = item.emojiGlyph && item.emojiGlyph.length > 1
+    ? emojiToTwemojiUrl(item.emojiGlyph)
+    : null
+
+  if (twemojiUrl) {
+    return (
+      <span className="vesper-composer-autocomplete-emoji-glyph" aria-hidden="true">
+        <img src={twemojiUrl} alt={item.emojiGlyph!} className="vesper-composer-autocomplete-emoji-img" draggable={false} />
       </span>
     )
   }
