@@ -159,6 +159,7 @@ export default function ImageLightbox({
           alt={name}
           className={zoomMode === 'fit' ? 'vesper-lightbox-image vesper-lightbox-image-fit' : 'vesper-lightbox-image'}
           style={zoomMode === 'fit' ? undefined : { transform: `scale(${zoom})` }}
+          onError={() => onClose()}
         />
       </div>
     </div>,
