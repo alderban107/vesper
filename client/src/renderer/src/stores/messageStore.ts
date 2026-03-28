@@ -62,7 +62,8 @@ const liveScopeWatchTokens = new Map<string, symbol>()
 const RECENT_NOTIFICATION_TTL_MS = 30_000
 const RECENT_MUTATION_SEQ_WINDOW = 256
 const MESSAGE_PAGE_SIZE = 50
-const MAX_RESIDENT_MESSAGES_PER_SCOPE = 400
+const MAX_RESIDENT_MESSAGES_PER_SCOPE = 100
+const TRUNCATE_TO = 50
 const MAX_WARM_SCOPES = 3
 
 // Mapping from DM conversation_id to backing channel_id for unified MLS path.
@@ -384,6 +385,7 @@ function buildMessageFromCache(record: CachedMessageRecord): Message {
     inserted_at: record.insertedAt,
     expires_at: null,
     parent_message_id: record.parentMessageId,
+    is_reply: false,
     attachments: [],
     reactions: [],
     encrypted: Boolean(record.ciphertext),
@@ -461,6 +463,7 @@ async function buildMessageFromSdkProcessed(
     inserted_at: raw.inserted_at,
     expires_at: raw.expires_at ?? null,
     parent_message_id: raw.parent_message_id ?? null,
+    is_reply: raw.is_reply ?? false,
     attachments: raw.attachments ?? [],
     reactions: await resolveReactionGroups(targetId, raw.reactions),
     encrypted: processed.encrypted,
@@ -1005,14 +1008,14 @@ function applyMessageWindow(
 
   if (direction === 'prepend') {
     return {
-      messages: deduped.slice(0, MAX_RESIDENT_MESSAGES_PER_SCOPE),
+      messages: deduped.slice(0, TRUNCATE_TO),
       trimmedOlder: false,
       trimmedNewer: true
     }
   }
 
   return {
-    messages: deduped.slice(-MAX_RESIDENT_MESSAGES_PER_SCOPE),
+    messages: deduped.slice(-TRUNCATE_TO),
     trimmedOlder: true,
     trimmedNewer: false
   }
@@ -1650,6 +1653,7 @@ export interface Message {
   inserted_at: string
   expires_at: string | null
   parent_message_id: string | null
+  is_reply?: boolean
   attachments?: Attachment[]
   attachment_filenames?: string[]
   reactions?: ReactionGroup[]
@@ -1700,6 +1704,7 @@ interface MessageState {
   latestRoomSeqByScope: Record<string, number>
   loadingByScope: Record<string, boolean>
   loadedByScope: Record<string, boolean>
+  isAtBottomByScope: Record<string, boolean>
   activeScopeId: string | null
   recentScopeIds: string[]
   scopeLifecycleById: Record<string, ScopeLifecycleEntry>
@@ -1721,6 +1726,7 @@ interface MessageState {
   joinChannelChat: (channelId: string) => void
   leaveChannelChat: (channelId: string) => void
   activateScope: (scopeId: string, kind: ScopeKind) => void
+  setIsAtBottom: (scopeId: string, isAtBottom: boolean) => void
   fetchMessages: (channelId: string) => Promise<void>
   fetchOlderMessages: (channelId: string) => Promise<void>
   fetchNewerMessages: (channelId: string) => Promise<void>
@@ -1777,6 +1783,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   latestRoomSeqByScope: {},
   loadingByScope: {},
   loadedByScope: {},
+  isAtBottomByScope: {},
   activeScopeId: null,
   recentScopeIds: [],
   scopeLifecycleById: {},
@@ -1950,6 +1957,12 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
   leaveChannelChat: (channelId) => {
     releaseLiveScopeWatch(`chat:channel:${channelId}`)
+  },
+
+  setIsAtBottom: (scopeId, isAtBottom) => {
+    set((s) => ({
+      isAtBottomByScope: { ...s.isAtBottomByScope, [scopeId]: isAtBottom }
+    }))
   },
 
   fetchMessages: async (channelId) => {
@@ -2553,6 +2566,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       targetId: channelId,
       content: resolvedContent,
       parentMessageId: parentId,
+      isReply: shouldClearInlineReply && !!parentId,
       channelId,
       serverId: activeServer?.id ?? null,
       clientNonce
@@ -2570,6 +2584,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         resolvedContent,
         {
           parentMessageId: parentId,
+          isReply: shouldClearInlineReply && !!parentId,
           mentionedUserIds,
           clientNonce
         }
@@ -3151,6 +3166,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       targetId: conversationId,
       content,
       parentMessageId: parentId,
+      isReply: shouldClearInlineReply && !!parentId,
       conversationId,
       clientNonce
     })
@@ -3167,6 +3183,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         content,
         {
           parentMessageId: parentId,
+          isReply: shouldClearInlineReply && !!parentId,
           clientNonce
         }
       )
@@ -4059,6 +4076,7 @@ function buildOptimisticMessage(args: {
   targetId: string
   content: string
   parentMessageId?: string
+  isReply?: boolean
   channelId?: string | null
   conversationId?: string | null
   serverId?: string | null
@@ -4085,6 +4103,7 @@ function buildOptimisticMessage(args: {
     inserted_at: new Date().toISOString(),
     expires_at: null,
     parent_message_id: args.parentMessageId ?? null,
+    is_reply: args.isReply ?? false,
     attachments: [],
     reactions: [],
     encrypted: true,

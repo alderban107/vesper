@@ -12,6 +12,7 @@ defmodule Vesper.Chat.Message do
     field :mls_epoch, :integer
     field :expires_at, :utc_datetime
     field :edited_at, :utc_datetime
+    field :is_reply, :boolean, default: false
     field :room_seq, :integer, virtual: true
 
     belongs_to :channel, Vesper.Servers.Channel
@@ -36,7 +37,8 @@ defmodule Vesper.Chat.Message do
       :sender_id,
       :expires_at,
       :parent_message_id,
-      :edited_at
+      :edited_at,
+      :is_reply
     ])
     |> validate_required([:ciphertext, :mls_epoch, :sender_id])
     |> validate_target()
@@ -54,7 +56,8 @@ defmodule Vesper.Chat.Message do
       :sender_id,
       :expires_at,
       :parent_message_id,
-      :edited_at
+      :edited_at,
+      :is_reply
     ])
     |> validate_required([:ciphertext, :mls_epoch, :sender_id])
     |> validate_target()

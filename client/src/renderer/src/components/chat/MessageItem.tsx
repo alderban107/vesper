@@ -1,5 +1,5 @@
 import { memo, Suspense, useState, useRef, useEffect, useMemo, useCallback } from 'react'
-import { Copy, Lock, MessageSquare, Pencil, Pin, Reply, Trash2 } from 'lucide-react'
+import { Copy, Lock, MessageSquare, Pencil, Pin, Reply, Trash2, Bookmark } from 'lucide-react'
 import type { Message } from '../../stores/messageStore'
 import { useMessageStore, parseMessageContent } from '../../stores/messageStore'
 import { useAuthStore } from '../../stores/authStore'
@@ -20,6 +20,7 @@ import ProfilePopout from '../profile/ProfilePopout'
 import { formatCustomEmojiToken, type CustomEmoji } from '../../utils/emoji'
 import lazyWithRetry from '../../utils/lazyWithRetry'
 import VesperEditor from './slate/VesperEditor'
+import { getRendererClient } from '../../sdk/client'
 
 const MarkdownContent = lazyWithRetry(() => import('./MarkdownContent'))
 const EMPTY_EMOJIS: CustomEmoji[] = []
@@ -244,15 +245,14 @@ export default memo(function MessageItem({
     : null
   const threadAnchorMessage = message.parent_message_id ? (parentMessage ?? message) : message
   const threadAnchorId = threadAnchorMessage.id
-  const fetchedThreadReplyCount = useMessageStore(
-    (s) => s.threadRepliesByParent[threadAnchorId]?.length ?? 0
+  // Only count actual thread replies (not inline quote replies) for the summary
+  const threadReplyCount = useMessageStore(
+    (s) => {
+      const replies = s.threadRepliesByParent[threadAnchorId]
+      if (!replies) return 0
+      return replies.filter((r) => !r.is_reply).length
+    }
   )
-  const inlineThreadReplyCount = messages
-    ? messages.reduce((count, entry) => {
-      return count + (entry.parent_message_id === threadAnchorId ? 1 : 0)
-    }, 0)
-    : 0
-  const threadReplyCount = Math.max(fetchedThreadReplyCount, inlineThreadReplyCount)
   const isActiveThread = activeThreadParentId === threadAnchorId
   const threadActionLabel = message.parent_message_id ? 'Open thread' : 'Start thread'
   const showThreadSummary = !message.parent_message_id && threadReplyCount > 0
@@ -344,6 +344,13 @@ export default memo(function MessageItem({
           ]
         : []),
       {
+        label: 'Bookmark',
+        icon: Bookmark,
+        onClick: () => {
+          void getRendererClient().saveMessage(message.id, message.channel_id)
+        }
+      },
+      {
         label: 'Copy Message ID',
         icon: Copy,
         onClick: () => navigator.clipboard.writeText(message.id)
@@ -362,7 +369,16 @@ export default memo(function MessageItem({
       return parentParsed.text || parentParsed.file.name || 'Sent a file'
     }
 
-    return parentParsed.text || 'View message'
+    const raw = parentParsed.text || 'View message'
+    return raw
+      .replace(/<@([0-9a-f-]{36})>/g, (_match, userId: string) => {
+        const member = membersByUserId.get(userId)
+        const name = member?.user?.display_name || member?.user?.username || 'user'
+        return `@${name}`
+      })
+      .replace(/<@everyone>/g, '@everyone')
+      .replace(/<#([0-9a-f-]{36})>/g, '#channel')
+      .replace(/<a?:([a-zA-Z0-9_~-]{2,32}):[a-zA-Z0-9_-]+>/g, ':$1:')
   })()
   const truncatedReplyPreview =
     replyPreview.length > 72 ? `${replyPreview.slice(0, 72)}...` : replyPreview

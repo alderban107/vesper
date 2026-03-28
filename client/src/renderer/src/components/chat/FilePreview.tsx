@@ -244,19 +244,31 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
   // Video: delegate to VideoPlayer (always click-to-load)
   if (isVideo) {
     return (
-      <div ref={isMedia ? visibilityRef : undefined}>
-        <VideoPlayer
-          fileId={file.id}
-          name={file.name}
-          contentType={effectiveType}
-          size={file.size}
-          encryptionKey={file.key}
-          iv={file.iv}
-          thumbnailId={file.thumbnail?.id}
-          thumbnailKey={file.thumbnail?.key}
-          thumbnailIv={file.thumbnail?.iv}
-          duration={file.duration}
-        />
+      <div ref={isMedia ? visibilityRef : undefined} className="mt-1.5">
+        {isSpoiler && !spoilerRevealed ? (
+          <button
+            type="button"
+            onClick={() => setSpoilerRevealed(true)}
+            className="vesper-file-spoiler-overlay"
+          >
+            <div className="w-64 h-36 rounded-lg bg-bg-tertiary/50 border border-border flex items-center justify-center">
+              <span className="vesper-file-spoiler-label">SPOILER</span>
+            </div>
+          </button>
+        ) : (
+          <VideoPlayer
+            fileId={file.id}
+            name={file.name}
+            contentType={effectiveType}
+            size={file.size}
+            encryptionKey={file.key}
+            iv={file.iv}
+            thumbnailId={file.thumbnail?.id}
+            thumbnailKey={file.thumbnail?.key}
+            thumbnailIv={file.thumbnail?.iv}
+            duration={file.duration}
+          />
+        )}
       </div>
     )
   }
