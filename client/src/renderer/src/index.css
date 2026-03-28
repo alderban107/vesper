@@ -4381,6 +4381,27 @@ select:focus-visible {
   overflow-x: auto;
 }
 
+/* Spoiler in sent messages */
+.vesper-spoiler {
+  border-radius: 3px;
+  cursor: pointer;
+  display: inline;
+  transition: background-color 0.1s ease;
+}
+.vesper-spoiler-hidden {
+  background: var(--color-text-primary, #e0e0e0);
+}
+.vesper-spoiler-hidden .vesper-spoiler-content {
+  opacity: 0;
+  user-select: none;
+}
+.vesper-spoiler-revealed {
+  background: var(--color-bg-tertiary, rgba(255, 255, 255, 0.06));
+}
+.vesper-spoiler-revealed .vesper-spoiler-content {
+  opacity: 1;
+}
+
 .vesper-composer-rich-markdown {
   color: inherit;
   min-width: 0;
