@@ -2,8 +2,18 @@ import { useCallback } from 'react'
 import { Editable, type RenderElementProps, type RenderLeafProps } from 'slate-react'
 import type { NodeEntry } from 'slate'
 import LineElement from './elements/LineElement'
+import EmojiVoid from './elements/EmojiVoid'
+import CustomEmojiVoid from './elements/CustomEmojiVoid'
+import UserMentionVoid from './elements/UserMentionVoid'
+import ChannelMentionVoid from './elements/ChannelMentionVoid'
 import FormattedLeaf from './leaves/FormattedLeaf'
 import { decorateMarkdown } from './decorations'
+import type {
+  EmojiElement,
+  CustomEmojiElement,
+  UserMentionElement,
+  ChannelMentionElement,
+} from './types'
 
 interface Props {
   placeholder?: string
@@ -21,10 +31,15 @@ export default function VesperEditable({
   const renderElement = useCallback(
     (props: RenderElementProps) => {
       switch (props.element.type) {
+        case 'emoji':
+          return <EmojiVoid {...props} element={props.element as EmojiElement} />
+        case 'custom-emoji':
+          return <CustomEmojiVoid {...props} element={props.element as CustomEmojiElement} />
+        case 'user-mention':
+          return <UserMentionVoid {...props} element={props.element as UserMentionElement} />
+        case 'channel-mention':
+          return <ChannelMentionVoid {...props} element={props.element as ChannelMentionElement} />
         case 'line':
-          return <LineElement {...props} />
-        // Phase 4: blockquote, code-block, code-block-line
-        // Phase 3: emoji, custom-emoji, user-mention, channel-mention
         default:
           return <LineElement {...props} />
       }
