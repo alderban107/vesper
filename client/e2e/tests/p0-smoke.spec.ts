@@ -236,6 +236,42 @@ test.describe('P0 Smoke — full continuous run', () => {
     expect(bobReactions.get(REACTIONS.thumbsUp)).toBe(1)
   })
 
+  // --- Step 7b: Inline reply quote ---
+  test('Step 7b: DM inline reply shows quote preview', async () => {
+    // Alice replies to bob's first message
+    const targetMessage = DM_MESSAGES.bobToAlice1
+    const replyText = 'inline-reply-test'
+
+    // Right-click and select Reply
+    const row = alice.page.locator(`[data-testid="message-row"]:has-text("${targetMessage}")`)
+    await row.click({ button: 'right' })
+    await alice.page.waitForSelector('text=Reply', { timeout: 3_000 })
+    await alice.page.click('text=Reply')
+
+    // Composer should show reply preview
+    await alice.page.waitForSelector('.vesper-composer-reply', { timeout: 3_000 })
+
+    // Type and send the reply
+    const input = alice.page.locator('[data-testid="message-input"]')
+    await input.click()
+    await alice.page.keyboard.type(replyText)
+    await alice.page.keyboard.press('Enter')
+
+    // The reply should appear in the main feed with a quote preview
+    await waitForMessage(alice.page, replyText)
+
+    // Check that the reply preview (quote) appears above the sent message
+    const replyRow = alice.page.locator(`[data-testid="message-row"]:has-text("${replyText}")`)
+    const replyPreview = replyRow.locator('.vesper-message-reply')
+    await expect(replyPreview).toBeVisible({ timeout: 5_000 })
+
+    // Bob should also see the reply with quote
+    await waitForMessage(bob.page, replyText)
+    const bobReplyRow = bob.page.locator(`[data-testid="message-row"]:has-text("${replyText}")`)
+    const bobReplyPreview = bobReplyRow.locator('.vesper-message-reply')
+    await expect(bobReplyPreview).toBeVisible({ timeout: 5_000 })
+  })
+
   // --- Step 8: DM thread (R-DM-3) ---
   test('Step 8: DM thread and threaded replies converge', async () => {
     const threadLogs: string[] = []
