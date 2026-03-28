@@ -345,7 +345,18 @@ export default function MarkdownContent({ content }: Props): React.JSX.Element {
         <ReactMarkdown
           remarkPlugins={[remarkGfm, remarkMath]}
           rehypePlugins={[rehypeKatex]}
-          urlTransform={(url) => url.startsWith('emoji:') || url.startsWith('twemoji:') ? url : defaultUrlTransform(url)}
+          urlTransform={(url) => {
+            if (
+              url.startsWith('emoji:') ||
+              url.startsWith('twemoji:') ||
+              url.startsWith('spoiler:') ||
+              url.startsWith('mention:') ||
+              url.startsWith('channel:')
+            ) {
+              return url
+            }
+            return defaultUrlTransform(url)
+          }}
           components={components}
         >
           {processed}

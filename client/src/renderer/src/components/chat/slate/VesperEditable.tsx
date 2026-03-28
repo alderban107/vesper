@@ -1,6 +1,6 @@
 import { useCallback } from 'react'
-import { Editable, type RenderElementProps, type RenderLeafProps } from 'slate-react'
-import type { NodeEntry } from 'slate'
+import { Editable, useSlateStatic, type RenderElementProps, type RenderLeafProps } from 'slate-react'
+import { Editor, Transforms, type NodeEntry } from 'slate'
 import LineElement from './elements/LineElement'
 import BlockQuoteElement from './elements/BlockQuoteElement'
 import CodeBlockElement from './elements/CodeBlockElement'
@@ -31,6 +31,53 @@ export default function VesperEditable({
   readOnly = false,
   autoFocus = false,
 }: Props): React.JSX.Element {
+  const editor = useSlateStatic()
+
+  // When clicking in the empty space of the editor (past the text),
+  // place the cursor at the end of the line. Slate's default behavior
+  // resolves clicks in empty space to offset 0 (start of line),
+  // especially after inline void nodes (emoji).
+  const handleMouseDown = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      const target = event.target as HTMLElement
+      const editable = event.currentTarget
+
+      // Only intercept clicks directly on a line div or the editable itself
+      const isLineDiv = target.getAttribute('data-slate-node') === 'element' && target.parentElement === editable
+      const isEditable = target === editable
+
+      if (!isLineDiv && !isEditable) return
+
+      // Don't intercept if the editor has no real content — let Slate focus normally
+      const docText = Editor.string(editor, [])
+      const hasVoids = Array.from(Editor.nodes(editor, {
+        at: [],
+        match: n => editor.isVoid(n as any),
+      })).length > 0
+      if (!docText && !hasVoids) return
+
+      const clickY = event.clientY
+      const lines = editable.querySelectorAll<HTMLElement>(':scope > [data-slate-node="element"]')
+
+      for (let i = 0; i < lines.length; i++) {
+        const rect = lines[i].getBoundingClientRect()
+        if (clickY >= rect.top && clickY <= rect.bottom) {
+          event.preventDefault()
+          Transforms.select(editor, Editor.end(editor, [i]))
+          // Ensure focus since we prevented default
+          editable.focus()
+          return
+        }
+      }
+
+      if (isEditable) {
+        event.preventDefault()
+        Transforms.select(editor, Editor.end(editor, []))
+        editable.focus()
+      }
+    },
+    [editor]
+  )
   const renderElement = useCallback(
     (props: RenderElementProps) => {
       switch (props.element.type) {
@@ -73,6 +120,7 @@ export default function VesperEditable({
       renderLeaf={renderLeaf}
       decorate={decorate}
       placeholder={placeholder}
+      onMouseDown={handleMouseDown}
       onKeyDown={onKeyDown}
       readOnly={readOnly}
       autoFocus={autoFocus}

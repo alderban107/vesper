@@ -7,6 +7,7 @@ import { useMessageStore } from '../../stores/messageStore'
 import { useAuthStore } from '../../stores/authStore'
 import ComposerForm from './ComposerForm'
 import type { StagedFile } from './message/ComposerShell'
+import { resolveFilename } from './message/ComposerShell'
 import { formatCustomEmojiToken, type CustomEmoji } from '../../utils/emoji'
 import { prepareMessageAttachment } from '../../utils/messageAttachment'
 import { getRendererEncryptedChat } from '../../sdk/client'
@@ -61,6 +62,14 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
   )
   const activeServer = servers.find((server) => server.id === activeServerId)
   const activeConversation = isChannel ? undefined : conversations.find((c) => c.id === scopeId)
+  const fetchMembers = useServerStore((s) => s.fetchMembers)
+
+  // Ensure members are loaded for @mention autocomplete
+  useEffect(() => {
+    if (isChannel && activeServerId && members.length === 0) {
+      void fetchMembers(activeServerId)
+    }
+  }, [isChannel, activeServerId, members.length, fetchMembers])
 
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isTypingRef = useRef(false)
@@ -117,6 +126,18 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
 
   const removeStagedFile = (id: string): void => {
     setStagedFiles((prev) => prev.filter((e) => e.id !== id))
+  }
+
+  const toggleStagedFileSpoiler = (id: string): void => {
+    setStagedFiles((prev) =>
+      prev.map((e) => e.id === id ? { ...e, spoiler: !e.spoiler } : e)
+    )
+  }
+
+  const toggleStagedFileAnonymous = (id: string): void => {
+    setStagedFiles((prev) =>
+      prev.map((e) => e.id === id ? { ...e, anonymous: !e.anonymous } : e)
+    )
   }
 
   const uploadAndSendFile = async (file: File, text: string | undefined): Promise<boolean> => {
@@ -248,7 +269,12 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
       try {
         for (let i = 0; i < stagedFiles.length; i++) {
           const text = i === 0 ? markdown : undefined
-          const ok = await uploadAndSendFile(stagedFiles[i].file, text)
+          const entry = stagedFiles[i]
+          const finalName = resolveFilename(entry)
+          const renamedFile = finalName !== entry.file.name
+            ? new File([entry.file], finalName, { type: entry.file.type })
+            : entry.file
+          const ok = await uploadAndSendFile(renamedFile, text)
           if (!ok) { setUploading(false); return }
         }
         setStagedFiles([])
@@ -379,12 +405,40 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
         onDrop={handleDrop}
         onEmojiClose={() => setShowEmojiPicker(false)}
         onEmojiSelect={(emoji, item) => {
-          const value = item?.type === 'custom' ? formatCustomEmojiToken(item as CustomEmoji) : emoji
-          Transforms.insertText(editor, value)
+          // Ensure editor has focus and valid selection
+          if (!editor.selection) {
+            Transforms.select(editor, Editor.end(editor, []))
+          }
+          if (item?.type === 'custom') {
+            const ce = item as CustomEmoji
+            Transforms.insertNodes(editor, [
+              {
+                type: 'custom-emoji' as const,
+                token: formatCustomEmojiToken(ce),
+                name: ce.name,
+                url: ce.url,
+                animated: ce.animated ?? false,
+                children: [{ text: '' }],
+              },
+              { text: ' ' },
+            ], { at: editor.selection!, select: true })
+          } else {
+            Transforms.insertNodes(editor, [
+              {
+                type: 'emoji' as const,
+                unicode: emoji,
+                children: [{ text: '' }],
+              },
+              { text: ' ' },
+            ], { at: editor.selection!, select: true })
+          }
+          Transforms.move(editor, { distance: 1 })
           setShowEmojiPicker(false)
         }}
         onFileSelect={handleFileSelect}
         onRemoveStagedFile={removeStagedFile}
+        onToggleStagedFileSpoiler={toggleStagedFileSpoiler}
+        onToggleStagedFileAnonymous={toggleStagedFileAnonymous}
         onSend={() => { void handleSubmit() }}
         onToggleEmojiPicker={() => setShowEmojiPicker(!showEmojiPicker)}
         replyingTo={replyingTo}

@@ -29,6 +29,8 @@ interface Props {
   onEmojiSelect: (emoji: string, item?: PickerEmoji) => void
   onFileSelect: ChangeEventHandler<HTMLInputElement>
   onRemoveStagedFile: (id: string) => void
+  onToggleStagedFileSpoiler: (id: string) => void
+  onToggleStagedFileAnonymous: (id: string) => void
   onSend: () => void
   onToggleEmojiPicker: () => void
   replyingTo: Message | null
@@ -61,6 +63,8 @@ export default function ComposerForm({
   onEmojiSelect,
   onFileSelect,
   onRemoveStagedFile,
+  onToggleStagedFileSpoiler,
+  onToggleStagedFileAnonymous,
   onSend,
   onToggleEmojiPicker,
   replyingTo,
@@ -93,7 +97,7 @@ export default function ComposerForm({
         </div>
       )}
 
-      {triggerQuery && autocompleteItems.length > 0 && (
+      {triggerQuery !== null && autocompleteItems.length > 0 && (
         <ComposerAutocomplete
           anchorRef={editorContainerRef}
           query={triggerQuery}
@@ -111,6 +115,8 @@ export default function ComposerForm({
         onCancelReply={onCancelReply}
         stagedFiles={stagedFiles}
         onRemoveStagedFile={onRemoveStagedFile}
+        onToggleSpoiler={onToggleStagedFileSpoiler}
+        onToggleAnonymous={onToggleStagedFileAnonymous}
       >
         <div className="vesper-composer-controls">
           <button

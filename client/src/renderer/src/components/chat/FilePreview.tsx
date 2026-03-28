@@ -38,6 +38,8 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
   const isAudio = effectiveType.startsWith('audio/')
   const isVideo = effectiveType.startsWith('video/')
   const isMedia = isImage || isAudio || isVideo
+  const isSpoiler = file.name.startsWith('SPOILER_')
+  const [spoilerRevealed, setSpoilerRevealed] = useState(false)
 
   const { ref: visibilityRef, hasBeenVisible, isFarAway } = useVisibility()
 
@@ -269,18 +271,34 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
           </div>
         ) : previewUrl ? (
           <>
-            <button
-              type="button"
-              onClick={() => setShowLightbox(true)}
-              className="block group"
-            >
-              <img
-                src={previewUrl}
-                alt={file.name}
-                className="max-w-sm max-h-80 rounded-lg border border-border object-contain cursor-zoom-in group-hover:brightness-90 transition-all"
-                onError={() => setError(true)}
-              />
-            </button>
+            {isSpoiler && !spoilerRevealed ? (
+              <button
+                type="button"
+                onClick={() => setSpoilerRevealed(true)}
+                className="vesper-file-spoiler-overlay"
+              >
+                <img
+                  src={previewUrl}
+                  alt={file.name}
+                  className="max-w-sm max-h-80 rounded-lg border border-border object-contain"
+                  onError={() => setError(true)}
+                />
+                <span className="vesper-file-spoiler-label">SPOILER</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => isSpoiler ? setSpoilerRevealed(false) : setShowLightbox(true)}
+                className="block group"
+              >
+                <img
+                  src={previewUrl}
+                  alt={file.name}
+                  className="max-w-sm max-h-80 rounded-lg border border-border object-contain cursor-zoom-in group-hover:brightness-90 transition-all"
+                  onError={() => setError(true)}
+                />
+              </button>
+            )}
 
             {showLightbox && (
               <ImageLightbox
@@ -293,7 +311,6 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
             )}
           </>
         ) : !hasBeenVisible ? (
-          // Placeholder before the element scrolls into view
           <div className="w-48 h-32 rounded-lg bg-bg-tertiary/50 border border-border" />
         ) : null}
       </div>

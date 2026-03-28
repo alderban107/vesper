@@ -176,10 +176,10 @@ export default memo(function MessageItem({
   const liveMember = membersByUserId.get(message.sender_id ?? '')
   const myUser = useAuthStore((s) => s.user)
   const myId = myUser?.id
-  const customEmojis = useServerStore((s) => {
-    const srv = s.servers.find((server) => server.id === s.activeServerId)
-    return srv?.emojis ?? EMPTY_EMOJIS
-  })
+  const activeServer = useServerStore((s) =>
+    s.servers.find((server) => server.id === s.activeServerId)
+  )
+  const customEmojis = activeServer?.emojis ?? EMPTY_EMOJIS
   const isMe = message.sender_id === myId
   const displayName = isMe
     ? (myUser?.display_name || myUser?.username || 'Unknown')

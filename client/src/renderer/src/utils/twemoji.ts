@@ -1,31 +1,27 @@
 // Self-hosted twemoji SVGs served from public/twemoji/ (copied from twemoji-emojis on postinstall)
 const TWEMOJI_BASE = '/twemoji'
 
-// Codepoints below this threshold that appear alone are "text-presentation-by-default"
-// and need FE0F to map to the correct twemoji filename (e.g. red heart 2764-fe0f).
-const TEXT_PRESENTATION_THRESHOLD = 0x1f000
-
 /**
- * Convert a Unicode emoji string to hyphen-joined hex codepoints.
- * Handles surrogates, ZWJ sequences, and FE0F variation selector stripping.
+ * Convert a Unicode emoji string to hyphen-joined hex codepoints matching
+ * the twemoji-emojis v14 filename convention:
  *
- *   "😄"        → "1f604"
- *   "🇺🇸"      → "1f1fa-1f1f8"
- *   "❤️"        → "2764-fe0f"
- *   "👨‍👩‍👧"  → "1f468-200d-1f469-200d-1f467"
+ *   - Standalone emojis: FE0F stripped entirely ("❤️" → "2764")
+ *   - ZWJ sequences: FE0F kept where present ("❤️‍🔥" → "2764-fe0f-200d-1f525")
+ *   - Skin tones: kept as-is ("👍🏽" → "1f44d-1f3fd")
  */
 export function emojiToCodepoints(emoji: string): string {
   const raw = [...emoji].map((ch) => ch.codePointAt(0)!)
 
-  // Strip FE0F
-  const stripped = raw.filter((cp) => cp !== 0xfe0f)
+  // Check if this is a multi-codepoint sequence (has ZWJ, skin tones, flags, etc.)
+  const hasZwj = raw.includes(0x200d)
 
-  // If stripping FE0F left a single codepoint below the threshold,
-  // the file needs FE0F (text-presentation-by-default characters like ❤️).
-  if (stripped.length === 1 && stripped[0] < TEXT_PRESENTATION_THRESHOLD) {
-    return stripped[0].toString(16) + '-fe0f'
+  if (hasZwj) {
+    // ZWJ sequences: keep FE0F in place — filenames retain it
+    return raw.map((cp) => cp.toString(16)).join('-')
   }
 
+  // Non-ZWJ: strip FE0F entirely — filenames never have it for standalone emojis
+  const stripped = raw.filter((cp) => cp !== 0xfe0f)
   const points = stripped.length > 0 ? stripped : raw
   return points.map((cp) => cp.toString(16)).join('-')
 }

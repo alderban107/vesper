@@ -1,5 +1,6 @@
-import { Editor, Transforms, Range } from 'slate'
+import { Editor, Transforms, Range, Node, Text } from 'slate'
 import type { ComposerAutocompleteItem } from '../ComposerAutocomplete'
+import type { CustomElement } from './types'
 
 /**
  * Insert a void node from autocomplete selection into the Slate editor.
@@ -21,37 +22,42 @@ export function insertAutocompleteResult(
   }
   Transforms.delete(editor, { at: deleteRange })
 
+  let node: CustomElement | null = null
+
   if (item.type === 'user') {
-    Transforms.insertNodes(editor, {
+    node = {
       type: 'user-mention',
       userId: item.id,
       displayName: item.label,
       children: [{ text: '' }],
-    })
+    }
   } else if (item.type === 'everyone') {
-    Transforms.insertNodes(editor, {
+    node = {
       type: 'user-mention',
       userId: 'everyone',
       displayName: 'everyone',
       children: [{ text: '' }],
-    })
+    }
   } else if (item.type === 'channel') {
-    Transforms.insertNodes(editor, {
+    node = {
       type: 'channel-mention',
       channelId: item.id,
       channelName: item.label,
       children: [{ text: '' }],
-    })
+    }
   } else if (item.type === 'emoji' && item.emojiGlyph) {
-    Transforms.insertNodes(editor, {
+    node = {
       type: 'emoji',
       unicode: item.emojiGlyph,
       children: [{ text: '' }],
-    })
+    }
   }
 
-  // Insert trailing space and move cursor after it
-  Transforms.insertText(editor, ' ')
+  if (node) {
+    Transforms.insertNodes(editor, [node, { text: ' ' }])
+    // Move cursor to after the space
+    Transforms.move(editor, { distance: 1 })
+  }
 }
 
 /**
@@ -67,8 +73,9 @@ export function detectSlateTrigger(
   const [start] = Range.edges(selection)
 
   // Get the text node at cursor
-  const [node] = Editor.node(editor, start.path)
-  if (!('text' in node)) return null
+  const entry = Editor.node(editor, start.path)
+  const node = entry[0]
+  if (!Text.isText(node)) return null
 
   const textBeforeCursor = node.text.slice(0, start.offset)
 
@@ -93,11 +100,9 @@ export function detectSlateTrigger(
         start: i,
       }
     }
-    if (ch === ':' && i < textBeforeCursor.length - 1) {
+    if (ch === ':') {
       const query = textBeforeCursor.slice(i + 1)
-      if (query.length >= 2) {
-        return { type: 'emoji', query, start: i }
-      }
+      return { type: 'emoji', query, start: i }
     }
   }
 

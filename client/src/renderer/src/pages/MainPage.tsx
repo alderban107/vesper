@@ -318,7 +318,6 @@ export default function MainPage(): React.JSX.Element {
   }, [activeChannelId, closeThread, selectedConversationId])
 
   useEffect(() => {
-    setThreadReply('')
     setReplyingTo(null)
   }, [activeThreadParentId, setReplyingTo])
 
