@@ -173,6 +173,17 @@ export default function MessageFeed({
             message.sender_id === currentUserId
         ))
 
+    // Detect deletions — list shrunk without a prepend. Skip scroll adjustments.
+    const isDeleteOrShrink =
+      previousMessages.length > 0 &&
+      messages.length < previousMessages.length &&
+      nextFirstId === previousFirstId
+
+    if (isDeleteOrShrink) {
+      previousMessagesRef.current = messages
+      return
+    }
+
     if (
       previousMessages.length > 0 &&
       nextFirstId &&
