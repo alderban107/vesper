@@ -5,11 +5,13 @@ import { useServerStore } from '../../stores/serverStore'
 import { useDmStore } from '../../stores/dmStore'
 import { useMessageStore } from '../../stores/messageStore'
 import { useAuthStore } from '../../stores/authStore'
+import { useSettingsStore } from '../../stores/settingsStore'
 import ComposerForm from './ComposerForm'
 import type { StagedFile } from './message/ComposerShell'
 import { resolveFilename } from './message/ComposerShell'
 import { formatCustomEmojiToken, type CustomEmoji } from '../../utils/emoji'
 import { prepareMessageAttachment } from '../../utils/messageAttachment'
+import { stripExifData } from '../../utils/stripExif'
 import { getRendererEncryptedChat } from '../../sdk/client'
 import {
   buildChannelSuggestions,
@@ -270,11 +272,21 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
         for (let i = 0; i < stagedFiles.length; i++) {
           const text = i === 0 ? markdown : undefined
           const entry = stagedFiles[i]
-          const finalName = resolveFilename(entry)
-          const renamedFile = finalName !== entry.file.name
+          // Apply global privacy settings
+          const privacySettings = useSettingsStore.getState()
+          const effectiveEntry = {
+            ...entry,
+            anonymous: entry.anonymous || privacySettings.anonFilenames,
+          }
+          const finalName = resolveFilename(effectiveEntry)
+          let fileToSend = finalName !== entry.file.name
             ? new File([entry.file], finalName, { type: entry.file.type })
             : entry.file
-          const ok = await uploadAndSendFile(renamedFile, text)
+          // Strip EXIF from images if enabled
+          if (privacySettings.stripExif && fileToSend.type.startsWith('image/')) {
+            fileToSend = await stripExifData(fileToSend)
+          }
+          const ok = await uploadAndSendFile(fileToSend, text)
           if (!ok) { setUploading(false); return }
         }
         setStagedFiles([])
@@ -453,6 +465,7 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
         <VesperEditable
           placeholder={isChannel ? 'Message this channel' : 'Message this conversation'}
           onKeyDown={handleKeyDown}
+          onPasteAsFile={(file) => stageFiles([file])}
           autoFocus
         />
       </ComposerForm>

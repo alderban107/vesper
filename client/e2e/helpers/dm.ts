@@ -1,6 +1,7 @@
 import type { Locator, Page } from '@playwright/test'
 import { sendAttachmentWithEncryptionRetry, sendMessageWithEncryptionRetry } from './sendRetry'
 import { waitForSocketConnected } from './wait'
+import { COMPOSER_SELECTOR, clearSlateEditor } from './slate'
 
 const ENCRYPTION_READY_TIMEOUT = 30_000
 const ENCRYPTION_POLL_INTERVAL = 500
@@ -25,7 +26,7 @@ export async function createDm(page: Page, username: string): Promise<void> {
   await page.click('button:has-text("Start Chat")')
 
   await page.waitForSelector('text=New Message', { state: 'hidden', timeout: 5_000 })
-  await page.waitForSelector('.vesper-composer-textarea', { timeout: 5_000 })
+  await page.waitForSelector(COMPOSER_SELECTOR, { timeout: 5_000 })
 
   // MLS encryption may not be ready yet -- dismiss error banners until it syncs
   await waitForEncryptionReady(page)
@@ -99,15 +100,13 @@ async function waitForOpenDm(page: Page, displayName: string): Promise<void> {
       .querySelector('.vesper-chat-header .text-text-primary.font-semibold')
       ?.textContent
       ?.trim()
-    return title === name && Boolean(document.querySelector('.vesper-composer-textarea'))
+    return title === name && Boolean(document.querySelector('[data-testid="message-input"]'))
   }, displayName, { timeout: 10_000 })
 
   await waitForSocketConnected(page)
   await waitForEncryptionReady(page)
 
   // Allow async scope watch to complete Phoenix channel subscription.
-  // joinChannelChat fires the watch asynchronously; this gives it
-  // time to connect before tests interact with the channel.
   await page.waitForTimeout(3_000)
 }
 
@@ -120,7 +119,7 @@ async function resolveDmState(
   | { kind: 'missing' }
 > {
   const header = page.locator('.vesper-chat-header .text-text-primary.font-semibold')
-  const composer = page.locator('.vesper-composer-textarea')
+  const composer = page.locator(COMPOSER_SELECTOR)
   const currentHeader =
     (await header.count().catch(() => 0)) > 0
       ? (await header.first().textContent().catch(() => null))?.trim()
@@ -164,7 +163,7 @@ async function waitForDmState(
 export async function sendDmMessage(page: Page, text: string): Promise<void> {
   await sendMessageWithEncryptionRetry(
     page,
-    page.locator('.vesper-composer-textarea'),
+    page.locator(COMPOSER_SELECTOR),
     page.getByTestId('message-row'),
     text,
     { timeout: ENCRYPTION_READY_TIMEOUT, errorLabel: 'DM' }
@@ -189,13 +188,13 @@ async function waitForEncryptionReady(page: Page): Promise<void> {
 }
 
 export async function startDmTyping(page: Page): Promise<void> {
-  const textarea = page.locator('.vesper-composer-textarea')
-  await textarea.type('typing...', { delay: 50 })
+  const input = page.locator(COMPOSER_SELECTOR)
+  await input.click()
+  await page.keyboard.type('typing...', { delay: 50 })
 }
 
 export async function clearDmComposer(page: Page): Promise<void> {
-  const textarea = page.locator('.vesper-composer-textarea')
-  await textarea.fill('')
+  await clearSlateEditor(page, page.locator(COMPOSER_SELECTOR))
 }
 
 export async function getDmMessages(page: Page): Promise<string[]> {
@@ -208,11 +207,9 @@ export async function uploadDmAttachment(
   filePath: string
 ): Promise<void> {
   // Send a probe message to confirm encryption is fully ready.
-  // The attachment upload can't retry if encryption fails mid-submit,
-  // so we validate the scope is operational first.
   await sendMessageWithEncryptionRetry(
     page,
-    page.locator('.vesper-composer-textarea'),
+    page.locator(COMPOSER_SELECTOR),
     page.getByTestId('message-row'),
     'attachment-probe',
     { timeout: 30_000, errorLabel: 'DM attachment probe' }
@@ -225,10 +222,10 @@ export async function uploadDmAttachment(
     timeout: 10_000,
   })
 
-  const textarea = page.locator('.vesper-composer-textarea')
+  const input = page.locator(COMPOSER_SELECTOR)
   await sendAttachmentWithEncryptionRetry(
     page,
-    textarea,
+    input,
     page.locator('[data-testid="message-row"] [data-testid="attachment"]'),
     { errorLabel: 'DM attachment' }
   )

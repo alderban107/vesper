@@ -41,7 +41,7 @@ export async function openThread(page: Page, messageText: string): Promise<void>
 export async function sendThreadReply(page: Page, text: string): Promise<void> {
   await sendMessageWithEncryptionRetry(
     page,
-    page.locator('.vesper-thread-composer-textarea'),
+    page.locator('.vesper-thread-panel [data-testid="message-input"]'),
     page.locator('.vesper-thread-feed [data-testid="message-row"]'),
     text,
     { errorLabel: 'thread reply' }
@@ -116,5 +116,7 @@ export async function startChannelTyping(page: Page): Promise<void> {
 
 export async function clearChannelComposer(page: Page): Promise<void> {
   const input = page.locator('[data-testid="message-input"]')
-  await input.fill('')
+  await input.click()
+  await page.keyboard.press('Meta+a')
+  await page.keyboard.press('Backspace')
 }

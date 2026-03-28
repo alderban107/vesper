@@ -79,6 +79,7 @@ export type CustomText = {
   strikethrough?: true
   inlineCode?: true
   spoiler?: true
+  blockquote?: true
   link?: string
   syntaxMark?: true
   codeBlockText?: true

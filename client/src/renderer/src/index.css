@@ -4469,6 +4469,13 @@ select:focus-visible {
   font-weight: 500;
 }
 
+.vesper-slate-blockquote-text {
+  color: var(--color-text-faint);
+  border-left: 3px solid var(--color-accent, #c8a24e);
+  padding-left: 0.5rem;
+  margin-left: 2px;
+}
+
 /* Block elements */
 .vesper-slate-blockquote {
   border-left: 3px solid var(--color-accent, #c8a24e);

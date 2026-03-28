@@ -25,6 +25,9 @@ export default function FormattedLeaf({
   if (leaf.spoiler) {
     content = <span className="vesper-slate-spoiler-composer">{content}</span>
   }
+  if (leaf.blockquote) {
+    content = <span className="vesper-slate-blockquote-text">{content}</span>
+  }
   if (leaf.link) {
     content = <span className="vesper-slate-link">{content}</span>
   }

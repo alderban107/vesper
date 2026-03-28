@@ -145,5 +145,19 @@ export function decorateMarkdown([node, path]: NodeEntry): Range[] {
     } as Range & { link: string })
   }
 
+  // Blockquote: line starting with "> "
+  if (text.startsWith('> ')) {
+    ranges.push({
+      anchor: { path, offset: 0 },
+      focus: { path, offset: 2 },
+      syntaxMark: true,
+    } as Range & { syntaxMark: true })
+    ranges.push({
+      anchor: { path, offset: 2 },
+      focus: { path, offset: text.length },
+      blockquote: true,
+    } as Range & { blockquote: true })
+  }
+
   return ranges
 }

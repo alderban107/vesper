@@ -2,7 +2,6 @@ import { useCallback } from 'react'
 import { Editable, useSlateStatic, type RenderElementProps, type RenderLeafProps } from 'slate-react'
 import { Editor, Transforms, type NodeEntry } from 'slate'
 import LineElement from './elements/LineElement'
-import BlockQuoteElement from './elements/BlockQuoteElement'
 import CodeBlockElement from './elements/CodeBlockElement'
 import EmojiVoid from './elements/EmojiVoid'
 import CustomEmojiVoid from './elements/CustomEmojiVoid'
@@ -18,9 +17,12 @@ import type {
   CodeBlockElement as CodeBlockElementType,
 } from './types'
 
+const PASTE_AS_FILE_THRESHOLD = 2000
+
 interface Props {
   placeholder?: string
   onKeyDown?: (event: React.KeyboardEvent) => void
+  onPasteAsFile?: (file: File) => void
   readOnly?: boolean
   autoFocus?: boolean
 }
@@ -28,6 +30,7 @@ interface Props {
 export default function VesperEditable({
   placeholder = 'Type a message...',
   onKeyDown,
+  onPasteAsFile,
   readOnly = false,
   autoFocus = false,
 }: Props): React.JSX.Element {
@@ -89,8 +92,6 @@ export default function VesperEditable({
           return <UserMentionVoid {...props} element={props.element as UserMentionElement} />
         case 'channel-mention':
           return <ChannelMentionVoid {...props} element={props.element as ChannelMentionElement} />
-        case 'blockquote':
-          return <BlockQuoteElement {...props} />
         case 'code-block':
           return <CodeBlockElement {...props} element={props.element as CodeBlockElementType} />
         case 'code-block-line':
@@ -113,6 +114,20 @@ export default function VesperEditable({
     []
   )
 
+  const handlePaste = useCallback(
+    (event: React.ClipboardEvent<HTMLDivElement>) => {
+      const text = event.clipboardData.getData('text/plain')
+      if (text && text.length > PASTE_AS_FILE_THRESHOLD && onPasteAsFile) {
+        event.preventDefault()
+        const blob = new Blob([text], { type: 'text/plain' })
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+        const file = new File([blob], `paste-${timestamp}.txt`, { type: 'text/plain' })
+        onPasteAsFile(file)
+      }
+    },
+    [onPasteAsFile]
+  )
+
   return (
     <Editable
       className="vesper-slate-editable"
@@ -121,6 +136,7 @@ export default function VesperEditable({
       decorate={decorate}
       placeholder={placeholder}
       onMouseDown={handleMouseDown}
+      onPaste={handlePaste}
       onKeyDown={onKeyDown}
       readOnly={readOnly}
       autoFocus={autoFocus}
