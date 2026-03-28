@@ -1,7 +1,9 @@
 import { useCallback } from 'react'
 import { Editable, type RenderElementProps, type RenderLeafProps } from 'slate-react'
+import type { NodeEntry } from 'slate'
 import LineElement from './elements/LineElement'
 import FormattedLeaf from './leaves/FormattedLeaf'
+import { decorateMarkdown } from './decorations'
 
 interface Props {
   placeholder?: string
@@ -35,11 +37,17 @@ export default function VesperEditable({
     []
   )
 
+  const decorate = useCallback(
+    (entry: NodeEntry) => decorateMarkdown(entry),
+    []
+  )
+
   return (
     <Editable
       className="vesper-slate-editable"
       renderElement={renderElement}
       renderLeaf={renderLeaf}
+      decorate={decorate}
       placeholder={placeholder}
       onKeyDown={onKeyDown}
       readOnly={readOnly}
