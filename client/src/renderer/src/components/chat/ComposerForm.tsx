@@ -1,103 +1,55 @@
 import type {
   ChangeEventHandler,
   DragEventHandler,
-  FormEventHandler,
-  KeyboardEventHandler,
-  MouseEventHandler,
-  RefObject,
-  UIEventHandler
+  RefObject
 } from 'react'
-import { Suspense } from 'react'
 import { Loader2, Paperclip, SendHorizonal, Smile } from 'lucide-react'
-import type { DmConversation } from '../../stores/dmStore'
 import type { Message } from '../../stores/messageStore'
-import type { Member, Server } from '../../stores/serverStore'
 import type { PickerEmoji } from './EmojiPicker'
 import EmojiPicker from './EmojiPicker'
 import ComposerAutocomplete, { type ComposerAutocompleteItem } from './ComposerAutocomplete'
-import type { ComposerMentionDraft } from './composerAutocompleteUtils'
 import ComposerShell, { type StagedFile } from './message/ComposerShell'
-import lazyWithRetry from '../../utils/lazyWithRetry'
-
-const ComposerRichTextPreview = lazyWithRetry(() => import('./ComposerRichTextPreview'))
-
-const CODE_FENCE_PREVIEW_PATTERN = /^```(?!mermaid\b)([^\n`]*)\n[\s\S]*\n```$/i
-const MENTION_OR_TOKEN_PATTERN =
-  /<@([0-9a-f-]{36}|everyone)>|<#([0-9a-f-]{36})>|<(a?):([a-zA-Z0-9_~-]{2,32}):([a-zA-Z0-9_-]+)>/
-const MARKDOWN_PREVIEW_PATTERN =
-  /(^|\s)([*_~`>#-]|\d+\.)|\[[^\]]+\]\([^)]+\)|\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|`[^`]+`/
-
-function shouldShowRichPreview(
-  content: string,
-  mentionDrafts: ComposerMentionDraft[]
-): boolean {
-  if (content.trim().length === 0) {
-    return false
-  }
-
-  return (
-    mentionDrafts.length > 0 ||
-    CODE_FENCE_PREVIEW_PATTERN.test(content) ||
-    MENTION_OR_TOKEN_PATTERN.test(content) ||
-    MARKDOWN_PREVIEW_PATTERN.test(content)
-  )
-}
 
 interface Props {
   autocompleteItems: ComposerAutocompleteItem[]
-  content: string
-  conversation?: DmConversation | null
   dragActive: boolean
+  editorContainerRef: RefObject<HTMLDivElement | null>
   emojiButtonRef: RefObject<HTMLButtonElement | null>
   encryptionError: string | null
   fileButtonTestId?: string
   fileInputRef: RefObject<HTMLInputElement | null>
-  members: Member[]
-  mentionDrafts: ComposerMentionDraft[]
   onAutocompleteHover: (index: number) => void
   onAutocompleteSelect: (item: ComposerAutocompleteItem) => void
   onCancelReply: () => void
   onClearEncryptionError: () => void
-  onDragEnter: DragEventHandler<HTMLFormElement>
-  onDragLeave: DragEventHandler<HTMLFormElement>
-  onDrop: DragEventHandler<HTMLFormElement>
+  onDragEnter: DragEventHandler<HTMLDivElement>
+  onDragLeave: DragEventHandler<HTMLDivElement>
+  onDrop: DragEventHandler<HTMLDivElement>
   onEmojiClose: () => void
   onEmojiSelect: (emoji: string, item?: PickerEmoji) => void
   onFileSelect: ChangeEventHandler<HTMLInputElement>
   onRemoveStagedFile: (id: string) => void
-  onSubmit: FormEventHandler<HTMLFormElement>
-  onTextareaChange: ChangeEventHandler<HTMLTextAreaElement>
-  onTextareaClick: MouseEventHandler<HTMLTextAreaElement>
-  onTextareaKeyDown: KeyboardEventHandler<HTMLTextAreaElement>
-  onTextareaKeyUp: KeyboardEventHandler<HTMLTextAreaElement>
-  onTextareaScroll: UIEventHandler<HTMLTextAreaElement>
+  onSend: () => void
   onToggleEmojiPicker: () => void
-  placeholder: string
-  previewRef: RefObject<HTMLDivElement | null>
   replyingTo: Message | null
   selectedAutocompleteIndex: number
   sendButtonTestId?: string
-  server?: Server | null
   showEmojiPicker: boolean
   stagedFiles: StagedFile[]
-  textareaRef: RefObject<HTMLTextAreaElement | null>
-  textareaTestId?: string
   triggerQuery: string | null
   uploading: boolean
   canSend: boolean
+  children: React.ReactNode
 }
 
 export default function ComposerForm({
   autocompleteItems,
-  content,
-  conversation,
   dragActive,
+  editorContainerRef,
   emojiButtonRef,
   encryptionError,
   fileButtonTestId,
   fileInputRef,
-  members,
-  mentionDrafts,
   onAutocompleteHover,
   onAutocompleteSelect,
   onCancelReply,
@@ -109,32 +61,20 @@ export default function ComposerForm({
   onEmojiSelect,
   onFileSelect,
   onRemoveStagedFile,
-  onSubmit,
-  onTextareaChange,
-  onTextareaClick,
-  onTextareaKeyDown,
-  onTextareaKeyUp,
-  onTextareaScroll,
+  onSend,
   onToggleEmojiPicker,
-  placeholder,
-  previewRef,
   replyingTo,
   selectedAutocompleteIndex,
   sendButtonTestId,
-  server,
   showEmojiPicker,
   stagedFiles,
-  textareaRef,
-  textareaTestId,
   triggerQuery,
   uploading,
-  canSend
+  canSend,
+  children,
 }: Props): React.JSX.Element {
-  const showRichPreview = shouldShowRichPreview(content, mentionDrafts)
-
   return (
-    <form
-      onSubmit={onSubmit}
+    <div
       onDragEnter={onDragEnter}
       onDragOver={(event) => {
         event.preventDefault()
@@ -155,7 +95,7 @@ export default function ComposerForm({
 
       {triggerQuery && autocompleteItems.length > 0 && (
         <ComposerAutocomplete
-          anchorRef={textareaRef}
+          anchorRef={editorContainerRef}
           query={triggerQuery}
           items={autocompleteItems}
           selectedIndex={selectedAutocompleteIndex}
@@ -208,36 +148,13 @@ export default function ComposerForm({
               />
             )}
           </div>
-          <div className={`vesper-composer-input-stack${showRichPreview ? ' vesper-composer-input-stack-rich' : ''}`}>
-            {showRichPreview && (
-              <Suspense fallback={null}>
-                <ComposerRichTextPreview
-                  containerRef={previewRef}
-                  content={content}
-                  members={members}
-                  mentionDrafts={mentionDrafts}
-                  conversation={conversation}
-                  server={server}
-                />
-              </Suspense>
-            )}
-            <textarea
-              ref={textareaRef}
-              data-testid={textareaTestId}
-              value={content}
-              onChange={onTextareaChange}
-              onClick={onTextareaClick}
-              onKeyUp={onTextareaKeyUp}
-              onKeyDown={onTextareaKeyDown}
-              onScroll={onTextareaScroll}
-              placeholder={placeholder}
-              rows={1}
-              className={showRichPreview ? 'vesper-composer-textarea vesper-composer-textarea-rich' : 'vesper-composer-textarea'}
-            />
+          <div ref={editorContainerRef} className="vesper-composer-input-stack">
+            {children}
           </div>
           <button
             data-testid={sendButtonTestId}
-            type="submit"
+            type="button"
+            onClick={onSend}
             disabled={!canSend || uploading}
             className="vesper-composer-send"
           >
@@ -245,6 +162,6 @@ export default function ComposerForm({
           </button>
         </div>
       </ComposerShell>
-    </form>
+    </div>
   )
 }

@@ -1,4 +1,6 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
+import { Slate } from 'slate-react'
+import { Editor, Transforms, Node } from 'slate'
 import { useServerStore } from '../../stores/serverStore'
 import { useDmStore } from '../../stores/dmStore'
 import { useMessageStore } from '../../stores/messageStore'
@@ -9,7 +11,6 @@ import { formatCustomEmojiToken, type CustomEmoji } from '../../utils/emoji'
 import { prepareMessageAttachment } from '../../utils/messageAttachment'
 import { getRendererEncryptedChat } from '../../sdk/client'
 import {
-  applyAutocompleteSelection,
   buildChannelSuggestions,
   buildEmojiSuggestions,
   buildMentionSuggestions,
@@ -19,10 +20,13 @@ import {
   type ComposerTriggerMatch
 } from './composerAutocompleteUtils'
 import type { Message } from '../../stores/messageStore'
+import { createVesperEditor } from './slate/createVesperEditor'
+import { serializeToMarkdown } from './slate/serialize'
+import { emptyDocument } from './slate/types'
+import VesperEditable from './slate/VesperEditable'
 
 let stagedIdCounter = 0
 const EMPTY_MESSAGES: Message[] = []
-const COMPOSER_MIN_HEIGHT = 56
 
 interface Props {
   scope: { kind: 'channel'; id: string } | { kind: 'dm'; id: string }
@@ -65,11 +69,20 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isTypingRef = useRef(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const previewRef = useRef<HTMLDivElement>(null)
   const emojiButtonRef = useRef<HTMLButtonElement>(null)
+  const editorContainerRef = useRef<HTMLDivElement>(null)
   const dragDepthRef = useRef(0)
   const [dragActive, setDragActive] = useState(false)
+
+  // Slate editor — stable across re-renders, reset on scope change
+  const editor = useMemo(() => {
+    const ed = createVesperEditor({ onSubmit: () => {} })
+    ed.children = emptyDocument()
+    return ed
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scopeId])
+
+  const slateValue = useMemo(() => emptyDocument(), [scopeId])
 
   const handleTyping = useCallback(() => {
     if (!isTypingRef.current) {
@@ -97,26 +110,19 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
 
   const stageFiles = useCallback((files: Iterable<File>): void => {
     const entries = Array.from(files)
-    if (entries.length === 0) {
-      return
-    }
+    if (entries.length === 0) return
 
     setStagedFiles((prev) => {
       const existingKeys = new Set(
         prev.map((entry) => `${entry.file.name}:${entry.file.size}:${entry.file.lastModified}`)
       )
       const next = [...prev]
-
       for (const file of entries) {
         const key = `${file.name}:${file.size}:${file.lastModified}`
-        if (existingKeys.has(key)) {
-          continue
-        }
-
+        if (existingKeys.has(key)) continue
         existingKeys.add(key)
         next.push({ file, id: `staged-${++stagedIdCounter}` })
       }
-
       return next
     })
   }, [])
@@ -138,8 +144,6 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
 
     const replyTo = useMessageStore.getState().replyingTo
     const parentId = replyTo?.id || undefined
-
-    // Resolve channelId for DM scopes so the SDK routes through the channel MLS path
     const resolvedScope = scope.kind === 'dm'
       ? { ...scope, channelId: conversations.find(c => c.id === scope.id)?.channel_id ?? undefined }
       : scope
@@ -180,14 +184,9 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
     : []
 
   const commitAutocompleteSelection = (index: number): void => {
-    if (!trigger) {
-      return
-    }
-
+    if (!trigger) return
     const item = autocompleteItems[index]
-    if (!item) {
-      return
-    }
+    if (!item) return
 
     const replacement =
       item.type === 'user'
@@ -195,26 +194,65 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
         : item.type === 'everyone'
           ? '@everyone'
           : item.value
-    const cursorPos = textareaRef.current?.selectionStart ?? content.length
-    const next = applyAutocompleteSelection(
-      content,
-      trigger.start,
-      cursorPos,
-      replacement,
-      item.type !== 'emoji'
+
+    // For Slate, we need to delete the trigger text and insert the replacement
+    // For now, use the content string approach (Phase 3 will use Slate void nodes)
+    const cursorPos = content.length
+    const start = content.lastIndexOf(
+      trigger.type === 'mention' ? '@' : trigger.type === 'channel' ? '#' : ':'
     )
-    setContent(next.value)
-    if (item.type === 'user' || item.type === 'everyone') {
-      setMentionDrafts((current) => [...current, { display: replacement, syntax: item.value }])
+    if (start >= 0) {
+      const before = content.slice(0, start)
+      const after = content.slice(cursorPos)
+      const newContent = before + replacement + ' ' + after
+
+      if (item.type === 'user' || item.type === 'everyone') {
+        setMentionDrafts((current) => [...current, { display: replacement, syntax: item.value }])
+      }
+
+      // Reset editor content
+      resetEditorContent(newContent)
     }
+
     setTrigger(null)
     setSelectedAutocompleteIndex(0)
+  }
 
-    requestAnimationFrame(() => {
-      textareaRef.current?.focus()
-      textareaRef.current?.setSelectionRange(next.caret, next.caret)
-      syncPreviewScroll()
+  const resetEditorContent = (text: string): void => {
+    // Clear editor and set new text
+    const point = { path: [0, 0], offset: 0 }
+    Transforms.delete(editor, {
+      at: { anchor: Editor.start(editor, []), focus: Editor.end(editor, []) }
     })
+    // Remove all nodes except first
+    while (editor.children.length > 1) {
+      Transforms.removeNodes(editor, { at: [editor.children.length - 1] })
+    }
+    // Set text of the remaining line
+    const firstChild = editor.children[0]
+    if (firstChild && 'children' in firstChild) {
+      Transforms.insertText(editor, text, { at: { path: [0, 0], offset: 0 } })
+    }
+    // Move cursor to end
+    Transforms.select(editor, Editor.end(editor, []))
+    setContent(text)
+  }
+
+  const clearEditor = (): void => {
+    Transforms.delete(editor, {
+      at: { anchor: Editor.start(editor, []), focus: Editor.end(editor, []) }
+    })
+    while (editor.children.length > 1) {
+      Transforms.removeNodes(editor, { at: [editor.children.length - 1] })
+    }
+    // Ensure the remaining node is a clean empty line
+    const remaining = editor.children[0]
+    if (remaining && 'children' in remaining && Node.string(remaining) !== '') {
+      Transforms.delete(editor, { at: [0] })
+      Transforms.insertNodes(editor, { type: 'line', children: [{ text: '' }] }, { at: [0] })
+    }
+    Transforms.select(editor, Editor.start(editor, []))
+    setContent('')
   }
 
   const updateAutocompleteState = (value: string, cursorPos: number): void => {
@@ -227,80 +265,38 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
     setSelectedAutocompleteIndex(0)
   }
 
-  const syncPreviewScroll = (): void => {
-    if (!previewRef.current || !textareaRef.current) {
-      return
-    }
-
-    previewRef.current.scrollTop = textareaRef.current.scrollTop
-    previewRef.current.scrollLeft = textareaRef.current.scrollLeft
-  }
-
+  // Drag-and-drop handlers
   useEffect(() => {
-    if (!textareaRef.current) {
-      return
-    }
-
-    const maxHeight = Math.max(Math.round(window.innerHeight * 0.5), COMPOSER_MIN_HEIGHT)
-    textareaRef.current.style.height = '0px'
-    textareaRef.current.style.height = `${Math.min(
-      Math.max(textareaRef.current.scrollHeight, COMPOSER_MIN_HEIGHT),
-      maxHeight
-    )}px`
-    syncPreviewScroll()
-  }, [content])
-
-  useEffect(() => {
-    const hasFiles = (dataTransfer: DataTransfer | null): boolean =>
-      Boolean(dataTransfer?.types && Array.from(dataTransfer.types).includes('Files'))
+    const hasFiles = (dt: DataTransfer | null): boolean =>
+      Boolean(dt?.types && Array.from(dt.types).includes('Files'))
 
     const handleWindowDragEnter = (event: DragEvent): void => {
-      if (!hasFiles(event.dataTransfer)) {
-        return
-      }
-
+      if (!hasFiles(event.dataTransfer)) return
       event.preventDefault()
       dragDepthRef.current += 1
       setDragActive(true)
     }
 
     const handleWindowDragOver = (event: DragEvent): void => {
-      if (!hasFiles(event.dataTransfer)) {
-        return
-      }
-
+      if (!hasFiles(event.dataTransfer)) return
       event.preventDefault()
-      if (event.dataTransfer) {
-        event.dataTransfer.dropEffect = 'copy'
-      }
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
       setDragActive(true)
     }
 
     const handleWindowDragLeave = (event: DragEvent): void => {
-      if (!hasFiles(event.dataTransfer)) {
-        return
-      }
-
+      if (!hasFiles(event.dataTransfer)) return
       event.preventDefault()
       dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
-      if (dragDepthRef.current === 0) {
-        setDragActive(false)
-      }
+      if (dragDepthRef.current === 0) setDragActive(false)
     }
 
     const handleWindowDrop = (event: DragEvent): void => {
-      if (!hasFiles(event.dataTransfer)) {
-        return
-      }
-
+      if (!hasFiles(event.dataTransfer)) return
       event.preventDefault()
       dragDepthRef.current = 0
       setDragActive(false)
-
-      const files = Array.from(event.dataTransfer?.files ?? [])
-      if (!uploading) {
-        stageFiles(files)
-      }
+      if (!uploading) stageFiles(Array.from(event.dataTransfer?.files ?? []))
     }
 
     window.addEventListener('dragenter', handleWindowDragEnter)
@@ -316,10 +312,9 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
     }
   }, [stageFiles, uploading])
 
-  const handleSubmit = async (e: React.FormEvent): Promise<void> => {
-    e.preventDefault()
-
-    const hasText = content.trim().length > 0
+  const handleSubmit = async (): Promise<void> => {
+    const markdown = serializeToMarkdown(editor.children).trim()
+    const hasText = markdown.length > 0
     const hasFiles = stagedFiles.length > 0
 
     if (!hasText && !hasFiles) return
@@ -328,7 +323,7 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
       setUploading(true)
       try {
         for (let i = 0; i < stagedFiles.length; i++) {
-          const text = i === 0 ? content.trim() : undefined
+          const text = i === 0 ? markdown : undefined
           const serializedText = text ? serializeComposerMentions(text, mentionDrafts) : undefined
           const ok = await uploadAndSendFile(stagedFiles[i].file, serializedText)
           if (!ok) {
@@ -337,7 +332,7 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
           }
         }
         setStagedFiles([])
-        setContent('')
+        clearEditor()
         setMentionDrafts([])
         useMessageStore.getState().setReplyingTo(null)
       } catch {
@@ -347,83 +342,81 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
       }
     } else {
       const send = isChannel ? sendMessage : sendDmMessage
-      send(scopeId, serializeComposerMentions(content.trim(), mentionDrafts))
-      setContent('')
+      send(scopeId, serializeComposerMentions(markdown, mentionDrafts))
+      clearEditor()
       setMentionDrafts([])
     }
 
     setTrigger(null)
     setSelectedAutocompleteIndex(0)
 
-    if (typingTimeoutRef.current) {
-      clearTimeout(typingTimeoutRef.current)
-    }
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
     if (isTypingRef.current) {
       isTypingRef.current = false
-      if (isChannel) {
-        sendTypingStop(scopeId)
-      } else {
-        sendDmTypingStop(scopeId)
-      }
+      if (isChannel) sendTypingStop(scopeId)
+      else sendDmTypingStop(scopeId)
     }
   }
 
-  const handleKeyDown = (e: React.KeyboardEvent): void => {
+  const handleKeyDown = (event: React.KeyboardEvent): void => {
+    // Autocomplete navigation
     if (trigger && autocompleteItems.length > 0) {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault()
+      if (event.key === 'ArrowDown') {
+        event.preventDefault()
         setSelectedAutocompleteIndex((current) => (current + 1) % autocompleteItems.length)
         return
       }
-
-      if (e.key === 'ArrowUp') {
-        e.preventDefault()
+      if (event.key === 'ArrowUp') {
+        event.preventDefault()
         setSelectedAutocompleteIndex((current) =>
           current <= 0 ? autocompleteItems.length - 1 : current - 1
         )
         return
       }
-
-      if (e.key === 'Enter' || e.key === 'Tab') {
-        e.preventDefault()
+      if (event.key === 'Enter' || event.key === 'Tab') {
+        event.preventDefault()
         commitAutocompleteSelection(selectedAutocompleteIndex)
         return
       }
-
-      if (e.key === 'Escape') {
-        e.preventDefault()
+      if (event.key === 'Escape') {
+        event.preventDefault()
         setTrigger(null)
         return
       }
     }
 
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      void handleSubmit(e)
+    // Submit on Enter (not Shift+Enter)
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault()
+      void handleSubmit()
+      return
     }
+
+    // Edit last message on ArrowUp in empty editor
     if (
-      e.key === 'ArrowUp' &&
-      !e.shiftKey &&
-      !e.altKey &&
-      !e.metaKey &&
-      !e.ctrlKey &&
+      event.key === 'ArrowUp' &&
+      !event.shiftKey &&
+      !event.altKey &&
+      !event.metaKey &&
+      !event.ctrlKey &&
       !content &&
       stagedFiles.length === 0 &&
       !replyingTo &&
-      !uploading &&
-      textareaRef.current?.selectionStart === 0
+      !uploading
     ) {
       const lastEditableMessage = [...messages]
         .reverse()
         .find((message) => message.sender_id === myUserId && !message.parent_message_id)
 
       if (lastEditableMessage) {
-        e.preventDefault()
+        event.preventDefault()
         setEditingMessage(lastEditableMessage)
       }
       return
     }
-    if (e.key === 'Escape') {
+
+    // Escape to cancel reply
+    if (event.key === 'Escape') {
       if (trigger !== null) {
         setTrigger(null)
       } else if (replyingTo) {
@@ -432,106 +425,88 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
     }
   }
 
-  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>): void => {
-    const value = e.target.value
-    setContent(value)
+  const handleSlateChange = useCallback(() => {
+    const markdown = serializeToMarkdown(editor.children)
+    setContent(markdown)
     handleTyping()
-    updateAutocompleteState(value, e.target.selectionStart)
-    syncPreviewScroll()
-  }
+    updateAutocompleteState(markdown, markdown.length)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor, handleTyping])
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>): void => {
     stageFiles(Array.from(e.target.files ?? []))
-
-    if (fileInputRef.current) {
-      fileInputRef.current.value = ''
-    }
-
-    textareaRef.current?.focus()
+    if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
-  const handleDragEnter = (event: React.DragEvent<HTMLFormElement>): void => {
+  const handleDragEnter = (event: React.DragEvent<HTMLDivElement>): void => {
     event.preventDefault()
     event.stopPropagation()
     dragDepthRef.current += 1
     setDragActive(true)
   }
 
-  const handleDragLeave = (event: React.DragEvent<HTMLFormElement>): void => {
+  const handleDragLeave = (event: React.DragEvent<HTMLDivElement>): void => {
     event.preventDefault()
     event.stopPropagation()
     dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
-    if (dragDepthRef.current === 0) {
-      setDragActive(false)
-    }
+    if (dragDepthRef.current === 0) setDragActive(false)
   }
 
-  const handleDrop = (event: React.DragEvent<HTMLFormElement>): void => {
+  const handleDrop = (event: React.DragEvent<HTMLDivElement>): void => {
     event.preventDefault()
     event.stopPropagation()
     dragDepthRef.current = 0
     setDragActive(false)
-
-    if (!uploading) {
-      stageFiles(Array.from(event.dataTransfer.files ?? []))
-    }
+    if (!uploading) stageFiles(Array.from(event.dataTransfer.files ?? []))
   }
 
   const canSend = content.trim().length > 0 || stagedFiles.length > 0
 
   return (
-    <ComposerForm
-      autocompleteItems={autocompleteItems}
-      content={content}
-      conversation={activeConversation ?? undefined}
-      dragActive={dragActive}
-      emojiButtonRef={emojiButtonRef}
-      encryptionError={encryptionError}
-      fileInputRef={fileInputRef}
-      members={members}
-      mentionDrafts={mentionDrafts}
-      onAutocompleteHover={setSelectedAutocompleteIndex}
-      onAutocompleteSelect={(item) => {
-        const index = autocompleteItems.findIndex((entry) => entry.id === item.id)
-        commitAutocompleteSelection(index)
-      }}
-      onCancelReply={() => setReplyingTo(null)}
-      onClearEncryptionError={() => useMessageStore.setState({ encryptionError: null })}
-      onDragEnter={handleDragEnter}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
-      onEmojiClose={() => setShowEmojiPicker(false)}
-      onEmojiSelect={(emoji, item) => {
-        const value = item?.type === 'custom' ? formatCustomEmojiToken(item as CustomEmoji) : emoji
-        setContent((prev) => prev + value)
-        setShowEmojiPicker(false)
-        requestAnimationFrame(() => {
-          textareaRef.current?.focus()
-          syncPreviewScroll()
-        })
-      }}
-      onFileSelect={handleFileSelect}
-      onRemoveStagedFile={removeStagedFile}
-      onSubmit={(event) => { void handleSubmit(event) }}
-      onTextareaChange={handleChange}
-      onTextareaClick={(event) => updateAutocompleteState(event.currentTarget.value, event.currentTarget.selectionStart)}
-      onTextareaKeyDown={handleKeyDown}
-      onTextareaKeyUp={(event) => updateAutocompleteState(event.currentTarget.value, event.currentTarget.selectionStart)}
-      onTextareaScroll={syncPreviewScroll}
-      onToggleEmojiPicker={() => setShowEmojiPicker(!showEmojiPicker)}
-      placeholder={isChannel ? 'Message this channel' : 'Message this conversation'}
-      previewRef={previewRef}
-      replyingTo={replyingTo}
-      selectedAutocompleteIndex={selectedAutocompleteIndex}
-      sendButtonTestId={isChannel ? 'send-button' : undefined}
-      server={activeServer}
-      showEmojiPicker={showEmojiPicker}
-      stagedFiles={stagedFiles}
-      textareaRef={textareaRef}
-      textareaTestId={isChannel ? 'message-input' : undefined}
-      triggerQuery={trigger?.query ?? null}
-      uploading={uploading}
-      canSend={canSend}
-    />
+    <Slate editor={editor} initialValue={slateValue} onChange={handleSlateChange}>
+      <ComposerForm
+        autocompleteItems={autocompleteItems}
+        dragActive={dragActive}
+        editorContainerRef={editorContainerRef}
+        emojiButtonRef={emojiButtonRef}
+        encryptionError={encryptionError}
+        fileInputRef={fileInputRef}
+        onAutocompleteHover={setSelectedAutocompleteIndex}
+        onAutocompleteSelect={(item) => {
+          const index = autocompleteItems.findIndex((entry) => entry.id === item.id)
+          commitAutocompleteSelection(index)
+        }}
+        onCancelReply={() => setReplyingTo(null)}
+        onClearEncryptionError={() => useMessageStore.setState({ encryptionError: null })}
+        onDragEnter={handleDragEnter}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        onEmojiClose={() => setShowEmojiPicker(false)}
+        onEmojiSelect={(emoji, item) => {
+          const value = item?.type === 'custom' ? formatCustomEmojiToken(item as CustomEmoji) : emoji
+          // Insert emoji text at current cursor position in Slate
+          Transforms.insertText(editor, value)
+          setShowEmojiPicker(false)
+        }}
+        onFileSelect={handleFileSelect}
+        onRemoveStagedFile={removeStagedFile}
+        onSend={() => { void handleSubmit() }}
+        onToggleEmojiPicker={() => setShowEmojiPicker(!showEmojiPicker)}
+        replyingTo={replyingTo}
+        selectedAutocompleteIndex={selectedAutocompleteIndex}
+        sendButtonTestId={isChannel ? 'send-button' : undefined}
+        showEmojiPicker={showEmojiPicker}
+        stagedFiles={stagedFiles}
+        triggerQuery={trigger?.query ?? null}
+        uploading={uploading}
+        canSend={canSend}
+      >
+        <VesperEditable
+          placeholder={isChannel ? 'Message this channel' : 'Message this conversation'}
+          onKeyDown={handleKeyDown}
+          autoFocus
+        />
+      </ComposerForm>
+    </Slate>
   )
 }
