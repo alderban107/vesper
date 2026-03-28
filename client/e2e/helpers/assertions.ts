@@ -122,10 +122,9 @@ export async function assertConvergence(
   const uniqueB = new Set(textsB)
   expect(uniqueB.size, `${label}: duplicate messages on client B`).toBe(textsB.length)
 
-  // Compare thread counts
-  expect(snapshotA.threadCounts, `${label}: thread counts differ`).toEqual(
-    snapshotB.threadCounts
-  )
+  // Thread counts are now client-local state (depends on whether the user
+  // opened the thread panel, which populates threadRepliesByParent).
+  // Skip thread count comparison in convergence checks.
 
   // Compare reactions
   expect(snapshotA.reactions, `${label}: reactions differ`).toEqual(snapshotB.reactions)
