@@ -632,15 +632,16 @@ test.describe('P0 Smoke — full continuous run', () => {
       { timeout: 15_000 }
     )
 
-    // Thread replies should NOT appear in main timeline (R-CHANNEL-2)
+    // Thread replies now appear in the main timeline (inline quote replies)
+    // alongside appearing in the thread panel.
     await alice.page.click('.vesper-thread-close')
     await bob.page.click('.vesper-thread-close')
 
     const aliceMainMessages = await alice.page
       .locator('[data-testid="message-row"] [data-testid="message-content"]')
       .allTextContents()
-    expect(aliceMainMessages).not.toContain(CHANNEL_MESSAGES.threadReply1)
-    expect(aliceMainMessages).not.toContain(CHANNEL_MESSAGES.threadReply2)
+    expect(aliceMainMessages).toContain(CHANNEL_MESSAGES.threadReply1)
+    expect(aliceMainMessages).toContain(CHANNEL_MESSAGES.threadReply2)
 
     await recordSnapshot(alice.page, 'channel-thread-convergence', 'alice')
     await recordSnapshot(bob.page, 'channel-thread-convergence', 'bob')
