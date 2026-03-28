@@ -62,7 +62,8 @@ const liveScopeWatchTokens = new Map<string, symbol>()
 const RECENT_NOTIFICATION_TTL_MS = 30_000
 const RECENT_MUTATION_SEQ_WINDOW = 256
 const MESSAGE_PAGE_SIZE = 50
-const MAX_RESIDENT_MESSAGES_PER_SCOPE = 400
+const MAX_RESIDENT_MESSAGES_PER_SCOPE = 100
+const TRUNCATE_TO = 50
 const MAX_WARM_SCOPES = 3
 
 // Mapping from DM conversation_id to backing channel_id for unified MLS path.
@@ -1007,14 +1008,14 @@ function applyMessageWindow(
 
   if (direction === 'prepend') {
     return {
-      messages: deduped.slice(0, MAX_RESIDENT_MESSAGES_PER_SCOPE),
+      messages: deduped.slice(0, TRUNCATE_TO),
       trimmedOlder: false,
       trimmedNewer: true
     }
   }
 
   return {
-    messages: deduped.slice(-MAX_RESIDENT_MESSAGES_PER_SCOPE),
+    messages: deduped.slice(-TRUNCATE_TO),
     trimmedOlder: true,
     trimmedNewer: false
   }
@@ -1703,6 +1704,7 @@ interface MessageState {
   latestRoomSeqByScope: Record<string, number>
   loadingByScope: Record<string, boolean>
   loadedByScope: Record<string, boolean>
+  isAtBottomByScope: Record<string, boolean>
   activeScopeId: string | null
   recentScopeIds: string[]
   scopeLifecycleById: Record<string, ScopeLifecycleEntry>
@@ -1724,6 +1726,7 @@ interface MessageState {
   joinChannelChat: (channelId: string) => void
   leaveChannelChat: (channelId: string) => void
   activateScope: (scopeId: string, kind: ScopeKind) => void
+  setIsAtBottom: (scopeId: string, isAtBottom: boolean) => void
   fetchMessages: (channelId: string) => Promise<void>
   fetchOlderMessages: (channelId: string) => Promise<void>
   fetchNewerMessages: (channelId: string) => Promise<void>
@@ -1780,6 +1783,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   latestRoomSeqByScope: {},
   loadingByScope: {},
   loadedByScope: {},
+  isAtBottomByScope: {},
   activeScopeId: null,
   recentScopeIds: [],
   scopeLifecycleById: {},
@@ -1953,6 +1957,12 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
   leaveChannelChat: (channelId) => {
     releaseLiveScopeWatch(`chat:channel:${channelId}`)
+  },
+
+  setIsAtBottom: (scopeId, isAtBottom) => {
+    set((s) => ({
+      isAtBottomByScope: { ...s.isAtBottomByScope, [scopeId]: isAtBottom }
+    }))
   },
 
   fetchMessages: async (channelId) => {

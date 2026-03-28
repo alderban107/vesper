@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { useServerStore } from '../../stores/serverStore'
 import { useDmStore } from '../../stores/dmStore'
 import { useMessageStore, type Message } from '../../stores/messageStore'
@@ -13,9 +13,6 @@ interface Props {
 }
 
 export default function MessageList({ scope }: Props): React.JSX.Element {
-  // For DMs with a backing channel, use the channelId as the scope.
-  // All messages, MLS state, and broadcasts go through the channel topic.
-  // Subscribe to dmStore so this re-evaluates when conversations sync.
   const dmChannelId = useDmStore((s) => {
     if (scope.kind !== 'dm') return null
     return s.conversations.find(c => c.id === scope.id)?.channel_id ?? null
@@ -54,6 +51,7 @@ export default function MessageList({ scope }: Props): React.JSX.Element {
   const joinDmChat = useMessageStore((s) => s.joinDmChat)
   const leaveDmChat = useMessageStore((s) => s.leaveDmChat)
   const activateScope = useMessageStore((s) => s.activateScope)
+  const setIsAtBottom = useMessageStore((s) => s.setIsAtBottom)
   const fetchOlderMessages = useMessageStore((s) => s.fetchOlderMessages)
   const fetchNewerMessages = useMessageStore((s) => s.fetchNewerMessages)
   const fetchOlderDmMessages = useMessageStore((s) => s.fetchOlderDmMessages)
@@ -64,7 +62,6 @@ export default function MessageList({ scope }: Props): React.JSX.Element {
   const prevScopeRef = useRef<string | null>(null)
 
   useEffect(() => {
-    // Use original scope.id for join/leave (joinDmChat resolves channelId internally)
     const leave = scope.kind === 'channel' ? leaveChannelChat : leaveDmChat
     const join = scope.kind === 'channel' ? joinChannelChat : joinDmChat
     const joinId = scope.id
@@ -72,7 +69,6 @@ export default function MessageList({ scope }: Props): React.JSX.Element {
     if (prevScopeRef.current) {
       leave(prevScopeRef.current)
     }
-    // Activate with the resolved scopeId (channelId for DMs with channel)
     activateScope(scopeId, resolvedScope.kind)
     join(joinId)
     prevScopeRef.current = joinId
@@ -92,6 +88,10 @@ export default function MessageList({ scope }: Props): React.JSX.Element {
     }
   }
 
+  const handleIsAtBottomChange = useCallback((isAtBottom: boolean) => {
+    setIsAtBottom(scopeId, isAtBottom)
+  }, [scopeId, setIsAtBottom])
+
   return (
     <MessageFeed
       messages={messages}
@@ -103,6 +103,7 @@ export default function MessageList({ scope }: Props): React.JSX.Element {
       emptyState="No messages yet. Say something!"
       onLoadMore={handleLoadMore}
       onLoadNewer={handleLoadNewer}
+      onIsAtBottomChange={handleIsAtBottomChange}
       onMarkRead={(messageId) => {
         if (scope.kind === 'channel') {
           if (useServerStore.getState().activeChannelId === scopeId) {

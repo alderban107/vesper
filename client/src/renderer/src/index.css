@@ -1350,11 +1350,70 @@ select:focus-visible {
   min-height: 0;
 }
 
+.vesper-message-feed-scroller {
+  flex: 1;
+  overflow-y: scroll;
+  overflow-x: hidden;
+  overflow-anchor: none;
+  display: flex;
+  flex-direction: column-reverse;
+  min-height: 0;
+  position: relative;
+}
+
+.vesper-message-feed-content {
+  display: flex;
+  flex-direction: column;
+  padding: 0.8rem 0.75rem 0.4rem;
+  min-height: 100%;
+  justify-content: flex-end;
+}
+
+.vesper-message-feed-load-more {
+  padding: 0.5rem 0;
+}
+
+.vesper-message-feed-empty {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 0.8rem 0.75rem 0.4rem;
+}
+
 .vesper-message-feed-root {
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+/* New messages bar */
+.vesper-new-messages-bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.4rem 1rem;
+  background: var(--color-accent, #c8a24e);
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: 0;
+  width: 100%;
+  text-align: left;
+  transition: background-color 0.15s ease;
+}
+
+.vesper-new-messages-bar:hover {
+  filter: brightness(1.1);
+}
+
+.vesper-new-messages-bar-action {
+  font-weight: 500;
+  opacity: 0.9;
 }
 
 .vesper-message-feed-inner {
