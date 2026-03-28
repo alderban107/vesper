@@ -32,10 +32,7 @@ export default function MessageList({ scope }: Props): React.JSX.Element {
   const allMessages = useMessageStore((s) =>
     s.messagesByChannel[scopeId] ?? EMPTY_MESSAGES
   )
-  const messages = useMemo(
-    () => allMessages.filter((message) => !message.parent_message_id),
-    [allMessages]
-  )
+  const messages = allMessages
   const typingUsers = useMessageStore((s) =>
     s.typingUsers[scopeId] ?? EMPTY_TYPING
   )

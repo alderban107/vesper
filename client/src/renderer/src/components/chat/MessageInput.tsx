@@ -299,12 +299,14 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
       }
     } else {
       const send = isChannel ? sendMessage : sendDmMessage
-      send(scopeId, markdown)
+      const replyId = useMessageStore.getState().replyingTo?.id
+      send(scopeId, markdown, replyId)
       clearEditor()
     }
 
     setTrigger(null)
     setSelectedAutocompleteIndex(0)
+    useMessageStore.getState().setReplyingTo(null)
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
     if (isTypingRef.current) {
       isTypingRef.current = false
