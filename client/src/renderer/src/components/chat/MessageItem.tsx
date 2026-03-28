@@ -347,14 +347,7 @@ export default memo(function MessageItem({
         label: 'Bookmark',
         icon: Bookmark,
         onClick: () => {
-          void getRendererClient().apiFetch('/api/v1/saved-messages', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              message_id: message.id,
-              channel_id: message.channel_id
-            })
-          })
+          void getRendererClient().saveMessage(message.id, message.channel_id)
         }
       },
       {

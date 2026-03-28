@@ -355,8 +355,7 @@ defmodule VesperWeb.MessageController do
           message: %{
             id: message.id,
             content: message.content,
-            ciphertext:
-              if(message.ciphertext, do: Base.encode64(message.ciphertext), else: nil),
+            ciphertext: if(message.ciphertext, do: Base.encode64(message.ciphertext), else: nil),
             mls_epoch: message.mls_epoch,
             sender_id: message.sender_id,
             sender: sender_json(message.sender),

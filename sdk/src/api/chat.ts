@@ -191,6 +191,15 @@ export interface VesperChannelPin {
   inserted_at: string
 }
 
+export interface VesperSavedMessage {
+  id: string
+  message_id: string
+  channel_id: string | null
+  note: string | null
+  saved_at: string
+  message: VesperMessage
+}
+
 export interface VesperAttachmentUpload {
   attachment?: {
     id?: string

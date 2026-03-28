@@ -29,6 +29,7 @@ import {
   type VesperChannel,
   type VesperChannelActivityPatch,
   type VesperChannelPin,
+  type VesperSavedMessage,
   type VesperConversation,
   type VesperConversationMessagePreview,
   type VesperConversationResetPatch,
@@ -1418,6 +1419,34 @@ export class VesperClient {
       'Could not load pinned messages'
     )
     return data.pins ?? []
+  }
+
+  async listSavedMessages(): Promise<VesperSavedMessage[]> {
+    const data = await this.fetchJson<{ saved_messages?: VesperSavedMessage[] }>(
+      '/api/v1/saved-messages',
+      {},
+      'Could not load saved messages'
+    )
+    return data.saved_messages ?? []
+  }
+
+  async saveMessage(messageId: string, channelId?: string | null): Promise<{ id: string }> {
+    const response = await this.httpClient.apiFetch('/api/v1/saved-messages', {
+      method: 'POST',
+      body: JSON.stringify({
+        message_id: messageId,
+        ...(channelId ? { channel_id: channelId } : {})
+      })
+    })
+    await this.assertResponseOk(response, 'Could not save message')
+    return response.json()
+  }
+
+  async unsaveMessage(messageId: string): Promise<void> {
+    const response = await this.httpClient.apiFetch(`/api/v1/saved-messages/${messageId}`, {
+      method: 'DELETE'
+    })
+    await this.assertResponseOk(response, 'Could not unsave message')
   }
 
   async markChannelRead(channelId: string, messageId: string): Promise<void> {
