@@ -3,7 +3,8 @@ import { withReact } from 'slate-react'
 import { withHistory } from 'slate-history'
 import { withInlineVoids } from './plugins/withInlineVoids'
 import { withSoftBreak } from './plugins/withSoftBreak'
-import type { emptyDocument } from './types'
+import { withBlockQuotes } from './plugins/withBlockQuotes'
+import { withCodeBlocks } from './plugins/withCodeBlocks'
 
 export interface VesperEditorOptions {
   onSubmit: () => void
@@ -11,13 +12,17 @@ export interface VesperEditorOptions {
 
 export function createVesperEditor(options: VesperEditorOptions) {
   const base = createEditor()
-  const withPlugins = withSoftBreak(
-    withInlineVoids(
-      withReact(
-        withHistory(base)
+  const editor = withCodeBlocks(
+    withBlockQuotes(
+      withSoftBreak(
+        withInlineVoids(
+          withReact(
+            withHistory(base)
+          )
+        ),
+        options.onSubmit
       )
-    ),
-    options.onSubmit
+    )
   )
-  return withPlugins
+  return editor
 }

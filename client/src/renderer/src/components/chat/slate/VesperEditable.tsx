@@ -2,6 +2,8 @@ import { useCallback } from 'react'
 import { Editable, type RenderElementProps, type RenderLeafProps } from 'slate-react'
 import type { NodeEntry } from 'slate'
 import LineElement from './elements/LineElement'
+import BlockQuoteElement from './elements/BlockQuoteElement'
+import CodeBlockElement from './elements/CodeBlockElement'
 import EmojiVoid from './elements/EmojiVoid'
 import CustomEmojiVoid from './elements/CustomEmojiVoid'
 import UserMentionVoid from './elements/UserMentionVoid'
@@ -13,6 +15,7 @@ import type {
   CustomEmojiElement,
   UserMentionElement,
   ChannelMentionElement,
+  CodeBlockElement as CodeBlockElementType,
 } from './types'
 
 interface Props {
@@ -39,6 +42,12 @@ export default function VesperEditable({
           return <UserMentionVoid {...props} element={props.element as UserMentionElement} />
         case 'channel-mention':
           return <ChannelMentionVoid {...props} element={props.element as ChannelMentionElement} />
+        case 'blockquote':
+          return <BlockQuoteElement {...props} />
+        case 'code-block':
+          return <CodeBlockElement {...props} element={props.element as CodeBlockElementType} />
+        case 'code-block-line':
+          return <div {...props.attributes} className="vesper-slate-code-line">{props.children}</div>
         case 'line':
         default:
           return <LineElement {...props} />
