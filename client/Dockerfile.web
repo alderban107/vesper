@@ -10,8 +10,10 @@ COPY sdk/ /app/sdk/
 RUN ln -s /app/client/node_modules /app/sdk/node_modules
 # Make the WASM package available for Vite resolution
 RUN ln -s /app/sdk/wasm/pkg /app/client/node_modules/vesper-openmls-wasm
-# Copy twemoji SVGs from npm package (postinstall doesn't run with --ignore-scripts)
-RUN node -e "const fs=require('fs');const src='node_modules/twemoji-emojis/vendor/svg';const dst='src/renderer/public/twemoji';if(fs.existsSync(src)){fs.mkdirSync(dst,{recursive:true});for(const f of fs.readdirSync(src))fs.copyFileSync(src+'/'+f,dst+'/'+f)}"
+# Copy twemoji SVGs: run the package's postinstall to download them
+# (npm ci --ignore-scripts skips this), then copy into public/
+RUN cd node_modules/twemoji-emojis && node postinstall.js
+RUN node -e "const fs=require('fs');const src='node_modules/twemoji-emojis/vendor/svg';const dst='src/renderer/public/twemoji';if(!fs.existsSync(src))throw new Error('twemoji SVGs missing');fs.mkdirSync(dst,{recursive:true});for(const f of fs.readdirSync(src))fs.copyFileSync(src+'/'+f,dst+'/'+f);console.log('Copied '+fs.readdirSync(dst).length+' twemoji SVGs')"
 RUN npm run build:web
 
 # Stage 2: Serve with nginx
