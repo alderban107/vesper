@@ -76,6 +76,9 @@
     "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
+    "slate": "^0.124.0",
+    "slate-history": "^0.113.1",
+    "slate-react": "^0.124.0",
     "tailwindcss": "^4.2.1",
     "zustand": "^5.0.11"
   }
