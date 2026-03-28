@@ -1,4 +1,4 @@
-import { memo, Suspense, useState, useRef, useEffect, useMemo } from 'react'
+import { memo, Suspense, useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { Copy, Lock, MessageSquare, Pencil, Pin, Reply, Trash2 } from 'lucide-react'
 import type { Message } from '../../stores/messageStore'
 import { useMessageStore, parseMessageContent } from '../../stores/messageStore'
@@ -19,6 +19,7 @@ import MessageReactionBar from './message/MessageReactionBar'
 import ProfilePopout from '../profile/ProfilePopout'
 import { formatCustomEmojiToken, type CustomEmoji } from '../../utils/emoji'
 import lazyWithRetry from '../../utils/lazyWithRetry'
+import VesperEditor from './slate/VesperEditor'
 
 const MarkdownContent = lazyWithRetry(() => import('./MarkdownContent'))
 const EMPTY_EMOJIS: CustomEmoji[] = []
@@ -170,17 +171,15 @@ export default memo(function MessageItem({
   isThreadView = false
 }: Props): React.JSX.Element {
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
-  const [editText, setEditText] = useState('')
-  const editRef = useRef<HTMLTextAreaElement>(null)
   const reactionAnchorRef = useRef<HTMLDivElement>(null)
   const membersByUserId = useServerStore((s) => s.membersByUserId)
   const liveMember = membersByUserId.get(message.sender_id ?? '')
   const myUser = useAuthStore((s) => s.user)
   const myId = myUser?.id
-  const customEmojis = useServerStore((s) => {
-    const srv = s.servers.find((server) => server.id === s.activeServerId)
-    return srv?.emojis ?? EMPTY_EMOJIS
-  })
+  const activeServer = useServerStore((s) =>
+    s.servers.find((server) => server.id === s.activeServerId)
+  )
+  const customEmojis = activeServer?.emojis ?? EMPTY_EMOJIS
   const isMe = message.sender_id === myId
   const displayName = isMe
     ? (myUser?.display_name || myUser?.username || 'Unknown')
@@ -223,35 +222,18 @@ export default memo(function MessageItem({
     [message.content]
   )
 
-  useEffect(() => {
-    if (isEditing && editRef.current) {
-      editRef.current.focus()
-      editRef.current.selectionStart = editRef.current.value.length
-    }
-  }, [isEditing])
-
   const handleStartEdit = (): void => {
-    setEditText(message.content)
     setEditingMessage(message)
   }
 
-  const handleSaveEdit = (): void => {
-    const trimmed = editText.trim()
+  const handleSaveEdit = useCallback((markdown: string): void => {
+    const trimmed = markdown.trim()
     if (trimmed && trimmed !== message.content) {
       editMessage(targetId, topic, message.id, trimmed)
     } else {
       setEditingMessage(null)
     }
-  }
-
-  const handleEditKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      handleSaveEdit()
-    } else if (e.key === 'Escape') {
-      setEditingMessage(null)
-    }
-  }
+  }, [editMessage, message.content, message.id, setEditingMessage, targetId, topic])
 
   const handleDelete = (): void => {
     deleteMessage(targetId, topic, message.id)
@@ -488,15 +470,16 @@ export default memo(function MessageItem({
 
         {isEditing ? (
           <div className="mt-1">
-            <textarea
-              data-testid="edit-input"
-              ref={editRef}
-              value={editText}
-              onChange={(e) => setEditText(e.target.value)}
-              onKeyDown={handleEditKeyDown}
-              className="w-full rounded-xl border border-border bg-bg-secondary/70 px-3 py-2 text-sm text-text-secondary focus:border-accent/50 focus:outline-none resize-none"
-              rows={Math.min(editText.split('\n').length + 1, 6)}
-            />
+            <div className="rounded-xl border border-border bg-bg-secondary/70 px-3 py-2 text-sm text-text-secondary focus-within:border-accent/50">
+              <VesperEditor
+                mode="edit"
+                initialValue={message.content}
+                onSubmit={handleSaveEdit}
+                onCancel={() => setEditingMessage(null)}
+                placeholder="Edit message..."
+                autoFocus
+              />
+            </div>
             <p className="mt-1 text-xs text-text-faintest">
               Enter to save · Escape to cancel
             </p>

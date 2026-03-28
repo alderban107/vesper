@@ -34,27 +34,33 @@ test.describe('P1: Mentions', () => {
     await bob.context.close()
   })
 
-  test('Composer rich preview renders markdown while input keeps raw text', async () => {
+  test('Composer renders markdown decorations inline', async () => {
     const input = alice.page.locator('[data-testid="message-input"]')
-    const preview = alice.page.locator('[data-testid="composer-rich-preview"]')
 
-    await input.fill('**bold** _italic_ ~~gone~~')
+    await input.click()
+    await alice.page.keyboard.type('**bold** *italic* ~~gone~~')
 
-    await expect(preview.locator('strong')).toHaveText('bold')
-    await expect(preview.locator('em')).toHaveText('italic')
-    await expect(preview.locator('del')).toHaveText('gone')
-    await expect(input).toHaveValue('**bold** _italic_ ~~gone~~')
+    // Slate decorations render bold/italic/strikethrough inline
+    await expect(input.locator('strong.vesper-slate-bold')).toHaveText('bold')
+    await expect(input.locator('em.vesper-slate-italic')).toHaveText('italic')
+    await expect(input.locator('s.vesper-slate-strikethrough')).toHaveText('gone')
 
-    await input.fill('')
+    // Clear
+    await alice.page.keyboard.press('Meta+a')
+    await alice.page.keyboard.press('Backspace')
   })
 
   test('Member mention autocomplete inserts correct syntax (R-MSG-4)', async () => {
     const input = alice.page.locator('[data-testid="message-input"]')
-    const preview = alice.page.locator('[data-testid="composer-rich-preview"]')
     const autocomplete = alice.page.locator('[data-testid="composer-autocomplete"]')
     const toggleMembers = alice.page.locator('[data-testid="toggle-members"]')
     const memberList = alice.page.locator('[data-testid="member-list"]')
-    await input.fill('')
+
+    // Clear editor
+    await input.click()
+    await alice.page.keyboard.press('Meta+a')
+    await alice.page.keyboard.press('Backspace')
+
     const suffix = 'mention-sync-rmsg4'
 
     if (await toggleMembers.isVisible().catch(() => false)) {
@@ -67,27 +73,28 @@ test.describe('P1: Mentions', () => {
     ).toBeVisible()
 
     // Type @ to trigger autocomplete
-    await input.type('@bob')
+    await input.click()
+    await alice.page.keyboard.type('@bob')
     await expect(autocomplete).toBeVisible()
 
     const bobOption = autocomplete.getByRole('option', { name: USERS.bob.username })
     await expect(bobOption).toBeVisible()
     await bobOption.click()
 
-    await expect(preview).toContainText('@bob')
+    // Mention should appear as a void node chip
+    await expect(input.locator('.vesper-slate-mention')).toContainText('@bob')
 
     // Ensure the message includes stable plain text we can assert on both clients.
-    await input.type(` ${suffix}`)
+    await alice.page.keyboard.type(` ${suffix}`)
 
-    // Send via keyboard to avoid flaky pointer interception by transient overlays.
-    await input.press('Enter')
+    // Send via keyboard
+    await alice.page.keyboard.press('Enter')
     await waitForMessage(alice.page, suffix)
     await waitForMessage(bob.page, suffix)
 
     // Bob should see the message with a mention highlight
     const mentionHighlight = bob.page.locator('[data-testid="message-row"] .vesper-mention-highlight, [data-testid="message-row"] .mention')
     const hasMention = await mentionHighlight.count() > 0
-    // If the app renders mentions with highlight, verify it; otherwise just verify the message arrived
     if (!hasMention) {
       await waitForMessage(bob.page, suffix)
     }

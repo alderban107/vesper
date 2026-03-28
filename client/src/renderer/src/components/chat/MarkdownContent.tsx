@@ -14,6 +14,7 @@ import ProfilePopout from '../profile/ProfilePopout'
 import { extractMarkdownCodeBlock } from './MarkdownCodeBlock'
 import MermaidBlock from './MermaidBlock'
 import EmojiGlyph from './message/EmojiGlyph'
+import SpoilerReveal from './message/SpoilerReveal'
 
 interface Props {
   content: string
@@ -74,6 +75,16 @@ function preprocessUnicodeEmoji(text: string): string {
   })
 }
 
+function preprocessSpoilers(text: string): string {
+  // Convert ||spoiler text|| to a link with spoiler: protocol
+  // This preserves the content through react-markdown and lets us
+  // render it with the SpoilerReveal component.
+  return text.replace(/\|\|(.+?)\|\|/g, (_match, content: string) => {
+    const encoded = encodeURIComponent(content)
+    return `[${content}](spoiler:${encoded})`
+  })
+}
+
 export default function MarkdownContent({ content }: Props): React.JSX.Element {
   const members = useServerStore((s) => s.members)
   const activeServer = useServerStore((s) => s.servers.find((server) => server.id === s.activeServerId))
@@ -124,10 +135,12 @@ export default function MarkdownContent({ content }: Props): React.JSX.Element {
     (entry, index, collection) =>
       collection.findIndex((candidate) => candidate.id === entry.id) === index
   )
-  const processed = preprocessUnicodeEmoji(
-    preprocessCustomEmoji(
-      preprocessChannels(preprocessMentions(content, dedupedMentionUsers), channels),
-      customEmojis
+  const processed = preprocessSpoilers(
+    preprocessUnicodeEmoji(
+      preprocessCustomEmoji(
+        preprocessChannels(preprocessMentions(content, dedupedMentionUsers), channels),
+        customEmojis
+      )
     )
   )
   const mentionedUser = (() => {
@@ -267,6 +280,10 @@ export default function MarkdownContent({ content }: Props): React.JSX.Element {
         )
       }
 
+      if (href?.startsWith('spoiler:')) {
+        return <SpoilerReveal>{children}</SpoilerReveal>
+      }
+
       return (
         <a
           href={href}
@@ -328,7 +345,18 @@ export default function MarkdownContent({ content }: Props): React.JSX.Element {
         <ReactMarkdown
           remarkPlugins={[remarkGfm, remarkMath]}
           rehypePlugins={[rehypeKatex]}
-          urlTransform={(url) => url.startsWith('emoji:') || url.startsWith('twemoji:') ? url : defaultUrlTransform(url)}
+          urlTransform={(url) => {
+            if (
+              url.startsWith('emoji:') ||
+              url.startsWith('twemoji:') ||
+              url.startsWith('spoiler:') ||
+              url.startsWith('mention:') ||
+              url.startsWith('channel:')
+            ) {
+              return url
+            }
+            return defaultUrlTransform(url)
+          }}
           components={components}
         >
           {processed}

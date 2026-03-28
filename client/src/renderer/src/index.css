@@ -4147,57 +4147,154 @@ select:focus-visible {
   cursor: pointer;
 }
 
-.vesper-composer-staged-files {
+/* --- Staged file attachment tray (Discord-style cards) --- */
+
+.vesper-staged-tray {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.45rem;
-  padding: 0.65rem 0.75rem 0.4rem;
+  gap: 1rem;
+  padding: 1rem 0.75rem 0.5rem;
+  overflow-x: auto;
   border-bottom: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  scrollbar-width: thin;
 }
 
-.vesper-composer-staged-file {
-  display: inline-flex;
+.vesper-staged-card {
+  position: relative;
+  flex: 0 0 auto;
+  width: 200px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-bg-tertiary) 40%, transparent);
+  overflow: hidden;
+}
+
+.vesper-staged-card-actions {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 4px;
+  z-index: 1;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.vesper-staged-card:hover .vesper-staged-card-actions {
+  opacity: 1;
+}
+
+.vesper-staged-card-action {
+  display: flex;
   align-items: center;
-  gap: 0.4rem;
-  max-width: 16rem;
-  padding: 0.35rem 0.45rem 0.35rem 0.55rem;
-  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
-  border-radius: 0.7rem;
-  background: color-mix(in srgb, var(--color-bg-tertiary) 50%, transparent);
-  font-size: 0.78rem;
-  line-height: 1;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-bg-primary) 85%, transparent);
+  color: var(--color-text-faint);
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  transition: background-color 0.12s ease, color 0.12s ease;
 }
 
-.vesper-composer-staged-name {
+.vesper-staged-card-action:hover {
+  background: var(--color-bg-primary);
+  color: var(--color-text-secondary);
+}
+
+.vesper-staged-card-action-delete:hover {
+  color: #f87171;
+}
+
+.vesper-staged-card-preview {
+  width: 100%;
+  height: 140px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--color-bg-secondary) 60%, transparent);
+}
+
+.vesper-staged-card-spoiler .vesper-staged-card-thumbnail {
+  filter: blur(24px) brightness(0.5);
+}
+
+.vesper-staged-card-spoiler-label {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+.vesper-staged-card-thumbnail {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: filter 0.2s ease;
+}
+
+.vesper-staged-card-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-faintest);
+}
+
+.vesper-staged-card-name {
+  padding: 8px 10px;
+  font-size: 0.78rem;
+  color: var(--color-text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--color-text-secondary);
-  font-weight: 500;
 }
 
-.vesper-composer-staged-size {
-  color: var(--color-text-faint);
-  white-space: nowrap;
+.vesper-staged-card-action-active {
+  color: var(--color-accent-text, #c8a24e) !important;
 }
 
-.vesper-composer-staged-remove {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.3rem;
-  height: 1.3rem;
-  border: 0;
-  border-radius: 0.4rem;
-  background: transparent;
+.vesper-staged-card-anon .vesper-staged-card-name {
+  font-style: italic;
   color: var(--color-text-faint);
+}
+
+/* Spoiler overlay on received file attachments */
+.vesper-file-spoiler-overlay {
+  position: relative;
+  display: block;
   cursor: pointer;
-  transition: background-color 0.14s ease, color 0.14s ease;
+  border: 0;
+  padding: 0;
+  background: none;
+  border-radius: 8px;
+  overflow: hidden;
 }
 
-.vesper-composer-staged-remove:hover {
-  background: color-mix(in srgb, var(--color-bg-tertiary) 80%, transparent);
-  color: #fca5a5;
+.vesper-file-spoiler-overlay img {
+  filter: blur(28px) brightness(0.5);
+  transition: filter 0.2s ease;
+}
+
+.vesper-file-spoiler-label {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  pointer-events: none;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
 }
 
 .vesper-composer-controls {
@@ -4246,7 +4343,6 @@ select:focus-visible {
 
 .vesper-composer-icon-button:hover,
 .vesper-composer-send:hover {
-  background: color-mix(in srgb, var(--color-bg-tertiary) 78%, transparent);
   color: var(--color-text-primary);
 }
 
@@ -4288,34 +4384,133 @@ select:focus-visible {
   color: var(--color-text-faintest);
 }
 
-.vesper-composer-textarea-rich {
-  color: transparent;
-  caret-color: var(--color-text-primary);
-  font-family: var(--font-mono, 'SFMono-Regular', 'Menlo', monospace);
-  tab-size: 2;
-}
+/* --- Slate editor styles --- */
 
-.vesper-composer-rich-preview {
-  min-height: var(--vesper-composer-textarea-height);
+.vesper-slate-editable {
+  flex: 1;
   max-height: var(--vesper-composer-textarea-max-height);
-  overflow: auto;
-  display: flex;
-  align-items: flex-start;
+  border: 0;
+  background: transparent;
   box-sizing: border-box;
+  min-height: var(--vesper-composer-textarea-height);
   padding-block: calc(
     (var(--vesper-composer-textarea-height) - var(--vesper-composer-line-height)) / 2
   );
   padding-inline: 0 0.65rem;
   color: var(--color-text-primary);
+  outline: none;
   font-size: 0.92rem;
   line-height: var(--vesper-composer-line-height);
+  overflow-y: auto;
   word-break: break-word;
-  pointer-events: none;
-  scrollbar-width: none;
+  white-space: break-spaces;
+  caret-color: var(--color-text-primary);
 }
 
-.vesper-composer-rich-preview::-webkit-scrollbar {
-  display: none;
+.vesper-slate-editable [data-slate-placeholder] {
+  color: var(--color-text-faintest) !important;
+  opacity: 1 !important;
+  top: calc(
+    (var(--vesper-composer-textarea-height) - var(--vesper-composer-line-height)) / 2
+  ) !important;
+  pointer-events: none;
+}
+
+/* Leaf decorations */
+.vesper-slate-bold { font-weight: 700; }
+.vesper-slate-italic { font-style: italic; }
+.vesper-slate-underline { text-decoration: underline; }
+.vesper-slate-strikethrough { text-decoration: line-through; }
+.vesper-slate-inline-code {
+  background: var(--color-bg-tertiary);
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+  font-family: var(--font-mono, 'SFMono-Regular', 'Menlo', monospace);
+  font-size: 85%;
+}
+.vesper-slate-spoiler-composer {
+  background: var(--color-bg-tertiary);
+  border-radius: 3px;
+  padding: 0 0.15em;
+}
+.vesper-slate-syntax-mark { color: var(--color-text-faintest); }
+.vesper-slate-link { color: var(--color-accent-text); text-decoration: underline; }
+
+/* Inline void elements */
+.vesper-slate-inline-void {
+  display: inline;
+  vertical-align: baseline;
+  cursor: default;
+  user-select: none;
+}
+.vesper-slate-emoji {
+  display: inline;
+  line-height: 0;
+}
+.vesper-slate-emoji img {
+  display: inline !important;
+  height: 1.375em;
+  width: 1.375em;
+  object-fit: contain;
+  vertical-align: -0.3em;
+}
+.vesper-slate-mention {
+  background: var(--color-accent-bg, rgba(200, 162, 78, 0.15));
+  color: var(--color-accent-text, #c8a24e);
+  border-radius: 3px;
+  padding: 0 2px;
+  font-weight: 500;
+}
+.vesper-slate-channel-mention {
+  background: var(--color-accent-bg, rgba(200, 162, 78, 0.15));
+  color: var(--color-accent-text, #c8a24e);
+  border-radius: 3px;
+  padding: 0 2px;
+  font-weight: 500;
+}
+
+.vesper-slate-blockquote-text {
+  color: var(--color-text-faint);
+  border-left: 3px solid var(--color-accent, #c8a24e);
+  padding-left: 0.5rem;
+  margin-left: 2px;
+}
+
+/* Block elements */
+.vesper-slate-blockquote {
+  border-left: 3px solid var(--color-accent, #c8a24e);
+  padding-left: 0.75rem;
+  margin: 0.25rem 0;
+}
+.vesper-slate-code-block {
+  background: var(--color-bg-tertiary);
+  border-radius: 4px;
+  padding: 0.5rem;
+  font-family: var(--font-mono, 'SFMono-Regular', 'Menlo', monospace);
+  font-size: 85%;
+  margin: 0.25rem 0;
+  overflow-x: auto;
+}
+
+/* Spoiler in sent messages */
+.vesper-spoiler {
+  border-radius: 3px;
+  cursor: pointer;
+  display: inline;
+  transition: background-color 0.1s ease;
+}
+.vesper-spoiler-hidden {
+  background: var(--color-text-primary, #e0e0e0);
+}
+.vesper-spoiler-hidden .vesper-spoiler-content {
+  opacity: 0;
+  user-select: none;
+}
+.vesper-spoiler-revealed {
+  background: var(--color-bg-tertiary, rgba(255, 255, 255, 0.06));
+}
+.vesper-spoiler-revealed .vesper-spoiler-content {
+  opacity: 1;
 }
 
 .vesper-composer-rich-markdown {

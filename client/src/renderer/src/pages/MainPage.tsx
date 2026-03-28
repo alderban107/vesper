@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useRef, useState } from 'react'
+import { Suspense, useEffect, useRef, useState, useCallback } from 'react'
 import { SendHorizonal, Star, X } from 'lucide-react'
 import Sidebar from '../components/layout/Sidebar'
 import Header from '../components/layout/Header'
@@ -6,6 +6,7 @@ import MessageList from '../components/chat/MessageList'
 import MessageInput from '../components/chat/MessageInput'
 import MessageItem from '../components/chat/MessageItem'
 import MessageFeed from '../components/chat/message/MessageFeed'
+import VesperEditor from '../components/chat/slate/VesperEditor'
 import { useServerStore } from '../stores/serverStore'
 import { useDmStore } from '../stores/dmStore'
 import { useUIStore } from '../stores/uiStore'
@@ -181,7 +182,6 @@ export default function MainPage(): React.JSX.Element {
     }
     return EMPTY_MESSAGES
   })
-  const [threadReply, setThreadReply] = useState('')
   const sawInitialSocketOpenRef = useRef(false)
   const [connectionState, setConnectionState] = useState(() => {
     const clientState = getRendererClient().getState()
@@ -318,23 +318,11 @@ export default function MainPage(): React.JSX.Element {
   }, [activeChannelId, closeThread, selectedConversationId])
 
   useEffect(() => {
-    setThreadReply('')
     setReplyingTo(null)
   }, [activeThreadParentId, setReplyingTo])
 
-  const submitThreadReply = (): void => {
-    const trimmed = threadReply.trim()
-    if (!trimmed) {
-      return
-    }
-
-    void sendThreadReply(trimmed)
-    setThreadReply('')
-  }
-
   const handleThreadSubmit = (event: React.FormEvent<HTMLFormElement>): void => {
     event.preventDefault()
-    submitThreadReply()
   }
 
   const renderThreadPanel = (mobilePanel: boolean): React.JSX.Element | null => {
@@ -427,23 +415,18 @@ export default function MainPage(): React.JSX.Element {
               </button>
             </div>
           )}
-          <textarea
-            value={threadReply}
-            onChange={(event) => setThreadReply(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault()
-                submitThreadReply()
-              }
+          <VesperEditor
+            mode="compose"
+            onSubmit={(markdown) => {
+              const trimmed = markdown.trim()
+              if (trimmed) void sendThreadReply(trimmed)
             }}
             placeholder="Reply to thread"
-            rows={1}
-            className="vesper-thread-composer-textarea"
-            disabled={!activeThreadParentId}
+            autoFocus
           />
           <button
             type="submit"
-            disabled={!threadReply.trim() || !activeThreadParentId}
+            disabled={!activeThreadParentId}
             className="vesper-thread-composer-send"
           >
             <SendHorizonal className="w-4 h-4" />

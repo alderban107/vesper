@@ -43,7 +43,9 @@ export async function sendMessageWithEncryptionRetry(
     }
 
     if (!sent) {
-      await inputLocator.fill(text)
+      await inputLocator.click()
+      await page.keyboard.press('Meta+a')
+      await page.keyboard.type(text)
       await inputLocator.press('Enter')
       sent = true
     }
@@ -59,7 +61,9 @@ export async function sendMessageWithEncryptionRetry(
     if (result === 'error') {
       sent = false
       await dismissEncryptionAlert(page)
-      await inputLocator.fill('')
+      await inputLocator.click()
+      await page.keyboard.press('Meta+a')
+      await page.keyboard.press('Backspace')
       await page.waitForTimeout(POLL_INTERVAL)
       continue
     }

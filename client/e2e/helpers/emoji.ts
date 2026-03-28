@@ -61,7 +61,7 @@ export async function useCustomEmojiInMessage(
 ): Promise<void> {
   const textarea = composer === 'channel'
     ? page.locator('[data-testid="message-input"]')
-    : page.locator('.vesper-composer-textarea')
+    : page.locator('[data-testid="message-input"]')
 
   await textarea.type(`:${emojiName}:`)
 }

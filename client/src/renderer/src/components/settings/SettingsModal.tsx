@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { Bell, Globe, Laptop2, Mic, Moon, Palette, Pencil, Shield, Sun, UserRound, Volume2 } from 'lucide-react'
+import { Bell, Globe, Laptop2, Lock, Mic, Moon, Palette, Pencil, Shield, Sun, UserRound, Volume2 } from 'lucide-react'
 import { getLocalDeviceIdentity } from '@vesper/sdk/auth'
 import { usePresenceStore } from '../../stores/presenceStore'
 import { useUIStore } from '../../stores/uiStore'
+import { useSettingsStore } from '../../stores/settingsStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useVoiceStore } from '../../stores/voiceStore'
 import { useAuthStore } from '../../stores/authStore'
@@ -13,7 +14,7 @@ import SettingsShell, { type SettingsSectionGroup } from './SettingsShell'
 import { getStoredValue, setStoredValue, getStoredJson, setStoredJson } from '../../utils/localStorage'
 import { type ThemeOption, applyTheme, watchSystemTheme } from '../../utils/theme'
 
-type UserSettingsSection = 'profile' | 'appearance' | 'notifications' | 'voice' | 'advanced'
+type UserSettingsSection = 'profile' | 'appearance' | 'notifications' | 'voice' | 'privacy' | 'advanced'
 
 interface AudioDevice {
   deviceId: string
@@ -171,6 +172,10 @@ export default function SettingsModal(): React.JSX.Element {
   const revokeDevice = useAuthStore((s) => s.revokeDevice)
   const myStatus = usePresenceStore((s) => s.myStatus)
   const localDevice = getLocalDeviceIdentity()
+  const anonFilenames = useSettingsStore((s) => s.anonFilenames)
+  const setAnonFilenames = useSettingsStore((s) => s.setAnonFilenames)
+  const stripExif = useSettingsStore((s) => s.stripExif)
+  const setStripExif = useSettingsStore((s) => s.setStripExif)
 
   const avatarInputRef = useRef<HTMLInputElement>(null)
   const bannerInputRef = useRef<HTMLInputElement>(null)
@@ -215,6 +220,7 @@ export default function SettingsModal(): React.JSX.Element {
         { id: 'appearance', label: 'Appearance', icon: Palette },
         { id: 'notifications', label: 'Notifications', icon: Bell },
         { id: 'voice', label: 'Voice & Video', icon: Volume2 },
+        { id: 'privacy', label: 'Privacy', icon: Lock },
         { id: 'advanced', label: 'Advanced', icon: Shield }
       ]
     }
@@ -735,6 +741,56 @@ export default function SettingsModal(): React.JSX.Element {
             >
               {testingSpeaker ? 'Testing...' : 'Play Test Tone'}
             </button>
+          </div>
+        </>
+      )}
+
+      {activeSection === 'privacy' && (
+        <>
+          <div className="vesper-settings-page-header">
+            <div>
+              <h1 className="vesper-settings-page-title">Privacy</h1>
+            </div>
+          </div>
+
+          <div className="vesper-settings-section-heading">File Uploads</div>
+
+          <div className="vesper-settings-stack">
+            <div className="vesper-settings-row">
+              <div>
+                <div className="vesper-settings-row-title">Anonymous Filenames</div>
+                <div className="vesper-settings-row-copy">
+                  Replace original filenames with random characters when uploading. Prevents leaking file naming patterns or personal info in filenames.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAnonFilenames(!anonFilenames)}
+                className={anonFilenames ? 'vesper-settings-toggle vesper-settings-toggle-on' : 'vesper-settings-toggle'}
+                aria-pressed={anonFilenames}
+                aria-label="Anonymous Filenames"
+              >
+                <span className="vesper-settings-toggle-knob" />
+              </button>
+            </div>
+
+            <div className="vesper-settings-row">
+              <div>
+                <div className="vesper-settings-row-title">Strip EXIF Data</div>
+                <div className="vesper-settings-row-copy">
+                  Remove metadata (location, camera info, timestamps) from images before uploading. Enabled by default for privacy.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setStripExif(!stripExif)}
+                className={stripExif ? 'vesper-settings-toggle vesper-settings-toggle-on' : 'vesper-settings-toggle'}
+                aria-pressed={stripExif}
+                aria-label="Strip EXIF Data"
+              >
+                <span className="vesper-settings-toggle-knob" />
+              </button>
+            </div>
           </div>
         </>
       )}

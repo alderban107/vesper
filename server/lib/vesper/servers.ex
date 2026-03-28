@@ -1380,7 +1380,9 @@ defmodule Vesper.Servers do
       |> Enum.reduce({[], []}, fn {{id, position}, idx}, {params, fragments} ->
         id_idx = idx * 2 + 1
         pos_idx = idx * 2 + 2
-        {params ++ [Ecto.UUID.dump!(id), position], fragments ++ ["($#{id_idx}::uuid, $#{pos_idx}::integer)"]}
+
+        {params ++ [Ecto.UUID.dump!(id), position],
+         fragments ++ ["($#{id_idx}::uuid, $#{pos_idx}::integer)"]}
       end)
 
     values = Enum.join(placeholders, ", ")

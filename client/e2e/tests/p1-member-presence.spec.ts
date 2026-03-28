@@ -114,7 +114,7 @@ test.describe('P1: Member list and presence', () => {
     await messageBtn.click()
 
     // Should navigate to DM view with charlie
-    await alice.page.waitForSelector('.vesper-composer-textarea', { timeout: 10_000 })
+    await alice.page.waitForSelector('[data-testid="message-input"]', { timeout: 10_000 })
     await waitForAppShell(alice.page)
   })
 })

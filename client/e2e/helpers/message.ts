@@ -87,9 +87,11 @@ export async function editMessage(
   await row.hover()
   await row.locator('[data-testid="edit-message"]').click()
 
-  const editInput = row.locator('[data-testid="edit-input"]')
+  const editInput = row.locator('[data-slate-editor]')
   await editInput.waitFor({ state: 'visible', timeout: 10_000 })
-  await editInput.fill(newText)
+  await editInput.click()
+  await page.keyboard.press('Meta+a')
+  await page.keyboard.type(newText)
 
   const deadline = Date.now() + 15_000
   while (Date.now() < deadline) {
