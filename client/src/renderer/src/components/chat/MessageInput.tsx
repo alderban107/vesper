@@ -368,10 +368,14 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
   }
 
   // --- Slate onChange ---
+  const contentRef = useRef('')
   const handleSlateChange = useCallback(() => {
     const markdown = serializeToMarkdown(editor.children)
-    setContent(markdown)
-    handleTyping()
+    if (markdown !== contentRef.current) {
+      contentRef.current = markdown
+      setContent(markdown)
+      handleTyping()
+    }
     updateAutocompleteState()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor, handleTyping])

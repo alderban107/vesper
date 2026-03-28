@@ -245,10 +245,13 @@ export default memo(function MessageItem({
   const threadAnchorMessage = message.parent_message_id ? (parentMessage ?? message) : message
   const threadAnchorId = threadAnchorMessage.id
   // Only count actual thread replies (not inline quote replies) for the summary
-  const fetchedThreadReplies = useMessageStore(
-    (s) => s.threadRepliesByParent[threadAnchorId] ?? []
+  const threadReplyCount = useMessageStore(
+    (s) => {
+      const replies = s.threadRepliesByParent[threadAnchorId]
+      if (!replies) return 0
+      return replies.filter((r) => !r.is_reply).length
+    }
   )
-  const threadReplyCount = fetchedThreadReplies.filter((r) => !r.is_reply).length
   const isActiveThread = activeThreadParentId === threadAnchorId
   const threadActionLabel = message.parent_message_id ? 'Open thread' : 'Start thread'
   const showThreadSummary = !message.parent_message_id && threadReplyCount > 0
