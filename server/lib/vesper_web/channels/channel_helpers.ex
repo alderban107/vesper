@@ -117,6 +117,7 @@ defmodule VesperWeb.ChannelHelpers do
       sender: sender_json(message.sender),
       expires_at: message.expires_at,
       parent_message_id: message.parent_message_id,
+      is_reply: message.is_reply,
       inserted_at: message.inserted_at,
       attachments: attachments_json(message),
       reactions: reactions_json(message)

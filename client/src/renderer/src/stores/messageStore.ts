@@ -384,6 +384,7 @@ function buildMessageFromCache(record: CachedMessageRecord): Message {
     inserted_at: record.insertedAt,
     expires_at: null,
     parent_message_id: record.parentMessageId,
+    is_reply: false,
     attachments: [],
     reactions: [],
     encrypted: Boolean(record.ciphertext),
@@ -461,6 +462,7 @@ async function buildMessageFromSdkProcessed(
     inserted_at: raw.inserted_at,
     expires_at: raw.expires_at ?? null,
     parent_message_id: raw.parent_message_id ?? null,
+    is_reply: raw.is_reply ?? false,
     attachments: raw.attachments ?? [],
     reactions: await resolveReactionGroups(targetId, raw.reactions),
     encrypted: processed.encrypted,
@@ -1650,6 +1652,7 @@ export interface Message {
   inserted_at: string
   expires_at: string | null
   parent_message_id: string | null
+  is_reply?: boolean
   attachments?: Attachment[]
   attachment_filenames?: string[]
   reactions?: ReactionGroup[]
@@ -2553,6 +2556,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       targetId: channelId,
       content: resolvedContent,
       parentMessageId: parentId,
+      isReply: shouldClearInlineReply && !!parentId,
       channelId,
       serverId: activeServer?.id ?? null,
       clientNonce
@@ -2570,6 +2574,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         resolvedContent,
         {
           parentMessageId: parentId,
+          isReply: shouldClearInlineReply && !!parentId,
           mentionedUserIds,
           clientNonce
         }
@@ -3151,6 +3156,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       targetId: conversationId,
       content,
       parentMessageId: parentId,
+      isReply: shouldClearInlineReply && !!parentId,
       conversationId,
       clientNonce
     })
@@ -3167,6 +3173,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         content,
         {
           parentMessageId: parentId,
+          isReply: shouldClearInlineReply && !!parentId,
           clientNonce
         }
       )
@@ -4059,6 +4066,7 @@ function buildOptimisticMessage(args: {
   targetId: string
   content: string
   parentMessageId?: string
+  isReply?: boolean
   channelId?: string | null
   conversationId?: string | null
   serverId?: string | null
@@ -4085,6 +4093,7 @@ function buildOptimisticMessage(args: {
     inserted_at: new Date().toISOString(),
     expires_at: null,
     parent_message_id: args.parentMessageId ?? null,
+    is_reply: args.isReply ?? false,
     attachments: [],
     reactions: [],
     encrypted: true,

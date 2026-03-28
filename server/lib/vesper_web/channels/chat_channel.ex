@@ -72,7 +72,8 @@ defmodule VesperWeb.ChatChannel do
             client_nonce: client_nonce,
             mls_epoch: epoch,
             channel_id: socket.assigns.channel_id,
-            sender_id: socket.assigns.user_id
+            sender_id: socket.assigns.user_id,
+            is_reply: params["is_reply"] == true
           }
           |> maybe_add_parent_id(parent_message_id)
           |> maybe_add_expires_at(socket.assigns.disappearing_ttl)

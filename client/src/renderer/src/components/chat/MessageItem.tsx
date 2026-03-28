@@ -244,15 +244,11 @@ export default memo(function MessageItem({
     : null
   const threadAnchorMessage = message.parent_message_id ? (parentMessage ?? message) : message
   const threadAnchorId = threadAnchorMessage.id
-  const fetchedThreadReplyCount = useMessageStore(
-    (s) => s.threadRepliesByParent[threadAnchorId]?.length ?? 0
+  // Only count actual thread replies (not inline quote replies) for the summary
+  const fetchedThreadReplies = useMessageStore(
+    (s) => s.threadRepliesByParent[threadAnchorId] ?? []
   )
-  const inlineThreadReplyCount = messages
-    ? messages.reduce((count, entry) => {
-      return count + (entry.parent_message_id === threadAnchorId ? 1 : 0)
-    }, 0)
-    : 0
-  const threadReplyCount = Math.max(fetchedThreadReplyCount, inlineThreadReplyCount)
+  const threadReplyCount = fetchedThreadReplies.filter((r) => !r.is_reply).length
   const isActiveThread = activeThreadParentId === threadAnchorId
   const threadActionLabel = message.parent_message_id ? 'Open thread' : 'Start thread'
   const showThreadSummary = !message.parent_message_id && threadReplyCount > 0
@@ -362,7 +358,16 @@ export default memo(function MessageItem({
       return parentParsed.text || parentParsed.file.name || 'Sent a file'
     }
 
-    return parentParsed.text || 'View message'
+    const raw = parentParsed.text || 'View message'
+    return raw
+      .replace(/<@([0-9a-f-]{36})>/g, (_match, userId: string) => {
+        const member = membersByUserId.get(userId)
+        const name = member?.user?.display_name || member?.user?.username || 'user'
+        return `@${name}`
+      })
+      .replace(/<@everyone>/g, '@everyone')
+      .replace(/<#([0-9a-f-]{36})>/g, '#channel')
+      .replace(/<a?:([a-zA-Z0-9_~-]{2,32}):[a-zA-Z0-9_-]+>/g, ':$1:')
   })()
   const truncatedReplyPreview =
     replyPreview.length > 72 ? `${replyPreview.slice(0, 72)}...` : replyPreview

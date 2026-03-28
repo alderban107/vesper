@@ -43,12 +43,20 @@ function getReplyAuthor(message: Message): string {
   return message.sender?.display_name || message.sender?.username || 'Unknown'
 }
 
+function cleanPreviewText(text: string): string {
+  return text
+    .replace(/<@([0-9a-f-]{36})>/g, '@user')
+    .replace(/<@everyone>/g, '@everyone')
+    .replace(/<#([0-9a-f-]{36})>/g, '#channel')
+    .replace(/<a?:([a-zA-Z0-9_~-]{2,32}):[a-zA-Z0-9_-]+>/g, ':$1:')
+}
+
 function getReplyPreview(message: Message): string {
   const parsed = parseMessageContent(message.content || '')
   if (parsed.type === 'file') {
     return parsed.text || parsed.file.name || 'Sent a file'
   }
-  return parsed.text || ''
+  return cleanPreviewText(parsed.text || '')
 }
 
 function isImageFile(file: File): boolean {

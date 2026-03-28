@@ -118,6 +118,7 @@ export interface EncryptedScopeWatchEvent {
 
 export interface SendTextOptions {
   parentMessageId?: string | null
+  isReply?: boolean
   mentionedUserIds?: string[]
   clientNonce?: string | null
 }
@@ -1099,6 +1100,10 @@ export class VesperEncryptedChat {
 
           if (options.parentMessageId) {
             messagePayload.parent_message_id = options.parentMessageId
+          }
+
+          if (options.isReply) {
+            messagePayload.is_reply = true
           }
 
           if (options.mentionedUserIds && options.mentionedUserIds.length > 0) {

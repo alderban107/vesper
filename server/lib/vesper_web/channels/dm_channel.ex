@@ -65,7 +65,8 @@ defmodule VesperWeb.DmChannel do
           client_nonce: client_nonce,
           mls_epoch: epoch,
           conversation_id: socket.assigns.conversation_id,
-          sender_id: socket.assigns.user_id
+          sender_id: socket.assigns.user_id,
+          is_reply: params["is_reply"] == true
         }
         |> maybe_add_parent_id(parent_message_id)
 

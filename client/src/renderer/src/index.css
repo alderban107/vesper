@@ -6119,7 +6119,7 @@ select:focus-visible {
 
 .vesper-emoji-picker-list {
   overflow-y: auto;
-  padding: 0.55rem 0.35rem 0.75rem 0.75rem;
+  padding: 0;
 }
 
 .vesper-emoji-picker-section + .vesper-emoji-picker-section {
@@ -6130,7 +6130,7 @@ select:focus-visible {
   position: sticky;
   top: 0;
   z-index: 1;
-  padding: 0.35rem 0.15rem 0.5rem;
+  padding: 0.35rem 0.15rem 0.5rem 0.75rem;
   background: linear-gradient(180deg, color-mix(in srgb, var(--color-bg-secondary) 95%, transparent), rgba(28, 31, 51, 0));
   color: var(--color-text-faint);
   font-size: 0.72rem;
