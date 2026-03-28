@@ -1,5 +1,5 @@
 import { memo, Suspense, useState, useRef, useEffect, useMemo, useCallback } from 'react'
-import { Copy, Lock, MessageSquare, Pencil, Pin, Reply, Trash2 } from 'lucide-react'
+import { Copy, Lock, MessageSquare, Pencil, Pin, Reply, Trash2, Bookmark } from 'lucide-react'
 import type { Message } from '../../stores/messageStore'
 import { useMessageStore, parseMessageContent } from '../../stores/messageStore'
 import { useAuthStore } from '../../stores/authStore'
@@ -20,6 +20,7 @@ import ProfilePopout from '../profile/ProfilePopout'
 import { formatCustomEmojiToken, type CustomEmoji } from '../../utils/emoji'
 import lazyWithRetry from '../../utils/lazyWithRetry'
 import VesperEditor from './slate/VesperEditor'
+import { getRendererClient } from '../../sdk/client'
 
 const MarkdownContent = lazyWithRetry(() => import('./MarkdownContent'))
 const EMPTY_EMOJIS: CustomEmoji[] = []
@@ -342,6 +343,20 @@ export default memo(function MessageItem({
             }
           ]
         : []),
+      {
+        label: 'Bookmark',
+        icon: Bookmark,
+        onClick: () => {
+          void getRendererClient().apiFetch('/api/v1/saved-messages', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              message_id: message.id,
+              channel_id: message.channel_id
+            })
+          })
+        }
+      },
       {
         label: 'Copy Message ID',
         icon: Copy,

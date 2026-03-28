@@ -138,6 +138,11 @@ defmodule VesperWeb.Router do
     get("/messages/:id/thread", MessageController, :thread)
     get("/messages/:id", MessageController, :show)
 
+    # Saved messages (bookmarks)
+    get("/saved-messages", MessageController, :saved)
+    post("/saved-messages", MessageController, :save)
+    delete("/saved-messages/:message_id", MessageController, :unsave)
+
     # DM conversations
     resources("/conversations", ConversationController, only: [:create, :index, :show])
     get("/conversations/:conversation_id/messages", ConversationController, :messages)

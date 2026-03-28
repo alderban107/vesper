@@ -1373,4 +1373,44 @@ defmodule Vesper.Chat do
         nil
     end
   end
+
+  # --- Saved Messages (Bookmarks) ---
+
+  alias Vesper.Chat.SavedMessage
+
+  def save_message(user_id, message_id, channel_id \\ nil, note \\ nil) do
+    %SavedMessage{}
+    |> SavedMessage.changeset(%{
+      user_id: user_id,
+      message_id: message_id,
+      channel_id: channel_id,
+      note: note
+    })
+    |> Repo.insert()
+  end
+
+  def unsave_message(user_id, message_id) do
+    case Repo.get_by(SavedMessage, user_id: user_id, message_id: message_id) do
+      nil -> {:error, :not_found}
+      saved -> Repo.delete(saved)
+    end
+  end
+
+  def list_saved_messages(user_id, opts \\ []) do
+    limit = Keyword.get(opts, :limit, 50)
+
+    from(s in SavedMessage,
+      where: s.user_id == ^user_id,
+      order_by: [desc: s.inserted_at],
+      limit: ^limit,
+      preload: [message: [:sender]]
+    )
+    |> Repo.all()
+  end
+
+  def is_saved?(user_id, message_id) do
+    Repo.exists?(
+      from(s in SavedMessage, where: s.user_id == ^user_id and s.message_id == ^message_id)
+    )
+  end
 end

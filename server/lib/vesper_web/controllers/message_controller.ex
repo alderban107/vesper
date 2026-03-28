@@ -335,4 +335,68 @@ defmodule VesperWeb.MessageController do
       avatar_url: sender.avatar_url
     }
   end
+
+  # --- Saved Messages (Bookmarks) ---
+
+  def saved(conn, _params) do
+    user = conn.assigns.current_user
+
+    saved_messages =
+      Chat.list_saved_messages(user.id)
+      |> Enum.map(fn saved ->
+        message = saved.message
+
+        %{
+          id: saved.id,
+          message_id: message.id,
+          channel_id: saved.channel_id,
+          note: saved.note,
+          saved_at: saved.inserted_at,
+          message: %{
+            id: message.id,
+            content: message.content,
+            ciphertext:
+              if(message.ciphertext, do: Base.encode64(message.ciphertext), else: nil),
+            mls_epoch: message.mls_epoch,
+            sender_id: message.sender_id,
+            sender: sender_json(message.sender),
+            inserted_at: message.inserted_at,
+            channel_id: message.channel_id,
+            conversation_id: message.conversation_id
+          }
+        }
+      end)
+
+    json(conn, %{saved_messages: saved_messages})
+  end
+
+  def save(conn, %{"message_id" => message_id} = params) do
+    user = conn.assigns.current_user
+    channel_id = Map.get(params, "channel_id")
+    note = Map.get(params, "note")
+
+    case Chat.save_message(user.id, message_id, channel_id, note) do
+      {:ok, saved} ->
+        json(conn, %{id: saved.id, message_id: message_id})
+
+      {:error, changeset} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "Could not save message", details: inspect(changeset.errors)})
+    end
+  end
+
+  def unsave(conn, %{"message_id" => message_id}) do
+    user = conn.assigns.current_user
+
+    case Chat.unsave_message(user.id, message_id) do
+      {:ok, _} ->
+        json(conn, %{ok: true})
+
+      {:error, :not_found} ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "Saved message not found"})
+    end
+  end
 end
