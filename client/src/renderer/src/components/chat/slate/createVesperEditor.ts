@@ -5,6 +5,7 @@ import { withInlineVoids } from './plugins/withInlineVoids'
 import { withSoftBreak } from './plugins/withSoftBreak'
 import { withBlockQuotes } from './plugins/withBlockQuotes'
 import { withCodeBlocks } from './plugins/withCodeBlocks'
+import { withMaxLength } from './plugins/withMaxLength'
 
 export interface VesperEditorOptions {
   onSubmit: () => void
@@ -12,15 +13,17 @@ export interface VesperEditorOptions {
 
 export function createVesperEditor(options: VesperEditorOptions) {
   const base = createEditor()
-  const editor = withCodeBlocks(
-    withBlockQuotes(
-      withSoftBreak(
-        withInlineVoids(
-          withReact(
-            withHistory(base)
-          )
-        ),
-        options.onSubmit
+  const editor = withMaxLength(
+    withCodeBlocks(
+      withBlockQuotes(
+        withSoftBreak(
+          withInlineVoids(
+            withReact(
+              withHistory(base)
+            )
+          ),
+          options.onSubmit
+        )
       )
     )
   )
