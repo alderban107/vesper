@@ -33,8 +33,10 @@ export default function MessageList({ scope }: Props): React.JSX.Element {
     () => allMessages.filter((message) => {
       const isThreadMessage =
         Boolean(message.thread_root_message_id) ||
-        (!message.thread_root_message_id && Boolean(message.parent_message_id) && message.is_reply !== true)
-      return !isThreadMessage
+        (!message.thread_root_message_id &&
+          Boolean(message.parent_message_id) &&
+          message.is_reply !== true)
+      return !isThreadMessage || message.reply_to_message_id != null
     }),
     [allMessages]
   )

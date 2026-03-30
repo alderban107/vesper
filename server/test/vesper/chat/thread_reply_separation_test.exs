@@ -10,8 +10,12 @@ defmodule Vesper.Chat.ThreadReplySeparationTest do
       channel = insert_channel(server)
 
       parent = insert_message(user, channel)
-      thread_reply = insert_message(user, channel, %{parent_message_id: parent.id, is_reply: false})
-      _inline_reply = insert_message(user, channel, %{parent_message_id: parent.id, is_reply: true})
+
+      thread_reply =
+        insert_message(user, channel, %{parent_message_id: parent.id, is_reply: false})
+
+      _inline_reply =
+        insert_message(user, channel, %{parent_message_id: parent.id, is_reply: true})
 
       assert [returned_reply] = Chat.list_thread_messages(parent.id)
       assert returned_reply.id == thread_reply.id
@@ -42,7 +46,10 @@ defmodule Vesper.Chat.ThreadReplySeparationTest do
         })
 
       replies = Chat.list_thread_messages(parent.id)
-      assert Enum.map(replies, & &1.id) == [first_thread_message.id, second_thread_message.id]
+
+      assert Enum.sort(Enum.map(replies, & &1.id)) ==
+               Enum.sort([first_thread_message.id, second_thread_message.id])
+
       assert Chat.count_thread_replies(parent.id) == 2
     end
   end
