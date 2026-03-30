@@ -29,17 +29,7 @@ export default function MessageList({ scope }: Props): React.JSX.Element {
   const allMessages = useMessageStore((s) =>
     s.messagesByChannel[scopeId] ?? EMPTY_MESSAGES
   )
-  const messages = useMemo(
-    () => allMessages.filter((message) => {
-      const isThreadMessage =
-        Boolean(message.thread_root_message_id) ||
-        (!message.thread_root_message_id &&
-          Boolean(message.parent_message_id) &&
-          message.is_reply !== true)
-      return !isThreadMessage || message.reply_to_message_id != null
-    }),
-    [allMessages]
-  )
+  const messages = useMemo(() => allMessages, [allMessages])
   const typingUsers = useMessageStore((s) =>
     s.typingUsers[scopeId] ?? EMPTY_TYPING
   )
