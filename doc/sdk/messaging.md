@@ -46,7 +46,10 @@ interface ProcessedScopeMessage {
   conversationId: string | null
   senderId: string | null
   senderUsername: string | null
-  parentMessageId: string | null
+  parentMessageId: string | null   // Legacy compatibility field
+  threadRootMessageId: string | null
+  replyToMessageId: string | null
+  isReply: boolean
   insertedAt: string
   content: string           // Server-stored ciphertext
   plaintext: string | null  // Decrypted text (available locally)
@@ -93,6 +96,21 @@ const messages = await chat.fetchMessages(channelId, {
 ```
 
 History messages are decrypted on fetch using cached group states. If a message's MLS epoch is too old and the group state for that epoch is no longer available, `plaintext` will be `null`.
+
+## Threads and Inline Replies
+
+Vesper now treats thread membership and reply targeting as separate message relations.
+
+- `threadRootMessageId` means the message belongs to a thread rooted at a top-level message.
+- `replyToMessageId` means the message is replying to a specific message.
+- A thread message may also set `replyToMessageId` to quote a specific message inside the thread without creating a nested thread.
+- `parentMessageId` remains as a legacy compatibility field during the migration from the old overloaded parent model.
+
+In the product UI, this maps to:
+
+- main-timeline reply → `replyToMessageId` only
+- thread message → `threadRootMessageId` only
+- thread message replying to another message inside the thread → both fields set
 
 ## Message Payloads
 

@@ -280,7 +280,12 @@ export default function MainPage(): React.JSX.Element {
     (voiceRoomType === 'dm' || (isMobile && !isCurrentVoiceRoomView))
   const showThreadPanel = Boolean(activeThreadParentId && (isChannelView || isDmView))
   const inlineThreadReplies = activeThreadParentId
-    ? activeTargetMessages.filter((message) => message.parent_message_id === activeThreadParentId)
+    ? activeTargetMessages.filter((message) => {
+      const threadRootId =
+        message.thread_root_message_id ??
+        (!message.is_reply ? message.parent_message_id : null)
+      return threadRootId === activeThreadParentId
+    })
     : EMPTY_MESSAGES
   const threadReplies = mergeThreadReplies(threadRepliesFromApi, inlineThreadReplies)
   const resolvedThreadParent = activeThreadParent ?? (

@@ -365,12 +365,15 @@ defmodule Vesper.Runtime do
     end
   end
 
-  defp maybe_create_thread_relation(%RoomEvent{} = event, %Message{parent_message_id: nil}) do
-    {:ok, event}
-  end
-
   defp maybe_create_thread_relation(%RoomEvent{} = event, %Message{} = message) do
-    case Repo.get_by(RoomEvent, message_id: message.parent_message_id) do
+    thread_root_id =
+      cond do
+        is_binary(message.thread_root_message_id) -> message.thread_root_message_id
+        is_binary(message.parent_message_id) and message.is_reply != true -> message.parent_message_id
+        true -> nil
+      end
+
+    case thread_root_id && Repo.get_by(RoomEvent, message_id: thread_root_id) do
       nil ->
         {:ok, event}
 
@@ -405,6 +408,8 @@ defmodule Vesper.Runtime do
   defp message_content(%Message{} = message) do
     %{}
     |> maybe_put("parent_message_id", message.parent_message_id)
+    |> maybe_put("thread_root_message_id", message.thread_root_message_id)
+    |> maybe_put("reply_to_message_id", message.reply_to_message_id)
     |> maybe_put("edited_at", message.edited_at)
     |> maybe_put("expires_at", message.expires_at)
   end

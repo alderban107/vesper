@@ -84,6 +84,9 @@ export interface ProcessedScopeMessage {
   senderId: string | null
   senderUsername: string | null
   parentMessageId: string | null
+  threadRootMessageId: string | null
+  replyToMessageId: string | null
+  isReply: boolean
   insertedAt: string
   content: string
   plaintext: string | null
@@ -118,6 +121,8 @@ export interface EncryptedScopeWatchEvent {
 
 export interface SendTextOptions {
   parentMessageId?: string | null
+  threadRootMessageId?: string | null
+  replyToMessageId?: string | null
   isReply?: boolean
   mentionedUserIds?: string[]
   clientNonce?: string | null
@@ -496,7 +501,16 @@ function normalizeHistoryBundleItem(
     parentMessageId:
       typeof item.parentMessageId === 'string' || item.parentMessageId === null
         ? (item.parentMessageId as string | null)
-        : null
+        : null,
+    threadRootMessageId:
+      typeof item.threadRootMessageId === 'string' || item.threadRootMessageId === null
+        ? (item.threadRootMessageId as string | null)
+        : null,
+    replyToMessageId:
+      typeof item.replyToMessageId === 'string' || item.replyToMessageId === null
+        ? (item.replyToMessageId as string | null)
+        : null,
+    isReply: item.isReply === true
   }
 }
 
@@ -1096,6 +1110,14 @@ export class VesperEncryptedChat {
           const messagePayload: Record<string, unknown> = {
             ciphertext: encrypted.ciphertext,
             mls_epoch: encrypted.epoch
+          }
+
+          if (options.threadRootMessageId) {
+            messagePayload.thread_root_message_id = options.threadRootMessageId
+          }
+
+          if (options.replyToMessageId) {
+            messagePayload.reply_to_message_id = options.replyToMessageId
           }
 
           if (options.parentMessageId) {
@@ -2650,6 +2672,7 @@ export class VesperEncryptedChat {
         senderId: rawMessage.sender_id ?? null,
         senderUsername: rawMessage.sender?.username ?? null,
         parentMessageId: rawMessage.parent_message_id ?? null,
+        isReply: rawMessage.is_reply ?? false,
         ciphertext: ciphertext ? Buffer.from(ciphertext, 'base64') : null,
         decryptedContent: decryptionFailed ? null : plaintext,
         mlsEpoch: rawMessage.mls_epoch ?? null,
@@ -2671,6 +2694,9 @@ export class VesperEncryptedChat {
       senderId: rawMessage.sender_id ?? null,
       senderUsername: rawMessage.sender?.username ?? null,
       parentMessageId: rawMessage.parent_message_id ?? null,
+      threadRootMessageId: rawMessage.thread_root_message_id ?? null,
+      replyToMessageId: rawMessage.reply_to_message_id ?? null,
+      isReply: rawMessage.is_reply ?? false,
       insertedAt: rawMessage.inserted_at,
       content,
       plaintext,
@@ -3429,7 +3455,10 @@ export class VesperEncryptedChat {
         sender: message.raw.sender ?? null,
         insertedAt: message.insertedAt,
         expiresAt: message.raw.expires_at ?? null,
-        parentMessageId: message.parentMessageId
+        parentMessageId: message.parentMessageId,
+        threadRootMessageId: message.threadRootMessageId,
+        replyToMessageId: message.replyToMessageId,
+        isReply: message.isReply
       })
       bundledIds.add(message.id)
     }
@@ -3671,6 +3700,23 @@ export class VesperEncryptedChat {
             existingMessage?.parentMessageId ??
             cachedMessage?.parentMessageId ??
             null,
+          threadRootMessageId:
+            item.threadRootMessageId ??
+            existingMessage?.threadRootMessageId ??
+            cachedMessage?.threadRootMessageId ??
+            existingMessage?.raw.thread_root_message_id ??
+            null,
+          replyToMessageId:
+            item.replyToMessageId ??
+            existingMessage?.replyToMessageId ??
+            cachedMessage?.replyToMessageId ??
+            existingMessage?.raw.reply_to_message_id ??
+            null,
+          isReply:
+            item.raw?.is_reply ??
+            existingMessage?.raw.is_reply ??
+            cachedMessage?.isReply ??
+            false,
           ciphertext,
           decryptedContent: item.content,
           mlsEpoch: cachedMessage?.mlsEpoch ?? existingMessage?.raw.mls_epoch ?? input.mlsEpoch,
@@ -5041,6 +5087,9 @@ export class VesperEncryptedChat {
           senderId: message.senderId,
           senderUsername: message.senderUsername,
           parentMessageId: message.parentMessageId,
+          threadRootMessageId: message.threadRootMessageId,
+          replyToMessageId: message.replyToMessageId,
+          isReply: message.isReply,
           insertedAt: message.insertedAt,
           content,
           plaintext,

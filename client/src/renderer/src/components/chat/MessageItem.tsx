@@ -240,22 +240,20 @@ export default memo(function MessageItem({
     deleteMessage(targetId, topic, message.id)
   }
 
-  const parentMessage = message.parent_message_id && messages
-    ? messages.find((m) => m.id === message.parent_message_id)
+  const replyTargetId = message.reply_to_message_id ?? (message.is_reply ? message.parent_message_id : null)
+  const replyTargetMessage = replyTargetId && messages
+    ? messages.find((m) => m.id === replyTargetId)
     : null
-  const threadAnchorMessage = message.parent_message_id ? (parentMessage ?? message) : message
-  const threadAnchorId = threadAnchorMessage.id
-  // Only count actual thread replies (not inline quote replies) for the summary
+  const threadAnchorId = message.thread_root_message_id ?? message.id
+  const threadAnchorMessage = message.thread_root_message_id && messages
+    ? messages.find((m) => m.id === message.thread_root_message_id) ?? message
+    : message
   const threadReplyCount = useMessageStore(
-    (s) => {
-      const replies = s.threadRepliesByParent[threadAnchorId]
-      if (!replies) return 0
-      return replies.filter((r) => !r.is_reply).length
-    }
+    (s) => s.threadRepliesByParent[threadAnchorId]?.length ?? 0
   )
   const isActiveThread = activeThreadParentId === threadAnchorId
-  const threadActionLabel = message.parent_message_id ? 'Open thread' : 'Start thread'
-  const showThreadSummary = !message.parent_message_id && threadReplyCount > 0
+  const threadActionLabel = message.thread_root_message_id ? 'Open thread' : 'Start thread'
+  const showThreadSummary = !message.thread_root_message_id && threadReplyCount > 0
   const threadSummaryLabel = `${threadReplyCount} ${threadReplyCount === 1 ? 'reply' : 'replies'} in thread`
   const handleOpenThread = (): void => {
     void openThread(threadAnchorMessage)
@@ -360,11 +358,11 @@ export default memo(function MessageItem({
 
   const displayText = parsed.text
   const replyPreview = (() => {
-    if (!parentMessage) {
+    if (!replyTargetMessage) {
       return 'View message'
     }
 
-    const parentParsed = parseMessageContent(parentMessage.content || '')
+    const parentParsed = parseMessageContent(replyTargetMessage.content || '')
     if (parentParsed.type === 'file') {
       return parentParsed.text || parentParsed.file.name || 'Sent a file'
     }
@@ -383,16 +381,16 @@ export default memo(function MessageItem({
   const truncatedReplyPreview =
     replyPreview.length > 72 ? `${replyPreview.slice(0, 72)}...` : replyPreview
   const replyAuthorName = (() => {
-    if (!parentMessage) {
+    if (!replyTargetMessage) {
       return ''
     }
 
-    if (parentMessage.sender_id === myId) {
+    if (replyTargetMessage.sender_id === myId) {
       return myUser?.display_name || myUser?.username || 'Unknown'
     }
 
-    const pm = membersByUserId.get(parentMessage.sender_id ?? '')
-    return pm?.user?.display_name || pm?.user?.username || parentMessage.sender?.display_name || parentMessage.sender?.username || 'Unknown'
+    const pm = membersByUserId.get(replyTargetMessage.sender_id ?? '')
+    return pm?.user?.display_name || pm?.user?.username || replyTargetMessage.sender?.display_name || replyTargetMessage.sender?.username || 'Unknown'
   })()
   const isUnavailableMessage = displayText === 'Message unavailable - decryption failed'
   const unavailableLabel = startsGroup ? 'Encrypted message unavailable' : 'Message unavailable'
@@ -463,7 +461,7 @@ export default memo(function MessageItem({
           </div>
         </div>
 
-        {!isThreadView && parentMessage && (
+        {replyTargetMessage && (
           <MessageReplyPreview
             authorName={replyAuthorName}
             preview={truncatedReplyPreview}

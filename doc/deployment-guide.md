@@ -193,6 +193,26 @@ The application runs pending Ecto migrations on startup via `Vesper.Migrator`. T
 
 If migrations are pending or failed, the health check returns `503`.
 
+### Post-migration relation backfill
+
+The thread/reply relation split introduced `thread_root_message_id` and `reply_to_message_id` while keeping `parent_message_id` as a legacy compatibility field. New messages populate the new fields automatically, but existing deployments may have historical rows that still need backfilling.
+
+Run this after deploying the image if you want to normalize old message history immediately:
+
+```bash
+cd server
+MIX_ENV=prod mix vesper.backfill_thread_reply_fields
+```
+
+Dry-run mode:
+
+```bash
+cd server
+MIX_ENV=prod mix vesper.backfill_thread_reply_fields --dry-run
+```
+
+The backfill is optional for correctness during the transition because the app still dual-reads the legacy fields, but running it makes thread counts and history less dependent on fallback behavior.
+
 ### Connection pool
 
 In production, the default pool size is 10 connections. Adjust with the `POOL_SIZE` environment variable:

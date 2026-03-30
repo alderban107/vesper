@@ -11,6 +11,7 @@ Self-hostable, end-to-end encrypted messaging.
 - **Servers & channels** — create communities with text and voice channels
 - **Direct messages** — private 1-on-1 conversations
 - **File sharing** — encrypted file uploads with previews
+- **Threads & replies** — side threads stay off the main timeline, inline replies target specific messages
 - **Mentions** — @user and @everyone notifications
 - **Emoji reactions** — react to messages
 - **Message pinning** — pin important messages in channels

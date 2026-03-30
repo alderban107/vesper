@@ -150,7 +150,7 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
     const preparedAttachment = await prepareMessageAttachment(file)
     if (!preparedAttachment) return false
     const replyTo = useMessageStore.getState().replyingTo
-    const parentId = replyTo?.id || undefined
+    const replyToId = replyTo?.id || undefined
     const resolvedScope = scope.kind === 'dm'
       ? { ...scope, channelId: conversations.find(c => c.id === scope.id)?.channel_id ?? undefined }
       : scope
@@ -158,7 +158,16 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
       await getRendererEncryptedChat().sendPayload(
         resolvedScope,
         { v: 1, type: 'file', text: text ?? null, file: preparedAttachment.file },
-        { attachmentIds: preparedAttachment.attachmentIds, ...(parentId ? { parentMessageId: parentId } : {}) }
+        {
+          attachmentIds: preparedAttachment.attachmentIds,
+          ...(replyToId
+            ? {
+                parentMessageId: replyToId,
+                replyToMessageId: replyToId,
+                isReply: true
+              }
+            : {})
+        }
       )
       return true
     } catch {
@@ -353,7 +362,7 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
     ) {
       const lastEditableMessage = [...messages]
         .reverse()
-        .find((m) => m.sender_id === myUserId && !m.parent_message_id)
+        .find((m) => m.sender_id === myUserId && !m.thread_root_message_id)
       if (lastEditableMessage) {
         event.preventDefault()
         setEditingMessage(lastEditableMessage)

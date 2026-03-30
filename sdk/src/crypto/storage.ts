@@ -185,6 +185,9 @@ export interface CryptoStorageRuntime {
     senderId: string | null
     senderUsername: string | null
     parentMessageId: string | null
+    threadRootMessageId: string | null
+    replyToMessageId: string | null
+    isReply: boolean
     ciphertext: Uint8Array | null
     decryptedContent: string | null
     mlsEpoch: number | null
@@ -205,6 +208,9 @@ export interface CryptoStorageRuntime {
       senderId: string | null
       senderUsername: string | null
       parentMessageId: string | null
+      threadRootMessageId: string | null
+      replyToMessageId: string | null
+      isReply: boolean
       ciphertext: Uint8Array | null
       decryptedContent: string | null
       mlsEpoch: number | null
@@ -662,6 +668,9 @@ export class DefaultCryptoStorageRuntime implements CryptoStorageRuntime {
     senderId: string | null
     senderUsername: string | null
     parentMessageId: string | null
+    threadRootMessageId: string | null
+    replyToMessageId: string | null
+    isReply: boolean
     ciphertext: Uint8Array | null
     decryptedContent: string | null
     mlsEpoch: number | null
@@ -676,6 +685,9 @@ export class DefaultCryptoStorageRuntime implements CryptoStorageRuntime {
       sender_id: msg.senderId,
       sender_username: msg.senderUsername,
       parent_message_id: msg.parentMessageId,
+      thread_root_message_id: msg.threadRootMessageId,
+      reply_to_message_id: msg.replyToMessageId,
+      is_reply: msg.isReply,
       ciphertext: msg.ciphertext,
       decrypted_content: msg.decryptedContent,
       mls_epoch: msg.mlsEpoch,
@@ -713,6 +725,9 @@ export class DefaultCryptoStorageRuntime implements CryptoStorageRuntime {
       senderId: string | null
       senderUsername: string | null
       parentMessageId: string | null
+      threadRootMessageId: string | null
+      replyToMessageId: string | null
+      isReply: boolean
       ciphertext: Uint8Array | null
       decryptedContent: string | null
       mlsEpoch: number | null
@@ -729,6 +744,9 @@ export class DefaultCryptoStorageRuntime implements CryptoStorageRuntime {
       senderId: result.sender_id,
       senderUsername: result.sender_username,
       parentMessageId: result.parent_message_id ?? null,
+      threadRootMessageId: result.thread_root_message_id ?? null,
+      replyToMessageId: result.reply_to_message_id ?? null,
+      isReply: Boolean(result.is_reply),
       ciphertext: result.ciphertext ? new Uint8Array(result.ciphertext) : null,
       decryptedContent: result.decrypted_content,
       mlsEpoch: result.mls_epoch,

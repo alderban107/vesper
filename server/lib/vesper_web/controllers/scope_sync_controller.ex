@@ -308,6 +308,9 @@ defmodule VesperWeb.ScopeSyncController do
       sender: sender_json(message.sender),
       expires_at: message.expires_at,
       parent_message_id: message.parent_message_id,
+      thread_root_message_id: message.thread_root_message_id,
+      reply_to_message_id: message.reply_to_message_id,
+      is_reply: message.is_reply,
       inserted_at: message.inserted_at,
       attachments: attachments_json(message),
       reactions: reactions_json(message)

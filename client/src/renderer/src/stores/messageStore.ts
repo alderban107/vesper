@@ -349,6 +349,7 @@ interface CachedMessageRecord {
   senderId: string | null
   senderUsername: string | null
   parentMessageId: string | null
+  isReply: boolean
   ciphertext: Uint8Array | null
   decryptedContent: string | null
   mlsEpoch: number | null
@@ -385,7 +386,7 @@ function buildMessageFromCache(record: CachedMessageRecord): Message {
     inserted_at: record.insertedAt,
     expires_at: null,
     parent_message_id: record.parentMessageId,
-    is_reply: false,
+    is_reply: record.isReply,
     attachments: [],
     reactions: [],
     encrypted: Boolean(record.ciphertext),
@@ -463,6 +464,8 @@ async function buildMessageFromSdkProcessed(
     inserted_at: raw.inserted_at,
     expires_at: raw.expires_at ?? null,
     parent_message_id: raw.parent_message_id ?? null,
+    thread_root_message_id: raw.thread_root_message_id ?? null,
+    reply_to_message_id: raw.reply_to_message_id ?? null,
     is_reply: raw.is_reply ?? false,
     attachments: raw.attachments ?? [],
     reactions: await resolveReactionGroups(targetId, raw.reactions),
@@ -1653,6 +1656,8 @@ export interface Message {
   inserted_at: string
   expires_at: string | null
   parent_message_id: string | null
+  thread_root_message_id?: string | null
+  reply_to_message_id?: string | null
   is_reply?: boolean
   attachments?: Attachment[]
   attachment_filenames?: string[]
@@ -1699,6 +1704,13 @@ interface TypingUser {
   username: string
 }
 
+interface MessageSendRelations {
+  parentMessageId?: string
+  threadRootMessageId?: string
+  replyToMessageId?: string
+  isReply?: boolean
+}
+
 interface MessageState {
   messagesByChannel: Record<string, Message[]>
   latestRoomSeqByScope: Record<string, number>
@@ -1730,7 +1742,7 @@ interface MessageState {
   fetchMessages: (channelId: string) => Promise<void>
   fetchOlderMessages: (channelId: string) => Promise<void>
   fetchNewerMessages: (channelId: string) => Promise<void>
-  sendMessage: (channelId: string, content: string, parentMessageId?: string) => Promise<void>
+  sendMessage: (channelId: string, content: string, relations?: string | MessageSendRelations) => Promise<void>
   sendTypingStart: (channelId: string) => void
   sendTypingStop: (channelId: string) => void
 
@@ -1741,7 +1753,7 @@ interface MessageState {
   fetchOlderDmMessages: (conversationId: string) => Promise<void>
   fetchNewerDmMessages: (conversationId: string) => Promise<void>
   syncRecentScopes: (sinceToken?: string | null, options?: SyncRecentScopesOptions) => Promise<void>
-  sendDmMessage: (conversationId: string, content: string, parentMessageId?: string) => Promise<void>
+  sendDmMessage: (conversationId: string, content: string, relations?: string | MessageSendRelations) => Promise<void>
   sendDmTypingStart: (conversationId: string) => void
   sendDmTypingStop: (conversationId: string) => void
 
@@ -2545,7 +2557,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     }
   },
 
-  sendMessage: async (channelId, content, parentMessageId) => {
+  sendMessage: async (channelId, content, relations) => {
     if (!canUseEncryptedFeatures()) {
       set({
         encryptionError: 'Approve this device to send encrypted messages.'
@@ -2554,8 +2566,8 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     }
 
     const replyingTo = get().replyingTo
-    const parentId = parentMessageId ?? replyingTo?.id ?? undefined
-    const shouldClearInlineReply = !parentMessageId
+    const normalizedRelations = normalizeSendRelations(replyingTo, relations)
+    const shouldClearInlineReply = relations == null || typeof relations === 'string'
     const mentionedUserIds = extractMentionedUserIds(content)
     const activeServer = useServerStore.getState().servers.find(
       (s) => s.id === useServerStore.getState().activeServerId
@@ -2565,8 +2577,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const optimisticMessage = buildOptimisticMessage({
       targetId: channelId,
       content: resolvedContent,
-      parentMessageId: parentId,
-      isReply: shouldClearInlineReply && !!parentId,
+      parentMessageId: normalizedRelations.parent_message_id ?? undefined,
+      threadRootMessageId: normalizedRelations.thread_root_message_id,
+      replyToMessageId: normalizedRelations.reply_to_message_id,
+      isReply: normalizedRelations.is_reply,
       channelId,
       serverId: activeServer?.id ?? null,
       clientNonce
@@ -2583,8 +2597,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         },
         resolvedContent,
         {
-          parentMessageId: parentId,
-          isReply: shouldClearInlineReply && !!parentId,
+          parentMessageId: normalizedRelations.parent_message_id ?? undefined,
+          threadRootMessageId: normalizedRelations.thread_root_message_id ?? undefined,
+          replyToMessageId: normalizedRelations.reply_to_message_id ?? undefined,
+          isReply: normalizedRelations.is_reply,
           mentionedUserIds,
           clientNonce
         }
@@ -3142,7 +3158,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     }
   },
 
-  sendDmMessage: async (conversationId, content, parentMessageId) => {
+  sendDmMessage: async (conversationId, content, relations) => {
     if (!canUseEncryptedFeatures()) {
       set({
         encryptionError: 'Approve this device to send encrypted messages.'
@@ -3153,20 +3169,22 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     // DM-as-channel: delegate to channel send path
     const channelId = resolveDmChannelId(conversationId)
     if (channelId) {
-      await get().sendMessage(channelId, content, parentMessageId)
+      await get().sendMessage(channelId, content, relations)
       return
     }
 
     // Legacy DM path
     const replyingTo = get().replyingTo
-    const parentId = parentMessageId ?? replyingTo?.id ?? undefined
-    const shouldClearInlineReply = !parentMessageId
+    const normalizedRelations = normalizeSendRelations(replyingTo, relations)
+    const shouldClearInlineReply = relations == null || typeof relations === 'string'
     const clientNonce = generateClientNonce()
     const optimisticMessage = buildOptimisticMessage({
       targetId: conversationId,
       content,
-      parentMessageId: parentId,
-      isReply: shouldClearInlineReply && !!parentId,
+      parentMessageId: normalizedRelations.parent_message_id ?? undefined,
+      threadRootMessageId: normalizedRelations.thread_root_message_id,
+      replyToMessageId: normalizedRelations.reply_to_message_id,
+      isReply: normalizedRelations.is_reply,
       conversationId,
       clientNonce
     })
@@ -3182,8 +3200,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         },
         content,
         {
-          parentMessageId: parentId,
-          isReply: shouldClearInlineReply && !!parentId,
+          parentMessageId: normalizedRelations.parent_message_id ?? undefined,
+          threadRootMessageId: normalizedRelations.thread_root_message_id ?? undefined,
+          replyToMessageId: normalizedRelations.reply_to_message_id ?? undefined,
+          isReply: normalizedRelations.is_reply,
           clientNonce
         }
       )
@@ -3224,10 +3244,10 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   setReplyingTo: (message) => set({ replyingTo: message }),
   openThread: async (message) => {
     const canonicalMessage = await resolveCanonicalThreadMessage(get, message)
-    const parentId = canonicalMessage.parent_message_id ?? canonicalMessage.id
+    const parentId = canonicalMessage.thread_root_message_id ?? canonicalMessage.id
     set({
       activeThreadParentId: parentId,
-      activeThreadParent: canonicalMessage.parent_message_id ? null : canonicalMessage,
+      activeThreadParent: canonicalMessage.thread_root_message_id ? null : canonicalMessage,
       threadError: null
     })
 
@@ -3370,22 +3390,29 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const replyTargetId =
       canonicalReplyTarget &&
       (canonicalReplyTarget.id === threadParentId ||
-        canonicalReplyTarget.parent_message_id === threadParentId)
+        canonicalReplyTarget.thread_root_message_id === threadParentId)
         ? canonicalReplyTarget.id
-        : threadParentId
+        : null
 
     const trimmed = content.trim()
     if (!trimmed) {
       return
     }
 
+    const threadRelations: MessageSendRelations = {
+      parentMessageId: threadParentId,
+      threadRootMessageId: threadParentId,
+      replyToMessageId: replyTargetId ?? undefined,
+      isReply: false
+    }
+
     if (parent.channel_id) {
-      await get().sendMessage(parent.channel_id, trimmed, replyTargetId)
+      await get().sendMessage(parent.channel_id, trimmed, threadRelations)
       return
     }
 
     if (parent.conversation_id) {
-      await get().sendDmMessage(parent.conversation_id, trimmed, replyTargetId)
+      await get().sendDmMessage(parent.conversation_id, trimmed, threadRelations)
     }
   },
 
@@ -3806,7 +3833,9 @@ function upsertThreadReplyState(
   state: MessageState,
   message: Message
 ): Partial<MessageState> {
-  const parentId = message.parent_message_id
+  const parentId =
+    message.thread_root_message_id ??
+    (!message.is_reply ? message.parent_message_id : null)
   if (!parentId) {
     return {}
   }
@@ -4072,10 +4101,38 @@ async function handleReactionUpdate(
   return true
 }
 
+function normalizeSendRelations(
+  replyingTo: Message | null,
+  relations?: string | MessageSendRelations
+): Required<Pick<Message, 'parent_message_id' | 'thread_root_message_id' | 'reply_to_message_id' | 'is_reply'>> {
+  if (typeof relations === 'string' || relations == null) {
+    const replyToMessageId = relations ?? replyingTo?.id ?? null
+    return {
+      parent_message_id: replyToMessageId,
+      thread_root_message_id: null,
+      reply_to_message_id: replyToMessageId,
+      is_reply: Boolean(replyToMessageId)
+    }
+  }
+
+  const threadRootMessageId = relations.threadRootMessageId ?? null
+  const replyToMessageId = relations.replyToMessageId ?? null
+  const parentMessageId = relations.parentMessageId ?? threadRootMessageId ?? replyToMessageId ?? null
+
+  return {
+    parent_message_id: parentMessageId,
+    thread_root_message_id: threadRootMessageId,
+    reply_to_message_id: replyToMessageId,
+    is_reply: relations.isReply ?? (!threadRootMessageId && Boolean(replyToMessageId))
+  }
+}
+
 function buildOptimisticMessage(args: {
   targetId: string
   content: string
   parentMessageId?: string
+  threadRootMessageId?: string | null
+  replyToMessageId?: string | null
   isReply?: boolean
   channelId?: string | null
   conversationId?: string | null
@@ -4103,6 +4160,8 @@ function buildOptimisticMessage(args: {
     inserted_at: new Date().toISOString(),
     expires_at: null,
     parent_message_id: args.parentMessageId ?? null,
+    thread_root_message_id: args.threadRootMessageId ?? null,
+    reply_to_message_id: args.replyToMessageId ?? null,
     is_reply: args.isReply ?? false,
     attachments: [],
     reactions: [],
@@ -4470,6 +4529,9 @@ async function processIncomingMessage(
         senderId,
         senderUsername: (msg.sender as MessageSender)?.username ?? null,
         parentMessageId: msg.parent_message_id ?? null,
+        threadRootMessageId: msg.thread_root_message_id ?? null,
+        replyToMessageId: msg.reply_to_message_id ?? null,
+        isReply: msg.is_reply ?? false,
         ciphertext: base64ToUint8(ciphertextB64),
         decryptedContent: plaintext,
         mlsEpoch,
@@ -4516,6 +4578,9 @@ async function processIncomingMessage(
       inserted_at: msg.inserted_at,
       expires_at: msg.expires_at ?? null,
       parent_message_id: msg.parent_message_id ?? null,
+      thread_root_message_id: msg.thread_root_message_id ?? null,
+      reply_to_message_id: msg.reply_to_message_id ?? null,
+      is_reply: msg.is_reply ?? false,
       attachments: (msg.attachments as Attachment[] | undefined) ?? [],
       reactions: await resolveReactionGroups(targetId, msg.reactions as RawReaction[] | undefined),
       encrypted: true,
@@ -4539,6 +4604,9 @@ async function processIncomingMessage(
     inserted_at: msg.inserted_at,
     expires_at: msg.expires_at ?? null,
     parent_message_id: msg.parent_message_id ?? null,
+    thread_root_message_id: msg.thread_root_message_id ?? null,
+    reply_to_message_id: msg.reply_to_message_id ?? null,
+    is_reply: msg.is_reply ?? false,
     attachments: (msg.attachments as Attachment[] | undefined) ?? [],
     reactions: await resolveReactionGroups(targetId, msg.reactions as RawReaction[] | undefined),
     edited_at: msg.edited_at ?? undefined,
@@ -4563,6 +4631,9 @@ async function processIncomingMessage(
       senderId: plaintextMessage.sender_id,
       senderUsername: plaintextMessage.sender?.username ?? null,
       parentMessageId: plaintextMessage.parent_message_id,
+      threadRootMessageId: plaintextMessage.thread_root_message_id ?? null,
+      replyToMessageId: plaintextMessage.reply_to_message_id ?? null,
+      isReply: plaintextMessage.is_reply ?? false,
       ciphertext: null,
       decryptedContent: plaintextMessage.content,
       mlsEpoch: null,
@@ -4594,6 +4665,9 @@ function buildProvisionalMessage(msg: VesperMessage): Message {
     inserted_at: msg.inserted_at,
     expires_at: msg.expires_at ?? null,
     parent_message_id: msg.parent_message_id ?? null,
+    thread_root_message_id: msg.thread_root_message_id ?? null,
+    reply_to_message_id: msg.reply_to_message_id ?? null,
+    is_reply: msg.is_reply ?? false,
     attachments: (msg.attachments as Attachment[] | undefined) ?? [],
     reactions: [],
     encrypted: isEncrypted,

@@ -65,11 +65,19 @@ defmodule VesperWeb.ChannelHelpers do
 
   def reactions_json(_), do: []
 
-  def maybe_add_parent(attrs, %{"parent_message_id" => parent_id}) when is_binary(parent_id) do
-    Map.put(attrs, :parent_message_id, parent_id)
-  end
+  def maybe_add_parent(attrs, params) do
+    case resolve_message_relations(params, nil, nil, validate_scope?: false) do
+      {:ok, relations} ->
+        attrs
+        |> maybe_put(:parent_message_id, relations.parent_message_id)
+        |> maybe_put(:thread_root_message_id, relations.thread_root_message_id)
+        |> maybe_put(:reply_to_message_id, relations.reply_to_message_id)
+        |> Map.put(:is_reply, relations.is_reply)
 
-  def maybe_add_parent(attrs, _params), do: attrs
+      {:error, _reason} ->
+        attrs
+    end
+  end
 
   def maybe_add_parent_id(attrs, parent_id) when is_binary(parent_id) do
     Map.put(attrs, :parent_message_id, parent_id)
@@ -77,24 +85,42 @@ defmodule VesperWeb.ChannelHelpers do
 
   def maybe_add_parent_id(attrs, _parent_id), do: attrs
 
-  def resolve_parent_message_id(params, scope_field, scope_id) do
-    case Map.get(params, "parent_message_id") do
-      nil ->
-        {:ok, nil}
+  def resolve_message_relations(params, scope_field, scope_id, opts \\ []) do
+    validate_scope? = Keyword.get(opts, :validate_scope?, true)
 
-      parent_id when is_binary(parent_id) ->
-        with {:ok, root_parent} <- load_thread_root(parent_id),
-             true <-
-               scope_matches?(root_parent, scope_field, scope_id) ||
-                 {:error, "parent message is not in this scope"} do
-          {:ok, root_parent.id}
-        else
-          {:error, reason} -> {:error, reason}
-          false -> {:error, "parent message is not in this scope"}
-        end
+    with {:ok, explicit_thread_root_id} <- parse_optional_message_id(params, "thread_root_message_id"),
+         {:ok, explicit_reply_to_id} <- parse_optional_message_id(params, "reply_to_message_id"),
+         {:ok, legacy_parent_id} <- parse_optional_message_id(params, "parent_message_id"),
+         {:ok, explicit_thread_root} <-
+           resolve_optional_message(explicit_thread_root_id, scope_field, scope_id, validate_scope?),
+         {:ok, explicit_reply_to} <-
+           resolve_optional_message(explicit_reply_to_id, scope_field, scope_id, validate_scope?),
+         {:ok, legacy_parent} <-
+           resolve_optional_message(legacy_parent_id, scope_field, scope_id, validate_scope?) do
+      thread_root =
+        explicit_thread_root ||
+          derive_legacy_thread_root(legacy_parent, params["is_reply"] == true)
 
-      _ ->
-        {:error, "parent_message_id must be a string"}
+      reply_to =
+        explicit_reply_to ||
+          derive_legacy_reply_target(legacy_parent, params["is_reply"] == true)
+
+      with :ok <- validate_thread_root(thread_root),
+           :ok <- validate_reply_target(reply_to),
+           :ok <- validate_thread_reply_compatibility(thread_root, reply_to) do
+        {:ok,
+         %{
+           thread_root_message_id: thread_root && thread_root.id,
+           reply_to_message_id: reply_to && reply_to.id,
+           parent_message_id:
+             cond do
+               thread_root -> thread_root.id
+               reply_to -> reply_to.id
+               true -> nil
+             end,
+           is_reply: is_nil(thread_root) and not is_nil(reply_to)
+         }}
+      end
     end
   end
 
@@ -117,6 +143,8 @@ defmodule VesperWeb.ChannelHelpers do
       sender: sender_json(message.sender),
       expires_at: message.expires_at,
       parent_message_id: message.parent_message_id,
+      thread_root_message_id: message.thread_root_message_id,
+      reply_to_message_id: message.reply_to_message_id,
       is_reply: message.is_reply,
       inserted_at: message.inserted_at,
       attachments: attachments_json(message),
@@ -281,20 +309,108 @@ defmodule VesperWeb.ChannelHelpers do
     %{user_id: user_id, username: nil}
   end
 
-  defp load_thread_root(parent_id) do
-    case Chat.get_message(parent_id) do
-      nil ->
-        {:error, "parent message not found"}
+  defp parse_optional_message_id(params, key) do
+    case Map.get(params, key) do
+      nil -> {:ok, nil}
+      value when is_binary(value) -> {:ok, value}
+      _ -> {:error, "#{key} must be a string"}
+    end
+  end
 
-      parent ->
-        if parent.parent_message_id do
-          case Chat.get_message(parent.parent_message_id) do
-            nil -> {:ok, parent}
-            root -> {:ok, root}
-          end
+  defp resolve_optional_message(nil, _scope_field, _scope_id, _validate_scope?), do: {:ok, nil}
+
+  defp resolve_optional_message(message_id, _scope_field, _scope_id, false) when is_binary(message_id) do
+    case Chat.get_message(message_id) do
+      nil -> {:error, "message not found"}
+      message -> {:ok, message}
+    end
+  end
+
+  defp resolve_optional_message(message_id, scope_field, scope_id, true) when is_binary(message_id) do
+    case Chat.get_message(message_id) do
+      nil ->
+        {:error, "message not found"}
+
+      message ->
+        if scope_matches?(message, scope_field, scope_id) do
+          {:ok, message}
         else
-          {:ok, parent}
+          {:error, "message is not in this scope"}
         end
+    end
+  end
+
+  defp derive_legacy_thread_root(nil, _is_reply), do: nil
+  defp derive_legacy_thread_root(_message, true), do: nil
+
+  defp derive_legacy_thread_root(message, false) do
+    effective_thread_root_message(message)
+  end
+
+  defp derive_legacy_reply_target(nil, _is_reply), do: nil
+  defp derive_legacy_reply_target(_message, false), do: nil
+  defp derive_legacy_reply_target(message, true), do: message
+
+  defp validate_thread_root(nil), do: :ok
+
+  defp validate_thread_root(message) do
+    if effective_thread_root_id(message) do
+      {:error, "thread root must be a top-level message"}
+    else
+      :ok
+    end
+  end
+
+  defp validate_reply_target(nil), do: :ok
+  defp validate_reply_target(_message), do: :ok
+
+  defp validate_thread_reply_compatibility(nil, nil), do: :ok
+
+  defp validate_thread_reply_compatibility(nil, reply_to) do
+    case effective_thread_root_id(reply_to) do
+      nil -> :ok
+      root_id -> {:error, "reply target belongs to a thread; set thread_root_message_id to #{root_id}"}
+    end
+  end
+
+  defp validate_thread_reply_compatibility(thread_root, nil) when not is_nil(thread_root), do: :ok
+
+  defp validate_thread_reply_compatibility(thread_root, reply_to) do
+    reply_thread_root_id = effective_thread_root_id(reply_to)
+
+    cond do
+      reply_to.id == thread_root.id ->
+        :ok
+
+      reply_thread_root_id == thread_root.id ->
+        :ok
+
+      true ->
+        {:error, "reply target is not in the selected thread"}
+    end
+  end
+
+  defp effective_thread_root_message(nil), do: nil
+
+  defp effective_thread_root_message(message) do
+    cond do
+      is_binary(message.thread_root_message_id) ->
+        Chat.get_message(message.thread_root_message_id) || message
+
+      is_binary(message.parent_message_id) and message.is_reply != true ->
+        Chat.get_message(message.parent_message_id) || message
+
+      true ->
+        nil
+    end
+  end
+
+  defp effective_thread_root_id(nil), do: nil
+
+  defp effective_thread_root_id(message) do
+    case effective_thread_root_message(message) do
+      nil -> nil
+      root -> root.id
     end
   end
 

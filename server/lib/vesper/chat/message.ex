@@ -19,6 +19,8 @@ defmodule Vesper.Chat.Message do
     belongs_to :conversation, Vesper.Chat.DmConversation
     belongs_to :sender, Vesper.Accounts.User
     belongs_to :parent_message, Vesper.Chat.Message
+    belongs_to :thread_root_message, Vesper.Chat.Message
+    belongs_to :reply_to_message, Vesper.Chat.Message
 
     has_many :reactions, Vesper.Chat.Reaction
     has_many :attachments, Vesper.Chat.Attachment
@@ -37,6 +39,8 @@ defmodule Vesper.Chat.Message do
       :sender_id,
       :expires_at,
       :parent_message_id,
+      :thread_root_message_id,
+      :reply_to_message_id,
       :edited_at,
       :is_reply
     ])
@@ -56,6 +60,8 @@ defmodule Vesper.Chat.Message do
       :sender_id,
       :expires_at,
       :parent_message_id,
+      :thread_root_message_id,
+      :reply_to_message_id,
       :edited_at,
       :is_reply
     ])

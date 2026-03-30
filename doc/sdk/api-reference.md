@@ -567,6 +567,8 @@ interface VesperMessage {
   sender_id: string | null
   sender: VesperMemberPreview | null
   parent_message_id?: string | null
+  thread_root_message_id?: string | null
+  reply_to_message_id?: string | null
   inserted_at: string
   expires_at?: string | null
   content?: string

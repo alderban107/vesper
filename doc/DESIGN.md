@@ -629,7 +629,9 @@ CREATE TABLE messages (
     content     TEXT,                                -- plaintext (Phase 1 compat, nullable)
     ciphertext  BYTEA,                               -- MLS-encrypted message content
     mls_epoch   BIGINT,                              -- MLS epoch for key lookup
-    parent_message_id UUID REFERENCES messages(id) ON DELETE SET NULL,  -- threads
+    parent_message_id UUID REFERENCES messages(id) ON DELETE SET NULL,  -- legacy compatibility field
+    thread_root_message_id UUID REFERENCES messages(id) ON DELETE SET NULL, -- thread membership
+    reply_to_message_id UUID REFERENCES messages(id) ON DELETE SET NULL, -- inline reply target
     edited_at   TIMESTAMPTZ,                         -- set on edit
     inserted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at  TIMESTAMPTZ,                         -- for disappearing messages
@@ -643,9 +645,13 @@ CREATE INDEX idx_messages_channel ON messages(channel_id, inserted_at);
 CREATE INDEX idx_messages_conversation ON messages(conversation_id, inserted_at);
 CREATE INDEX idx_messages_expires ON messages(expires_at) WHERE expires_at IS NOT NULL;
 CREATE INDEX idx_messages_parent ON messages(parent_message_id);
+CREATE INDEX idx_messages_thread_root ON messages(thread_root_message_id, inserted_at, id);
+CREATE INDEX idx_messages_reply_to ON messages(reply_to_message_id);
 CREATE INDEX idx_messages_channel_sender ON messages(channel_id, sender_id, inserted_at);
 CREATE INDEX idx_messages_convo_sender ON messages(conversation_id, sender_id, inserted_at);
 CREATE INDEX idx_messages_sender ON messages(sender_id);
+
+`thread_root_message_id` and `reply_to_message_id` intentionally model different user intents. Threads partition conversation into a side timeline; replies point at a specific message. A thread message may also carry `reply_to_message_id` to quote a specific message inside the thread without creating a nested subthread.
 
 -- MLS Key Packages
 CREATE TABLE key_packages (
@@ -1169,7 +1175,7 @@ Join: Verifies channel membership. Assigns `channel_id`, `server_id`, `disappear
 
 Client → Server:
 ```
-new_message        { ciphertext, mls_epoch, ?parent_message_id, ?attachment_ids, ?mentioned_user_ids }
+new_message        { ciphertext, mls_epoch, ?thread_root_message_id, ?reply_to_message_id, legacy ?parent_message_id, ?attachment_ids, ?mentioned_user_ids }
 edit_message       { message_id, ciphertext, mls_epoch }
 delete_message     { message_id }
 add_reaction       { message_id, emoji }
