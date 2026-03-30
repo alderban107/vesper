@@ -365,6 +365,9 @@ function registerIpcHandlers(): void {
         sender_id: string | null
         sender_username: string | null
         parent_message_id: string | null
+        thread_root_message_id: string | null
+        reply_to_message_id: string | null
+        is_reply: boolean
         ciphertext: Uint8Array | null
         decrypted_content: string | null
         mls_epoch: number | null

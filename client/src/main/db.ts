@@ -141,6 +141,7 @@ const SCHEMA_SQL = `
     sender_id TEXT,
     sender_username TEXT,
     parent_message_id TEXT,
+    is_reply INTEGER NOT NULL DEFAULT 0,
     ciphertext BLOB,
     decrypted_content TEXT,
     mls_epoch INTEGER,
@@ -421,6 +422,7 @@ function ensureMessageCacheColumns(): void {
   ensureColumn('message_cache', 'server_id', 'TEXT')
   ensureColumn('message_cache', 'decrypted_content', 'TEXT')
   ensureColumn('message_cache', 'parent_message_id', 'TEXT')
+  ensureColumn('message_cache', 'is_reply', 'INTEGER NOT NULL DEFAULT 0')
 }
 
 function ensureMessageCacheIndexes(): void {
@@ -1137,6 +1139,9 @@ export function cacheMessage(msg: {
   sender_id: string | null
   sender_username: string | null
   parent_message_id: string | null
+  thread_root_message_id: string | null
+  reply_to_message_id: string | null
+  is_reply: boolean
   ciphertext: Buffer | null
   decrypted_content: string | null
   mls_epoch: number | null
@@ -1152,11 +1157,14 @@ export function cacheMessage(msg: {
         sender_id,
         sender_username,
         parent_message_id,
+        thread_root_message_id,
+        reply_to_message_id,
+        is_reply,
         ciphertext,
         decrypted_content,
         mls_epoch,
         inserted_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         channel_id = COALESCE(excluded.channel_id, message_cache.channel_id),
         conversation_id = COALESCE(excluded.conversation_id, message_cache.conversation_id),
@@ -1164,6 +1172,9 @@ export function cacheMessage(msg: {
         sender_id = COALESCE(excluded.sender_id, message_cache.sender_id),
         sender_username = COALESCE(excluded.sender_username, message_cache.sender_username),
         parent_message_id = COALESCE(excluded.parent_message_id, message_cache.parent_message_id),
+        thread_root_message_id = COALESCE(excluded.thread_root_message_id, message_cache.thread_root_message_id),
+        reply_to_message_id = COALESCE(excluded.reply_to_message_id, message_cache.reply_to_message_id),
+        is_reply = excluded.is_reply,
         ciphertext = COALESCE(excluded.ciphertext, message_cache.ciphertext),
         decrypted_content = COALESCE(excluded.decrypted_content, message_cache.decrypted_content),
         mls_epoch = COALESCE(excluded.mls_epoch, message_cache.mls_epoch),
@@ -1177,6 +1188,9 @@ export function cacheMessage(msg: {
       msg.sender_id,
       msg.sender_username,
       msg.parent_message_id,
+      msg.thread_root_message_id,
+      msg.reply_to_message_id,
+      msg.is_reply ? 1 : 0,
       msg.ciphertext,
       msg.decrypted_content,
       msg.mls_epoch,
@@ -1222,6 +1236,9 @@ export function getCachedMessages(channelId: string): Array<{
   sender_id: string | null
   sender_username: string | null
   parent_message_id: string | null
+  thread_root_message_id: string | null
+  reply_to_message_id: string | null
+  is_reply: number
   ciphertext: Buffer | null
   decrypted_content: string | null
   mls_epoch: number | null

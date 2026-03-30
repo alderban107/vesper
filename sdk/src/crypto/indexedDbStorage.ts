@@ -42,6 +42,9 @@ interface CachedMessageStoreRecord {
   sender_id: string | null
   sender_username: string | null
   parent_message_id: string | null
+  thread_root_message_id: string | null
+  reply_to_message_id: string | null
+  is_reply: boolean
   ciphertext: ArrayBuffer | null
   decrypted_content: string | null
   mls_epoch: number | null
@@ -699,6 +702,7 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
       sender_id: string | null
       sender_username: string | null
       parent_message_id: string | null
+      is_reply: boolean
       ciphertext: Uint8Array | null
       decrypted_content: string | null
       mls_epoch: number | null
@@ -721,6 +725,11 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
           sender_id: msg.sender_id ?? existing?.sender_id ?? null,
           sender_username: msg.sender_username ?? existing?.sender_username ?? null,
           parent_message_id: msg.parent_message_id ?? existing?.parent_message_id ?? null,
+          thread_root_message_id:
+            msg.thread_root_message_id ?? existing?.thread_root_message_id ?? null,
+          reply_to_message_id:
+            msg.reply_to_message_id ?? existing?.reply_to_message_id ?? null,
+          is_reply: msg.is_reply,
           ciphertext: msg.ciphertext ?? existing?.ciphertext ?? null,
           decrypted_content: msg.decrypted_content ?? existing?.decrypted_content ?? null,
           mls_epoch: msg.mls_epoch ?? existing?.mls_epoch ?? null

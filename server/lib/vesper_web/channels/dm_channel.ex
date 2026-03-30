@@ -57,8 +57,8 @@ defmodule VesperWeb.DmChannel do
       end
 
     with {:ok, decoded} <- safe_decode64(ciphertext),
-         {:ok, parent_message_id} <-
-           resolve_parent_message_id(params, :conversation_id, socket.assigns.conversation_id) do
+         {:ok, relations} <-
+           resolve_message_relations(params, :conversation_id, socket.assigns.conversation_id) do
       attrs =
         %{
           ciphertext: decoded,
@@ -66,9 +66,11 @@ defmodule VesperWeb.DmChannel do
           mls_epoch: epoch,
           conversation_id: socket.assigns.conversation_id,
           sender_id: socket.assigns.user_id,
-          is_reply: params["is_reply"] == true
+          parent_message_id: relations.parent_message_id,
+          thread_root_message_id: relations.thread_root_message_id,
+          reply_to_message_id: relations.reply_to_message_id,
+          is_reply: relations.is_reply
         }
-        |> maybe_add_parent_id(parent_message_id)
 
       case Chat.create_message(attrs) do
         {:ok, message} ->
@@ -612,6 +614,8 @@ defmodule VesperWeb.DmChannel do
             sender_id: message.sender_id,
             sender: sender_json(message.sender),
             parent_message_id: message.parent_message_id,
+            thread_root_message_id: message.thread_root_message_id,
+            reply_to_message_id: message.reply_to_message_id,
             urgent_reason: "dm",
             mentions_you: false,
             reply_to_you: false,

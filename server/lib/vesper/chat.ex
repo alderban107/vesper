@@ -746,7 +746,9 @@ defmodule Vesper.Chat do
     from(m in Message,
       left_join: event in RoomEvent,
       on: event.message_id == m.id,
-      where: m.parent_message_id == ^parent_message_id,
+      where:
+        m.thread_root_message_id == ^parent_message_id or
+          (is_nil(m.thread_root_message_id) and m.parent_message_id == ^parent_message_id and m.is_reply == false),
       order_by: [asc: m.inserted_at, asc: m.id],
       limit: ^limit,
       select_merge: %{room_seq: event.room_seq},
@@ -904,7 +906,11 @@ defmodule Vesper.Chat do
   end
 
   def count_thread_replies(message_id) do
-    from(m in Message, where: m.parent_message_id == ^message_id)
+    from(m in Message,
+      where:
+        m.thread_root_message_id == ^message_id or
+          (is_nil(m.thread_root_message_id) and m.parent_message_id == ^message_id and m.is_reply == false)
+    )
     |> Repo.aggregate(:count, :id)
   end
 

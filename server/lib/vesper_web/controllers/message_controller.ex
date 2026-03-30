@@ -197,11 +197,14 @@ defmodule VesperWeb.MessageController do
       nil ->
         nil
 
-      %{parent_message_id: nil} = message ->
-        message
+      %{thread_root_message_id: root_id} = message when is_binary(root_id) ->
+        Chat.get_message_with_details(root_id) || message
 
-      %{parent_message_id: parent_id} = message ->
+      %{parent_message_id: parent_id, is_reply: false} = message when is_binary(parent_id) ->
         Chat.get_message_with_details(parent_id) || message
+
+      message ->
+        message
     end
   end
 
@@ -272,6 +275,9 @@ defmodule VesperWeb.MessageController do
       sender: sender_json(message.sender),
       expires_at: message.expires_at,
       parent_message_id: message.parent_message_id,
+      thread_root_message_id: message.thread_root_message_id,
+      reply_to_message_id: message.reply_to_message_id,
+      is_reply: message.is_reply,
       inserted_at: message.inserted_at
     }
 

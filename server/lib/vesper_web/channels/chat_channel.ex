@@ -64,8 +64,8 @@ defmodule VesperWeb.ChatChannel do
          socket.assigns.channel_id
        ) do
       with {:ok, decoded} <- safe_decode64(ciphertext),
-           {:ok, parent_message_id} <-
-             resolve_parent_message_id(params, :channel_id, socket.assigns.channel_id) do
+           {:ok, relations} <-
+             resolve_message_relations(params, :channel_id, socket.assigns.channel_id) do
         attrs =
           %{
             ciphertext: decoded,
@@ -73,9 +73,11 @@ defmodule VesperWeb.ChatChannel do
             mls_epoch: epoch,
             channel_id: socket.assigns.channel_id,
             sender_id: socket.assigns.user_id,
-            is_reply: params["is_reply"] == true
+            parent_message_id: relations.parent_message_id,
+            thread_root_message_id: relations.thread_root_message_id,
+            reply_to_message_id: relations.reply_to_message_id,
+            is_reply: relations.is_reply
           }
-          |> maybe_add_parent_id(parent_message_id)
           |> maybe_add_expires_at(socket.assigns.disappearing_ttl)
 
         case Chat.create_message(attrs) do
@@ -841,6 +843,8 @@ defmodule VesperWeb.ChatChannel do
             sender_id: message.sender_id,
             sender: sender_json(message.sender),
             parent_message_id: message.parent_message_id,
+            thread_root_message_id: message.thread_root_message_id,
+            reply_to_message_id: message.reply_to_message_id,
             urgent_reason: flags.urgent_reason,
             mentions_you: flags.mentions_you,
             reply_to_you: flags.reply_to_you,
