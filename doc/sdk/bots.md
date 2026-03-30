@@ -129,11 +129,15 @@ bot.on('unknown-command', (event) => {
 // Send to a channel
 await bot.sendChannelText(channelId, 'Hello, channel!')
 
-// Reply with a mention
+// Reply with a mention in the main timeline
 await bot.reply(channelId, `Got your message`, {
   mentionUserId: senderId,
-  parentMessageId: messageId,  // Thread reply
+  parentMessageId: messageId,
 })
+
+// For thread membership vs. reply targeting, use the lower-level messaging APIs:
+// - thread_root_message_id joins a thread
+// - reply_to_message_id quotes a specific message
 ```
 
 ## MLS Group Management

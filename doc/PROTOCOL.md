@@ -190,6 +190,8 @@ Full history form:
   },
   "expires_at": null,
   "parent_message_id": null,
+  "thread_root_message_id": null,
+  "reply_to_message_id": null,
   "inserted_at": "2026-03-21T10:00:00Z",
   "ciphertext": "base64",
   "mls_epoch": 7,
@@ -219,6 +221,9 @@ Notes:
 
 - Encrypted messages use `ciphertext` plus `mls_epoch`.
 - Plaintext fallback messages use `content` instead of `ciphertext`.
+- `thread_root_message_id` means the message belongs to a thread rooted at that top-level message.
+- `reply_to_message_id` points at the specific message being replied to. It is independent of thread membership and can appear in either the main timeline or a thread.
+- `parent_message_id` is retained as a legacy compatibility field during the migration away from the old overloaded parent model.
 - Sync summary payloads redact encrypted bodies as `"encrypted"` instead of returning ciphertext.
 
 ### 2.7 Emoji
@@ -404,7 +409,7 @@ Response overrides add `allow_bits` and `deny_bits`.
 | `GET` | `/api/v1/channels/:id/pins` | List pinned messages | none | `{ "pins": [...] }` |
 | `GET` | `/api/v1/messages` | Batch fetch by ids | query or body `ids` list/comma string | `{ "messages": [message...] }` |
 | `GET` | `/api/v1/messages/:id` | Fetch one message | none | `{ "message": message }` |
-| `GET` | `/api/v1/messages/:id/thread` | Fetch thread parent and replies | query `limit` | `{ "parent": message, "messages": [...], "reply_count": 3 }` |
+| `GET` | `/api/v1/messages/:id/thread` | Fetch thread root and replies | query `limit` | `{ "parent": message, "messages": [...], "reply_count": 3 }` |
 | `POST` | `/api/v1/conversations` | Create DM or group DM | `{ "participant_ids": ["..."], optional "name": "..." }` | `{ "conversation": conversation }` |
 | `GET` | `/api/v1/conversations` | List conversations | none | `{ "conversations": [conversation...] }` |
 | `GET` | `/api/v1/conversations/:id` | Fetch one conversation | none | `{ "conversation": conversation }` |
@@ -645,7 +650,7 @@ Client -> server events:
 
 | Event | Payload |
 | --- | --- |
-| `new_message` | `{ "ciphertext": "base64", "mls_epoch": 7, optional "client_nonce", optional "parent_message_id", optional "attachment_ids", optional "mentioned_user_ids" }` |
+| `new_message` | `{ "ciphertext": "base64", "mls_epoch": 7, optional "client_nonce", optional "thread_root_message_id", optional "reply_to_message_id", legacy optional "parent_message_id", optional "attachment_ids", optional "mentioned_user_ids" }` |
 | `add_reaction` | either `{ "message_id": "uuid", "emoji": "👍" }` or `{ "message_id": "uuid", "ciphertext": "base64", optional "mls_epoch": 7 }` |
 | `remove_reaction` | same shape as `add_reaction` |
 | `edit_message` | `{ "message_id": "uuid", "ciphertext": "base64", "mls_epoch": 8 }` |
