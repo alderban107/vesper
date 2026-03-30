@@ -6057,7 +6057,3 @@ export class VesperEncryptedChat {
 export function createEncryptedChat(client: VesperClient): VesperEncryptedChat {
   return new VesperEncryptedChat(client)
 }
-dChat(client)
-}
-at(client)
-}

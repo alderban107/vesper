@@ -232,5 +232,3 @@ interface Window {
   VESPER_API_URL?: string
   cryptoDb?: CryptoDbApi
 }
-i
-}
