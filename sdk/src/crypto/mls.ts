@@ -74,7 +74,7 @@ export async function initCipherSuite(wasmSource?: string | URL | BufferSource):
   if (wasmInitialized) return
 
   if (wasmSource) {
-    await initWasm(wasmSource)
+    await initWasm({ module_or_path: wasmSource })
   } else if (typeof process !== 'undefined' && process.versions?.node) {
     // Node.js: load from disk
     const { readFile } = await import('fs/promises')
@@ -86,7 +86,7 @@ export async function initCipherSuite(wasmSource?: string | URL | BufferSource):
     const wasmPath = join(pkgDir, 'vesper_openmls_wasm_bg.wasm')
     const wasmBytes = await readFile(wasmPath)
 
-    await initWasm(wasmBytes)
+    await initWasm({ module_or_path: wasmBytes })
   } else {
     // Browser/Electron: try well-known URL first, fall back to default loader
     try {
@@ -94,7 +94,7 @@ export async function initCipherSuite(wasmSource?: string | URL | BufferSource):
       const wasmUrl = new URL('/assets/vesper_openmls_wasm_bg.wasm', window.location.origin)
       const response = await fetch(wasmUrl)
       if (response.ok) {
-        await initWasm(await response.arrayBuffer())
+        await initWasm({ module_or_path: await response.arrayBuffer() })
       } else {
         // Fall back to default import.meta.url-based loader
         await initWasm()

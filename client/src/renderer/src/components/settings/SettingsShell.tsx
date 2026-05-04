@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react'
+import { useBodyScrollLock } from '../../hooks/useBodyScrollLock'
 
 export interface SettingsSectionItem {
   id: string
@@ -38,6 +39,8 @@ export default function SettingsShell({
     [sections]
   )
 
+  useBodyScrollLock()
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
@@ -45,12 +48,9 @@ export default function SettingsShell({
       }
     }
 
-    const previousOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
     document.addEventListener('keydown', handleKeyDown)
 
     return () => {
-      document.body.style.overflow = previousOverflow
       document.removeEventListener('keydown', handleKeyDown)
     }
   }, [onClose])

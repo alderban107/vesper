@@ -17,8 +17,7 @@ defmodule Mix.Tasks.Vesper.BackfillThreadReplyFields do
 
     messages =
       from(m in Message,
-        where:
-          is_nil(m.thread_root_message_id) or is_nil(m.reply_to_message_id),
+        where: is_nil(m.thread_root_message_id) or is_nil(m.reply_to_message_id),
         select: %{id: m.id, parent_message_id: m.parent_message_id, is_reply: m.is_reply}
       )
       |> Repo.all()
@@ -40,7 +39,9 @@ defmodule Mix.Tasks.Vesper.BackfillThreadReplyFields do
         end
       end)
 
-    Mix.shell().info("#{if(dry_run?, do: "Dry run", else: "Updated")} #{updated} messages; skipped #{skipped}.")
+    Mix.shell().info(
+      "#{if(dry_run?, do: "Dry run", else: "Updated")} #{updated} messages; skipped #{skipped}."
+    )
   end
 
   defp derive_attrs(%{parent_message_id: nil}), do: %{}
@@ -52,10 +53,18 @@ defmodule Mix.Tasks.Vesper.BackfillThreadReplyFields do
   defp derive_attrs(%{parent_message_id: parent_id, is_reply: false}) when is_binary(parent_id) do
     thread_root_id =
       case Chat.get_message(parent_id) do
-        nil -> parent_id
-        %{thread_root_message_id: root_id} when is_binary(root_id) -> root_id
-        %{parent_message_id: legacy_parent_id, is_reply: false} when is_binary(legacy_parent_id) -> legacy_parent_id
-        _ -> parent_id
+        nil ->
+          parent_id
+
+        %{thread_root_message_id: root_id} when is_binary(root_id) ->
+          root_id
+
+        %{parent_message_id: legacy_parent_id, is_reply: false}
+        when is_binary(legacy_parent_id) ->
+          legacy_parent_id
+
+        _ ->
+          parent_id
       end
 
     %{thread_root_message_id: thread_root_id}

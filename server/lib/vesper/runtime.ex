@@ -368,9 +368,14 @@ defmodule Vesper.Runtime do
   defp maybe_create_thread_relation(%RoomEvent{} = event, %Message{} = message) do
     thread_root_id =
       cond do
-        is_binary(message.thread_root_message_id) -> message.thread_root_message_id
-        is_binary(message.parent_message_id) and message.is_reply != true -> message.parent_message_id
-        true -> nil
+        is_binary(message.thread_root_message_id) ->
+          message.thread_root_message_id
+
+        is_binary(message.parent_message_id) and message.is_reply != true ->
+          message.parent_message_id
+
+        true ->
+          nil
       end
 
     case thread_root_id && Repo.get_by(RoomEvent, message_id: thread_root_id) do

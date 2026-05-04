@@ -586,10 +586,16 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
 
     await initVoice(conversationId, 'dm', set, get)
 
-    // After joining, send call_ring
+    // After joining, send call_ring. If the room state update already promoted
+    // us into the call, do not regress back to ringing.
     const topic = `voice:dm:${conversationId}`
     pushTopicEvent(topic, 'call_ring', {})
-    set({ state: 'ringing' })
+    set((state) => ({
+      state:
+        state.roomType === 'dm' && state.roomId === conversationId && state.state === 'connecting'
+          ? 'ringing'
+          : state.state
+    }))
   },
 
   acceptCall: async (conversationId) => {
@@ -1282,16 +1288,46 @@ async function initVoice(
           typeof data.e2ee_creator_id === 'string' ? data.e2ee_creator_id : undefined
 
         void setupVoiceE2EE(topic, preferredCreatorId).catch(() => {
+          cleanup(get)
           set({
-            errorMessage: 'Voice encryption setup failed. Rejoin the call to try again.'
+            state: 'idle',
+            roomId: null,
+            roomType: null,
+            participants: [],
+            trackMap: {},
+            trackIdsByMid: {},
+            videoMode: 'none',
+            cameraEnabled: false,
+            screenShareEnabled: false,
+            localVideoStream: null,
+            remoteVideoStreams: {},
+            localCameraStream: null,
+            localShareStream: null,
+            remoteMediaStreams: {},
+            errorMessage: 'Voice encryption setup failed. Rejoin the call to try again.',
+            ...buildResetConnectionStats()
           })
-          get().disconnect()
         })
       } catch {
+        cleanup(get)
         set({
-          errorMessage: 'Voice setup failed. Check your permissions and selected devices.'
+          state: 'idle',
+          roomId: null,
+          roomType: null,
+          participants: [],
+          trackMap: {},
+          trackIdsByMid: {},
+          videoMode: 'none',
+          cameraEnabled: false,
+          screenShareEnabled: false,
+          localVideoStream: null,
+          remoteVideoStreams: {},
+          localCameraStream: null,
+          localShareStream: null,
+          remoteMediaStreams: {},
+          errorMessage: 'Voice setup failed. Check your microphone permissions and selected devices.',
+          ...buildResetConnectionStats()
         })
-        get().disconnect()
       }
     } else if (event === 'ice_candidate') {
       const candidate = data.candidate as Record<string, unknown>
@@ -1361,11 +1397,11 @@ async function initVoice(
         })
       )
 
-      set((state) => ({
+      set({
         participants: nextParticipants,
         remoteMediaStreams: nextRemoteMediaStreams,
         remoteVideoStreams: toPrimaryVideoStreamMap(nextParticipants, nextRemoteMediaStreams)
-      }))
+      })
     } else if (event === 'call_timeout') {
       get().disconnect()
     } else if (event === 'call_rejected') {

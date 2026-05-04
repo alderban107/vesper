@@ -88,11 +88,17 @@ defmodule VesperWeb.ChannelHelpers do
   def resolve_message_relations(params, scope_field, scope_id, opts \\ []) do
     validate_scope? = Keyword.get(opts, :validate_scope?, true)
 
-    with {:ok, explicit_thread_root_id} <- parse_optional_message_id(params, "thread_root_message_id"),
+    with {:ok, explicit_thread_root_id} <-
+           parse_optional_message_id(params, "thread_root_message_id"),
          {:ok, explicit_reply_to_id} <- parse_optional_message_id(params, "reply_to_message_id"),
          {:ok, legacy_parent_id} <- parse_optional_message_id(params, "parent_message_id"),
          {:ok, explicit_thread_root} <-
-           resolve_optional_message(explicit_thread_root_id, scope_field, scope_id, validate_scope?),
+           resolve_optional_message(
+             explicit_thread_root_id,
+             scope_field,
+             scope_id,
+             validate_scope?
+           ),
          {:ok, explicit_reply_to} <-
            resolve_optional_message(explicit_reply_to_id, scope_field, scope_id, validate_scope?),
          {:ok, legacy_parent} <-
@@ -319,14 +325,16 @@ defmodule VesperWeb.ChannelHelpers do
 
   defp resolve_optional_message(nil, _scope_field, _scope_id, _validate_scope?), do: {:ok, nil}
 
-  defp resolve_optional_message(message_id, _scope_field, _scope_id, false) when is_binary(message_id) do
+  defp resolve_optional_message(message_id, _scope_field, _scope_id, false)
+       when is_binary(message_id) do
     case Chat.get_message(message_id) do
       nil -> {:error, "message not found"}
       message -> {:ok, message}
     end
   end
 
-  defp resolve_optional_message(message_id, scope_field, scope_id, true) when is_binary(message_id) do
+  defp resolve_optional_message(message_id, scope_field, scope_id, true)
+       when is_binary(message_id) do
     case Chat.get_message(message_id) do
       nil ->
         {:error, "message not found"}
@@ -368,8 +376,11 @@ defmodule VesperWeb.ChannelHelpers do
 
   defp validate_thread_reply_compatibility(nil, reply_to) do
     case effective_thread_root_id(reply_to) do
-      nil -> :ok
-      root_id -> {:error, "reply target belongs to a thread; set thread_root_message_id to #{root_id}"}
+      nil ->
+        :ok
+
+      root_id ->
+        {:error, "reply target belongs to a thread; set thread_root_message_id to #{root_id}"}
     end
   end
 

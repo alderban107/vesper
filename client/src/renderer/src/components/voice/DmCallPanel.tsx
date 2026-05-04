@@ -12,7 +12,7 @@ import {
   Volume2
 } from 'lucide-react'
 import { useAuthStore } from '../../stores/authStore'
-import { useDmStore } from '../../stores/dmStore'
+import { useDmStore, type DmConversation } from '../../stores/dmStore'
 import { useVoiceStore } from '../../stores/voiceStore'
 import Avatar from '../ui/Avatar'
 import VoiceVideoSurface, {
@@ -22,6 +22,8 @@ import VoiceVideoSurface, {
   type StreamSlot
 } from './VoiceVideoSurface'
 
+const EMPTY_DM_PARTICIPANTS: DmConversation['participants'] = []
+
 export default function DmCallPanel(): React.JSX.Element | null {
   const conversations = useDmStore((s) => s.conversations)
   const roomId = useVoiceStore((s) => s.roomId)
@@ -29,9 +31,9 @@ export default function DmCallPanel(): React.JSX.Element | null {
   const voiceState = useVoiceStore((s) => s.state)
   const participants = useVoiceStore((s) => s.participants)
   const remoteVolumes = useVoiceStore((s) => s.remoteVolumes)
-  const remoteStreamVolumes = useVoiceStore((s) => s.remoteStreamVolumes)
   const connectionQuality = useVoiceStore((s) => s.connectionQuality)
   const roundTripMs = useVoiceStore((s) => s.roundTripMs)
+  const errorMessage = useVoiceStore((s) => s.errorMessage)
   const muted = useVoiceStore((s) => s.muted)
   const deafened = useVoiceStore((s) => s.deafened)
   const cameraEnabled = useVoiceStore((s) => s.cameraEnabled)
@@ -51,17 +53,20 @@ export default function DmCallPanel(): React.JSX.Element | null {
 
   const [focusedStreamKey, setFocusedStreamKey] = useState<string | null>(null)
 
-  if (roomType !== 'dm' || !roomId) return null
   const isConnected = voiceState === 'connected' || voiceState === 'in_call'
-  if (!isConnected) return null
-
-  const conversation = conversations.find((c) => c.id === roomId)
-  if (!conversation) return null
+  const isActiveCall = voiceState !== 'idle'
+  const conversation = roomType === 'dm' && roomId
+    ? conversations.find((c) => c.id === roomId) ?? null
+    : null
+  const hasConversation = Boolean(conversation)
+  const conversationParticipants = conversation?.participants ?? EMPTY_DM_PARTICIPANTS
 
   const participantCards = useMemo<ParticipantCard[]>(
-    () =>
-      participants.map((participant) => {
-        const dmParticipant = conversation.participants.find(
+    () => {
+      if (!hasConversation) return []
+
+      return participants.map((participant) => {
+        const dmParticipant = conversationParticipants.find(
           (p) => p.user_id === participant.user_id
         )
         const displayName =
@@ -87,11 +92,14 @@ export default function DmCallPanel(): React.JSX.Element | null {
           hasShare,
           hasShareAudio: Boolean(participant.share_audio_track_id)
         }
-      }),
-    [conversation.participants, localCameraStream, localShareStream, myUserId, participants]
+      })
+    },
+    [conversationParticipants, hasConversation, localCameraStream, localShareStream, myUserId, participants]
   )
 
   const streamCards = useMemo<StreamCard[]>(() => {
+    if (!hasConversation) return []
+
     const cards: StreamCard[] = []
 
     const pushCard = (
@@ -100,7 +108,7 @@ export default function DmCallPanel(): React.JSX.Element | null {
       stream: MediaStream,
       isLocal: boolean
     ): void => {
-      const dmParticipant = conversation.participants.find((p) => p.user_id === userId)
+      const dmParticipant = conversationParticipants.find((p) => p.user_id === userId)
       const participant = participants.find((p) => p.user_id === userId)
       const displayName =
         dmParticipant?.user.display_name ||
@@ -138,7 +146,7 @@ export default function DmCallPanel(): React.JSX.Element | null {
     }
 
     return cards
-  }, [conversation.participants, localCameraStream, localShareStream, myUserId, participants, remoteMediaStreams])
+  }, [conversationParticipants, hasConversation, localCameraStream, localShareStream, myUserId, participants, remoteMediaStreams])
 
   const orderedStreamCards = useMemo(() => {
     const shares = streamCards.filter((card) => card.slot === 'share_video')
@@ -161,12 +169,14 @@ export default function DmCallPanel(): React.JSX.Element | null {
     unknown: 'No data'
   }[connectionQuality]
 
+  if (roomType !== 'dm' || !roomId || !isActiveCall || !conversation) return null
+
   return (
     <div className="vesper-voice-channel-panel">
       <div className="vesper-voice-channel-panel-header">
         <div className="vesper-voice-channel-panel-header-info">
           <h2 className="vesper-voice-channel-panel-title">
-            {conversation.name || conversation.participants
+            {conversation.name || conversationParticipants
               .filter((p) => p.user_id !== myUserId)
               .map((p) => p.user.display_name || p.user.username)
               .join(', ')}
@@ -175,6 +185,7 @@ export default function DmCallPanel(): React.JSX.Element | null {
             {connectionQualityLabel}
             {roundTripMs !== null && ` · ${Math.round(roundTripMs)} ms`}
           </span>
+          {errorMessage && <div className="vesper-voice-room-error">{errorMessage}</div>}
         </div>
       </div>
 
@@ -284,6 +295,7 @@ export default function DmCallPanel(): React.JSX.Element | null {
         <button
           type="button"
           onClick={() => toggleCamera()}
+          disabled={!isConnected}
           className={`vesper-voice-btn ${cameraEnabled ? 'vesper-voice-btn-active' : ''}`}
           title={cameraEnabled ? 'Turn off camera' : 'Turn on camera'}
         >
@@ -293,6 +305,7 @@ export default function DmCallPanel(): React.JSX.Element | null {
         <button
           type="button"
           onClick={() => toggleScreenShare()}
+          disabled={!isConnected}
           className={`vesper-voice-btn ${screenShareEnabled ? 'vesper-voice-btn-active' : ''}`}
           title={screenShareEnabled ? 'Stop sharing' : 'Share screen'}
         >

@@ -1,8 +1,15 @@
-.git
-server/
+*
+!client/
+!client/**
+!sdk/
+!sdk/**
+
 client/node_modules/
 client/dist/
 client/dist-web/
+client/out/
+client/test-results/
+client/playwright-report/
 sdk/node_modules/
 sdk/dist/
 **/.env*

@@ -59,6 +59,7 @@ opencode.json
 
 # Test artifacts
 client/e2e/artifacts/
+dogfood-output/
 media-test-files/
 packages/
 

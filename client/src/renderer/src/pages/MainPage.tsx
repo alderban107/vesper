@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useRef, useState, useCallback } from 'react'
+import { Suspense, useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { SendHorizonal, Star, X } from 'lucide-react'
 import Sidebar from '../components/layout/Sidebar'
 import Header from '../components/layout/Header'
@@ -6,17 +6,18 @@ import MessageList from '../components/chat/MessageList'
 import MessageInput from '../components/chat/MessageInput'
 import MessageItem from '../components/chat/MessageItem'
 import MessageFeed from '../components/chat/message/MessageFeed'
-import VesperEditor from '../components/chat/slate/VesperEditor'
+import VesperEditor, { type VesperEditorHandle } from '../components/chat/slate/VesperEditor'
 import { useServerStore } from '../stores/serverStore'
 import { useDmStore } from '../stores/dmStore'
 import { useUIStore } from '../stores/uiStore'
 import { useVoiceStore } from '../stores/voiceStore'
 import { useAuthStore } from '../stores/authStore'
 import { usePresenceStore } from '../stores/presenceStore'
-import { parseMessageContent, useMessageStore, type Message } from '../stores/messageStore'
+import { compareMessages, parseMessageContent, useMessageStore, type Message } from '../stores/messageStore'
 import { useSyncStore } from '../stores/syncStore'
 import { getRendererClient } from '../sdk/client'
 import lazyWithRetry from '../utils/lazyWithRetry'
+import { useMediaQuery } from '../hooks/useMediaQuery'
 
 const CreateServerModal = lazyWithRetry(() => import('../components/server/CreateServerModal'))
 const JoinServerModal = lazyWithRetry(() => import('../components/server/JoinServerModal'))
@@ -48,9 +49,7 @@ function mergeThreadReplies(primary: Message[], secondary: Message[]): Message[]
     merged.set(message.id, message)
   }
 
-  return [...merged.values()].sort(
-    (a, b) => new Date(a.inserted_at).getTime() - new Date(b.inserted_at).getTime()
-  )
+  return [...merged.values()].sort(compareMessages)
 }
 
 function getReplyPreview(message: Message): string {
@@ -61,24 +60,6 @@ function getReplyPreview(message: Message): string {
   }
 
   return parsed.text || 'View message'
-}
-
-function useIsMobileLayout(): boolean {
-  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 768)
-
-  useEffect(() => {
-    const mediaQuery = window.matchMedia('(max-width: 768px)')
-    const handleChange = (event: MediaQueryListEvent): void => setIsMobile(event.matches)
-
-    setIsMobile(mediaQuery.matches)
-    mediaQuery.addEventListener('change', handleChange)
-
-    return () => {
-      mediaQuery.removeEventListener('change', handleChange)
-    }
-  }, [])
-
-  return isMobile
 }
 
 function DeferredChrome({
@@ -125,7 +106,7 @@ function WorkspaceStatusStrip({
 }
 
 export default function MainPage(): React.JSX.Element {
-  const isMobile = useIsMobileLayout()
+  const isMobile = useMediaQuery('(max-width: 768px)')
   const activeChannelId = useServerStore((s) => s.activeChannelId)
   const activeChannel = useServerStore((s) => {
     const server = s.servers.find((entry) => entry.id === s.activeServerId)
@@ -183,6 +164,7 @@ export default function MainPage(): React.JSX.Element {
     return EMPTY_MESSAGES
   })
   const sawInitialSocketOpenRef = useRef(false)
+  const threadEditorRef = useRef<VesperEditorHandle>(null)
   const [connectionState, setConnectionState] = useState(() => {
     const clientState = getRendererClient().getState()
 
@@ -272,30 +254,34 @@ export default function MainPage(): React.JSX.Element {
   const isCurrentDmCallView =
     isDmView &&
     voiceRoomType === 'dm' &&
-    voiceRoomId === selectedConversationId &&
-    (voiceState === 'connected' || voiceState === 'in_call')
+    voiceRoomId === selectedConversationId
   const shouldShowCallOverlay =
     voiceState !== 'idle' &&
     !isCurrentDmCallView &&
     (voiceRoomType === 'dm' || (isMobile && !isCurrentVoiceRoomView))
   const showThreadPanel = Boolean(activeThreadParentId && (isChannelView || isDmView))
-  const inlineThreadReplies = activeThreadParentId
+  const inlineThreadReplies = useMemo(() => activeThreadParentId
     ? activeTargetMessages.filter((message) => {
       const threadRootId =
         message.thread_root_message_id ??
         (!message.is_reply ? message.parent_message_id : null)
       return threadRootId === activeThreadParentId
     })
-    : EMPTY_MESSAGES
-  const threadReplies = mergeThreadReplies(threadRepliesFromApi, inlineThreadReplies)
-  const resolvedThreadParent = activeThreadParent ?? (
+    : EMPTY_MESSAGES,
+  [activeTargetMessages, activeThreadParentId])
+  const threadReplies = useMemo(
+    () => mergeThreadReplies(threadRepliesFromApi, inlineThreadReplies),
+    [inlineThreadReplies, threadRepliesFromApi]
+  )
+  const resolvedThreadParent = useMemo(() => activeThreadParent ?? (
     activeThreadParentId
       ? activeTargetMessages.find((message) => message.id === activeThreadParentId) ?? null
       : null
-  )
-  const threadMessageLookup = resolvedThreadParent
+  ), [activeTargetMessages, activeThreadParent, activeThreadParentId])
+  const threadMessageLookup = useMemo(() => resolvedThreadParent
     ? [resolvedThreadParent, ...threadReplies]
-    : threadReplies
+    : threadReplies,
+  [resolvedThreadParent, threadReplies])
 
   useEffect(() => {
     if (!isMobile) {
@@ -421,6 +407,7 @@ export default function MainPage(): React.JSX.Element {
             </div>
           )}
           <VesperEditor
+            ref={threadEditorRef}
             mode="compose"
             onSubmit={(markdown) => {
               const trimmed = markdown.trim()
@@ -430,7 +417,8 @@ export default function MainPage(): React.JSX.Element {
             autoFocus
           />
           <button
-            type="submit"
+            type="button"
+            onClick={() => threadEditorRef.current?.submit()}
             disabled={!activeThreadParentId}
             className="vesper-thread-composer-send"
           >

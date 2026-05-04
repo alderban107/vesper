@@ -8,6 +8,8 @@ import {
 } from './sdk/bootstrap'
 import lazyWithRetry from './utils/lazyWithRetry'
 import ToastContainer from './components/ui/ToastContainer'
+import { useFocusTrap } from './hooks/useFocusTrap'
+import { useBodyScrollLock } from './hooks/useBodyScrollLock'
 import { getStoredValue } from './utils/localStorage'
 import { applyTheme } from './utils/theme'
 const LoginPage = lazyWithRetry(() => import('./pages/LoginPage'))
@@ -71,16 +73,29 @@ function SessionNoticeModal({
   notice: SessionNotice
   onClose: () => void
 }): React.JSX.Element {
+  const modalRef = useFocusTrap<HTMLDivElement>(true)
+  useBodyScrollLock()
+
   return (
-    <div data-testid="session-notice" className="fixed inset-0 z-[200] bg-bg-base/86 backdrop-blur-md flex items-center justify-center p-6">
-      <div className="glass-card rounded-3xl max-w-md w-full p-6 border border-border/60 shadow-2xl animate-scale-in">
+    <div
+      data-testid="session-notice"
+      className="fixed inset-0 z-[200] bg-bg-base/86 backdrop-blur-md flex items-center justify-center p-4 sm:p-6"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="session-notice-title"
+      aria-describedby="session-notice-description"
+    >
+      <div
+        ref={modalRef}
+        className="glass-card rounded-3xl max-w-md w-full max-h-[calc(100dvh-2rem)] overflow-y-auto p-6 border border-border/60 shadow-2xl animate-scale-in"
+      >
         <div className="flex items-start gap-4">
           <div className="w-12 h-12 rounded-2xl bg-error/15 text-error flex items-center justify-center shrink-0">
             <AlertTriangle className="w-6 h-6" />
           </div>
           <div>
-            <h2 className="text-xl font-semibold text-text-primary">{notice.title}</h2>
-            <p className="text-text-muted mt-2">{notice.message}</p>
+            <h2 id="session-notice-title" className="text-xl font-semibold text-text-primary">{notice.title}</h2>
+            <p id="session-notice-description" className="text-text-muted mt-2">{notice.message}</p>
           </div>
         </div>
 

@@ -53,7 +53,7 @@ test.describe('P1: Device trust and session renewal', () => {
     // If device trust gate appears with unlock option, use it
     const hasGate = await page.locator('[data-testid="device-trust-gate"]').isVisible({ timeout: 5_000 }).catch(() => false)
     if (hasGate) {
-      const hasUnlock = await page.locator('text=Unlock encrypted chats').isVisible()
+      const hasUnlock = await page.locator('text=Unlock this device').isVisible()
       if (hasUnlock) {
         await unlockTrustedDevice(page, USERS.alice.password)
       } else {

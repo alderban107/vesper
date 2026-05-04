@@ -22,22 +22,59 @@ FROM nginx:alpine
 COPY --from=build /app/client/dist-web /usr/share/nginx/html
 COPY --from=build /app/client/docker-entrypoint.sh /docker-entrypoint.sh
 
-# SPA fallback + cache headers
-RUN printf 'server {\n\
+# SPA fallback, cache headers, and same-origin API proxy
+RUN printf 'proxy_set_header Host $host;\n\
+proxy_set_header X-Real-IP $remote_addr;\n\
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
+proxy_set_header X-Forwarded-Proto $vesper_forwarded_proto;\n' > /etc/nginx/conf.d/proxy_headers.inc
+RUN printf 'upstream vesper_api {\n\
+    server app:4000;\n\
+}\n\
+\n\
+map $http_x_forwarded_proto $vesper_forwarded_proto {\n\
+    default $http_x_forwarded_proto;\n\
+    "" $scheme;\n\
+}\n\
+\n\
+server {\n\
     listen 80;\n\
     root /usr/share/nginx/html;\n\
     index index.html;\n\
     \n\
-    # Twemoji SVGs — immutable, cache forever\n\
+    # Twemoji SVGs: immutable, cache forever\n\
     location /twemoji/ {\n\
         add_header Cache-Control "public, max-age=31536000, immutable";\n\
         try_files $uri =404;\n\
     }\n\
     \n\
-    # Vite hashed assets — immutable\n\
+    # Vite hashed assets: immutable\n\
     location /assets/ {\n\
         add_header Cache-Control "public, max-age=31536000, immutable";\n\
         try_files $uri =404;\n\
+    }\n\
+    \n\
+    location /api/ {\n\
+        proxy_pass http://vesper_api;\n\
+        include /etc/nginx/conf.d/proxy_headers.inc;\n\
+    }\n\
+    \n\
+    location /uploads/ {\n\
+        proxy_pass http://vesper_api;\n\
+        include /etc/nginx/conf.d/proxy_headers.inc;\n\
+    }\n\
+    \n\
+    location /socket/ {\n\
+        proxy_pass http://vesper_api;\n\
+        proxy_http_version 1.1;\n\
+        proxy_set_header Upgrade $http_upgrade;\n\
+        proxy_set_header Connection "upgrade";\n\
+        include /etc/nginx/conf.d/proxy_headers.inc;\n\
+        proxy_read_timeout 86400;\n\
+    }\n\
+    \n\
+    location /health {\n\
+        proxy_pass http://vesper_api;\n\
+        include /etc/nginx/conf.d/proxy_headers.inc;\n\
     }\n\
     \n\
     location / {\n\

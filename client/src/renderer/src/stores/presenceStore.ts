@@ -1,9 +1,13 @@
 import { create } from 'zustand'
 import { useServerStore } from './serverStore'
 import { registerDmChannelMapping } from './messageStore'
+import { useAuthStore } from './authStore'
+import { useToastStore } from './toastStore'
 import type { DmConversation } from './dmStore'
 import { getRendererClient, getRendererEncryptedChat } from '../sdk/client'
 import { fireAndForget } from '../utils/async'
+import { getStoredValue } from '../utils/localStorage'
+import { playNotificationSound } from '../utils/notificationSound'
 
 export type PresenceStatus = 'online' | 'idle' | 'dnd' | 'offline'
 
@@ -182,6 +186,24 @@ function queueScopeMutation(kind: 'channel' | 'dm', scopeId: string): void {
 
 export function queueScopeMutationHint(kind: 'channel' | 'dm', scopeId: string): void {
   queueScopeMutation(kind, scopeId)
+}
+
+function maybeShowActivityToast(
+  sender?: { username?: string; display_name?: string | null } | null,
+  senderId?: string | null,
+  dedupe?: { kind: 'channel' | 'dm'; scopeId: string; messageId: string }
+): void {
+  const myId = useAuthStore.getState().user?.id
+  if (senderId && senderId === myId) return
+  if (usePresenceStore.getState().myStatus === 'dnd') return
+  if (getStoredValue('notifications') === 'disabled') return
+  if (dedupe && !claimUnreadMessageKey(dedupe.kind, dedupe.scopeId, dedupe.messageId)) return
+
+  const title = sender?.display_name || sender?.username || 'New message'
+  useToastStore.getState().addToast(`${title}: New message`, 'info', 5000)
+  if (typeof document !== 'undefined' && !document.hidden && document.hasFocus()) {
+    playNotificationSound()
+  }
 }
 
 function claimUnreadMessageKey(
@@ -414,6 +436,7 @@ function handleUserFeedEvent(topic: string, event: string, payload: unknown): vo
         claimUnreadMessageKey('dm', data.conversation_id, data.message_id)
       ) {
         useUnreadStore.getState().incrementDm(data.conversation_id)
+        maybeShowActivityToast(data.sender, data.sender_id)
       }
 
       // scope_summary_updated functionality: update sidebar last message
@@ -461,6 +484,7 @@ function handleUserFeedEvent(topic: string, event: string, payload: unknown): vo
         claimUnreadMessageKey('dm', data.conversation_id, data.message_id)
       ) {
         useUnreadStore.getState().incrementDm(data.conversation_id)
+        maybeShowActivityToast(data.sender, data.sender_id)
       }
     })
     return
@@ -651,6 +675,11 @@ function handleUserFeedEvent(topic: string, event: string, payload: unknown): vo
         })
         if (useServerStore.getState().activeChannelId !== data.scope_id) {
           useUnreadStore.getState().incrementChannel(data.scope_id)
+          maybeShowActivityToast(data.activity!.sender ?? null, data.activity!.sender_id ?? null, {
+            kind: 'channel',
+            scopeId: data.scope_id,
+            messageId: data.activity!.message_id!
+          })
         }
       })
     }

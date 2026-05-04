@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { ShieldCheck, Copy, Check } from 'lucide-react'
+import { useFocusTrap } from '../../hooks/useFocusTrap'
+import { useBodyScrollLock } from '../../hooks/useBodyScrollLock'
 
 interface Props {
   mnemonic: string
@@ -9,6 +11,8 @@ interface Props {
 export default function RecoveryKeyModal({ mnemonic, onConfirm }: Props): React.JSX.Element {
   const [copied, setCopied] = useState(false)
   const [confirmed, setConfirmed] = useState(false)
+  const modalRef = useFocusTrap<HTMLDivElement>(true)
+  useBodyScrollLock()
 
   const words = mnemonic.split(' ')
 
@@ -19,24 +23,34 @@ export default function RecoveryKeyModal({ mnemonic, onConfirm }: Props): React.
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
-      <div data-testid="recovery-modal" className="glass-card rounded-2xl p-6 w-[480px] animate-scale-in">
+    <div
+      className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="recovery-key-title"
+      aria-describedby="recovery-key-description"
+    >
+      <div
+        ref={modalRef}
+        data-testid="recovery-modal"
+        className="glass-card rounded-2xl p-5 sm:p-6 w-full max-w-[480px] max-h-[calc(100dvh-2rem)] overflow-y-auto animate-scale-in"
+      >
         <div className="flex items-center gap-3 mb-4">
           <div className="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center">
             <ShieldCheck className="w-5 h-5 text-accent" />
           </div>
           <div>
-            <h2 className="text-lg font-semibold text-text-primary">Recovery Key</h2>
+            <h2 id="recovery-key-title" className="text-lg font-semibold text-text-primary">Recovery Key</h2>
             <p className="text-text-faint text-xs">Save this somewhere safe</p>
           </div>
         </div>
 
-        <p className="text-text-muted text-sm mb-4">
+        <p id="recovery-key-description" className="text-text-muted text-sm mb-4">
           This is the only way to recover your encrypted messages if you lose access to your account.
           It cannot be shown again.
         </p>
 
-        <div className="bg-bg-base/50 rounded-xl p-4 mb-4 grid grid-cols-4 gap-2 border border-border">
+        <div className="bg-bg-base/50 rounded-xl p-4 mb-4 grid grid-cols-2 sm:grid-cols-4 gap-2 border border-border">
           {words.map((word, i) => (
             <div key={i} className="flex items-center gap-1.5">
               <span className="text-text-faintest text-xs w-5 text-right">{i + 1}.</span>

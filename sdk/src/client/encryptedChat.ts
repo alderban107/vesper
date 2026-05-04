@@ -447,6 +447,9 @@ type HistoryBundleItem = {
   insertedAt?: string
   expiresAt?: string | null
   parentMessageId?: string | null
+  threadRootMessageId?: string | null
+  replyToMessageId?: string | null
+  isReply?: boolean
 }
 
 function normalizeHistoryBundleSender(
@@ -510,7 +513,7 @@ function normalizeHistoryBundleItem(
       typeof item.replyToMessageId === 'string' || item.replyToMessageId === null
         ? (item.replyToMessageId as string | null)
         : null,
-    isReply: item.isReply === true
+    isReply: typeof item.isReply === 'boolean' ? item.isReply : undefined
   }
 }
 
@@ -2672,6 +2675,8 @@ export class VesperEncryptedChat {
         senderId: rawMessage.sender_id ?? null,
         senderUsername: rawMessage.sender?.username ?? null,
         parentMessageId: rawMessage.parent_message_id ?? null,
+        threadRootMessageId: rawMessage.thread_root_message_id ?? null,
+        replyToMessageId: rawMessage.reply_to_message_id ?? null,
         isReply: rawMessage.is_reply ?? false,
         ciphertext: ciphertext ? Buffer.from(ciphertext, 'base64') : null,
         decryptedContent: decryptionFailed ? null : plaintext,
@@ -3435,7 +3440,10 @@ export class VesperEncryptedChat {
               }
             : null),
         insertedAt: cachedMessage.insertedAt,
-        parentMessageId: cachedMessage.parentMessageId
+        parentMessageId: cachedMessage.parentMessageId,
+        threadRootMessageId: cachedMessage.threadRootMessageId,
+        replyToMessageId: cachedMessage.replyToMessageId,
+        isReply: cachedMessage.isReply
       })
       bundledIds.add(cachedMessage.id)
     }
@@ -3619,6 +3627,9 @@ export class VesperEncryptedChat {
           senderId: item.senderId ?? sender?.id ?? null,
           senderUsername: sender?.username ?? null,
           parentMessageId: item.parentMessageId ?? null,
+          threadRootMessageId: item.threadRootMessageId ?? null,
+          replyToMessageId: item.replyToMessageId ?? null,
+          isReply: item.isReply ?? false,
           insertedAt,
           content: coerceDisplayText(item.content),
           plaintext: item.content,
@@ -3633,6 +3644,9 @@ export class VesperEncryptedChat {
             sender_id: item.senderId ?? sender?.id ?? null,
             sender,
             parent_message_id: item.parentMessageId ?? null,
+            thread_root_message_id: item.threadRootMessageId ?? null,
+            reply_to_message_id: item.replyToMessageId ?? null,
+            is_reply: item.isReply ?? false,
             inserted_at: insertedAt,
             expires_at: item.expiresAt ?? null,
             attachments: [],
@@ -3713,7 +3727,7 @@ export class VesperEncryptedChat {
             existingMessage?.raw.reply_to_message_id ??
             null,
           isReply:
-            item.raw?.is_reply ??
+            item.isReply ??
             existingMessage?.raw.is_reply ??
             cachedMessage?.isReply ??
             false,
@@ -5109,6 +5123,9 @@ export class VesperEncryptedChat {
                 }
               : null,
             parent_message_id: message.parentMessageId,
+            thread_root_message_id: message.threadRootMessageId,
+            reply_to_message_id: message.replyToMessageId,
+            is_reply: message.isReply,
             inserted_at: message.insertedAt,
             content: plaintext ?? undefined,
             ciphertext,
