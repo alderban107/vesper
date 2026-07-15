@@ -1,5 +1,5 @@
 import { Suspense, useEffect, useMemo, useRef, useState, useCallback } from 'react'
-import { SendHorizonal, Star, X } from 'lucide-react'
+import { SendHorizonal, MessageSquare, X } from 'lucide-react'
 import Sidebar from '../components/layout/Sidebar'
 import Header from '../components/layout/Header'
 import MessageList from '../components/chat/MessageList'
@@ -85,8 +85,8 @@ function WorkspaceStatusStrip({
     return null
   }
 
-  const tone = connected ? 'border-sky-400/20 bg-sky-500/10 text-sky-100' : 'border-amber-400/20 bg-amber-500/10 text-amber-100'
-  const dotTone = connected ? 'bg-sky-300' : 'bg-amber-300'
+  const tone = connected ? 'border-success/20 bg-success/10' : 'border-accent/30 bg-accent/10'
+  const dotTone = connected ? 'bg-success' : 'bg-accent'
   const title = connected ? 'Syncing latest activity' : 'Reconnecting to server'
   const description = connected
     ? 'Refreshing servers, DMs, unread state, and recent scope changes.'
@@ -98,7 +98,7 @@ function WorkspaceStatusStrip({
         <div className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${dotTone}`} />
         <div className="min-w-0 flex-1">
           <div className="text-sm font-semibold text-text-primary">{title}</div>
-          <div className="mt-1 text-xs leading-5 text-current">{description}</div>
+          <div className="mt-1 text-xs leading-5 text-text-muted">{description}</div>
         </div>
       </div>
     </div>
@@ -135,8 +135,6 @@ export default function MainPage(): React.JSX.Element {
   const screenShareEnabled = useVoiceStore((s) => s.screenShareEnabled)
   const servers = useServerStore((s) => s.servers)
   const currentUser = useAuthStore((s) => s.user)
-  const currentDevice = useAuthStore((s) => s.currentDevice)
-  const canUseE2EE = useAuthStore((s) => s.canUseE2EE)
   const joinPresence = usePresenceStore((s) => s.joinPresence)
   const joinAllServerPresence = usePresenceStore((s) => s.joinAllServerPresence)
   const syncNow = useSyncStore((s) => s.syncNow)
@@ -173,10 +171,6 @@ export default function MainPage(): React.JSX.Element {
       lastError: null as string | null
     }
   })
-  const needsEncryptedUnlock =
-    currentDevice?.trust_state === 'trusted' &&
-    !canUseE2EE
-
   useEffect(() => {
     const client = getRendererClient()
     const clientState = client.getState()
@@ -441,11 +435,10 @@ export default function MainPage(): React.JSX.Element {
             <Header mobile />
             <WorkspaceStatusStrip
               connected={connectionState.connected}
-              syncing={syncing && !needsEncryptedUnlock}
+              syncing={syncing}
               lastError={connectionState.lastError}
               mobile
             />
-
             <div className="vesper-mobile-chat-body">
               {isChannelView ? (
                 <>
@@ -472,7 +465,7 @@ export default function MainPage(): React.JSX.Element {
                 </>
               ) : (
                 <div className="vesper-mobile-empty-state">
-                  <Star className="w-10 h-10 text-text-faintest" />
+                  <MessageSquare className="w-10 h-10 text-text-faintest" />
                   <p>Select a channel or conversation to start chatting</p>
                 </div>
               )}
@@ -510,10 +503,9 @@ export default function MainPage(): React.JSX.Element {
         <Header />
         <WorkspaceStatusStrip
           connected={connectionState.connected}
-          syncing={syncing && !needsEncryptedUnlock}
+          syncing={syncing}
           lastError={connectionState.lastError}
         />
-
         <div id="vesper-main-content" className="vesper-desktop-body flex-1 flex min-h-0" role="main" tabIndex={-1}>
           <div className="vesper-main-chat-column flex-1 flex flex-col min-w-0">
             {isChannelView ? (
@@ -541,7 +533,7 @@ export default function MainPage(): React.JSX.Element {
               </>
             ) : (
               <div className="flex-1 flex flex-col items-center justify-center text-text-faint gap-3">
-                <Star className="w-10 h-10 text-text-faintest" />
+                <MessageSquare className="w-10 h-10 text-text-faintest" />
                 <p>Select a channel or conversation to start chatting</p>
               </div>
             )}

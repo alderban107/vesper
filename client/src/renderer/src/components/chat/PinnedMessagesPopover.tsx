@@ -127,7 +127,7 @@ export default function PinnedMessagesPopover({
                 {canManage && (
                   <button
                     type="button"
-                    className="ml-auto text-text-faint hover:text-red-400 transition-colors p-1 rounded hover:bg-bg-tertiary/50"
+                    className="ml-auto text-text-faint hover:text-error transition-colors p-1 rounded hover:bg-bg-tertiary/50"
                     title="Unpin message"
                     onClick={() => handleUnpin(pin.message.id)}
                   >
@@ -151,7 +151,7 @@ export default function PinnedMessagesPopover({
       </div>
 
       {error && (
-        <div className="px-2 pb-1 pt-1 text-[11px] text-red-300">{error}</div>
+        <div className="px-2 pb-1 pt-1 text-[11px] text-error">{error}</div>
       )}
       </div>
     </FloatingSurface>

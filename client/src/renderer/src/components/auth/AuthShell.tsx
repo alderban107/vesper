@@ -7,11 +7,6 @@ interface AuthFeature {
   description: string
 }
 
-interface AuthMetric {
-  value: string
-  label: string
-}
-
 interface Props {
   centered?: boolean
   formEyebrow?: string
@@ -21,7 +16,6 @@ interface Props {
   panelTitle: string
   panelDescription: string
   features: AuthFeature[]
-  metrics?: AuthMetric[]
   children: ReactNode
 }
 
@@ -34,17 +28,12 @@ export default function AuthShell({
   panelTitle,
   panelDescription,
   features,
-  metrics = [],
   children
 }: Props): React.JSX.Element {
   return (
     <div className="vesper-auth-screen">
       {!centered && (
         <div className="vesper-auth-background" aria-hidden="true">
-          <div className="vesper-auth-background-orb vesper-auth-background-orb-primary" />
-          <div className="vesper-auth-background-orb vesper-auth-background-orb-secondary" />
-          <div className="vesper-auth-background-cloud vesper-auth-background-cloud-primary" />
-          <div className="vesper-auth-background-cloud vesper-auth-background-cloud-secondary" />
           <div className="vesper-auth-background-grid" />
         </div>
       )}
@@ -68,33 +57,24 @@ export default function AuthShell({
               <p className="vesper-auth-panel-description">{panelDescription}</p>
             </div>
 
-            {metrics.length > 0 && (
-              <div className="vesper-auth-metrics">
-                {metrics.map((metric) => (
-                  <div key={metric.label} className="vesper-auth-metric">
-                    <div className="vesper-auth-metric-value">{metric.value}</div>
-                    <div className="vesper-auth-metric-label">{metric.label}</div>
-                  </div>
-                ))}
+            {features.length > 0 && (
+              <div className="vesper-auth-feature-list">
+                {features.slice(0, 3).map((feature) => {
+                  const Icon = feature.icon
+                  return (
+                    <div key={feature.label} className="vesper-auth-feature">
+                      <div className="vesper-auth-feature-icon">
+                        <Icon className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="vesper-auth-feature-label">{feature.label}</div>
+                        <div className="vesper-auth-feature-description">{feature.description}</div>
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
             )}
-
-            <div className="vesper-auth-feature-list">
-              {features.map((feature) => {
-                const Icon = feature.icon
-                return (
-                  <div key={feature.label} className="vesper-auth-feature">
-                    <div className="vesper-auth-feature-icon">
-                      <Icon className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <div className="vesper-auth-feature-label">{feature.label}</div>
-                      <div className="vesper-auth-feature-description">{feature.description}</div>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
 
             <div className="vesper-auth-panel-footer">
               <Shield className="w-4 h-4" />

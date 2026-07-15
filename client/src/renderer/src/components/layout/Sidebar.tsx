@@ -22,6 +22,8 @@ import { useUIStore } from '../../stores/uiStore'
 import { useUnreadStore } from '../../stores/unreadStore'
 import { useVoiceStore } from '../../stores/voiceStore'
 import { useContextMenu } from '../../hooks/useContextMenu'
+import { useBodyScrollLock } from '../../hooks/useBodyScrollLock'
+import { useFocusTrap } from '../../hooks/useFocusTrap'
 import { getRendererClient } from '../../sdk/client'
 import { getStoredJson, setStoredJson } from '../../utils/localStorage'
 import { useMediaQuery } from '../../hooks/useMediaQuery'
@@ -43,6 +45,9 @@ type ChannelSection = {
   category: Channel | null
   channels: Channel[]
 }
+type PendingDestructiveAction =
+  | { type: 'leave'; serverId: string; serverName: string }
+  | { type: 'delete'; serverId: string; channelId: string; channelName: string; label: string }
 
 const CHANNEL_COLLAPSE_STORAGE_KEY = 'vesper:channelCollapseState'
 
@@ -153,6 +158,109 @@ function getScopedChannelDraft(section: ChannelSection): {
   }
 }
 
+function DestructiveActionDialog({
+  action,
+  onClose,
+  onConfirm
+}: {
+  action: PendingDestructiveAction
+  onClose: () => void
+  onConfirm: () => Promise<boolean>
+}): React.JSX.Element {
+  const [confirmationName, setConfirmationName] = useState('')
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const dialogRef = useFocusTrap<HTMLDivElement>(true)
+  useBodyScrollLock()
+
+  const deleteAction = action.type === 'delete' ? action : null
+  const canConfirm = !deleteAction || confirmationName === deleteAction.channelName
+  const title = action.type === 'delete' ? `Delete ${action.channelName}?` : `Leave ${action.serverName}?`
+  const description = action.type === 'delete'
+    ? `Deleting this ${action.label} cannot be undone.`
+    : 'You will need a new invite to rejoin.'
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape' && !isSubmitting) onClose()
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [isSubmitting, onClose])
+
+  const handleConfirm = async (): Promise<void> => {
+    if (!canConfirm || isSubmitting) return
+
+    setIsSubmitting(true)
+    setError(null)
+    const completed = await onConfirm().catch(() => false)
+
+    if (completed) {
+      onClose()
+      return
+    }
+
+    setError(`Could not ${deleteAction ? 'delete the ' + deleteAction.label : 'leave the server'}. Please try again.`)
+    setIsSubmitting(false)
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[200] flex items-center justify-center bg-[#0d0f1a]/70 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="sidebar-destructive-dialog-title"
+      aria-describedby="sidebar-destructive-dialog-description"
+      onMouseDown={(event) => {
+        if (!isSubmitting && event.target === event.currentTarget) onClose()
+      }}
+    >
+      <div ref={dialogRef} className="w-full max-w-sm rounded-xl border border-border bg-bg-secondary p-5 shadow-xl">
+        <h2 id="sidebar-destructive-dialog-title" className="text-sm font-semibold text-text-primary">
+          {title}
+        </h2>
+        <p id="sidebar-destructive-dialog-description" className="mt-1 text-xs text-text-secondary">
+          {description}
+        </p>
+        {deleteAction && (
+          <label className="mt-4 block text-xs text-text-secondary">
+            Type <span className="font-medium text-text-primary">{deleteAction.channelName}</span> to confirm
+            <input
+              type="text"
+              value={confirmationName}
+              onChange={(event) => setConfirmationName(event.target.value)}
+              placeholder={deleteAction.channelName}
+              autoFocus
+              disabled={isSubmitting}
+              className="mt-1.5 block w-full rounded-lg border border-border bg-bg-base/50 px-3 py-2 text-sm text-text-primary input-focus"
+            />
+          </label>
+        )}
+        {error && <p className="mt-3 text-xs text-error">{error}</p>}
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            type="button"
+            className="rounded-lg px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary/50 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+            onClick={onClose}
+            disabled={isSubmitting}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="rounded-lg bg-error/15 px-3 py-1.5 text-sm text-error transition-colors hover:bg-error/25 disabled:cursor-not-allowed disabled:opacity-50"
+            onClick={() => void handleConfirm()}
+            disabled={!canConfirm || isSubmitting}
+          >
+            {isSubmitting ? 'Working...' : deleteAction ? 'Delete' : 'Leave'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function Sidebar(): React.JSX.Element {
   const servers = useServerStore((s) => s.servers)
   const activeServerId = useServerStore((s) => s.activeServerId)
@@ -185,6 +293,7 @@ export default function Sidebar(): React.JSX.Element {
   )
   const [dragState, setDragState] = useState<DragState | null>(null)
   const [dropTarget, setDropTarget] = useState<string | null>(null)
+  const [pendingConfirm, setPendingConfirm] = useState<PendingDestructiveAction | null>(null)
   const serverHeaderRef = useRef<HTMLDivElement | null>(null)
 
   const currentView: View = !activeServerId ? 'dm' : 'server'
@@ -361,7 +470,7 @@ export default function Sidebar(): React.JSX.Element {
       {
         label: 'Leave Server',
         icon: LogOut,
-        onClick: () => leaveServer(serverId),
+        onClick: () => setPendingConfirm({ type: 'leave', serverId, serverName: server?.name ?? 'server' }),
         danger: true,
         divider: true,
         disabled: isOwner
@@ -385,9 +494,19 @@ export default function Sidebar(): React.JSX.Element {
             {
               label: channel?.type === 'category' ? 'Delete Category' : 'Delete Channel',
               icon: Trash2,
-              onClick: () => deleteChannel(serverId, channelId),
+              onClick: () => {
+                if (!channel) return
+                setPendingConfirm({
+                  type: 'delete',
+                  serverId,
+                  channelId,
+                  channelName: channel.name,
+                  label: channel.type === 'category' ? 'category' : 'channel'
+                })
+              },
               danger: true,
-              divider: true
+              divider: true,
+              disabled: !channel
             }
           ]
         : []),
@@ -570,7 +689,7 @@ export default function Sidebar(): React.JSX.Element {
                         className="vesper-guild-header-menu-item vesper-guild-header-menu-item-danger"
                         onClick={() => {
                           setServerHeaderOpen(false)
-                          void leaveServer(activeServer.id)
+                          setPendingConfirm({ type: 'leave', serverId: activeServer.id, serverName: activeServer.name })
                         }}
                         disabled={isServerOwner}
                         role="menuitem"
@@ -863,6 +982,17 @@ export default function Sidebar(): React.JSX.Element {
           y={channelMenu.menu.y}
           items={getChannelItems(channelMenu.menu.data.channelId, channelMenu.menu.data.serverId)}
           onClose={channelMenu.closeMenu}
+        />
+      )}
+      {pendingConfirm && (
+        <DestructiveActionDialog
+          action={pendingConfirm}
+          onClose={() => setPendingConfirm(null)}
+          onConfirm={() => (
+            pendingConfirm.type === 'leave'
+              ? leaveServer(pendingConfirm.serverId)
+              : deleteChannel(pendingConfirm.serverId, pendingConfirm.channelId)
+          )}
         />
       )}
     </div>

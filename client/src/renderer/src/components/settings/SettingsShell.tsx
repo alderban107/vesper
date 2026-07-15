@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { useBodyScrollLock } from '../../hooks/useBodyScrollLock'
+import { useFocusTrap } from '../../hooks/useFocusTrap'
 
 export interface SettingsSectionItem {
   id: string
@@ -40,6 +41,7 @@ export default function SettingsShell({
   )
 
   useBodyScrollLock()
+  const trapRef = useFocusTrap<HTMLDivElement>(true)
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent): void => {
@@ -97,7 +99,7 @@ export default function SettingsShell({
         }
       }}
     >
-      <div className="vesper-settings-shell">
+      <div ref={trapRef} className="vesper-settings-shell">
         <div className="vesper-settings-close-cluster">
           <button
             type="button"

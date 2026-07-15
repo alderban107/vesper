@@ -24,7 +24,7 @@ export default function RecoveryKeyModal({ mnemonic, onConfirm }: Props): React.
 
   return (
     <div
-      className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+      className="fixed inset-0 bg-[#0d0f1a]/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="recovery-key-title"

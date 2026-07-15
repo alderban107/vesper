@@ -101,7 +101,7 @@ export default function DmSidebar(): React.JSX.Element {
                   <p className="text-xs text-text-faint truncate">{getPreview(conv)}</p>
                 </div>
                 {unread > 0 && conv.id !== selectedId && (
-                  <span className="vesper-dm-unread-badge min-w-[18px] h-[18px] bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center px-1 shrink-0">
+                  <span className="vesper-dm-unread-badge min-w-[18px] h-[18px] bg-accent text-bg-base text-[10px] font-bold rounded-full flex items-center justify-center px-1 shrink-0">
                     {unread > 99 ? '99+' : unread}
                   </span>
                 )}

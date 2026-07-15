@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { ArrowRight, KeyRound, Laptop2, Loader2, Settings, ShieldCheck, User } from 'lucide-react'
+import AuthServerSettingsModal from '../components/auth/AuthServerSettingsModal'
 import AuthShell from '../components/auth/AuthShell'
-import ServerConnectionCard from '../components/auth/ServerConnectionCard'
 import { useAuthStore } from '../stores/authStore'
 import { useSettingsStore } from '../stores/settingsStore'
 
@@ -72,13 +72,7 @@ export default function RegisterPage({ onSwitchToLogin }: Props): React.JSX.Elem
         <Settings className="w-4 h-4" />
       </button>
 
-      {showServerModal && (
-        <div className="vesper-auth-server-modal-backdrop" onClick={() => setShowServerModal(false)}>
-          <div className="vesper-auth-server-modal" onClick={(e) => e.stopPropagation()}>
-            <ServerConnectionCard />
-          </div>
-        </div>
-      )}
+      {showServerModal && <AuthServerSettingsModal onClose={() => setShowServerModal(false)} />}
 
       <form onSubmit={handleSubmit} data-testid="register-form" className="vesper-auth-form">
         {displayError && <div className="vesper-auth-error">{displayError}</div>}

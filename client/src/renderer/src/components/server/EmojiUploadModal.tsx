@@ -45,7 +45,7 @@ export default function EmojiUploadModal({ file, serverId, onClose }: Props): Re
       {/* Emoji name input */}
       <label className="block">
         <span className="text-text-muted text-sm font-medium">
-          Emoji name <span className="text-red-400">*</span>
+          Emoji name <span className="text-error">*</span>
         </span>
         <div className="relative mt-1">
           <input
@@ -69,7 +69,7 @@ export default function EmojiUploadModal({ file, serverId, onClose }: Props): Re
           )}
         </div>
         {name && !validName && (
-          <span className="text-xs text-red-400 mt-1 block">
+          <span className="text-xs text-error mt-1 block">
             2-32 characters: letters, numbers, _ ~ -
           </span>
         )}

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Folder, Hash, Volume2, Loader2 } from 'lucide-react'
 import { useServerStore } from '../../stores/serverStore'
 import { useUIStore } from '../../stores/uiStore'
+import { useFocusTrap } from '../../hooks/useFocusTrap'
 
 const CHANNEL_TYPE_OPTIONS = [
   {
@@ -35,6 +36,7 @@ export default function CreateChannelModal(): React.JSX.Element {
   const setActiveChannel = useServerStore((s) => s.setActiveChannel)
   const closeModal = useUIStore((s) => s.closeCreateChannelModal)
   const draft = useUIStore((s) => s.createChannelDraft)
+  const trapRef = useFocusTrap<HTMLFormElement>(true)
   const categories = (activeServer?.channels ?? []).filter((channel) => channel.type === 'category')
 
   useEffect(() => {
@@ -86,7 +88,10 @@ export default function CreateChannelModal(): React.JSX.Element {
 
   return (
     <div
-      className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50"
+      className="fixed inset-0 bg-[#0d0f1a]/80 backdrop-blur-sm flex items-center justify-center z-50"
+      role="dialog"
+      aria-modal="true"
+      aria-label={type === 'category' ? 'Create category' : 'Create channel'}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) {
           closeModal()
@@ -94,6 +99,7 @@ export default function CreateChannelModal(): React.JSX.Element {
       }}
     >
       <form
+        ref={trapRef}
         onSubmit={handleSubmit}
         className="glass-card rounded-2xl p-6 w-[30rem] max-w-[calc(100vw-2rem)] animate-scale-in"
       >

@@ -1,5 +1,5 @@
 import { Component, Suspense, useEffect, useState, type ReactNode, type ErrorInfo } from 'react'
-import { AlertTriangle, Star } from 'lucide-react'
+import { AlertTriangle, Loader2 } from 'lucide-react'
 import { useAuthStore } from './stores/authStore'
 import {
   SESSION_NOTICE_EVENT,
@@ -37,7 +37,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
       return (
         <div className="h-screen bg-bg-primary flex items-center justify-center p-8">
           <div className="glass-card rounded-2xl p-6 max-w-lg w-full">
-            <h1 className="text-red-400 font-bold text-lg mb-2">Something went wrong</h1>
+            <h1 className="text-error font-bold text-lg mb-2">Something went wrong</h1>
             <pre className="text-text-secondary text-sm whitespace-pre-wrap break-words mb-4">
               {this.state.error.message}
             </pre>
@@ -45,6 +45,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
               {this.state.error.stack}
             </pre>
             <button
+              type="button"
               onClick={() => {
                 if (isChunkError) {
                   // Chunk load failures leave React.lazy() in a permanently
@@ -117,8 +118,8 @@ function AppLoadingFallback(): React.JSX.Element {
   return (
     <div className="h-screen bg-bg-primary flex items-center justify-center">
       <div className="flex items-center gap-2 animate-fade-in">
-        <Star className="w-6 h-6 text-accent animate-pulse" />
-        <p className="text-text-faint">Loading...</p>
+        <Loader2 className="w-5 h-5 text-text-faint animate-spin" />
+        <p className="text-text-faint">Loading Vesper...</p>
       </div>
     </div>
   )

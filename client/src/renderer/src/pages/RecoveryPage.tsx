@@ -190,7 +190,7 @@ export default function RecoveryPage({ onBack }: Props): React.JSX.Element {
           <button
             type="submit"
             disabled={loading || !newPassword || !confirmPassword || !serverUrl.trim()}
-            className="vesper-auth-submit glow-accent hover:glow-accent-hover disabled:opacity-40 disabled:shadow-none"
+            className="vesper-auth-submit disabled:opacity-40"
           >
             {loading ? (
               <>

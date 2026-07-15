@@ -98,7 +98,7 @@ export default function MessageList({ scope }: Props): React.JSX.Element {
       isLoading={!hasLoaded || isLoading}
       hasMore={hasMore}
       hasNewer={hasNewer}
-      emptyState="No messages yet. Say something!"
+      emptyState={scope.kind === 'dm' ? 'This is the start of your conversation.' : 'No messages yet.'}
       onLoadMore={handleLoadMore}
       onLoadNewer={handleLoadNewer}
       onIsAtBottomChange={handleIsAtBottomChange}

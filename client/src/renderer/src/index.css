@@ -116,21 +116,19 @@ body,
 
 /* Utility: Glowing accent button */
 @utility glow-accent {
-  background: #c8a24e;
+  background: var(--color-accent);
   box-shadow: 0 0 20px rgba(200, 162, 78, 0.3);
-  transition: all 0.2s ease;
+  transition: background 0.2s ease-out, box-shadow 0.2s ease-out;
 }
 
 @utility glow-accent-hover {
+  background: var(--color-accent-hover);
   box-shadow: 0 0 28px rgba(200, 162, 78, 0.45);
 }
 
-/* Utility: Text gradient */
+/* Utility: Accent text — flat gold, no gradient */
 @utility text-gradient {
-  background: linear-gradient(135deg, #c8a24e, #8b7ec8);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  color: #c8a24e;
 }
 
 /* Utility: Input focus ring */
@@ -139,9 +137,9 @@ body,
 }
 
 /* Input focus styling */
-.input-focus:focus {
-  border-color: #c8a24e;
-  box-shadow: 0 0 0 2px rgba(200, 162, 78, 0.15);
+.input-focus:focus-visible {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 15%, transparent);
   outline: none;
 }
 
@@ -189,6 +187,11 @@ select:focus-visible {
   outline: none;
   border-color: var(--color-accent);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
+/* Disabled button feedback */
+button:disabled {
+  cursor: not-allowed;
 }
 
 /* Skip-to-content link for keyboard users */
@@ -830,7 +833,7 @@ select:focus-visible {
 .vesper-auth-secondary-button,
 .vesper-auth-tertiary-button {
   min-height: 3.2rem;
-  border-radius: 1rem;
+  border-radius: 0.5rem;
   font-weight: 700;
   transition:
     transform 0.18s ease,
@@ -845,9 +848,21 @@ select:focus-visible {
   justify-content: center;
   gap: 0.55rem;
   min-height: 2.75rem;
-  border-radius: 0.2rem;
   background: var(--color-accent);
   color: var(--color-bg-base);
+  box-shadow: 0 0 20px rgba(200, 162, 78, 0.3);
+  transition:
+    transform 0.18s ease,
+    background-color 0.2s ease-out,
+    box-shadow 0.2s ease-out;
+}
+
+.vesper-auth-submit:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+  box-shadow: 0 0 28px rgba(200, 162, 78, 0.45);
+}
+
+.vesper-auth-submit:disabled {
   box-shadow: none;
 }
 
@@ -1451,6 +1466,15 @@ select:focus-visible {
   flex-direction: column;
   justify-content: flex-end;
   padding: 0.8rem 0.75rem 0.4rem;
+}
+
+.vesper-message-feed-empty-text {
+  padding: 1rem 0.25rem 0.75rem;
+}
+
+.vesper-message-feed-empty-text p {
+  font-size: 0.875rem;
+  color: var(--color-text-faintest);
 }
 
 .vesper-message-feed-root {
@@ -6761,7 +6785,7 @@ select:focus-visible {
 }
 
 .vesper-channel-row-unread .vesper-channel-row-label {
-  font-weight: 550;
+  font-weight: 600;
 }
 
 .vesper-channel-create-scope {
