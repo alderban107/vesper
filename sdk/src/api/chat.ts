@@ -89,18 +89,14 @@ type VesperConversationWire = Omit<VesperConversation, 'participants' | 'last_me
 
 function hydrateConversations(
   conversations: VesperConversationWire[] | undefined,
-  users: VesperUser[] | Record<string, VesperUser> | undefined
+  users: Record<string, VesperUser> | undefined
 ): VesperConversation[] {
   if (!Array.isArray(conversations)) return []
-
-  const usersById = Array.isArray(users)
-    ? Object.fromEntries(users.map((user) => [user.id, user]))
-    : users
 
   return conversations.map((conversation) => ({
     ...conversation,
     participants: conversation.participants.map((participant) => {
-      const user = participant.user ?? usersById?.[participant.user_id]
+      const user = participant.user ?? users?.[participant.user_id]
       if (!user) {
         throw new Error(`Conversation participant ${participant.user_id} is missing user data`)
       }
@@ -112,7 +108,7 @@ function hydrateConversations(
           sender:
             conversation.last_message.sender ??
             (conversation.last_message.sender_id
-              ? usersById?.[conversation.last_message.sender_id] ?? null
+              ? users?.[conversation.last_message.sender_id] ?? null
               : null)
         }
       : null
@@ -395,7 +391,7 @@ export async function listConversationsPage(
 
   const data = (await response.json()) as {
     conversations?: VesperConversationWire[]
-    users?: VesperUser[] | Record<string, VesperUser>
+    users?: Record<string, VesperUser>
     unread_counts?: Record<string, number>
     has_more?: boolean
     next_cursor?: string | null
@@ -434,7 +430,7 @@ export async function fetchWorkspaceSync(
   > & {
     servers?: VesperServerWire[]
     conversations?: VesperConversationWire[]
-    users?: VesperUser[] | Record<string, VesperUser>
+    users?: Record<string, VesperUser>
   }
 
   return {

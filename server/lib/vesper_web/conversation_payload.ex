@@ -29,7 +29,7 @@ defmodule VesperWeb.ConversationPayload do
         {%{conversation | participants: participants, last_message: last_message}, users}
       end)
 
-    {conversations, users |> Map.values() |> Enum.sort_by(& &1.id)}
+    {conversations, users}
   end
 
   defp compact_last_message(nil, users), do: {nil, users}
