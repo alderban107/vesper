@@ -1,4 +1,21 @@
 defmodule VesperWeb.ConversationPayload do
+  def message_preview(nil), do: nil
+
+  def message_preview(message) do
+    base = %{
+      id: message.id,
+      sender_id: message.sender_id,
+      sender: sender_json(message.sender),
+      inserted_at: message.inserted_at
+    }
+
+    if message.ciphertext do
+      Map.put(base, :ciphertext, "encrypted")
+    else
+      Map.put(base, :content, message.content)
+    end
+  end
+
   def compact(conversations) when is_list(conversations) do
     {conversations, users} =
       Enum.map_reduce(conversations, %{}, fn conversation, users ->
@@ -23,4 +40,15 @@ defmodule VesperWeb.ConversationPayload do
 
   defp put_user(users, nil), do: users
   defp put_user(users, %{id: id} = user), do: Map.put_new(users, id, user)
+
+  defp sender_json(nil), do: nil
+
+  defp sender_json(sender) do
+    %{
+      id: sender.id,
+      username: sender.username,
+      display_name: sender.display_name,
+      avatar_url: sender.avatar_url
+    }
+  end
 end

@@ -53,7 +53,7 @@ defmodule VesperWeb.ConversationController do
       page.items
       |> Enum.map(fn %{conversation: conv, last_message: last_msg} ->
         conversation_json(conv)
-        |> Map.put(:last_message, if(last_msg, do: message_json(last_msg), else: nil))
+        |> Map.put(:last_message, ConversationPayload.message_preview(last_msg))
       end)
       |> ConversationPayload.compact()
 
@@ -162,7 +162,7 @@ defmodule VesperWeb.ConversationController do
     }
   end
 
-  defp message_json(message, opts \\ []) do
+  defp message_json(message, opts) do
     lean = Keyword.get(opts, :lean, false)
 
     base = %{

@@ -93,7 +93,7 @@ defmodule VesperWeb.SyncController do
           last_message:
             case Map.get(conversation_reset_messages, conversation_id) do
               nil -> nil
-              message -> message_json(message)
+              message -> ConversationPayload.message_preview(message)
             end
         }
       end)
@@ -288,7 +288,7 @@ defmodule VesperWeb.SyncController do
          last_message: last_message
        }) do
     conversation_json(conversation)
-    |> Map.put(:last_message, if(last_message, do: message_json(last_message), else: nil))
+    |> Map.put(:last_message, ConversationPayload.message_preview(last_message))
   end
 
   defp conversation_json(conversation) do
@@ -317,37 +317,8 @@ defmodule VesperWeb.SyncController do
     }
   end
 
-  defp message_json(message) do
-    base = %{
-      id: message.id,
-      conversation_id: message.conversation_id,
-      channel_id: message.channel_id,
-      client_nonce: message.client_nonce,
-      sender_id: message.sender_id,
-      sender: sender_json(message.sender),
-      inserted_at: message.inserted_at
-    }
-
-    if message.ciphertext do
-      Map.put(base, :ciphertext, "encrypted")
-    else
-      Map.put(base, :content, message.content)
-    end
-  end
-
   defp channel_activity_json(%{channel_id: channel_id, message: message}) do
     ScopeSummary.channel_activity_json(channel_id, message)
-  end
-
-  defp sender_json(nil), do: nil
-
-  defp sender_json(sender) do
-    %{
-      id: sender.id,
-      username: sender.username,
-      display_name: sender.display_name,
-      avatar_url: sender.avatar_url
-    }
   end
 
   defp user_json(%Ecto.Association.NotLoaded{}), do: nil
