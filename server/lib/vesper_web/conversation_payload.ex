@@ -24,7 +24,7 @@ defmodule VesperWeb.ConversationPayload do
       Enum.map_reduce(conversations, %{}, fn conversation, users ->
         {participants, users} =
           Enum.map_reduce(conversation.participants, users, fn participant, acc ->
-            {Map.drop(participant, [:id, :user]), put_user(acc, participant.user)}
+            {Map.delete(participant, :user), put_user(acc, participant.user)}
           end)
 
         {last_message, users} = compact_last_message(conversation.last_message, users)
