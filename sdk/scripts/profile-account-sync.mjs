@@ -357,6 +357,11 @@ ORDER BY s.inserted_at ASC;
 
   const scopeDelta = psqlJson(stack, `
 EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+WITH user_dm_scopes AS MATERIALIZED (
+  SELECT p.conversation_id
+  FROM dm_participants p
+  WHERE p.user_id = :'profile_user_id'
+)
 SELECT events.*
 FROM (
   SELECT * FROM (
@@ -381,7 +386,7 @@ FROM (
   SELECT * FROM (
     SELECT e.id, e.event_type, e.scope_kind, e.scope_id, e.payload, e.inserted_at
     FROM scope_sync_events e
-    JOIN dm_participants p ON p.user_id = :'profile_user_id' AND p.conversation_id = e.scope_id
+    JOIN user_dm_scopes p ON p.conversation_id = e.scope_id
     WHERE e.scope_kind = 'dm'
     ORDER BY e.id ASC
     LIMIT :profile_limit
