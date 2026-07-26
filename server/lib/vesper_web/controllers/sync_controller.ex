@@ -238,9 +238,7 @@ defmodule VesperWeb.SyncController do
         case server.emojis do
           %Ecto.Association.NotLoaded{} -> []
           emojis -> Enum.map(emojis, &emoji_json/1)
-        end,
-      inserted_at: server.inserted_at,
-      updated_at: server.updated_at
+        end
     }
   end
 
