@@ -123,23 +123,25 @@ defmodule Vesper.Chat do
 
     membership_query =
       from(p in DmParticipant,
-        where: p.conversation_id == parent_as(:room).conversation_id and p.user_id == ^user_id,
-        select: 1
+        where: p.user_id == ^user_id,
+        select: %{conversation_id: p.conversation_id}
       )
 
     query =
       from(room in Room,
-        as: :room,
-        where: room.kind == :dm and exists(membership_query),
+        join: membership in "user_conversations",
+        on: field(membership, :conversation_id) == room.conversation_id,
+        where: room.kind == :dm,
         order_by: [desc: room.activity_at, desc: room.conversation_id],
         select: {room.conversation_id, room.activity_at},
         limit: ^(limit + 1)
       )
+      |> with_cte("user_conversations", as: ^membership_query, materialized: true)
 
     query =
       case before_cursor do
         {before_at, before_id} ->
-          from([room] in query,
+          from([room, _membership] in query,
             where:
               room.activity_at < ^before_at or
                 (room.activity_at == ^before_at and room.conversation_id < ^before_id)

@@ -333,15 +333,15 @@ function profileDatabase(stack, userId, pageSize) {
   const variables = { profile_user_id: userId, profile_limit: pageSize + 1 }
   const dmPage = psqlJson(stack, `
 EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+WITH user_conversations AS MATERIALIZED (
+  SELECT p.conversation_id
+  FROM dm_participants p
+  WHERE p.user_id = :'profile_user_id'
+)
 SELECT r.conversation_id, r.activity_at
-FROM rooms r
+FROM user_conversations p
+JOIN rooms r ON r.conversation_id = p.conversation_id
 WHERE r.kind = 'dm'
-  AND EXISTS (
-    SELECT 1
-    FROM dm_participants p
-    WHERE p.conversation_id = r.conversation_id
-      AND p.user_id = :'profile_user_id'
-  )
 ORDER BY r.activity_at DESC, r.conversation_id DESC
 LIMIT :profile_limit;
 `, variables)
