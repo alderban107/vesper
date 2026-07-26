@@ -288,7 +288,10 @@ defmodule Vesper.UrgentSyncTest do
 
     assert is_binary(response["token"])
     assert response["channel_activity"] == []
-    assert Enum.find(response["servers"], &(&1["id"] == server.id))["channels"] == []
+
+    server_summary = Enum.find(response["servers"], &(&1["id"] == server.id))
+    refute Map.has_key?(server_summary, "channels")
+    refute Map.has_key?(server_summary, "channels_loaded")
 
     channel_response =
       build_conn()
