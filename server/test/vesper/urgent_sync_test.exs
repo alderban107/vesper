@@ -68,6 +68,21 @@ defmodule Vesper.UrgentSyncTest do
     assert is_binary(response["token"])
   end
 
+  test "read changes remain targeted to the account that changed them" do
+    user = insert_user()
+    peer = insert_user()
+    conversation_id = Ecto.UUID.generate()
+
+    Sync.append_user_scope_event(user.id, "read", "dm", conversation_id)
+
+    assert Sync.list_scope_changes_with_cursors(user.id, 0, 0).read_changes == [
+             {:dm, conversation_id}
+           ]
+
+    assert Sync.list_scope_changes_with_cursors(peer.id, 0, 0).read_changes == []
+    assert Sync.list_scope_changes_since(user.id, 0, [conversation_id]).read_changes == []
+  end
+
   test "urgent sync drains a backlog without advancing past unreturned events", %{conn: conn} do
     user = insert_user()
     peer = insert_user()

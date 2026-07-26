@@ -1,10 +1,21 @@
 import assert from 'node:assert/strict'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import test from 'node:test'
 
 import {
   MemoryStorage,
   createCryptoStorageRuntime
 } from '../dist/storage/index.js'
+import { FileCryptoStorage } from '../dist/storage/file.js'
+import {
+  InjectedDroppedAckError,
+  injectDroppedAck,
+  injectDuplicateDelivery,
+  injectReorderedReplayPage,
+  injectRestart
+} from '../dist/testing/index.js'
 
 function configureMemoryStorage() {
   const storage = new MemoryStorage()
@@ -121,18 +132,232 @@ test('cached messages stay scoped even when channel and dm ids collide', async (
   assert.equal(await runtime.loadCachedMessageDecryption('other-scope-message'), 'other body')
 })
 
-test('deleting group state preserves the sync cursor', async (t) => {
+test('deterministic fault helpers preserve durable outcomes across ack loss, duplicate delivery, replay reorder, and restart', async (t) => {
+  const storage = new MemoryStorage()
+  const userId = `fault-hotpaths-${Date.now()}-${Math.random()}`
+  let runtime = createCryptoStorageRuntime(storage)
+  runtime.init(userId)
+  t.after(() => {
+    runtime.reset()
+  })
+
+  await assert.rejects(
+    injectDroppedAck(async () => {
+      await runtime.savePendingMessageSend({
+        clientNonce: 'fault-nonce',
+        scopeKind: 'channel',
+        scopeId: 'fault-scope',
+        scopeChannelId: 'fault-scope',
+        payloadJson: '{"v":1,"type":"text","text":"persist before ack"}',
+        insertedAt: '2026-07-15T00:00:00.000Z'
+      })
+    }),
+    InjectedDroppedAckError
+  )
+  assert.deepEqual(
+    (await runtime.loadPendingMessageSends()).map((entry) => entry.clientNonce),
+    ['fault-nonce']
+  )
+
+  await injectDuplicateDelivery(
+    {
+      id: 'duplicate-message',
+      roomSeq: 7,
+      channelId: 'fault-scope',
+      conversationId: null,
+      serverId: 'fault-server',
+      senderId: 'fault-sender',
+      senderUsername: 'fault-user',
+      parentMessageId: null,
+      threadRootMessageId: null,
+      replyToMessageId: null,
+      isReply: false,
+      ciphertext: null,
+      decryptedContent: 'delivered once',
+      mlsEpoch: null,
+      insertedAt: '2026-07-15T00:00:01.000Z'
+    },
+    async (message) => await runtime.cacheMessage(message)
+  )
+  assert.deepEqual(
+    (await runtime.loadCachedMessages('fault-scope')).map((message) => message.id),
+    ['duplicate-message']
+  )
+
+  assert.deepEqual(
+    injectReorderedReplayPage([{ seq: 7 }, { seq: 8 }, { seq: 9 }]).map((event) => event.seq),
+    [8, 7, 9]
+  )
+
+  await runtime.saveScopeCheckpoint('fault-scope', {
+    groupId: 'fault-scope',
+    groupState: null,
+    lastEventSeq: 9,
+    recentCommitFingerprints: [],
+    recentHistoryBundleFingerprints: [],
+    repairState: null,
+    controlIntents: []
+  })
+
+  runtime = await injectRestart(
+    () => runtime.reset(),
+    () => {
+      const restarted = createCryptoStorageRuntime(storage)
+      restarted.init(userId)
+      return restarted
+    }
+  )
+  assert.equal((await runtime.loadScopeCheckpoint('fault-scope')).lastEventSeq, 9)
+})
+
+test('deleting group state preserves the checkpoint replay cursor', async (t) => {
   const { runtime } = configureMemoryStorage()
   t.after(() => {
     runtime.reset()
   })
 
-  await runtime.saveGroupState('scope-1', Uint8Array.from([1, 2, 3]), 7)
-  await runtime.saveGroupSyncCursor('scope-1', 42)
-  assert.equal(await runtime.loadGroupSyncCursor('scope-1'), 42)
+  await runtime.saveScopeCheckpoint('scope-1', {
+    groupId: 'scope-1',
+    groupState: {
+      state: Uint8Array.from([1, 2, 3]),
+      epoch: 7
+    },
+    lastEventSeq: 42,
+    recentCommitFingerprints: [],
+    recentHistoryBundleFingerprints: [],
+    repairState: null,
+    controlIntents: []
+  })
+  assert.equal((await runtime.loadScopeCheckpoint('scope-1')).lastEventSeq, 42)
 
   await runtime.deleteGroupState('scope-1')
   // Cursor must survive group deletion to prevent replay death spirals
   // (stale mls_remove events re-deleting the group on every replay)
-  assert.equal(await runtime.loadGroupSyncCursor('scope-1'), 42)
+  assert.equal((await runtime.loadScopeCheckpoint('scope-1')).lastEventSeq, 42)
+})
+
+for (const adapter of ['memory', 'file']) {
+  test(`${adapter} storage persists the account workspace and cursor atomically`, async (t) => {
+    const directory = adapter === 'file' ? await mkdtemp(path.join(tmpdir(), 'vesper-workspace-')) : null
+    const filePath = directory ? path.join(directory, 'crypto.json') : null
+    const storage = adapter === 'file' ? new FileCryptoStorage(filePath) : new MemoryStorage()
+    const runtime = createCryptoStorageRuntime(storage)
+    const userId = `workspace-contract-${adapter}`
+    runtime.init(userId)
+
+    t.after(async () => {
+      runtime.reset()
+      if (directory) {
+        await rm(directory, { recursive: true, force: true })
+      }
+    })
+
+    const snapshot = {
+      version: 1,
+      token: 'cursor-42',
+      serversJson: JSON.stringify([{ id: 'server-1', channels: [] }]),
+      conversationsJson: JSON.stringify([{ id: 'dm-1', participants: [] }]),
+      unreadCountsJson: JSON.stringify({ channels: {}, conversations: { 'dm-1': 2 } }),
+      updatedAt: '2026-07-26T00:00:00.000Z'
+    }
+
+    await runtime.saveWorkspaceSnapshot(userId, snapshot)
+    assert.deepEqual(await runtime.loadWorkspaceSnapshot(userId), snapshot)
+
+    runtime.reset()
+    const restarted = createCryptoStorageRuntime(storage)
+    restarted.init(userId)
+    assert.deepEqual(await restarted.loadWorkspaceSnapshot(userId), snapshot)
+    restarted.reset()
+  })
+
+  test(`${adapter} storage preserves multiple journal intents and durable results`, async (t) => {
+    const directory = adapter === 'file' ? await mkdtemp(path.join(tmpdir(), 'vesper-storage-')) : null
+    const filePath = directory ? path.join(directory, 'crypto.json') : null
+    const storage = adapter === 'file' ? new FileCryptoStorage(filePath) : new MemoryStorage()
+    const runtime = createCryptoStorageRuntime(storage)
+    runtime.init(`journal-contract-${adapter}`)
+
+    t.after(async () => {
+      runtime.reset()
+      if (directory) {
+        await rm(directory, { recursive: true, force: true })
+      }
+    })
+
+    const intent = (idempotencyKey, state, resultJson = null) => ({
+      version: 1,
+      operation: 'mls_history_bundle',
+      idempotencyKey,
+      scopeId: 'journal-scope',
+      membershipGeneration: 7,
+      payloadJson: JSON.stringify({ requestId: idempotencyKey }),
+      attempts: state === 'pending' ? 0 : 1,
+      state,
+      resultJson,
+      createdAt: '2026-07-15T00:00:00.000Z',
+      updatedAt: '2026-07-15T00:00:01.000Z'
+    })
+
+    await runtime.saveScopeCheckpoint('journal-scope', {
+      groupId: 'journal-scope',
+      groupState: null,
+      lastEventSeq: 11,
+      recentCommitFingerprints: [],
+      recentHistoryBundleFingerprints: [],
+      repairState: null,
+      controlIntents: [
+        intent('history-1', 'pending'),
+        intent('history-2', 'accepted', '{"bundle_id":"bundle-2"}')
+      ]
+    })
+
+    const checkpoint = await runtime.loadScopeCheckpoint('journal-scope')
+    assert.equal(checkpoint.lastEventSeq, 11)
+    assert.deepEqual(
+      checkpoint.controlIntents.map((entry) => [entry.idempotencyKey, entry.state, entry.resultJson]),
+      [
+        ['history-1', 'pending', null],
+        ['history-2', 'accepted', '{"bundle_id":"bundle-2"}']
+      ]
+    )
+  })
+}
+
+test('file storage migrates legacy control records into the checkpoint journal once', async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'vesper-storage-migration-'))
+  const filePath = path.join(directory, 'crypto.json')
+  t.after(async () => {
+    await rm(directory, { recursive: true, force: true })
+  })
+
+  await writeFile(filePath, JSON.stringify({
+    nextKeyPackageId: 1,
+    identityKeys: {},
+    groupStates: { 'legacy-scope': { state: null, epoch: 3 } },
+    groupSyncCursors: { 'legacy-scope': 9 },
+    scopeMetadata: {},
+    pendingGroupInfoPublishes: {
+      'legacy-scope': {
+        group_info_data: 'AQID',
+        ratchet_tree_data: null,
+        epoch: 3
+      }
+    },
+    keyPackages: [],
+    cachedMessages: {},
+    cachedDecryptions: {},
+    sentPlaintext: {},
+    searchIndex: {},
+    pendingMessageSends: {}
+  }))
+
+  const storage = new FileCryptoStorage(filePath)
+  const checkpoint = await storage.getScopeCheckpoint('legacy-scope')
+  assert.equal(checkpoint.control_intents.length, 1)
+  assert.equal(checkpoint.control_intents[0]?.operation, 'group_info_publish')
+
+  const persisted = JSON.parse(await readFile(filePath, 'utf8'))
+  assert.equal('pendingGroupInfoPublishes' in persisted, false)
+  assert.equal(persisted.scopeMetadata['legacy-scope'].control_intents.length, 1)
 })

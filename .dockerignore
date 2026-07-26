@@ -3,6 +3,7 @@
 !client/**
 !sdk/
 !sdk/**
+!turnserver.conf
 
 client/node_modules/
 client/dist/

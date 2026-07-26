@@ -1,8 +1,7 @@
 defmodule VesperWeb.PendingHistoryBundleController do
   use VesperWeb, :controller
-  alias Vesper.Chat
   alias Vesper.Encryption
-  alias Vesper.Servers
+  alias VesperWeb.ControllerHelpers
 
   @doc "GET /api/v1/pending-history-bundles/:channel_id — fetch pending same-user history bundles for the current MLS scope"
   def index(conn, %{"channel_id" => scope_id}) do
@@ -70,41 +69,9 @@ defmodule VesperWeb.PendingHistoryBundleController do
   end
 
   defp authorized_scope(user_id, scope_id) do
-    with {:ok, uuid} <- Ecto.UUID.cast(scope_id) do
-      case authorize_channel_scope(user_id, uuid) do
-        {:error, :not_found} -> authorize_conversation_scope(user_id, uuid)
-        result -> result
-      end
-    else
-      :error -> {:error, :invalid_scope}
-    end
-  end
-
-  defp authorize_channel_scope(user_id, channel_id) do
-    case Servers.get_channel(channel_id) do
-      nil ->
-        {:error, :not_found}
-
-      channel ->
-        if Servers.user_can_view_channel?(user_id, channel) do
-          {:ok, channel_id}
-        else
-          {:error, :forbidden}
-        end
-    end
-  end
-
-  defp authorize_conversation_scope(user_id, conversation_id) do
-    case Chat.get_conversation(conversation_id) do
-      nil ->
-        {:error, :not_found}
-
-      _conversation ->
-        if Chat.user_is_participant?(user_id, conversation_id) do
-          {:ok, conversation_id}
-        else
-          {:error, :forbidden}
-        end
+    case ControllerHelpers.authorize_mls_scope(user_id, scope_id) do
+      {:ok, %{group_id: group_id}} -> {:ok, group_id}
+      error -> error
     end
   end
 end

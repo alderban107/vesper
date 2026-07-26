@@ -63,8 +63,38 @@ Phoenix topics:
 Most failures return one of these shapes:
 
 - `{ "error": "message" }`
-- `{ "errors": { "field": ["message"] } }`
+- `{ "errors": { "field": ["message"] }`
 - Phoenix channel reply error: `{ "reason": "message" }`
+
+### 1.6 Durable room encryption topology
+
+Text rooms have a versioned topology independent of their chat authorization identity. `single` and `batched_single` modes use the canonical room MLS group. `multi_cohort` mode assigns each user and all of that user's trusted devices to one bounded cohort. The current default target is 512 users per cohort; migration requests accept 2 through 1000.
+
+The migration sequence is durable and ordered:
+
+1. An authorized owner prepares a topology with a stable request ID.
+2. The server assigns every current room user exactly once under a row lock.
+3. Cohort members create or join their cohort MLS group and publish authenticated public GroupInfo and wrapping-key material.
+4. One fenced coordinator prepares a room-key epoch and stores one opaque envelope per cohort.
+5. The epoch becomes staged only after every expected cohort envelope exists.
+6. The server appends one `vesper.topology_cutover` room event and dispatches it through the durable outbox.
+7. Finalization activates the prepared topology and staged room key. A pre-cutover failure rolls back without changing the active application scheme.
+
+After cutover, application events use the `vesper-room-v1` AES-256-GCM envelope. Authenticated context binds `roomId`, `roomKeyEpoch`, `senderUserId`, `senderDeviceId`, `operation`, and `eventId`. Older events keep their original `mls` scheme and immutable `encryption_group_id`; clients must not reinterpret legacy ciphertext using the current cohort.
+
+Control transitions use stable durable keys and explicit terminal states. Sponsor work uses leases and fencing tokens. Dispatch rows progress through `pending`, `failed`, `delivered`, or `dead`. Topologies progress through `preparing`, `cohorts_ready`, `room_key_ready`, `cutover_appended`, `active`, `rolled_back`, or `retired`. Room-key epochs progress through `preparing`, `staged`, `active`, `repair`, or `retired`. Duplicate requests resolve the existing row; stale fences, incomplete envelope sets, topology changes, and conflicting request payloads are rejected.
+
+Retired room-key epochs are retained for seven days and bounded to eight rows per room. Same-user recovery packages are encrypted by the client, expire after seven days, are capped at 256 KiB, and advance monotonically by membership generation and event cursor. Peer-assisted legacy history is authorized against exact device membership-generation intervals; current room membership alone does not authorize messages sent while that device was absent.
+
+Relevant authenticated routes include:
+
+- `GET /api/v1/room-crypto-topology/:scope_id`
+- `POST /api/v1/room-crypto-topology/:scope_id/prepare`
+- `POST /api/v1/room-crypto-topology/:scope_id/cutover`
+- `POST /api/v1/room-crypto-topology/:scope_id/rollback`
+- `GET|PUT /api/v1/cohort-wrapping-keys/:group_id`
+- room-key material, prepare, claim, renew, envelope, stage, activate, and repair routes under `/api/v1/room-key-*`
+- `GET|PUT /api/v1/scope-recovery-packages/:scope_id`
 
 ## 2. Canonical JSON shapes
 

@@ -9,7 +9,8 @@ import Config
 
 config :vesper,
   ecto_repos: [Vesper.Repo],
-  generators: [timestamp_type: :utc_datetime, binary_id: true]
+  generators: [timestamp_type: :utc_datetime, binary_id: true],
+  sync_event_retention_days: 7
 
 # Configure the endpoint
 config :vesper, VesperWeb.Endpoint,
@@ -49,13 +50,14 @@ config :joken,
 # Oban background jobs
 config :vesper, Oban,
   repo: Vesper.Repo,
-  queues: [default: 10, crypto_evictions: 20],
+  queues: [default: 10, crypto_evictions: 20, dispatch: 50],
   plugins: [
     {Oban.Plugins.Cron,
      crontab: [
        {"* * * * *", Vesper.Workers.ExpireMessages},
        {"0 3 * * *", Vesper.Workers.PurgeKeyPackages},
        {"0 3 * * *", Vesper.Workers.PurgeWelcomes},
+       {"0 3 * * *", Vesper.Workers.PurgeRecoveryMaterial},
        {"0 3 * * *", Vesper.Workers.ExpireAttachmentBlobs},
        {"0 3 * * *", Vesper.Workers.PurgeExpiredTokens},
        {"0 4 * * *", Vesper.Workers.PurgeSyncEvents}

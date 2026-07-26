@@ -58,6 +58,18 @@ export class MemoryStorage implements CryptoDbApi {
       signature_private_key: Uint8Array | null
     }
   >()
+  private readonly recoveryPackageKeys = new Map<string, Uint8Array>()
+  private readonly workspaceSnapshots = new Map<
+    string,
+    {
+      version: number
+      token: string | null
+      servers_json: string
+      conversations_json: string
+      unread_counts_json: string
+      updated_at: string
+    }
+  >()
 
   private readonly groupStates = new Map<string, { state: Uint8Array; epoch: number }>()
   private readonly groupSyncCursors = new Map<string, number>()
@@ -70,39 +82,7 @@ export class MemoryStorage implements CryptoDbApi {
       repair_failure_count: number
       repair_last_error: string | null
       repair_updated_at: string | null
-    }
-  >()
-  private readonly pendingGroupInfoPublishes = new Map<
-    string,
-    {
-      group_info_data: Uint8Array
-      ratchet_tree_data: Uint8Array | null
-      epoch: number
-    }
-  >()
-  private readonly pendingExternalCommitBroadcasts = new Map<
-    string,
-    {
-      commit_data: string
-      commit_id: string
-    }
-  >()
-  private readonly pendingSponsoredTransitions = new Map<
-    string,
-    {
-      recipient_id: string
-      recipient_client_id: string | null
-      recipient_key_package_ref: string | null
-      commit_data: string
-      commit_id: string
-      remove_commit_data: string | null
-      welcome_data: string | null
-      group_info_data: Uint8Array | null
-      ratchet_tree_data: Uint8Array | null
-      epoch: number | null
-      previous_epoch: number | null
-      base_state: Uint8Array | null
-      base_epoch: number | null
+      control_intents: ControlIntentStorageRecord[]
     }
   >()
   private readonly keyPackages = new Map<
@@ -119,6 +99,16 @@ export class MemoryStorage implements CryptoDbApi {
   private readonly cachedDecryptions = new Map<string, string>()
   private readonly sentPlaintext = new Map<string, string>()
   private readonly searchIndex = new Map<string, IndexedMessageRecord>()
+  private readonly pendingMessageSends = new Map<
+    string,
+    {
+      scope_kind: 'channel' | 'dm'
+      scope_id: string
+      scope_channel_id: string | null
+      payload_json: string
+      inserted_at: string
+    }
+  >()
   private nextKeyPackageId = 1
 
   async getIdentityKeys(userId: string): Promise<{
@@ -167,6 +157,43 @@ export class MemoryStorage implements CryptoDbApi {
 
   async deleteIdentityKeys(userId: string): Promise<void> {
     this.identityKeys.delete(userId)
+    this.recoveryPackageKeys.delete(userId)
+    this.workspaceSnapshots.delete(userId)
+  }
+
+  async getWorkspaceSnapshot(userId: string): Promise<{
+    version: number
+    token: string | null
+    servers_json: string
+    conversations_json: string
+    unread_counts_json: string
+    updated_at: string
+  } | null> {
+    const snapshot = this.workspaceSnapshots.get(userId)
+    return snapshot ? { ...snapshot } : null
+  }
+
+  async setWorkspaceSnapshot(
+    userId: string,
+    snapshot: {
+      version: number
+      token: string | null
+      servers_json: string
+      conversations_json: string
+      unread_counts_json: string
+      updated_at: string
+    }
+  ): Promise<void> {
+    this.workspaceSnapshots.set(userId, { ...snapshot })
+  }
+
+  async getRecoveryPackageKey(userId: string): Promise<ArrayBuffer | null> {
+    const key = this.recoveryPackageKeys.get(userId)
+    return key ? cloneArrayBuffer(key) : null
+  }
+
+  async setRecoveryPackageKey(userId: string, key: Uint8Array): Promise<void> {
+    this.recoveryPackageKeys.set(userId, new Uint8Array(key))
   }
 
   async getGroupState(groupId: string): Promise<{ state: ArrayBuffer; epoch: number } | null> {
@@ -189,9 +216,6 @@ export class MemoryStorage implements CryptoDbApi {
     this.groupStates.delete(groupId)
     // NOTE: intentionally NOT deleting groupSyncCursors — see indexedDbStorage.ts
     this.scopeMetadata.delete(groupId)
-    this.pendingGroupInfoPublishes.delete(groupId)
-    this.pendingExternalCommitBroadcasts.delete(groupId)
-    this.pendingSponsoredTransitions.delete(groupId)
   }
 
   async getGroupSyncCursor(groupId: string): Promise<number> {
@@ -213,36 +237,10 @@ export class MemoryStorage implements CryptoDbApi {
     repair_failure_count: number
     repair_last_error: string | null
     repair_updated_at: string | null
-    pending_group_info_publish: {
-      group_info_data: ArrayBuffer
-      ratchet_tree_data: ArrayBuffer | null
-      epoch: number
-    } | null
-    pending_external_commit_broadcast: {
-      commit_data: string
-      commit_id: string
-    } | null
-    pending_sponsored_transition: {
-      recipient_id: string
-      recipient_client_id: string | null
-      recipient_key_package_ref: string | null
-      commit_data: string
-      commit_id: string
-      remove_commit_data: string | null
-      welcome_data: string | null
-      group_info_data: ArrayBuffer | null
-      ratchet_tree_data: ArrayBuffer | null
-      epoch: number | null
-      previous_epoch: number | null
-      base_state: ArrayBuffer | null
-      base_epoch: number | null
-    } | null
+    control_intents: ControlIntentStorageRecord[]
   }> {
     const groupState = this.groupStates.get(groupId)
     const metadata = this.scopeMetadata.get(groupId)
-    const pendingGroupInfo = this.pendingGroupInfoPublishes.get(groupId)
-    const pendingExternalCommit = this.pendingExternalCommitBroadcasts.get(groupId)
-    const pendingSponsoredTransition = this.pendingSponsoredTransitions.get(groupId)
 
     return {
       group_id: groupId,
@@ -257,44 +255,7 @@ export class MemoryStorage implements CryptoDbApi {
       repair_failure_count: metadata?.repair_failure_count ?? 0,
       repair_last_error: metadata?.repair_last_error ?? null,
       repair_updated_at: metadata?.repair_updated_at ?? null,
-      pending_group_info_publish: pendingGroupInfo
-        ? {
-            group_info_data: cloneArrayBuffer(pendingGroupInfo.group_info_data),
-            ratchet_tree_data: pendingGroupInfo.ratchet_tree_data
-              ? cloneArrayBuffer(pendingGroupInfo.ratchet_tree_data)
-              : null,
-            epoch: pendingGroupInfo.epoch
-          }
-        : null,
-      pending_external_commit_broadcast: pendingExternalCommit
-        ? {
-            commit_data: pendingExternalCommit.commit_data,
-            commit_id: pendingExternalCommit.commit_id
-          }
-        : null,
-      pending_sponsored_transition: pendingSponsoredTransition
-        ? {
-            recipient_id: pendingSponsoredTransition.recipient_id,
-            recipient_client_id: pendingSponsoredTransition.recipient_client_id,
-            recipient_key_package_ref: pendingSponsoredTransition.recipient_key_package_ref,
-            commit_data: pendingSponsoredTransition.commit_data,
-            commit_id: pendingSponsoredTransition.commit_id,
-            remove_commit_data: pendingSponsoredTransition.remove_commit_data,
-            welcome_data: pendingSponsoredTransition.welcome_data,
-            group_info_data: pendingSponsoredTransition.group_info_data
-              ? cloneArrayBuffer(pendingSponsoredTransition.group_info_data)
-              : null,
-            ratchet_tree_data: pendingSponsoredTransition.ratchet_tree_data
-              ? cloneArrayBuffer(pendingSponsoredTransition.ratchet_tree_data)
-              : null,
-            epoch: pendingSponsoredTransition.epoch,
-            previous_epoch: pendingSponsoredTransition.previous_epoch,
-            base_state: pendingSponsoredTransition.base_state
-              ? cloneArrayBuffer(pendingSponsoredTransition.base_state)
-              : null,
-            base_epoch: pendingSponsoredTransition.base_epoch
-          }
-        : null
+      control_intents: (metadata?.control_intents ?? []).map((intent) => ({ ...intent }))
     }
   }
 
@@ -302,10 +263,7 @@ export class MemoryStorage implements CryptoDbApi {
     return [...new Set([
       ...this.groupStates.keys(),
       ...this.groupSyncCursors.keys(),
-      ...this.scopeMetadata.keys(),
-      ...this.pendingGroupInfoPublishes.keys(),
-      ...this.pendingExternalCommitBroadcasts.keys(),
-      ...this.pendingSponsoredTransitions.keys()
+      ...this.scopeMetadata.keys()
     ])].sort()
   }
 
@@ -321,30 +279,7 @@ export class MemoryStorage implements CryptoDbApi {
       repair_failure_count?: number
       repair_last_error?: string | null
       repair_updated_at?: string | null
-      pending_group_info_publish?: {
-        group_info_data: Uint8Array
-        ratchet_tree_data: Uint8Array | null
-        epoch: number
-      } | null
-      pending_external_commit_broadcast?: {
-        commit_data: string
-        commit_id: string
-      } | null
-      pending_sponsored_transition?: {
-        recipient_id: string
-        recipient_client_id: string | null
-        recipient_key_package_ref: string | null
-        commit_data: string
-        commit_id: string
-        remove_commit_data: string | null
-        welcome_data: string | null
-        group_info_data: Uint8Array | null
-        ratchet_tree_data: Uint8Array | null
-        epoch: number | null
-        previous_epoch: number | null
-        base_state: Uint8Array | null
-        base_epoch: number | null
-      } | null
+      control_intents?: ControlIntentStorageRecord[]
     }
   ): Promise<void> {
     if (checkpoint.state) {
@@ -369,166 +304,9 @@ export class MemoryStorage implements CryptoDbApi {
       repair_status: checkpoint.repair_status ?? null,
       repair_failure_count: checkpoint.repair_failure_count ?? 0,
       repair_last_error: checkpoint.repair_last_error ?? null,
-      repair_updated_at: checkpoint.repair_updated_at ?? null
+      repair_updated_at: checkpoint.repair_updated_at ?? null,
+      control_intents: (checkpoint.control_intents ?? []).map((intent) => ({ ...intent }))
     })
-
-    if (Object.prototype.hasOwnProperty.call(checkpoint, 'pending_group_info_publish')) {
-      if (checkpoint.pending_group_info_publish) {
-        this.pendingGroupInfoPublishes.set(groupId, {
-          group_info_data: new Uint8Array(checkpoint.pending_group_info_publish.group_info_data),
-          ratchet_tree_data: checkpoint.pending_group_info_publish.ratchet_tree_data
-            ? new Uint8Array(checkpoint.pending_group_info_publish.ratchet_tree_data)
-            : null,
-          epoch: checkpoint.pending_group_info_publish.epoch
-        })
-      } else {
-        this.pendingGroupInfoPublishes.delete(groupId)
-      }
-    }
-
-    if (
-      Object.prototype.hasOwnProperty.call(checkpoint, 'pending_external_commit_broadcast')
-    ) {
-      if (checkpoint.pending_external_commit_broadcast) {
-        this.pendingExternalCommitBroadcasts.set(groupId, {
-          commit_data: checkpoint.pending_external_commit_broadcast.commit_data,
-          commit_id: checkpoint.pending_external_commit_broadcast.commit_id
-        })
-      } else {
-        this.pendingExternalCommitBroadcasts.delete(groupId)
-      }
-    }
-
-    if (Object.prototype.hasOwnProperty.call(checkpoint, 'pending_sponsored_transition')) {
-      if (checkpoint.pending_sponsored_transition) {
-        this.pendingSponsoredTransitions.set(groupId, {
-          recipient_id: checkpoint.pending_sponsored_transition.recipient_id,
-          recipient_client_id: checkpoint.pending_sponsored_transition.recipient_client_id,
-          recipient_key_package_ref:
-            checkpoint.pending_sponsored_transition.recipient_key_package_ref,
-          commit_data: checkpoint.pending_sponsored_transition.commit_data,
-          commit_id: checkpoint.pending_sponsored_transition.commit_id,
-          remove_commit_data: checkpoint.pending_sponsored_transition.remove_commit_data,
-          welcome_data: checkpoint.pending_sponsored_transition.welcome_data,
-          group_info_data: checkpoint.pending_sponsored_transition.group_info_data
-            ? new Uint8Array(checkpoint.pending_sponsored_transition.group_info_data)
-            : null,
-          ratchet_tree_data: checkpoint.pending_sponsored_transition.ratchet_tree_data
-            ? new Uint8Array(checkpoint.pending_sponsored_transition.ratchet_tree_data)
-            : null,
-          epoch: checkpoint.pending_sponsored_transition.epoch,
-          previous_epoch: checkpoint.pending_sponsored_transition.previous_epoch,
-          base_state: checkpoint.pending_sponsored_transition.base_state
-            ? new Uint8Array(checkpoint.pending_sponsored_transition.base_state)
-            : null,
-          base_epoch: checkpoint.pending_sponsored_transition.base_epoch
-        })
-      } else {
-        this.pendingSponsoredTransitions.delete(groupId)
-      }
-    }
-  }
-
-  async getPendingGroupInfoPublishes(): Promise<
-    Array<{
-      group_id: string
-      group_info_data: ArrayBuffer
-      ratchet_tree_data: ArrayBuffer | null
-      epoch: number
-    }>
-  > {
-    return [...this.pendingGroupInfoPublishes.entries()].map(([group_id, record]) => ({
-      group_id,
-      group_info_data: cloneArrayBuffer(record.group_info_data),
-      ratchet_tree_data: record.ratchet_tree_data
-        ? cloneArrayBuffer(record.ratchet_tree_data)
-        : null,
-      epoch: record.epoch
-    }))
-  }
-
-  async setPendingGroupInfoPublish(
-    groupId: string,
-    groupInfoData: Uint8Array,
-    ratchetTreeData: Uint8Array | null,
-    epoch: number
-  ): Promise<void> {
-    this.pendingGroupInfoPublishes.set(groupId, {
-      group_info_data: new Uint8Array(groupInfoData),
-      ratchet_tree_data: ratchetTreeData ? new Uint8Array(ratchetTreeData) : null,
-      epoch
-    })
-  }
-
-  async deletePendingGroupInfoPublish(groupId: string): Promise<void> {
-    this.pendingGroupInfoPublishes.delete(groupId)
-  }
-
-  async getPendingExternalCommitBroadcasts(): Promise<
-    Array<{
-      group_id: string
-      commit_data: string
-      commit_id: string
-    }>
-  > {
-    return [...this.pendingExternalCommitBroadcasts.entries()].map(([group_id, record]) => ({
-      group_id,
-      commit_data: record.commit_data,
-      commit_id: record.commit_id
-    }))
-  }
-
-  async setPendingExternalCommitBroadcast(
-    groupId: string,
-    commitData: string,
-    commitId: string
-  ): Promise<void> {
-    this.pendingExternalCommitBroadcasts.set(groupId, {
-      commit_data: commitData,
-      commit_id: commitId
-    })
-  }
-
-  async deletePendingExternalCommitBroadcast(groupId: string): Promise<void> {
-    this.pendingExternalCommitBroadcasts.delete(groupId)
-  }
-
-  async getPendingSponsoredTransitions(): Promise<
-    Array<{
-      group_id: string
-      recipient_id: string
-      recipient_client_id: string | null
-      recipient_key_package_ref: string | null
-      commit_data: string
-      commit_id: string
-      remove_commit_data: string | null
-      welcome_data: string | null
-      group_info_data: ArrayBuffer | null
-      ratchet_tree_data: ArrayBuffer | null
-      epoch: number | null
-      previous_epoch: number | null
-      base_state: ArrayBuffer | null
-      base_epoch: number | null
-    }>
-  > {
-    return [...this.pendingSponsoredTransitions.entries()].map(([group_id, record]) => ({
-      group_id,
-      recipient_id: record.recipient_id,
-      recipient_client_id: record.recipient_client_id,
-      recipient_key_package_ref: record.recipient_key_package_ref,
-      commit_data: record.commit_data,
-      commit_id: record.commit_id,
-      remove_commit_data: record.remove_commit_data,
-      welcome_data: record.welcome_data,
-      group_info_data: record.group_info_data ? cloneArrayBuffer(record.group_info_data) : null,
-      ratchet_tree_data: record.ratchet_tree_data
-        ? cloneArrayBuffer(record.ratchet_tree_data)
-        : null,
-      epoch: record.epoch,
-      previous_epoch: record.previous_epoch,
-      base_state: record.base_state ? cloneArrayBuffer(record.base_state) : null,
-      base_epoch: record.base_epoch
-    }))
   }
 
   async getLocalKeyPackages(): Promise<
@@ -754,6 +532,37 @@ export class MemoryStorage implements CryptoDbApi {
 
   async removeFromFtsIndex(messageId: string): Promise<void> {
     this.searchIndex.delete(messageId)
+  }
+
+  async getPendingMessageSends(): Promise<
+    Array<{
+      client_nonce: string
+      scope_kind: 'channel' | 'dm'
+      scope_id: string
+      scope_channel_id: string | null
+      payload_json: string
+      inserted_at: string
+    }>
+  > {
+    return [...this.pendingMessageSends.entries()]
+      .map(([client_nonce, record]) => ({ client_nonce, ...record }))
+      .sort((left, right) => left.inserted_at.localeCompare(right.inserted_at))
+  }
+
+  async setPendingMessageSend(entry: {
+    client_nonce: string
+    scope_kind: 'channel' | 'dm'
+    scope_id: string
+    scope_channel_id: string | null
+    payload_json: string
+    inserted_at: string
+  }): Promise<void> {
+    const { client_nonce, ...record } = entry
+    this.pendingMessageSends.set(client_nonce, record)
+  }
+
+  async deletePendingMessageSend(clientNonce: string): Promise<void> {
+    this.pendingMessageSends.delete(clientNonce)
   }
 
   private indexCachedMessage(message: CachedMessageRecord): void {

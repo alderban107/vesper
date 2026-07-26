@@ -42,6 +42,7 @@ export interface SdkServerStack {
   apiUrl: string
   artifactDir: string
   dbName: string
+  logStream: fs.WriteStream
   process: ChildProcess
   runId: string
 }
@@ -62,6 +63,54 @@ async function waitForProcessExit(process: ChildProcess, timeoutMs = 5_000): Pro
       resolve()
     })
   })
+}
+
+async function stopPhoenix(
+  phoenix: ChildProcess | null,
+  logStream: fs.WriteStream | null
+): Promise<void> {
+  if (phoenix) {
+    if (!phoenix.killed) {
+      phoenix.kill('SIGTERM')
+    }
+    await waitForProcessExit(phoenix)
+    if (logStream) {
+      phoenix.stdout?.unpipe(logStream)
+      phoenix.stderr?.unpipe(logStream)
+    }
+  }
+
+  if (logStream && !logStream.closed && !logStream.destroyed) {
+    await new Promise<void>((resolve) => logStream.end(resolve))
+  }
+}
+
+async function dropTestDatabase(runId: string, bestEffort = false): Promise<void> {
+  await withStackLifecycleLock(async () => {
+    try {
+      execSync('mix ecto.drop --quiet', {
+        cwd: SERVER_DIR,
+        env: {
+          ...process.env,
+          ...resolveTestDbEnv(),
+          MIX_ENV: 'test',
+          MIX_TEST_PARTITION: `_sdk_${runId}`,
+          VESPER_E2E: '1'
+        },
+        stdio: 'pipe'
+      })
+    } catch (error) {
+      if (!bestEffort) {
+        throw error
+      }
+    }
+  })
+}
+
+function removeArtifacts(artifactDir: string): void {
+  if (process.env.VESPER_SDK_KEEP_ARTIFACTS !== '1') {
+    fs.rmSync(artifactDir, { recursive: true, force: true })
+  }
 }
 
 export async function bootServerStack(): Promise<SdkServerStack> {
@@ -85,59 +134,57 @@ export async function bootServerStack(): Promise<SdkServerStack> {
     PORT: String(apiPort)
   }
 
-  const phoenix = await withStackLifecycleLock(async () => {
-    execSync('mix ecto.create --quiet', { cwd: SERVER_DIR, env: mixEnv, stdio: 'pipe' })
-    execSync('mix ecto.migrate --quiet', { cwd: SERVER_DIR, env: mixEnv, stdio: 'pipe' })
+  let logStream: fs.WriteStream | null = null
+  let phoenix: ChildProcess | null = null
 
-    const logPath = path.join(artifactDir, 'phoenix.log')
-    const logStream = fs.createWriteStream(logPath)
-    const nextPhoenix = spawn('mix', ['phx.server'], {
-      cwd: SERVER_DIR,
-      env: mixEnv,
-      stdio: ['ignore', 'pipe', 'pipe']
+  try {
+    await withStackLifecycleLock(async () => {
+      execSync('mix ecto.create --quiet', { cwd: SERVER_DIR, env: mixEnv, stdio: 'pipe' })
+      execSync('mix ecto.migrate --quiet', { cwd: SERVER_DIR, env: mixEnv, stdio: 'pipe' })
+
+      const logPath = path.join(artifactDir, 'phoenix.log')
+      logStream = fs.createWriteStream(logPath)
+      phoenix = spawn('mix', ['phx.server'], {
+        cwd: SERVER_DIR,
+        env: mixEnv,
+        stdio: ['ignore', 'pipe', 'pipe']
+      })
+
+      phoenix.stdout?.pipe(logStream)
+      phoenix.stderr?.pipe(logStream)
+
+      await waitForHealth(apiUrl, 30_000)
     })
 
-    nextPhoenix.stdout?.pipe(logStream)
-    nextPhoenix.stderr?.pipe(logStream)
+    if (!logStream || !phoenix) {
+      throw new Error('Phoenix stack was not initialized')
+    }
 
-    await waitForHealth(apiUrl, 30_000)
-    return nextPhoenix
-  })
-
-  return {
-    apiPort,
-    apiUrl,
-    artifactDir,
-    dbName,
-    process: phoenix,
-    runId
+    return {
+      apiPort,
+      apiUrl,
+      artifactDir,
+      dbName,
+      logStream,
+      process: phoenix,
+      runId
+    }
+  } catch (error) {
+    await stopPhoenix(phoenix, logStream)
+    await dropTestDatabase(runId, true)
+    removeArtifacts(artifactDir)
+    throw error
   }
 }
 
 export async function teardownServerStack(stack: SdkServerStack): Promise<void> {
-  if (!stack.process.killed) {
-    stack.process.kill('SIGTERM')
+  await stopPhoenix(stack.process, stack.logStream)
+
+  try {
+    await dropTestDatabase(stack.runId)
+  } finally {
+    removeArtifacts(stack.artifactDir)
   }
-
-  await waitForProcessExit(stack.process)
-
-  await withStackLifecycleLock(async () => {
-    try {
-      execSync('mix ecto.drop --quiet', {
-        cwd: SERVER_DIR,
-        env: {
-          ...process.env,
-          ...resolveTestDbEnv(),
-          MIX_ENV: 'test',
-          MIX_TEST_PARTITION: `_sdk_${stack.runId}`,
-          VESPER_E2E: '1'
-        },
-        stdio: 'pipe'
-      })
-    } catch {
-      // Best-effort cleanup.
-    }
-  })
 }
 
 async function getFreePort(): Promise<number> {

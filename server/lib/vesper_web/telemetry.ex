@@ -100,15 +100,21 @@ defmodule VesperWeb.Telemetry do
       ),
 
       # Member cache
-      counter("vesper.member_cache.miss.count")
+      counter("vesper.member_cache.miss.count"),
+
+      # Durable realtime dispatch
+      counter("vesper.dispatch.delivered.count"),
+      counter("vesper.dispatch.failed.count", tags: [:event, :dead_lettered]),
+      last_value("vesper.dispatch.backlog.depth"),
+      last_value("vesper.dispatch.backlog.oldest_age_seconds"),
+      last_value("vesper.dispatch.backlog.attempts"),
+      last_value("vesper.dispatch.backlog.failures")
     ]
   end
 
   defp periodic_measurements do
     [
-      # A module, function and arguments to be invoked periodically.
-      # This function must call :telemetry.execute/3 and a metric must be added above.
-      # {VesperWeb, :count_users, []}
+      {Vesper.Dispatch, :emit_backlog_metrics, []}
     ]
   end
 end

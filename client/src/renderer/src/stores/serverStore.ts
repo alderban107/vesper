@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { useDmStore } from './dmStore'
+import { useUnreadStore } from './unreadStore'
 import type { CustomEmoji } from '../utils/emoji'
 import { getRendererClient, getRendererEncryptedChat } from '../sdk/client'
 import { getStoredValue as readStoredValue, writeStoredValue } from '../utils/localStorage'
@@ -55,7 +56,9 @@ export interface Server {
   icon_url: string | null
   owner_id: string
   channels: Channel[]
+  channels_loaded?: boolean
   emojis: CustomEmoji[]
+  emojis_loaded?: boolean
 }
 
 export type Member = VesperServerMember
@@ -187,8 +190,14 @@ function resolveEmojiUrls(emojis: CustomEmoji[]): CustomEmoji[] {
 function normalizeServer(server: Server, existing?: Server): Server {
   return {
     ...server,
-    channels: mergeServerChannels(existing?.channels ?? [], server.channels ?? []),
-    emojis: resolveEmojiUrls(server.emojis ?? [])
+    channels:
+      server.channels_loaded === false
+        ? existing?.channels ?? []
+        : mergeServerChannels(existing?.channels ?? [], server.channels ?? []),
+    emojis:
+      server.emojis_loaded === false
+        ? existing?.emojis ?? []
+        : resolveEmojiUrls(server.emojis ?? [])
   }
 }
 
@@ -643,6 +652,14 @@ export const useServerStore = create<ServerState>((set, get) => ({
     if (!fetchedChannels) {
       return
     }
+
+    const channelIds = new Set(fetchedChannels.map((channel) => channel.id))
+    const channelUnreads = Object.fromEntries(
+      Object.entries(getRendererClient().getState().unreadCounts.channels).filter(([channelId]) =>
+        channelIds.has(channelId)
+      )
+    )
+    useUnreadStore.getState().mergeChannelUnreads(channelUnreads)
 
     set((s) => {
       const currentServer = s.servers.find((srv) => srv.id === serverId)

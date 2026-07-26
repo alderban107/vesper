@@ -9,6 +9,8 @@ defmodule Vesper.Chat.Reaction do
     field :emoji, :string
     field :ciphertext, :string
     field :mls_epoch, :integer
+    field :encryption_scheme, :string, default: "mls"
+    field :encryption_group_id, :string
 
     belongs_to :message, Vesper.Chat.Message
     belongs_to :sender, Vesper.Accounts.User
@@ -18,7 +20,15 @@ defmodule Vesper.Chat.Reaction do
 
   def changeset(reaction, attrs) do
     reaction
-    |> cast(attrs, [:emoji, :ciphertext, :mls_epoch, :message_id, :sender_id])
+    |> cast(attrs, [
+      :emoji,
+      :ciphertext,
+      :mls_epoch,
+      :encryption_scheme,
+      :encryption_group_id,
+      :message_id,
+      :sender_id
+    ])
     |> validate_required([:emoji, :message_id, :sender_id])
     |> unique_constraint([:message_id, :sender_id, :emoji])
   end

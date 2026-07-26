@@ -106,7 +106,7 @@ defmodule Vesper.Chat do
   end
 
   @doc """
-  List the first activity-ordered conversation page for compatibility.
+  List the first activity-ordered conversation page without pagination metadata.
   """
   def list_conversations(user_id, opts \\ []) do
     list_conversations_page(user_id, opts).items
@@ -1149,7 +1149,7 @@ defmodule Vesper.Chat do
       )
 
     if match?({:ok, _}, result) do
-      Sync.append_scope_events([user_id], "read", "channel", channel_id)
+      Sync.append_user_scope_event(user_id, "read", "channel", channel_id)
     end
 
     result
@@ -1180,7 +1180,7 @@ defmodule Vesper.Chat do
       )
 
     if match?({:ok, _}, result) do
-      Sync.append_scope_events([user_id], "read", "dm", conversation_id)
+      Sync.append_user_scope_event(user_id, "read", "dm", conversation_id)
     end
 
     result

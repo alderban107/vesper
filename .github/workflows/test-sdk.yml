@@ -96,11 +96,25 @@ jobs:
       - name: Pre-pull Postgres image
         run: docker pull postgres:16-alpine
 
-      - name: Run SDK integration tests
+      - name: Run P1 multi-cohort integration gate
         working-directory: client
         env:
           VESPER_PERF_MULTIPLIER: "5"
         run: npm run test:sdk:e2e
+
+      - name: Run P2 multi-cohort chaos gate
+        working-directory: sdk
+        env:
+          CHAOS_ACTUAL_USERS: "6"
+          CHAOS_ACTIVE_CHANNEL_COUNT: "2"
+          CHAOS_CHANNEL_COUNT: "2"
+          CHAOS_DURATION_SECONDS: "15"
+          CHAOS_HISTORY_SEED_MESSAGES: "20"
+          CHAOS_MULTI_COHORT_SIZE: "3"
+          CHAOS_SIMULATED_USERS: "50000"
+          CHAOS_TARGET_LATENCY_MS: "500"
+          VESPER_PERF_MULTIPLIER: "5"
+        run: npm run chaos:load
 
   # Gate job — branch protection should require this check.
   sdk-checks:

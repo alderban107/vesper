@@ -71,7 +71,7 @@ export default function PinnedMessagesPopover({
 
   const messagePreview = (pin: PinnedMessageEntry): string => {
     if (pin.message.decryptionFailed || pin.message.content === 'Message unavailable') {
-      return 'Encrypted message'
+      return 'Message unavailable'
     }
 
     const parsed = parseMessageContent(pin.message.content || '')

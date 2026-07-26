@@ -11,13 +11,12 @@ defmodule Vesper.Workers.PurgeSyncEvents do
 
   alias Vesper.Repo
   alias Vesper.ScopeSyncEvent
+  alias Vesper.SyncCursor
   alias Vesper.UserSyncEvent
-
-  @retention_days 7
 
   @impl Oban.Worker
   def perform(_job) do
-    cutoff = DateTime.utc_now() |> DateTime.add(-@retention_days * 86_400, :second)
+    cutoff = SyncCursor.retention_cutoff()
 
     {scope_count, _} =
       from(e in ScopeSyncEvent, where: e.inserted_at < ^cutoff)

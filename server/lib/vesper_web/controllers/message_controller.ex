@@ -295,7 +295,9 @@ defmodule VesperWeb.MessageController do
     if message.ciphertext do
       Map.merge(base, %{
         ciphertext: Base.encode64(message.ciphertext),
-        mls_epoch: message.mls_epoch
+        mls_epoch: message.mls_epoch,
+        encryption_scheme: message.encryption_scheme,
+        encryption_group_id: message.encryption_group_id
       })
     else
       Map.put(base, :content, message.content)
@@ -323,6 +325,8 @@ defmodule VesperWeb.MessageController do
         emoji: r.emoji,
         ciphertext: r.ciphertext,
         mls_epoch: r.mls_epoch,
+        encryption_scheme: r.encryption_scheme,
+        encryption_group_id: r.encryption_group_id,
         sender_id: r.sender_id,
         inserted_at: r.inserted_at
       }
@@ -363,6 +367,8 @@ defmodule VesperWeb.MessageController do
             content: message.content,
             ciphertext: if(message.ciphertext, do: Base.encode64(message.ciphertext), else: nil),
             mls_epoch: message.mls_epoch,
+            encryption_scheme: message.encryption_scheme,
+            encryption_group_id: message.encryption_group_id,
             sender_id: message.sender_id,
             sender: sender_json(message.sender),
             inserted_at: message.inserted_at,

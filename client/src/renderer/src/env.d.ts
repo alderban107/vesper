@@ -1,5 +1,19 @@
 /// <reference types="vite/client" />
 
+interface ControlIntentStorageRecord {
+  version: 1
+  operation: string
+  idempotency_key: string
+  scope_id: string
+  membership_generation: number
+  payload_json: string
+  attempts: number
+  state: string
+  result_json: string | null
+  created_at: string
+  updated_at: string
+}
+
 interface CryptoDbApi {
   // Identity keys
   getIdentityKeys(userId: string): Promise<{
@@ -20,6 +34,24 @@ interface CryptoDbApi {
     signaturePrivateKey?: Uint8Array | null
   ): Promise<void>
   deleteIdentityKeys(userId: string): Promise<void>
+  getWorkspaceSnapshot(userId: string): Promise<{
+    version: number
+    token: string | null
+    servers_json: string
+    conversations_json: string
+    unread_counts_json: string
+    updated_at: string
+  } | null>
+  setWorkspaceSnapshot(userId: string, snapshot: {
+    version: number
+    token: string | null
+    servers_json: string
+    conversations_json: string
+    unread_counts_json: string
+    updated_at: string
+  }): Promise<void>
+  getRecoveryPackageKey(userId: string): Promise<ArrayBuffer | null>
+  setRecoveryPackageKey(userId: string, key: Uint8Array): Promise<void>
 
   // MLS groups
   getGroupState(groupId: string): Promise<{
@@ -41,30 +73,7 @@ interface CryptoDbApi {
     repair_failure_count: number
     repair_last_error: string | null
     repair_updated_at: string | null
-    pending_group_info_publish: {
-      group_info_data: ArrayBuffer
-      ratchet_tree_data: ArrayBuffer | null
-      epoch: number
-    } | null
-    pending_external_commit_broadcast: {
-      commit_data: string
-      commit_id: string
-    } | null
-    pending_sponsored_transition: {
-      recipient_id: string
-      recipient_client_id: string | null
-      recipient_key_package_ref: string | null
-      commit_data: string
-      commit_id: string
-      remove_commit_data: string | null
-      welcome_data: string | null
-      group_info_data: ArrayBuffer | null
-      ratchet_tree_data: ArrayBuffer | null
-      epoch: number | null
-      previous_epoch: number | null
-      base_state: ArrayBuffer | null
-      base_epoch: number | null
-    } | null
+    control_intents: ControlIntentStorageRecord[]
   }>
   getKnownScopeIds(): Promise<string[]>
   setScopeCheckpoint(
@@ -79,51 +88,9 @@ interface CryptoDbApi {
       repair_failure_count?: number
       repair_last_error?: string | null
       repair_updated_at?: string | null
-      pending_group_info_publish?: {
-        group_info_data: Uint8Array
-        ratchet_tree_data: Uint8Array | null
-        epoch: number
-      } | null
-      pending_external_commit_broadcast?: {
-        commit_data: string
-        commit_id: string
-      } | null
-      pending_sponsored_transition?: {
-        recipient_id: string
-        recipient_client_id: string | null
-        recipient_key_package_ref: string | null
-        commit_data: string
-        commit_id: string
-        remove_commit_data: string | null
-        welcome_data: string | null
-        group_info_data: Uint8Array | null
-        ratchet_tree_data: Uint8Array | null
-        epoch: number | null
-        previous_epoch: number | null
-        base_state: Uint8Array | null
-        base_epoch: number | null
-      } | null
+      control_intents?: ControlIntentStorageRecord[]
     }
   ): Promise<void>
-  getPendingSponsoredTransitions(): Promise<
-    Array<{
-      group_id: string
-      recipient_id: string
-      recipient_client_id: string | null
-      recipient_key_package_ref: string | null
-      commit_data: string
-      commit_id: string
-      remove_commit_data: string | null
-      welcome_data: string | null
-      group_info_data: ArrayBuffer | null
-      ratchet_tree_data: ArrayBuffer | null
-      epoch: number | null
-      previous_epoch: number | null
-      base_state: ArrayBuffer | null
-      base_epoch: number | null
-    }>
-  >
-
   // Key packages
   getLocalKeyPackages(): Promise<
     Array<{
@@ -208,6 +175,31 @@ interface CryptoDbApi {
     content: string
   ): Promise<void>
   removeFromFtsIndex(messageId: string): Promise<void>
+
+  // Pending message send outbox — durable across a crash between "user hit
+  // send" and "server acknowledged the write". Keyed by client_nonce so a
+  // retry after restart is idempotent with the server's nonce unique index.
+  // scope_channel_id reconstructs EncryptedScope.channelId for DMs backed by
+  // a channel, where the MLS group id differs from the DM's own scope id.
+  getPendingMessageSends(): Promise<
+    Array<{
+      client_nonce: string
+      scope_kind: 'channel' | 'dm'
+      scope_id: string
+      scope_channel_id: string | null
+      payload_json: string
+      inserted_at: string
+    }>
+  >
+  setPendingMessageSend(entry: {
+    client_nonce: string
+    scope_kind: 'channel' | 'dm'
+    scope_id: string
+    scope_channel_id: string | null
+    payload_json: string
+    inserted_at: string
+  }): Promise<void>
+  deletePendingMessageSend(clientNonce: string): Promise<void>
 }
 
 interface E2eeScopeDiagnosticsSnapshot {
@@ -225,6 +217,7 @@ interface VesperE2eeTestBridge {
   resolveActiveChannelScopeId(): Promise<string | null>
   hasGroup(scopeId: string): boolean
   getScopeDiagnostics(scopeId: string): E2eeScopeDiagnosticsSnapshot | null
+  getCachedMessageTexts(scopeId: string): Promise<string[]>
   prepareScopeForRead(
     scope: { kind: 'channel' | 'dm'; id: string },
     options?: {

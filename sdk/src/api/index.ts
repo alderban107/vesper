@@ -1,5 +1,6 @@
 export * from './client.js'
 export * from './chat.js'
 export * from './crypto.js'
+export * from './roomCrypto.js'
 export * from './searchIndex.js'
 export * from './voiceConfig.js'

@@ -3,7 +3,7 @@ defmodule VesperWeb.ChannelHelpers do
   Shared helpers for ChatChannel and DmChannel to avoid code duplication.
   """
 
-  alias Vesper.Chat
+  alias Vesper.{Chat, Encryption, Runtime}
 
   @doc """
   Safely decode a base64 string, returning {:ok, binary} or {:error, reason}.
@@ -57,6 +57,8 @@ defmodule VesperWeb.ChannelHelpers do
         emoji: r.emoji,
         ciphertext: r.ciphertext,
         mls_epoch: r.mls_epoch,
+        encryption_scheme: r.encryption_scheme,
+        encryption_group_id: r.encryption_group_id,
         sender_id: r.sender_id,
         inserted_at: r.inserted_at
       }
@@ -144,6 +146,8 @@ defmodule VesperWeb.ChannelHelpers do
       room_seq: message.room_seq,
       ciphertext: Base.encode64(message.ciphertext),
       mls_epoch: message.mls_epoch,
+      encryption_scheme: message.encryption_scheme,
+      encryption_group_id: message.encryption_group_id,
       client_nonce: message.client_nonce,
       sender_id: message.sender_id,
       sender: sender_json(message.sender),
@@ -181,15 +185,32 @@ defmodule VesperWeb.ChannelHelpers do
     end
   end
 
-  def handle_edit_message(id, ciphertext_b64, epoch, socket) do
+  def handle_edit_message(
+        id,
+        ciphertext_b64,
+        epoch,
+        encryption_scheme,
+        encryption_group_id,
+        socket
+      ) do
     with {:ok, ciphertext} <- safe_decode64(ciphertext_b64),
          %{} = message <- Chat.get_message(id),
-         true <- message.sender_id == socket.assigns.user_id do
+         true <- message.sender_id == socket.assigns.user_id,
+         %{} = room <- room_for_message(message),
+         :ok <-
+           Encryption.validate_application_scheme(
+             room.id,
+             encryption_scheme,
+             epoch,
+             encryption_group_id
+           ) do
       now = DateTime.utc_now() |> DateTime.truncate(:second)
 
       case Chat.update_message(message, %{
              ciphertext: ciphertext,
              mls_epoch: epoch,
+             encryption_scheme: encryption_scheme,
+             encryption_group_id: encryption_group_id,
              edited_at: now
            }) do
         {:ok, _updated} ->
@@ -198,6 +219,8 @@ defmodule VesperWeb.ChannelHelpers do
               message_id: id,
               ciphertext: ciphertext_b64,
               mls_epoch: epoch,
+              encryption_scheme: encryption_scheme,
+              encryption_group_id: encryption_group_id,
               edited_at: now
             }
             |> maybe_put(:channel_id, Map.get(socket.assigns, :channel_id))
@@ -276,6 +299,8 @@ defmodule VesperWeb.ChannelHelpers do
                 %{message_id: message_id, sender_id: sender_id, emoji: emoji}
                 |> maybe_put(:ciphertext, Map.get(crypto_meta, :ciphertext))
                 |> maybe_put(:mls_epoch, Map.get(crypto_meta, :mls_epoch))
+                |> maybe_put(:encryption_scheme, Map.get(crypto_meta, :encryption_scheme))
+                |> maybe_put(:encryption_group_id, Map.get(crypto_meta, :encryption_group_id))
 
               case Chat.add_reaction(attrs) do
                 {:ok, _} -> :ok
@@ -299,6 +324,14 @@ defmodule VesperWeb.ChannelHelpers do
         end
     end
   end
+
+  defp room_for_message(%{channel_id: channel_id}) when is_binary(channel_id),
+    do: Runtime.get_room_for_channel(channel_id)
+
+  defp room_for_message(%{conversation_id: conversation_id}) when is_binary(conversation_id),
+    do: Runtime.get_room_for_conversation(conversation_id)
+
+  defp room_for_message(_message), do: nil
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

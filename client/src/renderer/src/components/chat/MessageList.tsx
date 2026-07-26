@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { useServerStore } from '../../stores/serverStore'
 import { useDmStore } from '../../stores/dmStore'
-import { useMessageStore, type Message } from '../../stores/messageStore'
+import {
+  resolveDmChannelId,
+  useMessageStore,
+  type Message
+} from '../../stores/messageStore'
 import { useUnreadStore } from '../../stores/unreadStore'
 import MessageFeed from './message/MessageFeed'
 
@@ -14,10 +18,8 @@ interface Props {
 }
 
 export default function MessageList({ scope }: Props): React.JSX.Element {
-  const dmChannelId = useDmStore((s) => {
-    if (scope.kind !== 'dm') return null
-    return s.conversations.find(c => c.id === scope.id)?.channel_id ?? null
-  })
+  useDmStore((s) => s.conversations)
+  const dmChannelId = scope.kind === 'dm' ? resolveDmChannelId(scope.id) : null
 
   const resolvedScope = scope.kind === 'dm' && dmChannelId
     ? { kind: 'channel' as const, id: dmChannelId }
@@ -95,7 +97,7 @@ export default function MessageList({ scope }: Props): React.JSX.Element {
       messages={messages}
       messageLookup={allMessages}
       typingUsers={typingUsers}
-      isLoading={!hasLoaded || isLoading}
+      isLoading={messages.length === 0 && (!hasLoaded || isLoading)}
       hasMore={hasMore}
       hasNewer={hasNewer}
       emptyState={scope.kind === 'dm' ? 'This is the start of your conversation.' : 'No messages yet.'}

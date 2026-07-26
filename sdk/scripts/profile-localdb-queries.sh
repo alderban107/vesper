@@ -7,36 +7,74 @@ REPO_ROOT="$(CDPATH='' cd -- "$SCRIPT_DIR/../.." && pwd)"
 . "$REPO_ROOT/scripts/load-test-env.sh" "$REPO_ROOT"
 
 CONTAINER_NAME="${VESPER_SDK_TEST_DB_CONTAINER:-vesper-sdk-test-postgres}"
-USER_NAME="${VESPER_SDK_TEST_DB_USER:-vesper_sdk}"
-PASSWORD="${VESPER_SDK_TEST_DB_PASS:-vesper_sdk}"
+HOST_NAME="${VESPER_SDK_TEST_DB_HOST:-${TEST_DB_HOST:-127.0.0.1}}"
+PORT_NUMBER="${VESPER_SDK_TEST_DB_PORT:-${TEST_DB_PORT:-55432}}"
+USER_NAME="${VESPER_SDK_TEST_DB_USER:-${TEST_DB_USER:-vesper_sdk}}"
+PASSWORD="${VESPER_SDK_TEST_DB_PASS:-${TEST_DB_PASS:-vesper_sdk}}"
 DB_NAME="${VESPER_SDK_PROFILE_DB_NAME:-}"
+DATABASE_URL="${DATABASE_URL:-}"
+MODE=""
 
-if ! docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
-  echo "Postgres container '$CONTAINER_NAME' is not running." >&2
+if [ -n "$DATABASE_URL" ]; then
+  MODE="url"
+elif pg_isready -h "$HOST_NAME" -p "$PORT_NUMBER" >/dev/null 2>&1; then
+  MODE="direct"
+elif command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
+  MODE="docker"
+else
+  echo "No PostgreSQL service is available through DATABASE_URL, $HOST_NAME:$PORT_NUMBER, or container '$CONTAINER_NAME'." >&2
   exit 1
 fi
 
-if [ -z "$DB_NAME" ]; then
-  DB_NAME="$(
-    docker exec -e PGPASSWORD="$PASSWORD" "$CONTAINER_NAME" \
-      psql -U "$USER_NAME" -d postgres -Atc \
-      "SELECT datname
-       FROM pg_database
-       WHERE datname LIKE 'vesper_test_sdk_%'
-       ORDER BY datname DESC
-       LIMIT 1"
-  )"
+if [ -z "$DB_NAME" ] && [ "$MODE" != "url" ]; then
+  if [ "$MODE" = "direct" ]; then
+    DB_NAME="$(
+      PGPASSWORD="$PASSWORD" psql -h "$HOST_NAME" -p "$PORT_NUMBER" -U "$USER_NAME" -d postgres -Atc \
+        "SELECT datname
+         FROM pg_database
+         WHERE datname LIKE 'vesper_test_sdk_%'
+         ORDER BY datname DESC
+         LIMIT 1"
+    )"
+  else
+    DB_NAME="$(
+      docker exec -e PGPASSWORD="$PASSWORD" "$CONTAINER_NAME" \
+        psql -U "$USER_NAME" -d postgres -Atc \
+        "SELECT datname
+         FROM pg_database
+         WHERE datname LIKE 'vesper_test_sdk_%'
+         ORDER BY datname DESC
+         LIMIT 1"
+    )"
+  fi
 fi
 
-if [ -z "$DB_NAME" ]; then
-  echo "No sdk test database found. Run an integration or chaos scenario first." >&2
+if [ "$MODE" != "url" ] && [ -z "$DB_NAME" ]; then
+  echo "No sdk test database found. Run an integration, chaos, or account profile scenario first." >&2
   exit 1
 fi
 
-echo "Profiling database: $DB_NAME"
+run_psql() {
+  case "$MODE" in
+    url)
+      psql "$DATABASE_URL" "$@"
+      ;;
+    direct)
+      PGPASSWORD="$PASSWORD" psql -h "$HOST_NAME" -p "$PORT_NUMBER" -U "$USER_NAME" -d "$DB_NAME" "$@"
+      ;;
+    docker)
+      docker exec -i -e PGPASSWORD="$PASSWORD" "$CONTAINER_NAME" psql -U "$USER_NAME" -d "$DB_NAME" "$@"
+      ;;
+  esac
+}
 
-docker exec -e PGPASSWORD="$PASSWORD" "$CONTAINER_NAME" \
-  psql -U "$USER_NAME" -d "$DB_NAME" <<'SQL'
+if [ "$MODE" = "url" ]; then
+  echo "Profiling database from DATABASE_URL"
+else
+  echo "Profiling database: $DB_NAME"
+fi
+
+run_psql <<'SQL'
 \timing on
 
 \echo ''

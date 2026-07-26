@@ -13,16 +13,13 @@ import {
   setGroupSyncCursor,
   getScopeCheckpoint,
   setScopeCheckpoint,
-  getPendingGroupInfoPublishes,
-  setPendingGroupInfoPublish,
-  deletePendingGroupInfoPublish,
-  getPendingExternalCommitBroadcasts,
-  getPendingSponsoredTransitions,
-  setPendingExternalCommitBroadcast,
-  deletePendingExternalCommitBroadcast,
   getIdentityKeys,
   setIdentityKeys,
   deleteIdentityKeys,
+  getWorkspaceSnapshot,
+  setWorkspaceSnapshot,
+  getRecoveryPackageKey,
+  setRecoveryPackageKey,
   getLocalKeyPackages,
   setLocalKeyPackages,
   consumeLocalKeyPackage,
@@ -36,13 +33,30 @@ import {
   setSentMessagePlaintext,
   searchMessages,
   indexDecryptedMessage,
-  removeFromFtsIndex
+  removeFromFtsIndex,
+  getPendingMessageSends,
+  setPendingMessageSend,
+  deletePendingMessageSend
 } from './db'
 import {
   isBlockedLinkPreviewUrl,
   parseLinkPreview,
   type LinkPreviewData
 } from '../shared/linkPreview'
+
+interface ControlIntentStorageRecord {
+  version: 1
+  operation: string
+  idempotency_key: string
+  scope_id: string
+  membership_generation: number
+  payload_json: string
+  attempts: number
+  state: string
+  result_json: string | null
+  created_at: string
+  updated_at: string
+}
 
 const LINK_PREVIEW_TIMEOUT_MS = 5_000
 const MAX_LINK_PREVIEW_HTML_LENGTH = 524_288
@@ -184,6 +198,31 @@ function registerIpcHandlers(): void {
   ipcMain.handle('cryptoDb:deleteIdentityKeys', (_, userId: string) =>
     deleteIdentityKeys(userId)
   )
+  ipcMain.handle('cryptoDb:getWorkspaceSnapshot', (_, userId: string) =>
+    getWorkspaceSnapshot(userId)
+  )
+  ipcMain.handle(
+    'cryptoDb:setWorkspaceSnapshot',
+    (
+      _,
+      userId: string,
+      snapshot: {
+        version: number
+        token: string | null
+        servers_json: string
+        conversations_json: string
+        unread_counts_json: string
+        updated_at: string
+      }
+    ) => setWorkspaceSnapshot(userId, snapshot)
+  )
+  ipcMain.handle('cryptoDb:getRecoveryPackageKey', (_, userId: string) =>
+    getRecoveryPackageKey(userId)
+  )
+  ipcMain.handle(
+    'cryptoDb:setRecoveryPackageKey',
+    (_, userId: string, key: Buffer) => setRecoveryPackageKey(userId, key)
+  )
 
   // MLS groups
   ipcMain.handle('cryptoDb:getGroupState', (_, groupId: string) =>
@@ -226,66 +265,10 @@ function registerIpcHandlers(): void {
         repair_failure_count?: number
         repair_last_error?: string | null
         repair_updated_at?: string | null
-        pending_group_info_publish?: {
-          group_info_data: Buffer
-          ratchet_tree_data: Buffer | null
-          epoch: number
-        } | null
-        pending_external_commit_broadcast?: {
-          commit_data: string
-          commit_id: string
-        } | null
-        pending_sponsored_transition?: {
-          recipient_id: string
-          recipient_client_id: string | null
-          recipient_key_package_ref: string | null
-          commit_data: string
-          commit_id: string
-          remove_commit_data: string | null
-          welcome_data: string | null
-          group_info_data: Buffer | null
-          ratchet_tree_data: Buffer | null
-          epoch: number | null
-          previous_epoch: number | null
-          base_state: Buffer | null
-          base_epoch: number | null
-        } | null
+        control_intents?: ControlIntentStorageRecord[]
       }
     ) => setScopeCheckpoint(groupId, checkpoint)
   )
-  ipcMain.handle('cryptoDb:getPendingGroupInfoPublishes', () =>
-    getPendingGroupInfoPublishes()
-  )
-  ipcMain.handle(
-    'cryptoDb:setPendingGroupInfoPublish',
-    (
-      _,
-      groupId: string,
-      groupInfoData: Buffer,
-      ratchetTreeData: Buffer | null,
-      epoch: number
-    ) => setPendingGroupInfoPublish(groupId, groupInfoData, ratchetTreeData, epoch)
-  )
-  ipcMain.handle(
-    'cryptoDb:deletePendingGroupInfoPublish',
-    (_, groupId: string) => deletePendingGroupInfoPublish(groupId)
-  )
-  ipcMain.handle('cryptoDb:getPendingExternalCommitBroadcasts', () =>
-    getPendingExternalCommitBroadcasts()
-  )
-  ipcMain.handle('cryptoDb:getPendingSponsoredTransitions', () =>
-    getPendingSponsoredTransitions()
-  )
-  ipcMain.handle(
-    'cryptoDb:setPendingExternalCommitBroadcast',
-    (_, groupId: string, commitData: string, commitId: string) =>
-      setPendingExternalCommitBroadcast(groupId, commitData, commitId)
-  )
-  ipcMain.handle(
-    'cryptoDb:deletePendingExternalCommitBroadcast',
-    (_, groupId: string) => deletePendingExternalCommitBroadcast(groupId)
-  )
-
   // Key packages
   ipcMain.handle('cryptoDb:getLocalKeyPackages', () => getLocalKeyPackages())
   ipcMain.handle(
@@ -414,6 +397,26 @@ function registerIpcHandlers(): void {
   )
   ipcMain.handle('cryptoDb:removeFromFtsIndex', (_, messageId: string) =>
     removeFromFtsIndex(messageId)
+  )
+
+  // Pending message send outbox
+  ipcMain.handle('cryptoDb:getPendingMessageSends', () => getPendingMessageSends())
+  ipcMain.handle(
+    'cryptoDb:setPendingMessageSend',
+    (
+      _,
+      entry: {
+        client_nonce: string
+        scope_kind: 'channel' | 'dm'
+        scope_id: string
+        scope_channel_id: string | null
+        payload_json: string
+        inserted_at: string
+      }
+    ) => setPendingMessageSend(entry)
+  )
+  ipcMain.handle('cryptoDb:deletePendingMessageSend', (_, clientNonce: string) =>
+    deletePendingMessageSend(clientNonce)
   )
 
   ipcMain.handle('linkPreview:fetchMetadata', (_, url: string) =>

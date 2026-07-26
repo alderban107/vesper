@@ -72,6 +72,21 @@ const SCHEMA_SQL = `
     signature_private_key BLOB
   );
 
+  CREATE TABLE IF NOT EXISTS recovery_package_keys (
+    user_id TEXT PRIMARY KEY,
+    key BLOB NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS workspace_snapshots (
+    user_id TEXT PRIMARY KEY,
+    version INTEGER NOT NULL,
+    token TEXT,
+    servers_json TEXT NOT NULL,
+    conversations_json TEXT NOT NULL,
+    unread_counts_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS mls_groups (
     group_id TEXT PRIMARY KEY,
     state BLOB NOT NULL,
@@ -90,40 +105,8 @@ const SCHEMA_SQL = `
     repair_status TEXT,
     repair_failure_count INTEGER NOT NULL DEFAULT 0,
     repair_last_error TEXT,
-    repair_updated_at TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS pending_group_info_publishes (
-    group_id TEXT PRIMARY KEY,
-    group_info_data BLOB NOT NULL,
-    ratchet_tree_data BLOB,
-    epoch INTEGER NOT NULL,
-    inserted_at TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS pending_external_commit_broadcasts (
-    group_id TEXT PRIMARY KEY,
-    commit_data TEXT NOT NULL,
-    commit_id TEXT NOT NULL,
-    inserted_at TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS pending_sponsored_transitions (
-    group_id TEXT PRIMARY KEY,
-    recipient_id TEXT NOT NULL,
-    recipient_client_id TEXT,
-    recipient_key_package_ref TEXT,
-    commit_data TEXT NOT NULL,
-    commit_id TEXT NOT NULL,
-    remove_commit_data TEXT,
-    welcome_data TEXT,
-    group_info_data BLOB,
-    ratchet_tree_data BLOB,
-    epoch INTEGER,
-    previous_epoch INTEGER,
-    base_state BLOB,
-    base_epoch INTEGER,
-    inserted_at TEXT NOT NULL
+    repair_updated_at TEXT,
+    control_intents TEXT NOT NULL DEFAULT '[]'
   );
 
   CREATE TABLE IF NOT EXISTS local_key_packages (
@@ -160,10 +143,54 @@ const SCHEMA_SQL = `
 
   CREATE INDEX IF NOT EXISTS idx_sent_message_cache_inserted_at ON sent_message_cache(inserted_at DESC);
 
+  CREATE TABLE IF NOT EXISTS pending_message_sends (
+    client_nonce TEXT PRIMARY KEY,
+    scope_kind TEXT NOT NULL,
+    scope_id TEXT NOT NULL,
+    scope_channel_id TEXT,
+    payload_json TEXT NOT NULL,
+    inserted_at TEXT NOT NULL
+  );
+
   CREATE VIRTUAL TABLE IF NOT EXISTS message_fts USING fts5(
     message_id,
     channel_id,
     content
+  );
+`
+
+const LEGACY_CONTROL_SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS pending_group_info_publishes (
+    group_id TEXT PRIMARY KEY,
+    group_info_data BLOB NOT NULL,
+    ratchet_tree_data BLOB,
+    epoch INTEGER NOT NULL,
+    inserted_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS pending_external_commit_broadcasts (
+    group_id TEXT PRIMARY KEY,
+    commit_data TEXT NOT NULL,
+    commit_id TEXT NOT NULL,
+    inserted_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS pending_sponsored_transitions (
+    group_id TEXT PRIMARY KEY,
+    recipient_id TEXT NOT NULL,
+    recipient_client_id TEXT,
+    recipient_key_package_ref TEXT,
+    commit_data TEXT NOT NULL,
+    commit_id TEXT NOT NULL,
+    remove_commit_data TEXT,
+    welcome_data TEXT,
+    group_info_data BLOB,
+    ratchet_tree_data BLOB,
+    epoch INTEGER,
+    previous_epoch INTEGER,
+    base_state BLOB,
+    base_epoch INTEGER,
+    inserted_at TEXT NOT NULL
   );
 `
 
@@ -243,30 +270,7 @@ interface ScopeCheckpointRow {
   repair_failure_count: number
   repair_last_error: string | null
   repair_updated_at: string | null
-  pending_group_info_publish: {
-    group_info_data: Buffer
-    ratchet_tree_data: Buffer | null
-    epoch: number
-  } | null
-  pending_external_commit_broadcast: {
-    commit_data: string
-    commit_id: string
-  } | null
-    pending_sponsored_transition: {
-      recipient_id: string
-      recipient_client_id: string | null
-      recipient_key_package_ref: string | null
-      commit_data: string
-      commit_id: string
-      remove_commit_data: string | null
-      welcome_data: string | null
-      group_info_data: Buffer | null
-      ratchet_tree_data: Buffer | null
-      epoch: number | null
-      previous_epoch: number | null
-      base_state: Buffer | null
-      base_epoch: number | null
-    } | null
+  control_intents: ControlIntentStorageRecord[]
 }
 
 /**
@@ -307,6 +311,17 @@ function migrateToEncrypted(dbPath: string, hexKey: string): void {
   applyKey(newDb, hexKey)
   newDb.pragma('journal_mode = WAL')
   newDb.exec(SCHEMA_SQL)
+  if (
+    tables.some(({ name }) =>
+      name === 'pending_group_info_publishes' ||
+      name === 'pending_external_commit_broadcasts' ||
+      name === 'pending_sponsored_transitions'
+    )
+  ) {
+    // Preserve legacy rows only long enough for initDb's transactional
+    // journal migration to fold them into mls_scope_metadata and drop them.
+    newDb.exec(LEGACY_CONTROL_SCHEMA_SQL)
+  }
 
   // 4. Re-insert data
   for (const { name } of tables) {
@@ -386,12 +401,8 @@ export function initDb(): void {
     'recent_history_bundle_fingerprints',
     "TEXT NOT NULL DEFAULT '[]'"
   )
-  ensureColumn('pending_sponsored_transitions', 'group_info_data', 'BLOB')
-  ensureColumn('pending_sponsored_transitions', 'ratchet_tree_data', 'BLOB')
-  ensureColumn('pending_sponsored_transitions', 'epoch', 'INTEGER')
-  ensureColumn('pending_sponsored_transitions', 'previous_epoch', 'INTEGER')
-  ensureColumn('pending_sponsored_transitions', 'base_state', 'BLOB')
-  ensureColumn('pending_sponsored_transitions', 'base_epoch', 'INTEGER')
+  ensureColumn('mls_scope_metadata', 'control_intents', "TEXT NOT NULL DEFAULT '[]'")
+  migrateLegacyControlIntents()
   ensureMessageCacheIndexes()
 }
 
@@ -415,6 +426,171 @@ function ensureColumn(tableName: string, columnName: string, columnType: string)
   if (!row) {
     getDb().exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnType}`)
   }
+}
+
+function safeJsonArray<T>(value: string | null | undefined): T[] {
+  if (!value) {
+    return []
+  }
+
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? (parsed as T[]) : []
+  } catch {
+    return []
+  }
+}
+
+function migrateLegacyControlIntents(): void {
+  const database = getDb()
+  const legacyTables = [
+    'pending_group_info_publishes',
+    'pending_external_commit_broadcasts',
+    'pending_sponsored_transitions'
+  ]
+  const existingTables = new Set(
+    database
+      .prepare(
+        `SELECT name FROM sqlite_master
+         WHERE type = 'table' AND name IN (?, ?, ?)`
+      )
+      .all(...legacyTables)
+      .map((row) => (row as TableRow).name)
+  )
+
+  if (existingTables.size === 0) {
+    return
+  }
+
+  const groupInfos = existingTables.has('pending_group_info_publishes')
+    ? (database.prepare('SELECT * FROM pending_group_info_publishes').all() as PendingGroupInfoPublishRow[])
+    : []
+  const externalCommits = existingTables.has('pending_external_commit_broadcasts')
+    ? (database.prepare('SELECT * FROM pending_external_commit_broadcasts').all() as PendingExternalCommitBroadcastRow[])
+    : []
+  const sponsoredTransitions = existingTables.has('pending_sponsored_transitions')
+    ? (database.prepare('SELECT * FROM pending_sponsored_transitions').all() as PendingSponsoredTransitionRow[])
+    : []
+
+  const migrate = database.transaction(() => {
+    const now = new Date().toISOString()
+    const byScope = new Map<string, ControlIntentStorageRecord[]>()
+    const append = (scopeId: string, intent: ControlIntentStorageRecord): void => {
+      byScope.set(scopeId, [...(byScope.get(scopeId) ?? []), intent])
+    }
+    const createIntent = (
+      operation: string,
+      scopeId: string,
+      idempotencyKey: string,
+      membershipGeneration: number,
+      payload: unknown,
+      createdAt: string
+    ): ControlIntentStorageRecord => ({
+      version: 1,
+      operation,
+      idempotency_key: idempotencyKey,
+      scope_id: scopeId,
+      membership_generation: membershipGeneration,
+      payload_json: JSON.stringify(payload),
+      attempts: 0,
+      state: 'pending',
+      result_json: null,
+      created_at: createdAt || now,
+      updated_at: now
+    })
+
+    for (const pending of groupInfos) {
+      append(
+        pending.group_id,
+        createIntent(
+          'group_info_publish',
+          pending.group_id,
+          `group-info:${pending.epoch}`,
+          pending.epoch,
+          {
+            groupInfoData: pending.group_info_data.toString('base64'),
+            ratchetTreeData: pending.ratchet_tree_data?.toString('base64') ?? null,
+            epoch: pending.epoch
+          },
+          pending.inserted_at
+        )
+      )
+    }
+
+    for (const pending of externalCommits) {
+      const epoch =
+        (database
+          .prepare('SELECT epoch FROM mls_groups WHERE group_id = ?')
+          .get(pending.group_id) as { epoch: number } | undefined)?.epoch ?? 0
+      append(
+        pending.group_id,
+        createIntent(
+          'external_commit_broadcast',
+          pending.group_id,
+          pending.commit_id,
+          epoch,
+          { commitData: pending.commit_data, commitId: pending.commit_id },
+          pending.inserted_at
+        )
+      )
+    }
+
+    for (const pending of sponsoredTransitions) {
+      append(
+        pending.group_id,
+        createIntent(
+          'sponsored_transition',
+          pending.group_id,
+          pending.commit_id,
+          pending.epoch ?? 0,
+          {
+            recipientId: pending.recipient_id,
+            recipientClientId: pending.recipient_client_id,
+            recipientKeyPackageRef: pending.recipient_key_package_ref,
+            commitData: pending.commit_data,
+            commitId: pending.commit_id,
+            removeCommitData: pending.remove_commit_data,
+            welcomeData: pending.welcome_data,
+            groupInfoData: pending.group_info_data?.toString('base64') ?? null,
+            ratchetTreeData: pending.ratchet_tree_data?.toString('base64') ?? null,
+            epoch: pending.epoch,
+            previousEpoch: pending.previous_epoch,
+            baseState: pending.base_state?.toString('base64') ?? null,
+            baseEpoch: pending.base_epoch
+          },
+          pending.inserted_at
+        )
+      )
+    }
+
+    const selectMetadata = database.prepare(
+      'SELECT control_intents FROM mls_scope_metadata WHERE group_id = ?'
+    )
+    const upsertMetadata = database.prepare(
+      `INSERT INTO mls_scope_metadata (group_id, control_intents)
+       VALUES (?, ?)
+       ON CONFLICT(group_id) DO UPDATE SET control_intents = excluded.control_intents`
+    )
+
+    for (const [scopeId, intents] of byScope) {
+      const row = selectMetadata.get(scopeId) as { control_intents: string } | undefined
+      const existing = safeJsonArray<ControlIntentStorageRecord>(row?.control_intents)
+      const keys = new Set(existing.map((intent) => `${intent.operation}:${intent.idempotency_key}`))
+      const merged = [
+        ...existing,
+        ...intents.filter(
+          (intent) => !keys.has(`${intent.operation}:${intent.idempotency_key}`)
+        )
+      ]
+      upsertMetadata.run(scopeId, JSON.stringify(merged))
+    }
+
+    for (const table of existingTables) {
+      database.exec(`DROP TABLE ${table}`)
+    }
+  })
+
+  migrate()
 }
 
 function ensureMessageCacheColumns(): void {
@@ -466,7 +642,77 @@ export function setIdentityKeys(
 }
 
 export function deleteIdentityKeys(userId: string): void {
-  getDb().prepare('DELETE FROM identity_keys WHERE user_id = ?').run(userId)
+  const database = getDb()
+  database.transaction(() => {
+    database.prepare('DELETE FROM identity_keys WHERE user_id = ?').run(userId)
+    database.prepare('DELETE FROM recovery_package_keys WHERE user_id = ?').run(userId)
+    database.prepare('DELETE FROM workspace_snapshots WHERE user_id = ?').run(userId)
+  })()
+}
+
+export function getWorkspaceSnapshot(userId: string): {
+  version: number
+  token: string | null
+  servers_json: string
+  conversations_json: string
+  unread_counts_json: string
+  updated_at: string
+} | null {
+  return getDb()
+    .prepare(
+      'SELECT version, token, servers_json, conversations_json, unread_counts_json, updated_at FROM workspace_snapshots WHERE user_id = ?'
+    )
+    .get(userId) as ReturnType<typeof getWorkspaceSnapshot>
+}
+
+export function setWorkspaceSnapshot(
+  userId: string,
+  snapshot: {
+    version: number
+    token: string | null
+    servers_json: string
+    conversations_json: string
+    unread_counts_json: string
+    updated_at: string
+  }
+): void {
+  getDb()
+    .prepare(
+      `INSERT INTO workspace_snapshots (
+         user_id, version, token, servers_json, conversations_json, unread_counts_json, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(user_id) DO UPDATE SET
+         version = excluded.version,
+         token = excluded.token,
+         servers_json = excluded.servers_json,
+         conversations_json = excluded.conversations_json,
+         unread_counts_json = excluded.unread_counts_json,
+         updated_at = excluded.updated_at`
+    )
+    .run(
+      userId,
+      snapshot.version,
+      snapshot.token,
+      snapshot.servers_json,
+      snapshot.conversations_json,
+      snapshot.unread_counts_json,
+      snapshot.updated_at
+    )
+}
+
+export function getRecoveryPackageKey(userId: string): Buffer | null {
+  const row = getDb()
+    .prepare('SELECT key FROM recovery_package_keys WHERE user_id = ?')
+    .get(userId) as { key: Buffer } | undefined
+  return row?.key ?? null
+}
+
+export function setRecoveryPackageKey(userId: string, key: Buffer): void {
+  getDb()
+    .prepare(
+      'INSERT INTO recovery_package_keys (user_id, key) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET key = excluded.key'
+    )
+    .run(userId, key)
 }
 
 // --- MLS Groups ---
@@ -491,17 +737,9 @@ export function deleteGroupState(groupId: string): void {
   const database = getDb()
   const cleanup = database.transaction((id: string) => {
     database.prepare('DELETE FROM mls_groups WHERE group_id = ?').run(id)
-    database.prepare('DELETE FROM mls_group_sync_state WHERE group_id = ?').run(id)
+    // Preserve the durable replay cursor. Rejoining with fresh MLS state must
+    // not replay an already-consumed removal forever.
     database.prepare('DELETE FROM mls_scope_metadata WHERE group_id = ?').run(id)
-    database
-      .prepare('DELETE FROM pending_group_info_publishes WHERE group_id = ?')
-      .run(id)
-    database
-      .prepare('DELETE FROM pending_external_commit_broadcasts WHERE group_id = ?')
-      .run(id)
-    database
-      .prepare('DELETE FROM pending_sponsored_transitions WHERE group_id = ?')
-      .run(id)
   })
   cleanup(groupId)
 }
@@ -541,7 +779,8 @@ export function getScopeCheckpoint(groupId: string): ScopeCheckpointRow {
          repair_status,
          repair_failure_count,
          repair_last_error,
-         repair_updated_at
+         repair_updated_at,
+         control_intents
        FROM mls_scope_metadata
        WHERE group_id = ?`
     )
@@ -553,70 +792,9 @@ export function getScopeCheckpoint(groupId: string): ScopeCheckpointRow {
         repair_failure_count: number
         repair_last_error: string | null
         repair_updated_at: string | null
+        control_intents: string | null
       }
     | undefined
-  const pendingGroupInfo = database
-    .prepare(
-      `SELECT group_info_data, ratchet_tree_data, epoch
-       FROM pending_group_info_publishes
-       WHERE group_id = ?`
-    )
-    .get(groupId) as
-    | {
-        group_info_data: Buffer
-        ratchet_tree_data: Buffer | null
-        epoch: number
-      }
-    | undefined
-  const pendingExternalCommit = database
-    .prepare(
-      `SELECT commit_data, commit_id
-       FROM pending_external_commit_broadcasts
-       WHERE group_id = ?`
-    )
-    .get(groupId) as
-    | {
-        commit_data: string
-        commit_id: string
-      }
-    | undefined
-  const pendingSponsoredTransition = database
-    .prepare(
-      `SELECT
-         recipient_id,
-         recipient_client_id,
-         recipient_key_package_ref,
-         commit_data,
-         commit_id,
-         remove_commit_data,
-         welcome_data,
-         group_info_data,
-         ratchet_tree_data,
-         epoch,
-         previous_epoch,
-         base_state,
-         base_epoch
-       FROM pending_sponsored_transitions
-       WHERE group_id = ?`
-    )
-    .get(groupId) as
-    | {
-        recipient_id: string
-        recipient_client_id: string | null
-        recipient_key_package_ref: string | null
-        commit_data: string
-        commit_id: string
-        remove_commit_data: string | null
-        welcome_data: string | null
-        group_info_data: Buffer | null
-        ratchet_tree_data: Buffer | null
-        epoch: number | null
-        previous_epoch: number | null
-        base_state: Buffer | null
-        base_epoch: number | null
-      }
-    | undefined
-
   let recentCommitFingerprints: string[] = []
   let recentHistoryBundleFingerprints: string[] = []
   if (metadata?.recent_commit_fingerprints) {
@@ -656,36 +834,7 @@ export function getScopeCheckpoint(groupId: string): ScopeCheckpointRow {
     repair_failure_count: metadata?.repair_failure_count ?? 0,
     repair_last_error: metadata?.repair_last_error ?? null,
     repair_updated_at: metadata?.repair_updated_at ?? null,
-    pending_group_info_publish: pendingGroupInfo
-      ? {
-          group_info_data: pendingGroupInfo.group_info_data,
-          ratchet_tree_data: pendingGroupInfo.ratchet_tree_data,
-          epoch: pendingGroupInfo.epoch
-        }
-      : null,
-    pending_external_commit_broadcast: pendingExternalCommit
-      ? {
-          commit_data: pendingExternalCommit.commit_data,
-          commit_id: pendingExternalCommit.commit_id
-        }
-      : null,
-    pending_sponsored_transition: pendingSponsoredTransition
-      ? {
-          recipient_id: pendingSponsoredTransition.recipient_id,
-          recipient_client_id: pendingSponsoredTransition.recipient_client_id,
-          recipient_key_package_ref: pendingSponsoredTransition.recipient_key_package_ref,
-          commit_data: pendingSponsoredTransition.commit_data,
-          commit_id: pendingSponsoredTransition.commit_id,
-          remove_commit_data: pendingSponsoredTransition.remove_commit_data,
-          welcome_data: pendingSponsoredTransition.welcome_data,
-          group_info_data: pendingSponsoredTransition.group_info_data,
-          ratchet_tree_data: pendingSponsoredTransition.ratchet_tree_data,
-          epoch: pendingSponsoredTransition.epoch,
-          previous_epoch: pendingSponsoredTransition.previous_epoch,
-          base_state: pendingSponsoredTransition.base_state,
-          base_epoch: pendingSponsoredTransition.base_epoch
-        }
-      : null
+    control_intents: safeJsonArray<ControlIntentStorageRecord>(metadata?.control_intents)
   }
 }
 
@@ -697,12 +846,6 @@ export function getKnownScopeIds(): string[] {
        SELECT group_id FROM mls_group_sync_state
        UNION
        SELECT group_id FROM mls_scope_metadata
-       UNION
-       SELECT group_id FROM pending_group_info_publishes
-       UNION
-       SELECT group_id FROM pending_external_commit_broadcasts
-       UNION
-       SELECT group_id FROM pending_sponsored_transitions
        ORDER BY group_id ASC`
     )
     .all()
@@ -721,30 +864,7 @@ export function setScopeCheckpoint(
     repair_failure_count?: number
     repair_last_error?: string | null
     repair_updated_at?: string | null
-    pending_group_info_publish?: {
-      group_info_data: Buffer
-      ratchet_tree_data: Buffer | null
-      epoch: number
-    } | null
-    pending_external_commit_broadcast?: {
-      commit_data: string
-      commit_id: string
-    } | null
-    pending_sponsored_transition?: {
-      recipient_id: string
-      recipient_client_id: string | null
-      recipient_key_package_ref: string | null
-      commit_data: string
-      commit_id: string
-      remove_commit_data: string | null
-      welcome_data: string | null
-      group_info_data: Buffer | null
-      ratchet_tree_data: Buffer | null
-      epoch: number | null
-      previous_epoch: number | null
-      base_state: Buffer | null
-      base_epoch: number | null
-    } | null
+    control_intents?: ControlIntentStorageRecord[]
   }
 ): void {
   const database = getDb()
@@ -761,30 +881,7 @@ export function setScopeCheckpoint(
         repair_failure_count?: number
         repair_last_error?: string | null
         repair_updated_at?: string | null
-        pending_group_info_publish?: {
-          group_info_data: Buffer
-          ratchet_tree_data: Buffer | null
-          epoch: number
-        } | null
-        pending_external_commit_broadcast?: {
-          commit_data: string
-          commit_id: string
-        } | null
-        pending_sponsored_transition?: {
-          recipient_id: string
-          recipient_client_id: string | null
-          recipient_key_package_ref: string | null
-          commit_data: string
-          commit_id: string
-          remove_commit_data: string | null
-          welcome_data: string | null
-          group_info_data: Buffer | null
-          ratchet_tree_data: Buffer | null
-          epoch: number | null
-          previous_epoch: number | null
-          base_state: Buffer | null
-          base_epoch: number | null
-        } | null
+        control_intents?: ControlIntentStorageRecord[]
       }
     ) => {
       if (payload.state) {
@@ -826,15 +923,17 @@ export function setScopeCheckpoint(
              repair_status,
              repair_failure_count,
              repair_last_error,
-             repair_updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?)
+             repair_updated_at,
+             control_intents
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(group_id) DO UPDATE SET
              recent_commit_fingerprints = excluded.recent_commit_fingerprints,
              recent_history_bundle_fingerprints = excluded.recent_history_bundle_fingerprints,
              repair_status = excluded.repair_status,
              repair_failure_count = excluded.repair_failure_count,
              repair_last_error = excluded.repair_last_error,
-             repair_updated_at = excluded.repair_updated_at`
+             repair_updated_at = excluded.repair_updated_at,
+             control_intents = excluded.control_intents`
         )
         .run(
           id,
@@ -843,247 +942,13 @@ export function setScopeCheckpoint(
           payload.repair_status ?? null,
           payload.repair_failure_count ?? 0,
           payload.repair_last_error ?? null,
-          payload.repair_updated_at ?? null
+          payload.repair_updated_at ?? null,
+          JSON.stringify(payload.control_intents ?? [])
         )
-
-      if (Object.prototype.hasOwnProperty.call(payload, 'pending_group_info_publish')) {
-        if (payload.pending_group_info_publish) {
-          database
-            .prepare(
-              `INSERT INTO pending_group_info_publishes (
-                 group_id,
-                 group_info_data,
-                 ratchet_tree_data,
-                 epoch,
-                 inserted_at
-               ) VALUES (?, ?, ?, ?, ?)
-               ON CONFLICT(group_id) DO UPDATE SET
-                 group_info_data = excluded.group_info_data,
-                 ratchet_tree_data = excluded.ratchet_tree_data,
-                 epoch = excluded.epoch,
-                 inserted_at = excluded.inserted_at`
-            )
-            .run(
-              id,
-              payload.pending_group_info_publish.group_info_data,
-              payload.pending_group_info_publish.ratchet_tree_data,
-              payload.pending_group_info_publish.epoch,
-              new Date().toISOString()
-            )
-        } else {
-          database
-            .prepare('DELETE FROM pending_group_info_publishes WHERE group_id = ?')
-            .run(id)
-        }
-      }
-
-      if (
-        Object.prototype.hasOwnProperty.call(payload, 'pending_external_commit_broadcast')
-      ) {
-        if (payload.pending_external_commit_broadcast) {
-          database
-            .prepare(
-              `INSERT INTO pending_external_commit_broadcasts (
-                 group_id,
-                 commit_data,
-                 commit_id,
-                 inserted_at
-               ) VALUES (?, ?, ?, ?)
-               ON CONFLICT(group_id) DO UPDATE SET
-                 commit_data = excluded.commit_data,
-                 commit_id = excluded.commit_id,
-                 inserted_at = excluded.inserted_at`
-            )
-            .run(
-              id,
-              payload.pending_external_commit_broadcast.commit_data,
-              payload.pending_external_commit_broadcast.commit_id,
-              new Date().toISOString()
-            )
-        } else {
-          database
-            .prepare('DELETE FROM pending_external_commit_broadcasts WHERE group_id = ?')
-            .run(id)
-        }
-      }
-
-      if (Object.prototype.hasOwnProperty.call(payload, 'pending_sponsored_transition')) {
-        if (payload.pending_sponsored_transition) {
-          database
-            .prepare(
-              `INSERT INTO pending_sponsored_transitions (
-                 group_id,
-                 recipient_id,
-                 recipient_client_id,
-                 recipient_key_package_ref,
-                 commit_data,
-                 commit_id,
-                 remove_commit_data,
-                 welcome_data,
-                 group_info_data,
-                 ratchet_tree_data,
-                 epoch,
-                 previous_epoch,
-                 base_state,
-                 base_epoch,
-                 inserted_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(group_id) DO UPDATE SET
-                 recipient_id = excluded.recipient_id,
-                 recipient_client_id = excluded.recipient_client_id,
-                 recipient_key_package_ref = excluded.recipient_key_package_ref,
-                 commit_data = excluded.commit_data,
-                 commit_id = excluded.commit_id,
-                 remove_commit_data = excluded.remove_commit_data,
-                 welcome_data = excluded.welcome_data,
-                 group_info_data = excluded.group_info_data,
-                 ratchet_tree_data = excluded.ratchet_tree_data,
-                 epoch = excluded.epoch,
-                 previous_epoch = excluded.previous_epoch,
-                 base_state = excluded.base_state,
-                 base_epoch = excluded.base_epoch,
-                 inserted_at = excluded.inserted_at`
-            )
-            .run(
-              id,
-              payload.pending_sponsored_transition.recipient_id,
-              payload.pending_sponsored_transition.recipient_client_id,
-              payload.pending_sponsored_transition.recipient_key_package_ref,
-              payload.pending_sponsored_transition.commit_data,
-              payload.pending_sponsored_transition.commit_id,
-              payload.pending_sponsored_transition.remove_commit_data,
-              payload.pending_sponsored_transition.welcome_data,
-              payload.pending_sponsored_transition.group_info_data,
-              payload.pending_sponsored_transition.ratchet_tree_data,
-              payload.pending_sponsored_transition.epoch,
-              payload.pending_sponsored_transition.previous_epoch,
-              payload.pending_sponsored_transition.base_state,
-              payload.pending_sponsored_transition.base_epoch,
-              new Date().toISOString()
-            )
-        } else {
-          database
-            .prepare('DELETE FROM pending_sponsored_transitions WHERE group_id = ?')
-            .run(id)
-        }
-      }
     }
   )
 
   save(groupId, checkpoint)
-}
-
-// --- MLS Control Outbox ---
-
-export function getPendingGroupInfoPublishes(): PendingGroupInfoPublishRow[] {
-  return getDb()
-    .prepare(
-      `SELECT
-         group_id,
-         group_info_data,
-         ratchet_tree_data,
-         epoch,
-         inserted_at
-       FROM pending_group_info_publishes
-       ORDER BY inserted_at ASC, group_id ASC`
-    )
-    .all() as PendingGroupInfoPublishRow[]
-}
-
-export function setPendingGroupInfoPublish(
-  groupId: string,
-  groupInfoData: Buffer,
-  ratchetTreeData: Buffer | null,
-  epoch: number
-): void {
-  getDb()
-    .prepare(
-      `INSERT INTO pending_group_info_publishes (
-        group_id,
-        group_info_data,
-        ratchet_tree_data,
-        epoch,
-        inserted_at
-      ) VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(group_id) DO UPDATE SET
-        group_info_data = excluded.group_info_data,
-        ratchet_tree_data = excluded.ratchet_tree_data,
-        epoch = excluded.epoch,
-        inserted_at = excluded.inserted_at`
-    )
-    .run(groupId, groupInfoData, ratchetTreeData, epoch, new Date().toISOString())
-}
-
-export function deletePendingGroupInfoPublish(groupId: string): void {
-  getDb()
-    .prepare('DELETE FROM pending_group_info_publishes WHERE group_id = ?')
-    .run(groupId)
-}
-
-export function getPendingExternalCommitBroadcasts(): PendingExternalCommitBroadcastRow[] {
-  return getDb()
-    .prepare(
-      `SELECT
-         group_id,
-         commit_data,
-         commit_id,
-         inserted_at
-       FROM pending_external_commit_broadcasts
-       ORDER BY inserted_at ASC, group_id ASC`
-    )
-    .all() as PendingExternalCommitBroadcastRow[]
-}
-
-export function getPendingSponsoredTransitions(): PendingSponsoredTransitionRow[] {
-  return getDb()
-    .prepare(
-      `SELECT
-         group_id,
-         recipient_id,
-         recipient_client_id,
-         recipient_key_package_ref,
-         commit_data,
-         commit_id,
-         remove_commit_data,
-         welcome_data,
-         group_info_data,
-         ratchet_tree_data,
-         epoch,
-         previous_epoch,
-         base_state,
-         base_epoch,
-         inserted_at
-       FROM pending_sponsored_transitions
-       ORDER BY inserted_at ASC, group_id ASC`
-    )
-    .all() as PendingSponsoredTransitionRow[]
-}
-
-export function setPendingExternalCommitBroadcast(
-  groupId: string,
-  commitData: string,
-  commitId: string
-): void {
-  getDb()
-    .prepare(
-      `INSERT INTO pending_external_commit_broadcasts (
-        group_id,
-        commit_data,
-        commit_id,
-        inserted_at
-      ) VALUES (?, ?, ?, ?)
-      ON CONFLICT(group_id) DO UPDATE SET
-        commit_data = excluded.commit_data,
-        commit_id = excluded.commit_id,
-        inserted_at = excluded.inserted_at`
-    )
-    .run(groupId, commitData, commitId, new Date().toISOString())
-}
-
-export function deletePendingExternalCommitBroadcast(groupId: string): void {
-  getDb()
-    .prepare('DELETE FROM pending_external_commit_broadcasts WHERE group_id = ?')
-    .run(groupId)
 }
 
 // --- Local Key Packages ---
@@ -1368,4 +1233,52 @@ export function searchMessages(
     inserted_at: string | null
     preview: string
   }>
+}
+
+// --- Pending message send outbox ---
+// Durable across a crash between "user hit send" and "server acknowledged
+// the write". Entries are keyed by client_nonce so a retried send after
+// restart is idempotent with the server's (scope, sender, client_nonce)
+// unique index — replaying the same nonce can never create a duplicate
+// message.
+
+export function getPendingMessageSends(): Array<{
+  client_nonce: string
+  scope_kind: 'channel' | 'dm'
+  scope_id: string
+  scope_channel_id: string | null
+  payload_json: string
+  inserted_at: string
+}> {
+  return getDb()
+    .prepare('SELECT * FROM pending_message_sends ORDER BY inserted_at ASC')
+    .all() as ReturnType<typeof getPendingMessageSends>
+}
+
+export function setPendingMessageSend(entry: {
+  client_nonce: string
+  scope_kind: 'channel' | 'dm'
+  scope_id: string
+  scope_channel_id: string | null
+  payload_json: string
+  inserted_at: string
+}): void {
+  getDb()
+    .prepare(
+      `INSERT OR REPLACE INTO pending_message_sends (
+         client_nonce, scope_kind, scope_id, scope_channel_id, payload_json, inserted_at
+       ) VALUES (?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      entry.client_nonce,
+      entry.scope_kind,
+      entry.scope_id,
+      entry.scope_channel_id,
+      entry.payload_json,
+      entry.inserted_at
+    )
+}
+
+export function deletePendingMessageSend(clientNonce: string): void {
+  getDb().prepare('DELETE FROM pending_message_sends WHERE client_nonce = ?').run(clientNonce)
 }

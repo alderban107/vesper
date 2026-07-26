@@ -95,14 +95,7 @@ defmodule Vesper.Servers do
   end
 
   def list_user_servers(user, opts \\ []) do
-    include_emojis = Keyword.get(opts, :include_emojis, true)
-
-    preloads =
-      if include_emojis do
-        [:channels, [emojis: :creator]]
-      else
-        [:channels]
-      end
+    preloads = server_list_preloads(opts)
 
     from(s in Server,
       join: m in Membership,
@@ -117,14 +110,7 @@ defmodule Vesper.Servers do
     if server_ids == [] do
       []
     else
-      include_emojis = Keyword.get(opts, :include_emojis, true)
-
-      preloads =
-        if include_emojis do
-          [:channels, [emojis: :creator]]
-        else
-          [:channels]
-        end
+      preloads = server_list_preloads(opts)
 
       from(s in Server,
         join: m in Membership,
@@ -134,6 +120,17 @@ defmodule Vesper.Servers do
       )
       |> Repo.all()
     end
+  end
+
+  defp server_list_preloads(opts) do
+    include_channels = Keyword.get(opts, :include_channels, true)
+    include_emojis = Keyword.get(opts, :include_emojis, true)
+
+    []
+    |> then(fn preloads -> if include_channels, do: [:channels | preloads], else: preloads end)
+    |> then(fn preloads ->
+      if include_emojis, do: [[emojis: :creator] | preloads], else: preloads
+    end)
   end
 
   def list_user_channel_ids(user_id) do
@@ -439,6 +436,7 @@ defmodule Vesper.Servers do
 
             case result do
               {:ok, %Membership{id: id}} when not is_nil(id) ->
+                :ok = Encryption.cancel_rejoined_server_member_evictions(server.id, user.id)
                 broadcast_membership_change(server.id, user.id, :member_joined)
 
               _ ->
@@ -900,13 +898,21 @@ defmodule Vesper.Servers do
   end
 
   def list_channel_permission_overrides(channel_id) when is_binary(channel_id) do
+    channel_id
+    |> then(&list_channel_permission_overrides([&1]))
+    |> Map.fetch!(channel_id)
+  end
+
+  def list_channel_permission_overrides(channel_ids) when is_list(channel_ids) do
+    channel_ids = Enum.uniq(channel_ids)
+
     role_overrides =
       from(override in ChannelRolePermission,
-        where: override.channel_id == ^channel_id,
+        where: override.channel_id in ^channel_ids,
         order_by: [asc: override.inserted_at]
       )
       |> Repo.all()
-      |> Enum.map(fn override ->
+      |> Enum.group_by(& &1.channel_id, fn override ->
         %{
           role_id: override.role_id,
           allow: permission_names_from_bits(override.allow),
@@ -918,11 +924,11 @@ defmodule Vesper.Servers do
 
     user_overrides =
       from(override in ChannelUserPermission,
-        where: override.channel_id == ^channel_id,
+        where: override.channel_id in ^channel_ids,
         order_by: [asc: override.inserted_at]
       )
       |> Repo.all()
-      |> Enum.map(fn override ->
+      |> Enum.group_by(& &1.channel_id, fn override ->
         %{
           user_id: override.user_id,
           allow: permission_names_from_bits(override.allow),
@@ -932,10 +938,13 @@ defmodule Vesper.Servers do
         }
       end)
 
-    %{
-      roles: role_overrides,
-      users: user_overrides
-    }
+    Map.new(channel_ids, fn channel_id ->
+      {channel_id,
+       %{
+         roles: Map.get(role_overrides, channel_id, []),
+         users: Map.get(user_overrides, channel_id, [])
+       }}
+    end)
   end
 
   def validate_channel_permission_overrides(%Channel{} = channel, overrides)
@@ -1150,7 +1159,7 @@ defmodule Vesper.Servers do
          {:ok, allow} <-
            normalize_override_mask(Map.get(entry, "allow") || Map.get(entry, :allow)),
          {:ok, deny} <- normalize_override_mask(Map.get(entry, "deny") || Map.get(entry, :deny)),
-         false <- (allow &&& deny) != 0 || {:error, "allow and deny cannot overlap"} do
+         true <- (allow &&& deny) == 0 || {:error, "allow and deny cannot overlap"} do
       if allow == 0 and deny == 0 do
         {:ok, nil}
       else
@@ -1159,7 +1168,6 @@ defmodule Vesper.Servers do
     else
       {:error, reason} -> {:error, reason}
       false -> {:error, "#{id_key} is required"}
-      true -> {:error, "allow and deny cannot overlap"}
     end
   end
 

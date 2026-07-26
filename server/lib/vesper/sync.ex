@@ -7,8 +7,6 @@ defmodule Vesper.Sync do
   alias Vesper.Servers.{Channel, Membership}
   alias Vesper.UserSyncEvent
 
-  @materialize_scope_memberships_after 5_000
-
   @doc """
   Append a single shared scope event. O(1) regardless of member count.
   Replaces the old per-user fan-out for scope-level events.
@@ -31,15 +29,6 @@ defmodule Vesper.Sync do
   end
 
   @doc """
-  Backward-compatible wrapper. Writes a single scope event instead of N user events.
-  The user_ids parameter is accepted but ignored — scope membership is resolved at read time.
-  """
-  def append_scope_events(user_ids, event_type, scope_kind, scope_id, payload \\ %{})
-      when is_list(user_ids) and is_binary(event_type) and is_binary(scope_kind) do
-    append_scope_event(event_type, scope_kind, scope_id, payload)
-  end
-
-  @doc """
   Append a user-targeted event. Still per-user (for DM notifications, device events).
   """
   def append_user_event(user_id, event_type, payload \\ %{}) when is_binary(user_id) do
@@ -47,6 +36,23 @@ defmodule Vesper.Sync do
       %{
         user_id: user_id,
         event_type: event_type,
+        payload: payload
+      }
+    ])
+  end
+
+  @doc """
+  Append a user-targeted change for one channel or DM scope.
+  """
+  def append_user_scope_event(user_id, event_type, scope_kind, scope_id, payload \\ %{})
+      when is_binary(user_id) and is_binary(event_type) and is_binary(scope_kind) and
+             is_binary(scope_id) do
+    insert_user_events([
+      %{
+        user_id: user_id,
+        event_type: event_type,
+        scope_kind: scope_kind,
+        scope_id: scope_id,
         payload: payload
       }
     ])
@@ -292,63 +298,29 @@ defmodule Vesper.Sync do
       )
       |> bounded_union_branch(fields)
 
-    {dm_events, dm_membership_cte} =
-      if high_water - after_event_id > @materialize_scope_memberships_after do
-        membership_query =
-          from(participant in DmParticipant,
-            where: participant.user_id == ^user_id,
-            select: %{conversation_id: participant.conversation_id}
-          )
+    dm_events =
+      from(event in ScopeSyncEvent,
+        join: participant in DmParticipant,
+        on:
+          participant.user_id == ^user_id and
+            participant.conversation_id == event.scope_id,
+        where:
+          event.scope_kind == "dm" and
+            event.id > ^after_event_id and
+            event.id <= ^high_water,
+        order_by: [asc: event.id],
+        limit: ^page_limit,
+        select: map(event, ^fields)
+      )
+      |> bounded_union_branch(fields)
 
-        events =
-          from(event in ScopeSyncEvent,
-            join: participant in "user_dm_scopes",
-            on: field(participant, :conversation_id) == event.scope_id,
-            where:
-              event.scope_kind == "dm" and
-                event.id > ^after_event_id and
-                event.id <= ^high_water,
-            order_by: [asc: event.id],
-            limit: ^page_limit,
-            select: map(event, ^fields)
-          )
-          |> bounded_union_branch(fields)
-
-        {events, membership_query}
-      else
-        events =
-          from(event in ScopeSyncEvent,
-            join: participant in DmParticipant,
-            on:
-              participant.user_id == ^user_id and
-                participant.conversation_id == event.scope_id,
-            where:
-              event.scope_kind == "dm" and
-                event.id > ^after_event_id and
-                event.id <= ^high_water,
-            order_by: [asc: event.id],
-            limit: ^page_limit,
-            select: map(event, ^fields)
-          )
-          |> bounded_union_branch(fields)
-
-        {events, nil}
-      end
-
-    query =
-      server_events
-      |> union_all(^channel_events)
-      |> union_all(^dm_events)
-      |> subquery()
-      |> then(fn events ->
-        from(event in events, order_by: [asc: event.id], limit: ^page_limit)
-      end)
-
-    if dm_membership_cte do
-      with_cte(query, "user_dm_scopes", as: ^dm_membership_cte, materialized: true)
-    else
-      query
-    end
+    server_events
+    |> union_all(^channel_events)
+    |> union_all(^dm_events)
+    |> subquery()
+    |> then(fn events ->
+      from(event in events, order_by: [asc: event.id], limit: ^page_limit)
+    end)
   end
 
   defp bounded_union_branch(query, fields) do

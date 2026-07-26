@@ -15,6 +15,7 @@ import {
 } from '../dist/testing/index.js'
 import { FileCryptoStorage } from '../dist/storage/file.js'
 import { MemoryStorage } from '../dist/storage/index.js'
+import { profileDatabase } from './profile-account-database.mjs'
 
 const SDK_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const REPO_ROOT = path.resolve(SDK_ROOT, '..')
@@ -48,6 +49,24 @@ function readConfig() {
     groupDms: readNonNegativeInt('ACCOUNT_PROFILE_GROUP_DMS', smoke ? 20 : 5_000),
     peers: readPositiveInt('ACCOUNT_PROFILE_PEERS', smoke ? 20 : 500),
     activeDms: readNonNegativeInt('ACCOUNT_PROFILE_ACTIVE_DMS', smoke ? 20 : 100),
+    busyGroupDms: readNonNegativeInt('ACCOUNT_PROFILE_BUSY_GROUP_DMS', smoke ? 10 : 2_500),
+    messagesPerBusyGroup: readPositiveInt(
+      'ACCOUNT_PROFILE_MESSAGES_PER_BUSY_GROUP',
+      smoke ? 10 : 30
+    ),
+    deepHistoryMessages: readPositiveInt(
+      'ACCOUNT_PROFILE_DEEP_HISTORY_MESSAGES',
+      smoke ? 300 : 10_000
+    ),
+    busyServerChannels: readNonNegativeInt(
+      'ACCOUNT_PROFILE_BUSY_SERVER_CHANNELS',
+      smoke ? 5 : 250
+    ),
+    messagesPerBusyServerChannel: readPositiveInt(
+      'ACCOUNT_PROFILE_MESSAGES_PER_BUSY_SERVER_CHANNEL',
+      smoke ? 10 : 30
+    ),
+    historyPageSize: readPositiveInt('ACCOUNT_PROFILE_HISTORY_PAGE_SIZE', 50),
     pageSize: readPositiveInt('ACCOUNT_PROFILE_PAGE_SIZE', smoke ? 25 : 100),
     deltaChanges: readPositiveInt('ACCOUNT_PROFILE_DELTA_CHANGES', smoke ? 20 : 100),
     unrelatedChanges: readNonNegativeInt(
@@ -82,6 +101,20 @@ function readConfig() {
       scopeDeltaSharedBlocks: readPositiveInt(
         'ACCOUNT_PROFILE_BUDGET_DELTA_SHARED_BLOCKS',
         250_000
+      ),
+      historyPageMs: readPositiveInt('ACCOUNT_PROFILE_BUDGET_HISTORY_PAGE_MS', 100),
+      historyPageResponseBytes: readPositiveInt(
+        'ACCOUNT_PROFILE_BUDGET_HISTORY_PAGE_BYTES',
+        131_072
+      ),
+      historyPageSqlMs: readPositiveInt('ACCOUNT_PROFILE_BUDGET_HISTORY_SQL_MS', 25),
+      historyPageSharedBlocks: readPositiveInt(
+        'ACCOUNT_PROFILE_BUDGET_HISTORY_SHARED_BLOCKS',
+        5_000
+      ),
+      messageStorageBytes: readPositiveInt(
+        'ACCOUNT_PROFILE_BUDGET_MESSAGE_STORAGE_BYTES',
+        268_435_456
       )
     },
     enforceBudgets: process.env.ACCOUNT_PROFILE_ENFORCE_BUDGETS !== '0',
@@ -89,6 +122,17 @@ function readConfig() {
       process.env.ACCOUNT_PROFILE_JSON_OUTPUT ??
       path.join(SDK_ROOT, 'artifacts', `account-sync-profile-${profileName}.json`),
     keepStack: process.env.ACCOUNT_PROFILE_KEEP_STACK === '1'
+  }
+}
+
+function validateConfig(config) {
+  if (config.busyGroupDms === 0 || config.busyGroupDms > config.groupDms) {
+    throw new Error('ACCOUNT_PROFILE_BUSY_GROUP_DMS must be between 1 and ACCOUNT_PROFILE_GROUP_DMS')
+  }
+  if (config.busyServerChannels === 0 || config.busyServerChannels > config.servers) {
+    throw new Error(
+      'ACCOUNT_PROFILE_BUSY_SERVER_CHANNELS must be between 1 and ACCOUNT_PROFILE_SERVERS'
+    )
   }
 }
 
@@ -248,159 +292,18 @@ function runFixtureScript(stack, config, userId, fixturePath, action) {
       ACCOUNT_PROFILE_GROUP_DMS: String(config.groupDms),
       ACCOUNT_PROFILE_PEERS: String(config.peers),
       ACCOUNT_PROFILE_ACTIVE_DMS: String(config.activeDms),
+      ACCOUNT_PROFILE_BUSY_GROUP_DMS: String(config.busyGroupDms),
+      ACCOUNT_PROFILE_MESSAGES_PER_BUSY_GROUP: String(config.messagesPerBusyGroup),
+      ACCOUNT_PROFILE_DEEP_HISTORY_MESSAGES: String(config.deepHistoryMessages),
+      ACCOUNT_PROFILE_BUSY_SERVER_CHANNELS: String(config.busyServerChannels),
+      ACCOUNT_PROFILE_MESSAGES_PER_BUSY_SERVER_CHANNEL: String(
+        config.messagesPerBusyServerChannel
+      ),
       ACCOUNT_PROFILE_DELTA_CHANGES: String(config.deltaChanges),
       ACCOUNT_PROFILE_UNRELATED_CHANGES: String(config.unrelatedChanges)
     }),
     stdio: 'inherit'
   })
-}
-
-function psqlJson(stack, sql, variables = {}) {
-  const args = [
-    '-h', process.env.TEST_DB_HOST ?? '127.0.0.1',
-    '-p', process.env.TEST_DB_PORT ?? '55432',
-    '-U', process.env.TEST_DB_USER ?? 'vesper_sdk',
-    '-d', stack.dbName,
-    '-X', '-q', '-t', '-A'
-  ]
-
-  for (const [key, value] of Object.entries(variables)) {
-    args.push('-v', `${key}=${value}`)
-  }
-
-  const output = execFileSync('psql', args, {
-    env: {
-      ...process.env,
-      PGPASSWORD: process.env.TEST_DB_PASS ?? 'vesper_sdk'
-    },
-    input: sql,
-    encoding: 'utf8',
-    stdio: ['pipe', 'pipe', 'inherit']
-  }).trim()
-
-  return JSON.parse(output)
-}
-
-function summarizePlan(explain) {
-  const root = explain[0]
-  const totals = {
-    planningTimeMs: root['Planning Time'] ?? null,
-    executionTimeMs: root['Execution Time'] ?? null,
-    sharedHitBlocks: 0,
-    sharedReadBlocks: 0,
-    tempReadBlocks: 0,
-    tempWrittenBlocks: 0,
-    scannedRows: 0,
-    rowsRemovedByFilter: 0,
-    heapFetches: 0,
-    indexProbeLoops: 0,
-    planRows: root.Plan?.['Plan Rows'] ?? null,
-    actualRows: root.Plan?.['Actual Rows'] ?? null,
-    nodes: []
-  }
-
-  function walk(node) {
-    if (!node) return
-    totals.sharedHitBlocks += node['Shared Hit Blocks'] ?? 0
-    totals.sharedReadBlocks += node['Shared Read Blocks'] ?? 0
-    totals.tempReadBlocks += node['Temp Read Blocks'] ?? 0
-    totals.tempWrittenBlocks += node['Temp Written Blocks'] ?? 0
-    totals.rowsRemovedByFilter +=
-      (node['Rows Removed by Filter'] ?? 0) * (node['Actual Loops'] ?? 1)
-    totals.heapFetches += node['Heap Fetches'] ?? 0
-    if (String(node['Node Type'] ?? '').includes('Scan')) {
-      totals.scannedRows += (node['Actual Rows'] ?? 0) * (node['Actual Loops'] ?? 1)
-    }
-    if (String(node['Node Type'] ?? '').includes('Index')) {
-      totals.indexProbeLoops += node['Actual Loops'] ?? 0
-    }
-    totals.nodes.push({
-      nodeType: node['Node Type'],
-      relationName: node['Relation Name'] ?? null,
-      indexName: node['Index Name'] ?? null,
-      actualRows: node['Actual Rows'] ?? null,
-      loops: node['Actual Loops'] ?? null,
-      rowsRemovedByFilter: node['Rows Removed by Filter'] ?? 0
-    })
-    for (const child of node.Plans ?? []) walk(child)
-  }
-
-  walk(root.Plan)
-  return totals
-}
-
-function profileDatabase(stack, userId, pageSize) {
-  const variables = { profile_user_id: userId, profile_limit: pageSize + 1 }
-  const dmPage = psqlJson(stack, `
-EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
-WITH user_conversations AS MATERIALIZED (
-  SELECT p.conversation_id
-  FROM dm_participants p
-  WHERE p.user_id = :'profile_user_id'
-)
-SELECT r.conversation_id, r.activity_at
-FROM user_conversations p
-JOIN rooms r ON r.conversation_id = p.conversation_id
-WHERE r.kind = 'dm'
-ORDER BY r.activity_at DESC, r.conversation_id DESC
-LIMIT :profile_limit;
-`, variables)
-
-  const servers = psqlJson(stack, `
-EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
-SELECT s.id, s.name, s.icon_url, s.owner_id, s.inserted_at, s.updated_at
-FROM servers s
-JOIN memberships m ON m.server_id = s.id
-WHERE m.user_id = :'profile_user_id'
-ORDER BY s.inserted_at ASC;
-`, variables)
-
-  const scopeDelta = psqlJson(stack, `
-EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
-WITH user_dm_scopes AS MATERIALIZED (
-  SELECT p.conversation_id
-  FROM dm_participants p
-  WHERE p.user_id = :'profile_user_id'
-)
-SELECT events.*
-FROM (
-  SELECT * FROM (
-    SELECT e.id, e.event_type, e.scope_kind, e.scope_id, e.payload, e.inserted_at
-    FROM scope_sync_events e
-    JOIN memberships m ON m.user_id = :'profile_user_id' AND m.server_id = e.scope_id
-    WHERE e.scope_kind = 'server'
-    ORDER BY e.id ASC
-    LIMIT :profile_limit
-  ) server_events
-  UNION ALL
-  SELECT * FROM (
-    SELECT e.id, e.event_type, e.scope_kind, e.scope_id, e.payload, e.inserted_at
-    FROM scope_sync_events e
-    JOIN channels c ON c.id = e.scope_id
-    JOIN memberships m ON m.user_id = :'profile_user_id' AND m.server_id = c.server_id
-    WHERE e.scope_kind = 'channel'
-    ORDER BY e.id ASC
-    LIMIT :profile_limit
-  ) channel_events
-  UNION ALL
-  SELECT * FROM (
-    SELECT e.id, e.event_type, e.scope_kind, e.scope_id, e.payload, e.inserted_at
-    FROM scope_sync_events e
-    JOIN user_dm_scopes p ON p.conversation_id = e.scope_id
-    WHERE e.scope_kind = 'dm'
-    ORDER BY e.id ASC
-    LIMIT :profile_limit
-  ) dm_events
-) events
-ORDER BY events.id ASC
-LIMIT :profile_limit;
-`, variables)
-
-  return {
-    dmPage: { summary: summarizePlan(dmPage), explain: dmPage },
-    servers: { summary: summarizePlan(servers), explain: servers },
-    scopeDelta: { summary: summarizePlan(scopeDelta), explain: scopeDelta }
-  }
 }
 
 function workspaceSnapshotBytes(storage, userId) {
@@ -468,6 +371,12 @@ function evaluateBudgets(config, scenarios, database) {
   const warm = byName.get('warm_cached_restart')
   const noChange = byName.get('no_change_delta')
   const changed = byName.get('bounded_delta_with_unrelated_traffic')
+  const historyScenarios = [
+    byName.get('busy_group_latest_window'),
+    byName.get('busy_group_older_window'),
+    byName.get('busy_server_latest_window'),
+    byName.get('second_device_latest_scope_window')
+  ].filter(Boolean)
 
   check('cold compact snapshot latency', cold?.durationMs, config.budgets.coldSnapshotMs, 'ms')
   check(
@@ -503,6 +412,42 @@ function evaluateBudgets(config, scenarios, database) {
     'bytes'
   )
   check(
+    'busy history page latency',
+    Math.max(...historyScenarios.map((scenario) => scenario.durationMs)),
+    config.budgets.historyPageMs,
+    'ms'
+  )
+  check(
+    'busy history page response',
+    Math.max(...historyScenarios.map((scenario) => scenario.network.responseBytes)),
+    config.budgets.historyPageResponseBytes,
+    'bytes'
+  )
+  check(
+    'busy history SQL latency',
+    Math.max(
+      database.dmHistoryPage.summary.executionTimeMs,
+      database.channelHistoryPage.summary.executionTimeMs
+    ),
+    config.budgets.historyPageSqlMs,
+    'ms'
+  )
+  check(
+    'busy history shared buffers',
+    Math.max(
+      database.dmHistoryPage.summary.sharedHitBlocks,
+      database.channelHistoryPage.summary.sharedHitBlocks
+    ),
+    config.budgets.historyPageSharedBlocks,
+    'blocks'
+  )
+  check(
+    'message and room-event storage',
+    database.storage.combined_bytes,
+    config.budgets.messageStorageBytes,
+    'bytes'
+  )
+  check(
     'DM page SQL latency',
     database.dmPage.summary.executionTimeMs,
     config.budgets.dmPageSqlMs,
@@ -535,6 +480,7 @@ async function main() {
   process.env.TEST_DB_POOL_SIZE ??= '4'
   process.env.VESPER_E2E_DB_POOL_SIZE ??= '4'
   const config = readConfig()
+  validateConfig(config)
   fs.mkdirSync(path.dirname(config.jsonOutputPath), { recursive: true })
 
   const stack = await bootServerStack()
@@ -552,6 +498,7 @@ async function main() {
   let secondary = null
   let warm = null
   let expired = null
+  let latestBusyGroupMessages = []
 
   try {
     const session = await primary.register(username, password)
@@ -595,6 +542,74 @@ async function main() {
         )
       )
     }
+
+    scenarios.push(
+      await measureScenario(
+        'busy_group_latest_window',
+        primaryMeter,
+        async () =>
+          await primary.fetchConversationMessages(fixture.busy_group_conversation_id, {
+            limit: config.historyPageSize,
+            lean: true
+          }),
+        async (messages) => {
+          latestBusyGroupMessages = messages
+          if (messages.length !== config.historyPageSize) {
+            throw new Error(
+              `Expected ${config.historyPageSize} latest busy-group messages, received ${messages.length}`
+            )
+          }
+          return {
+            messageCount: messages.length,
+            totalHistoryMessages: fixture.deep_history_messages
+          }
+        }
+      )
+    )
+
+    const oldestLatestMessage = latestBusyGroupMessages.at(-1)
+    if (!oldestLatestMessage) {
+      throw new Error('Busy-group latest window was empty')
+    }
+
+    const beforeCursor = `${oldestLatestMessage.inserted_at}|${oldestLatestMessage.id}`
+    scenarios.push(
+      await measureScenario(
+        'busy_group_older_window',
+        primaryMeter,
+        async () =>
+          await primary.fetchConversationMessages(fixture.busy_group_conversation_id, {
+            limit: config.historyPageSize,
+            before: beforeCursor,
+            lean: true
+          }),
+        async (messages) => {
+          if (messages.length !== config.historyPageSize) {
+            throw new Error(
+              `Expected ${config.historyPageSize} older busy-group messages, received ${messages.length}`
+            )
+          }
+          const latestIds = new Set(latestBusyGroupMessages.map((message) => message.id))
+          if (messages.some((message) => latestIds.has(message.id))) {
+            throw new Error('Busy-group history pages overlap')
+          }
+          return { messageCount: messages.length, pagesOverlap: false }
+        }
+      )
+    )
+
+    scenarios.push(
+      await measureScenario(
+        'busy_server_latest_window',
+        primaryMeter,
+        async () =>
+          await primary.fetchChannelMessages(fixture.busy_server_channel_id, {
+            limit: Math.min(config.historyPageSize, config.messagesPerBusyServerChannel),
+            lean: true
+          }),
+        async (messages) => ({ messageCount: messages.length })
+      )
+    )
 
     scenarios.push(
       await measureScenario(
@@ -659,10 +674,17 @@ async function main() {
         warmMeter,
         async () => await warm.client.syncNow(false),
         async (state) => {
-          assertWorkspace(state, config, deltaConversationCount)
+          const addedConversationSummaries = state.conversations.length - deltaConversationCount
+          if (addedConversationSummaries < 0 || addedConversationSummaries > config.deltaChanges) {
+            throw new Error(
+              `Delta materialized ${addedConversationSummaries} conversation summaries for ${config.deltaChanges} changed scopes`
+            )
+          }
+          assertWorkspace(state, config, state.conversations.length)
           return {
             relevantChanges: config.deltaChanges,
             unrelatedChanges: config.unrelatedChanges,
+            addedConversationSummaries,
             conversationCount: state.conversations.length
           }
         }
@@ -685,6 +707,29 @@ async function main() {
           return {
             serverCount: state.servers.length,
             conversationCount: state.conversations.length
+          }
+        }
+      )
+    )
+
+    scenarios.push(
+      await measureScenario(
+        'second_device_latest_scope_window',
+        secondaryMeter,
+        async () =>
+          await secondary.fetchScopesSync({
+            scopes: [{ kind: 'dm', id: fixture.busy_group_conversation_id }],
+            limit: config.historyPageSize
+          }),
+        async (response) => {
+          const scope = response.scopes[0]
+          if (!scope || scope.messages.length !== config.historyPageSize || scope.has_more !== true) {
+            throw new Error('Second device did not receive one bounded latest busy-group window')
+          }
+          return {
+            messageCount: scope.messages.length,
+            hasMore: scope.has_more,
+            latestRoomSeq: scope.latest_room_seq
           }
         }
       )
@@ -728,7 +773,13 @@ async function main() {
       )
     )
 
-    const database = profileDatabase(stack, userId, config.pageSize)
+    const database = profileDatabase(
+      stack,
+      userId,
+      config.pageSize,
+      config.historyPageSize,
+      fixture
+    )
     const budgetResults = evaluateBudgets(config, scenarios, database)
     const report = {
       generatedAt: new Date().toISOString(),
@@ -744,6 +795,8 @@ async function main() {
         ...fixture,
         server_ids: undefined,
         recent_conversation_ids: undefined,
+        busy_server_channel_id: undefined,
+        busy_group_conversation_id: undefined,
         seedDurationMs: fixtureSeedMs,
         physical: true,
         creationPath: 'direct database seed for inactive topology; real SDK/API sync operations'
@@ -754,14 +807,19 @@ async function main() {
       limitations: [
         'Runs on local loopback unless ACCOUNT_PROFILE_NETWORK_RTT_MS or ACCOUNT_PROFILE_BANDWIDTH_KBPS is set.',
         'Measures Node process memory and adapter-independent workspace JSON bytes; it does not launch Electron to sample renderer RSS.',
-        'Inactive topology is inserted directly into PostgreSQL, while every measured sync operation uses the real SDK and HTTP API.',
-        'Cryptographic send/decrypt behavior remains covered by the separate physical chaos suite.'
+        'Inactive topology and historical ciphertext are inserted directly into PostgreSQL, while every measured sync and history operation uses the real SDK and HTTP API.',
+        'Bulk seeded history measures bounded query, transfer, memory, and storage behavior; cryptographic send/decrypt throughput remains covered by the separate physical chaos suite.',
+        'The deep-history fixture proves indexed progressive disclosure at 10,000 messages in one group, not the storage footprint of every possible multi-year deployment.'
       ],
       correctness: {
         failures: 0,
         serverCount: config.servers,
         totalConversationCount: fixture.total_conversation_count,
+        totalSeededMessageCount: fixture.total_seeded_message_count,
+        deepHistoryMessages: fixture.deep_history_messages,
         devicesConverged: 2,
+        latestHistoryWindowBounded: true,
+        olderHistoryWindowBounded: true,
         expiredCursorRebuilt: true
       }
     }
@@ -779,6 +837,15 @@ async function main() {
     )
     console.log(
       `Scope delta SQL: ${database.scopeDelta.summary.executionTimeMs}ms, ${database.scopeDelta.summary.sharedHitBlocks} shared hit blocks`
+    )
+    console.log(
+      `Busy DM history SQL: ${database.dmHistoryPage.summary.executionTimeMs}ms, ${database.dmHistoryPage.summary.sharedHitBlocks} shared hit blocks`
+    )
+    console.log(
+      `Busy channel history SQL: ${database.channelHistoryPage.summary.executionTimeMs}ms, ${database.channelHistoryPage.summary.sharedHitBlocks} shared hit blocks`
+    )
+    console.log(
+      `Message storage: ${database.storage.message_count} messages, ${database.storage.combined_bytes} bytes with room events`
     )
     console.log(
       `Budgets: ${budgetResults.passed ? 'pass' : `fail (${budgetResults.failures.length})`}`

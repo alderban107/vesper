@@ -331,6 +331,22 @@ export class Group {
         }
     }
     /**
+     * Get credential names and Ed25519 public keys for signature verification.
+     * @returns {string}
+     */
+    member_signing_identities() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.group_member_signing_identities(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
      * Merge a pending commit (after add/remove/external commit)
      * @param {Provider} provider
      */
@@ -381,6 +397,24 @@ export class Group {
         _assertClass(provider, Provider);
         _assertClass(sender, Identity);
         const ret = wasm.group_remove_member(this.__wbg_ptr, provider.__wbg_ptr, sender.__wbg_ptr, leaf_index);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return CommitBundle.__wrap(ret[0]);
+    }
+    /**
+     * Remove several members in one MLS commit.
+     * @param {Provider} provider
+     * @param {Identity} sender
+     * @param {Uint32Array} leaf_indices
+     * @returns {CommitBundle}
+     */
+    remove_members(provider, sender, leaf_indices) {
+        _assertClass(provider, Provider);
+        _assertClass(sender, Identity);
+        const ptr0 = passArray32ToWasm0(leaf_indices, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.group_remove_members(this.__wbg_ptr, provider.__wbg_ptr, sender.__wbg_ptr, ptr0, len0);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -520,6 +554,22 @@ export class Identity {
         var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
         return v1;
+    }
+    /**
+     * Sign a purpose-bound application payload with this MLS leaf identity.
+     * @param {Uint8Array} payload
+     * @returns {Uint8Array}
+     */
+    sign(payload) {
+        const ptr0 = passArray8ToWasm0(payload, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.identity_sign(this.__wbg_ptr, ptr0, len0);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v2;
     }
     /**
      * Get the raw Ed25519 signature public key bytes.
@@ -764,6 +814,36 @@ export class RatchetTree {
 }
 if (Symbol.dispose) RatchetTree.prototype[Symbol.dispose] = RatchetTree.prototype.free;
 
+/**
+ * Verify a published MLS GroupInfo against its ratchet tree without joining the group.
+ * Returns only identities authenticated by the verified public MLS state.
+ * @param {Uint8Array} group_info_bytes
+ * @param {Uint8Array} ratchet_tree_bytes
+ * @returns {string}
+ */
+export function verify_public_group_snapshot(group_info_bytes, ratchet_tree_bytes) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passArray8ToWasm0(group_info_bytes, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(ratchet_tree_bytes, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.verify_public_group_snapshot(ptr0, len0, ptr1, len1);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
@@ -969,6 +1049,14 @@ function getStringFromWasm0(ptr, len) {
     return decodeText(ptr, len);
 }
 
+let cachedUint32ArrayMemory0 = null;
+function getUint32ArrayMemory0() {
+    if (cachedUint32ArrayMemory0 === null || cachedUint32ArrayMemory0.byteLength === 0) {
+        cachedUint32ArrayMemory0 = new Uint32Array(wasm.memory.buffer);
+    }
+    return cachedUint32ArrayMemory0;
+}
+
 let cachedUint8ArrayMemory0 = null;
 function getUint8ArrayMemory0() {
     if (cachedUint8ArrayMemory0 === null || cachedUint8ArrayMemory0.byteLength === 0) {
@@ -988,6 +1076,13 @@ function handleError(f, args) {
 
 function isLikeNone(x) {
     return x === undefined || x === null;
+}
+
+function passArray32ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 4, 4) >>> 0;
+    getUint32ArrayMemory0().set(arg, ptr / 4);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
 }
 
 function passArray8ToWasm0(arg, malloc) {
@@ -1074,6 +1169,7 @@ function __wbg_finalize_init(instance, module) {
     wasm = instance.exports;
     wasmModule = module;
     cachedDataViewMemory0 = null;
+    cachedUint32ArrayMemory0 = null;
     cachedUint8ArrayMemory0 = null;
     wasm.__wbindgen_start();
     return wasm;

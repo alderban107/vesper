@@ -18,6 +18,7 @@ import {
   createRecoveryData,
   decryptEncryptedKeyBundle,
   decryptWithRecoveryKey,
+  deriveRecoveryPackageKey,
   recoveryKeyToBytes,
 } from '../crypto/index.js'
 import {
@@ -180,6 +181,7 @@ export class VesperAuthClient {
         encryptedBundle.salt,
         signaturePrivateKey
       )
+      await saveAccountRecoveryPackageKey(this.storage, data.user.id, signaturePrivateKey)
 
       const batchPairs = await createKeyPackageBatch(
         signingIdentity.identityData,
@@ -395,6 +397,10 @@ export class VesperAuthClient {
       if (!recoverResponse.ok || typeof recoverData.encrypted_recovery_bundle !== 'string') {
         throw new Error(parseError(recoverData, 'Recovery key was not accepted'))
       }
+      const accountPrivateKeys = await decryptWithRecoveryKey(
+        mnemonic,
+        base64ToUint8(recoverData.encrypted_recovery_bundle)
+      )
 
       const approveResponse = await this.httpClient.apiFetch('/api/v1/auth/devices/approve-with-recovery', {
         method: 'POST',
@@ -427,6 +433,7 @@ export class VesperAuthClient {
         'This device was approved, but Vesper could not finish setup.'
       )
       this.lastKnownUserId = session.user.id
+      await saveAccountRecoveryPackageKey(this.storage, session.user.id, accountPrivateKeys)
 
       const restored = await this.createFreshLocalDeviceIdentity(session.user.id)
       if (!restored) {
@@ -458,11 +465,28 @@ export class VesperAuthClient {
         throw new Error(parseError(data, 'Could not load device setup'))
       }
 
-      const restored =
-        (await hasUnlockedLocalIdentity(this.storage, user.id)) ||
-        (shouldGenerateFreshDeviceIdentity(data.current_device) &&
-          (await this.createFreshLocalDeviceIdentity(user.id))) ||
-        (await hydrateTrustedCryptoFromPasswordResponse(this.storage, user.id, data, password))
+      const hasLocalIdentity = await hasUnlockedLocalIdentity(this.storage, user.id)
+      let restored = hasLocalIdentity
+
+      if (shouldGenerateFreshDeviceIdentity(data.current_device)) {
+        const accountPrivateKeys = await decryptAccountPrivateKeysFromPasswordResponse(data, password)
+        if (accountPrivateKeys) {
+          await saveAccountRecoveryPackageKey(this.storage, user.id, accountPrivateKeys)
+        }
+        restored = hasLocalIdentity || await this.createFreshLocalDeviceIdentity(user.id)
+      } else if (!hasLocalIdentity) {
+        restored = await hydrateTrustedCryptoFromPasswordResponse(
+          this.storage,
+          user.id,
+          data,
+          password
+        )
+      } else if (!await this.storage.loadRecoveryPackageKey(user.id)) {
+        const accountPrivateKeys = await decryptAccountPrivateKeysFromPasswordResponse(data, password)
+        if (accountPrivateKeys) {
+          await saveAccountRecoveryPackageKey(this.storage, user.id, accountPrivateKeys)
+        }
+      }
 
       if (!restored) {
         throw new Error(
@@ -536,6 +560,7 @@ export class VesperAuthClient {
         newBundle.salt,
         privateKeys
       )
+      await saveAccountRecoveryPackageKey(this.storage, resetData.user.id, privateKeys)
 
       void this.registerCurrentDeviceNotificationCapability()
 
@@ -777,25 +802,53 @@ async function hasUnlockedLocalIdentity(
   return Boolean(identity?.signaturePrivateKey)
 }
 
+async function saveAccountRecoveryPackageKey(
+  storage: CryptoStorageRuntime,
+  userId: string,
+  accountPrivateKeys: Uint8Array
+): Promise<void> {
+  await storage.saveRecoveryPackageKey(
+    userId,
+    await deriveRecoveryPackageKey(accountPrivateKeys)
+  )
+}
+
+async function decryptAccountPrivateKeysFromPasswordResponse(
+  data: AuthResponsePayload,
+  password: string
+): Promise<Uint8Array | null> {
+  if (!data.encrypted_key_bundle || !data.key_bundle_nonce || !data.key_bundle_salt) {
+    return null
+  }
+
+  return await decryptEncryptedKeyBundle(
+    {
+      ciphertext: base64ToUint8(data.encrypted_key_bundle),
+      nonce: base64ToUint8(data.key_bundle_nonce),
+      salt: base64ToUint8(data.key_bundle_salt)
+    },
+    password
+  )
+}
+
 async function hydrateTrustedCryptoFromPasswordResponse(
   storage: CryptoStorageRuntime,
   userId: string,
   data: AuthResponsePayload,
   password: string
 ): Promise<boolean> {
-  if (!data.encrypted_key_bundle || !data.key_bundle_nonce || !data.key_bundle_salt) {
+  const privateKeys = await decryptAccountPrivateKeysFromPasswordResponse(data, password)
+  if (!privateKeys) {
     return false
   }
 
   await initCipherSuite()
 
   const bundle = {
-    ciphertext: base64ToUint8(data.encrypted_key_bundle),
-    nonce: base64ToUint8(data.key_bundle_nonce),
-    salt: base64ToUint8(data.key_bundle_salt)
+    ciphertext: base64ToUint8(data.encrypted_key_bundle!),
+    nonce: base64ToUint8(data.key_bundle_nonce!),
+    salt: base64ToUint8(data.key_bundle_salt!)
   }
-
-  const privateKeys = await decryptEncryptedKeyBundle(bundle, password)
   const publicIdentityKey = data.public_identity_key
     ? base64ToUint8(data.public_identity_key)
     : bundle.ciphertext
@@ -812,6 +865,7 @@ async function hydrateTrustedCryptoFromPasswordResponse(
     bundle.salt,
     privateKeys
   )
+  await saveAccountRecoveryPackageKey(storage, userId, privateKeys)
 
   return true
 }

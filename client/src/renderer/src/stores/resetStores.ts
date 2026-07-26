@@ -75,7 +75,9 @@ export function resetAllStores(): void {
 
   useDmStore.setState({
     conversations: [],
-    selectedConversationId: null
+    selectedConversationId: null,
+    hasMoreConversations: false,
+    loadingMoreConversations: false
   })
 
   useUnreadStore.setState({

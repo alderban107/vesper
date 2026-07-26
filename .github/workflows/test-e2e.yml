@@ -1,7 +1,6 @@
 # E2E CI — Playwright browser tests
 #
-# Runs p0-smoke as the enforced gate, then p1-extended and p2-reliability
-# as informational suites (failures don't block PRs).
+# Runs p0-smoke, p1-extended, and p2-reliability as enforced gates.
 # The test harness boots its own PostgreSQL (Docker), Phoenix server, and Vite
 # dev server automatically via globalSetup.
 
@@ -106,11 +105,10 @@ jobs:
         working-directory: client
         run: npm run test:e2e:p0
 
-      - name: Run p1/p2 suites (informational)
-        if: always() && steps.p0.outcome != 'failure'
+      - name: Run p1/p2 reliability suites
+        if: steps.p0.outcome == 'success'
         id: extended
         working-directory: client
-        continue-on-error: true
         run: npx playwright test -c e2e/playwright.config.ts --project=p1-extended --project=p2-reliability --no-deps
 
       - name: Upload test artifacts

@@ -1,8 +1,8 @@
 import { getDefaultHttpClient, type VesperHttpClient } from './client.js'
+import { base64ToUint8, uint8ToBase64 } from './encoding.js'
 
-/**
- * Upload key packages to the server directory.
- */
+export { base64ToUint8, uint8ToBase64 }
+
 export async function uploadKeyPackages(
   packages: Uint8Array[],
   deviceId: string,
@@ -195,6 +195,7 @@ export async function fetchPendingHistoryRequests(
     requester_id: string
     requester_username: string | null
     requester_client_id: string | null
+    membership_generation: number
   }>
 > {
   const res = await httpClient.apiFetch(
@@ -279,7 +280,16 @@ export async function fetchMlsEvents(
     event_type: 'mls_commit' | 'mls_remove'
     payload: {
       commit_data?: string
+      transition_type?: 'external_commit' | 'sponsored_join'
+      joined_user_id?: string
+      joined_device_id?: string | null
       removed_user_id?: string
+      removed_device_id?: string | null
+      removals?: Array<{
+        removed_user_id?: string
+        removed_device_id?: string | null
+      }>
+      resulting_generation?: number
     }
     sender_id: string
     sender_device_id: string | null
@@ -297,27 +307,6 @@ export async function fetchMlsEvents(
   const data = await res.json()
   return data.events || []
 }
-
-// --- Helpers ---
-
-function uint8ToBase64(arr: Uint8Array): string {
-  let binary = ''
-  for (let i = 0; i < arr.length; i++) {
-    binary += String.fromCharCode(arr[i])
-  }
-  return btoa(binary)
-}
-
-function base64ToUint8(b64: string): Uint8Array {
-  const binary = atob(b64)
-  const arr = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i++) {
-    arr[i] = binary.charCodeAt(i)
-  }
-  return arr
-}
-
-export { uint8ToBase64, base64ToUint8 }
 
 // --- GroupInfo (for External Commits) ---
 
@@ -377,7 +366,10 @@ export async function publishExternalCommitGroupInfo(
   commitData: string,
   commitId: string,
   httpClient: VesperHttpClient = getDefaultHttpClient()
-): Promise<'ok' | 'conflict'> {
+): Promise<
+  | { status: 'ok'; commitEventSeq: number | null }
+  | { status: 'conflict' }
+> {
   const body: Record<string, unknown> = {
     group_info_data: uint8ToBase64(groupInfoData),
     epoch,
@@ -399,7 +391,7 @@ export async function publishExternalCommitGroupInfo(
   )
 
   if (res.status === 409) {
-    return 'conflict'
+    return { status: 'conflict' }
   }
 
   if (!res.ok) {
@@ -407,7 +399,11 @@ export async function publishExternalCommitGroupInfo(
     throw new Error(`Failed to publish External Commit GroupInfo: ${res.status} ${data.error || ''}`)
   }
 
-  return 'ok'
+  const data = await res.json().catch(() => ({}))
+  return {
+    status: 'ok',
+    commitEventSeq: typeof data.commit_event_seq === 'number' ? data.commit_event_seq : null
+  }
 }
 
 export async function publishSponsoredTransition(

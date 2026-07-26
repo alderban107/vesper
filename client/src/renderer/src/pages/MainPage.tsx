@@ -14,7 +14,7 @@ import { useVoiceStore } from '../stores/voiceStore'
 import { useAuthStore } from '../stores/authStore'
 import { usePresenceStore } from '../stores/presenceStore'
 import { compareMessages, parseMessageContent, useMessageStore, type Message } from '../stores/messageStore'
-import { useSyncStore } from '../stores/syncStore'
+import { persistSyncTokens, useSyncStore } from '../stores/syncStore'
 import { getRendererClient } from '../sdk/client'
 import lazyWithRetry from '../utils/lazyWithRetry'
 import { useMediaQuery } from '../hooks/useMediaQuery'
@@ -180,10 +180,22 @@ export default function MainPage(): React.JSX.Element {
       lastError: null
     })
 
-    const hasHydratedWorkspace =
-      useServerStore.getState().servers.length > 0 ||
-      useDmStore.getState().conversations.length > 0
-    void syncNow(useSyncStore.getState().token === null || !hasHydratedWorkspace)
+    const cachedWorkspace = client.getState()
+    if (cachedWorkspace.servers.length > 0) {
+      useServerStore.getState().mergeServers(cachedWorkspace.servers)
+    }
+    if (cachedWorkspace.conversations.length > 0) {
+      useDmStore.getState().mergeConversations(cachedWorkspace.conversations)
+    }
+    useDmStore.getState().setConversationPageState(cachedWorkspace.conversationsHasMore)
+    if (cachedWorkspace.syncToken) {
+      persistSyncTokens(
+        cachedWorkspace.syncToken,
+        useSyncStore.getState().urgentToken ?? cachedWorkspace.syncToken
+      )
+    }
+
+    void syncNow(false)
 
     const unsubscribeConnected = client.on('connected', () => {
       setConnectionState({

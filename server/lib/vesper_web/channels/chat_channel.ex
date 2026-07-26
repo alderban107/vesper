@@ -12,7 +12,13 @@ defmodule VesperWeb.ChatChannel do
   import VesperWeb.ChannelHelpers
 
   defp mls_scope(socket),
-    do: %{kind: "channel", id: socket.assigns.channel_id, id_key: :channel_id}
+    do: %{
+      kind: "channel",
+      group_id: socket.assigns.channel_id,
+      resource_id: socket.assigns.channel_id,
+      id_key: :channel_id,
+      topic: "chat:channel:#{socket.assigns.channel_id}"
+    }
 
   @impl true
   def join("chat:channel:" <> channel_id, _payload, socket) do
@@ -71,6 +77,8 @@ defmodule VesperWeb.ChatChannel do
             ciphertext: decoded,
             client_nonce: client_nonce,
             mls_epoch: epoch,
+            encryption_scheme: Map.get(params, "encryption_scheme", "mls"),
+            encryption_group_id: Map.get(params, "encryption_group_id"),
             channel_id: socket.assigns.channel_id,
             sender_id: socket.assigns.user_id,
             parent_message_id: relations.parent_message_id,
@@ -80,23 +88,31 @@ defmodule VesperWeb.ChatChannel do
           }
           |> maybe_add_expires_at(socket.assigns.disappearing_ttl)
 
-        case Chat.create_message(attrs) do
-          {:ok, message} ->
-            message = maybe_link_attachments(message, params)
-            mentioned = params["mentioned_user_ids"]
-            channel_id = socket.assigns.channel_id
-            sender_id = socket.assigns.user_id
-            server_id = socket.assigns.server_id
-
-            broadcast!(
-              socket,
-              "new_message",
+        dispatch = fn message, event ->
+          %{
+            durable_key: "room_event:#{event.id}",
+            scope_key: "channel:#{socket.assigns.channel_id}",
+            scope_topic: "chat:channel:#{socket.assigns.channel_id}",
+            ordering_key: event.room_seq,
+            event: "new_message",
+            payload:
               encrypted_message_payload(
                 message,
                 :channel_id,
                 if(client_nonce, do: %{client_nonce: client_nonce}, else: %{})
               )
-            )
+          }
+        end
+
+        case Chat.create_message(attrs,
+               attachment_ids: Map.get(params, "attachment_ids", []),
+               dispatch: dispatch
+             ) do
+          {:ok, message} ->
+            mentioned = params["mentioned_user_ids"]
+            channel_id = socket.assigns.channel_id
+            sender_id = socket.assigns.user_id
+            server_id = socket.assigns.server_id
 
             :telemetry.execute(
               [:vesper, :chat, :message, :send],
@@ -187,7 +203,12 @@ defmodule VesperWeb.ChatChannel do
            socket.assigns.user_id,
            :channel_id,
            socket.assigns.channel_id,
-           %{ciphertext: ciphertext, mls_epoch: mls_epoch}
+           %{
+             ciphertext: ciphertext,
+             mls_epoch: mls_epoch,
+             encryption_scheme: Map.get(payload, "encryption_scheme", "mls"),
+             encryption_group_id: Map.get(payload, "encryption_group_id")
+           }
          ) do
       :ok ->
         payload = %{
@@ -195,6 +216,7 @@ defmodule VesperWeb.ChatChannel do
           message_id: message_id,
           ciphertext: ciphertext,
           mls_epoch: mls_epoch,
+          encryption_scheme: Map.get(payload, "encryption_scheme", "mls"),
           sender_id: socket.assigns.user_id
         }
 
@@ -277,7 +299,12 @@ defmodule VesperWeb.ChatChannel do
            socket.assigns.user_id,
            :channel_id,
            socket.assigns.channel_id,
-           %{ciphertext: ciphertext, mls_epoch: mls_epoch}
+           %{
+             ciphertext: ciphertext,
+             mls_epoch: mls_epoch,
+             encryption_scheme: Map.get(payload, "encryption_scheme", "mls"),
+             encryption_group_id: Map.get(payload, "encryption_group_id")
+           }
          ) do
       :ok ->
         payload = %{
@@ -285,6 +312,7 @@ defmodule VesperWeb.ChatChannel do
           message_id: message_id,
           ciphertext: ciphertext,
           mls_epoch: mls_epoch,
+          encryption_scheme: Map.get(payload, "encryption_scheme", "mls"),
           sender_id: socket.assigns.user_id
         }
 
@@ -354,10 +382,17 @@ defmodule VesperWeb.ChatChannel do
 
   def handle_in(
         "edit_message",
-        %{"message_id" => id, "ciphertext" => ciphertext, "mls_epoch" => epoch},
+        %{"message_id" => id, "ciphertext" => ciphertext, "mls_epoch" => epoch} = params,
         socket
       ) do
-    case handle_edit_message(id, ciphertext, epoch, socket) do
+    case handle_edit_message(
+           id,
+           ciphertext,
+           epoch,
+           Map.get(params, "encryption_scheme", "mls"),
+           Map.get(params, "encryption_group_id"),
+           socket
+         ) do
       {:ok, payload} ->
         room_seq =
           Runtime.append_scope_event(

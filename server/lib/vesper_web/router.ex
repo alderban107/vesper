@@ -199,6 +199,38 @@ defmodule VesperWeb.Router do
     put("/group-info/:scope_id", GroupInfoController, :upsert)
     post("/mls-sponsored-transition/:scope_id", SponsoredTransitionController, :create)
 
+    # Current-user room encryption topology (never enumerates other cohorts)
+    get("/room-crypto-topology/:scope_id", RoomCryptoTopologyController, :show)
+    put("/room-crypto-topology/:scope_id", RoomCryptoTopologyController, :update)
+    post("/room-crypto-topology/:scope_id/prepare", RoomCryptoTopologyController, :prepare)
+    post("/room-crypto-topology/:scope_id/cutover", RoomCryptoTopologyController, :cutover)
+    post("/room-crypto-topology/:scope_id/rollback", RoomCryptoTopologyController, :rollback)
+
+    # Signed public cohort wrapping keys
+    get("/cohort-wrapping-keys/:group_id", CohortWrappingKeyController, :show)
+    put("/cohort-wrapping-keys/:group_id", CohortWrappingKeyController, :upsert)
+
+    # Fenced room data-key coordination
+    get("/room-key-epochs/:scope_id/material", RoomKeyEpochController, :material)
+    get("/room-key-epochs/:scope_id/active", RoomKeyEpochController, :active)
+    post("/room-key-epochs/:scope_id/prepare", RoomKeyEpochController, :prepare)
+    post("/room-key-epoch/:epoch_id/claim", RoomKeyEpochController, :claim)
+    post("/room-key-epoch/:epoch_id/renew", RoomKeyEpochController, :renew)
+
+    put(
+      "/room-key-epoch/:epoch_id/envelopes/:cohort_id",
+      RoomKeyEpochController,
+      :put_envelope
+    )
+
+    post("/room-key-epoch/:epoch_id/activate", RoomKeyEpochController, :activate)
+    post("/room-key-epoch/:epoch_id/stage", RoomKeyEpochController, :stage)
+    post("/room-key-epoch/:epoch_id/repair", RoomKeyEpochController, :repair)
+
+    # Bounded opaque same-user recovery packages
+    get("/scope-recovery-packages/:scope_id", ScopeRecoveryPackageController, :show)
+    put("/scope-recovery-packages/:scope_id", ScopeRecoveryPackageController, :upsert)
+
     # Pending same-user MLS history recovery
     get("/pending-history-requests/:channel_id", PendingHistoryRequestController, :index)
     delete("/pending-history-requests/:id", PendingHistoryRequestController, :delete)

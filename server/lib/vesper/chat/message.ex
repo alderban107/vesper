@@ -10,6 +10,8 @@ defmodule Vesper.Chat.Message do
     field :ciphertext, :binary
     field :client_nonce, :string
     field :mls_epoch, :integer
+    field :encryption_scheme, :string, default: "mls"
+    field :encryption_group_id, :string
     field :expires_at, :utc_datetime
     field :edited_at, :utc_datetime
     field :is_reply, :boolean, default: false
@@ -34,6 +36,8 @@ defmodule Vesper.Chat.Message do
       :ciphertext,
       :client_nonce,
       :mls_epoch,
+      :encryption_scheme,
+      :encryption_group_id,
       :channel_id,
       :conversation_id,
       :sender_id,
@@ -44,7 +48,7 @@ defmodule Vesper.Chat.Message do
       :edited_at,
       :is_reply
     ])
-    |> validate_required([:ciphertext, :mls_epoch, :sender_id])
+    |> validate_required([:ciphertext, :mls_epoch, :encryption_scheme, :sender_id])
     |> validate_target()
   end
 
@@ -55,6 +59,8 @@ defmodule Vesper.Chat.Message do
       :ciphertext,
       :client_nonce,
       :mls_epoch,
+      :encryption_scheme,
+      :encryption_group_id,
       :channel_id,
       :conversation_id,
       :sender_id,
@@ -65,7 +71,7 @@ defmodule Vesper.Chat.Message do
       :edited_at,
       :is_reply
     ])
-    |> validate_required([:ciphertext, :mls_epoch, :sender_id])
+    |> validate_required([:ciphertext, :mls_epoch, :encryption_scheme, :sender_id])
     |> validate_target()
   end
 

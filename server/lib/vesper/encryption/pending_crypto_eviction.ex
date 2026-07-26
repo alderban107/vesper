@@ -5,7 +5,7 @@ defmodule Vesper.Encryption.PendingCryptoEviction do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
-  @statuses ~w(pending requested claimed committed applied failed)
+  @statuses ~w(pending requested claimed committed applied failed cancelled)
 
   schema "mls_pending_crypto_evictions" do
     field :scope_kind, :string
@@ -14,6 +14,10 @@ defmodule Vesper.Encryption.PendingCryptoEviction do
     field :reason, :string
     field :status, :string, default: "pending"
     field :attempt_count, :integer, default: 0
+    field :membership_generation, :integer, default: 0
+    field :fencing_token, :integer, default: 0
+    field :lease_expires_at, :utc_datetime
+    field :result, :map
     field :last_error, :string
     field :target_device_id, :string
     field :sponsor_device_id, :string
@@ -42,6 +46,10 @@ defmodule Vesper.Encryption.PendingCryptoEviction do
       :reason,
       :status,
       :attempt_count,
+      :membership_generation,
+      :fencing_token,
+      :lease_expires_at,
+      :result,
       :last_error,
       :sponsor_user_id,
       :sponsor_device_id,

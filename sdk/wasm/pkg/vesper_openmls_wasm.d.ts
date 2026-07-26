@@ -90,6 +90,10 @@ export class Group {
      */
     member_identities(): string;
     /**
+     * Get credential names and Ed25519 public keys for signature verification.
+     */
+    member_signing_identities(): string;
+    /**
      * Merge a pending commit (after add/remove/external commit)
      */
     merge_pending_commit(provider: Provider): void;
@@ -107,6 +111,10 @@ export class Group {
      * Remove a member by leaf index using inline remove proposals.
      */
     remove_member(provider: Provider, sender: Identity, leaf_index: number): CommitBundle;
+    /**
+     * Remove several members in one MLS commit.
+     */
+    remove_members(provider: Provider, sender: Identity, leaf_indices: Uint32Array): CommitBundle;
 }
 
 export class GroupInfo {
@@ -145,6 +153,10 @@ export class Identity {
      * Format: name_len(u32-be) name pub_key_len(u32-be) pub_key
      */
     serialize(): Uint8Array;
+    /**
+     * Sign a purpose-bound application payload with this MLS leaf identity.
+     */
+    sign(payload: Uint8Array): Uint8Array;
     /**
      * Get the raw Ed25519 signature public key bytes.
      * Used for registration (sent to server for identity verification).
@@ -218,61 +230,71 @@ export class RatchetTree {
     to_bytes(): Uint8Array;
 }
 
+/**
+ * Verify a published MLS GroupInfo against its ratchet tree without joining the group.
+ * Returns only identities authenticated by the verified public MLS state.
+ */
+export function verify_public_group_snapshot(group_info_bytes: Uint8Array, ratchet_tree_bytes: Uint8Array): string;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
-    readonly __wbg_provider_free: (a: number, b: number) => void;
-    readonly provider_new: () => number;
-    readonly provider_serialize_storage: (a: number) => [number, number];
-    readonly provider_deserialize_storage: (a: number, b: number, c: number) => [number, number];
-    readonly __wbg_identity_free: (a: number, b: number) => void;
-    readonly identity_new: (a: number, b: number, c: number) => [number, number, number];
-    readonly identity_key_package: (a: number, b: number) => number;
-    readonly identity_name: (a: number) => [number, number];
-    readonly identity_signature_public_key: (a: number) => [number, number];
-    readonly identity_serialize: (a: number) => [number, number];
-    readonly identity_deserialize: (a: number, b: number, c: number) => [number, number, number];
-    readonly __wbg_keypackage_free: (a: number, b: number) => void;
-    readonly keypackage_to_bytes: (a: number) => [number, number];
-    readonly keypackage_from_bytes: (a: number, b: number) => [number, number, number];
-    readonly __wbg_ratchettree_free: (a: number, b: number) => void;
-    readonly ratchettree_to_bytes: (a: number) => [number, number];
-    readonly ratchettree_from_bytes: (a: number, b: number) => [number, number, number];
-    readonly __wbg_groupinfo_free: (a: number, b: number) => void;
-    readonly groupinfo_to_bytes: (a: number) => [number, number];
-    readonly groupinfo_from_bytes: (a: number, b: number) => number;
-    readonly __wbg_ownleafidentity_free: (a: number, b: number) => void;
-    readonly ownleafidentity_name: (a: number) => [number, number];
-    readonly ownleafidentity_signature_public_key: (a: number) => [number, number];
     readonly __wbg_commitbundle_free: (a: number, b: number) => void;
-    readonly commitbundle_commit: (a: number) => [number, number];
-    readonly commitbundle_welcome: (a: number) => [number, number];
-    readonly commitbundle_group_info: (a: number) => [number, number];
-    readonly __wbg_processresult_free: (a: number, b: number) => void;
-    readonly processresult_kind: (a: number) => [number, number];
-    readonly processresult_message: (a: number) => [number, number];
+    readonly __wbg_externalcommitresult_free: (a: number, b: number) => void;
     readonly __wbg_group_free: (a: number, b: number) => void;
+    readonly __wbg_groupinfo_free: (a: number, b: number) => void;
+    readonly __wbg_identity_free: (a: number, b: number) => void;
+    readonly __wbg_keypackage_free: (a: number, b: number) => void;
+    readonly __wbg_ownleafidentity_free: (a: number, b: number) => void;
+    readonly __wbg_processresult_free: (a: number, b: number) => void;
+    readonly __wbg_provider_free: (a: number, b: number) => void;
+    readonly __wbg_ratchettree_free: (a: number, b: number) => void;
+    readonly commitbundle_commit: (a: number) => [number, number];
+    readonly commitbundle_group_info: (a: number) => [number, number];
+    readonly commitbundle_welcome: (a: number) => [number, number];
+    readonly externalcommitresult_commit_bytes: (a: number) => [number, number];
+    readonly externalcommitresult_take_group: (a: number) => number;
+    readonly group_add_member: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly group_create_message: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly group_create_new: (a: number, b: number, c: number, d: number) => number;
-    readonly group_join_from_welcome: (a: number, b: number, c: number, d: number) => [number, number, number];
-    readonly group_join_from_external_commit: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+    readonly group_epoch: (a: number) => bigint;
     readonly group_export_group_info: (a: number, b: number, c: number) => [number, number, number, number];
     readonly group_export_ratchet_tree: (a: number) => number;
-    readonly group_add_member: (a: number, b: number, c: number, d: number) => [number, number, number];
-    readonly group_remove_member: (a: number, b: number, c: number, d: number) => [number, number, number];
-    readonly group_merge_pending_commit: (a: number, b: number) => [number, number];
-    readonly group_create_message: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
-    readonly group_process_message: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly group_export_secret: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
-    readonly group_epoch: (a: number) => bigint;
     readonly group_group_id: (a: number) => [number, number];
-    readonly group_member_identities: (a: number) => [number, number];
-    readonly group_member_count: (a: number) => number;
-    readonly group_own_leaf_identity: (a: number) => [number, number, number];
+    readonly group_join_from_external_commit: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+    readonly group_join_from_welcome: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly group_load: (a: number, b: number, c: number) => [number, number, number];
-    readonly __wbg_externalcommitresult_free: (a: number, b: number) => void;
-    readonly externalcommitresult_take_group: (a: number) => number;
-    readonly externalcommitresult_commit_bytes: (a: number) => [number, number];
+    readonly group_member_count: (a: number) => number;
+    readonly group_member_identities: (a: number) => [number, number];
+    readonly group_member_signing_identities: (a: number) => [number, number];
+    readonly group_merge_pending_commit: (a: number, b: number) => [number, number];
+    readonly group_own_leaf_identity: (a: number) => [number, number, number];
+    readonly group_process_message: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly group_remove_member: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly group_remove_members: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+    readonly groupinfo_from_bytes: (a: number, b: number) => number;
+    readonly groupinfo_to_bytes: (a: number) => [number, number];
+    readonly identity_deserialize: (a: number, b: number, c: number) => [number, number, number];
+    readonly identity_key_package: (a: number, b: number) => number;
+    readonly identity_name: (a: number) => [number, number];
+    readonly identity_new: (a: number, b: number, c: number) => [number, number, number];
+    readonly identity_serialize: (a: number) => [number, number];
+    readonly identity_sign: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly identity_signature_public_key: (a: number) => [number, number];
+    readonly keypackage_from_bytes: (a: number, b: number) => [number, number, number];
+    readonly keypackage_to_bytes: (a: number) => [number, number];
+    readonly ownleafidentity_name: (a: number) => [number, number];
+    readonly ownleafidentity_signature_public_key: (a: number) => [number, number];
+    readonly processresult_kind: (a: number) => [number, number];
+    readonly processresult_message: (a: number) => [number, number];
+    readonly provider_deserialize_storage: (a: number, b: number, c: number) => [number, number];
+    readonly provider_new: () => number;
+    readonly provider_serialize_storage: (a: number) => [number, number];
+    readonly ratchettree_from_bytes: (a: number, b: number) => [number, number, number];
+    readonly ratchettree_to_bytes: (a: number) => [number, number];
+    readonly verify_public_group_snapshot: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly __wbindgen_exn_store: (a: number) => void;
     readonly __externref_table_alloc: () => number;
     readonly __wbindgen_externrefs: WebAssembly.Table;

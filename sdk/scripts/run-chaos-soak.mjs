@@ -577,7 +577,7 @@ async function main() {
     }
 
     eventLoopHistogram.disable()
-    teardownServerStack(stack)
+    await teardownServerStack(stack)
   }
 }
 

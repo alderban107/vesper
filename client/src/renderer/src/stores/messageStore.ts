@@ -83,7 +83,7 @@ export function registerDmChannelMapping(conversationId: string, channelId: stri
 }
 
 // Resolve the backing channel_id for a DM conversation.
-function resolveDmChannelId(conversationId: string): string | null {
+export function resolveDmChannelId(conversationId: string): string | null {
   const cached = getDmChannelMappings().get(conversationId)
   if (cached) return cached
 
@@ -499,7 +499,9 @@ async function loadScopeMessagesViaSdk(scope: {
 }
 
 async function loadScopeMessagesFromCache(scopeId: string): Promise<Message[]> {
-  const cachedMessages = await getStorageRuntime().loadCachedMessages(scopeId).catch(() => [])
+  const cachedMessages = await getRendererClient()
+    .runWithStorageContext(async () => await getStorageRuntime().loadCachedMessages(scopeId))
+    .catch(() => [])
   if (cachedMessages.length === 0) {
     return []
   }
@@ -4384,6 +4386,7 @@ function syncDmConversationActivity(message: Message): void {
   useDmStore.getState().applyConversationActivity({
     conversationId: message.conversation_id,
     messageId: message.id,
+    content: message.decryptionFailed ? null : message.content,
     senderId: message.sender_id,
     sender: message.sender
       ? {

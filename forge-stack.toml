@@ -1,0 +1,27 @@
+[stack]
+hostname = "vesper.irrigate.cc"
+web_service = "web"
+
+[service.db]
+image = "forge-registry.internal:5000/forge/pp/vesper-db@sha256:b7e8788040745f0608ee4ca47c9168ed43bdc4d5c8fe8f6dbaf760b4672d8761"
+env = { POSTGRES_USER = "vesper", POSTGRES_DB = "vesper_prod", PGDATA = "/data/postgres" }
+secrets = { POSTGRES_PASSWORD = "POSTGRES_PASSWORD" }
+
+[service.app]
+image = "forge-registry.internal:5000/forge/pp/vesper-app@sha256:352f96a3f22beab2a591c4d39365822a355fd8500b688ecbf34066925510bf67"
+port = 4000
+health_path = "/health"
+env = { PHX_HOST = "vesper.irrigate.cc", PORT = "4000", UPLOAD_DIR = "/data/uploads", TURN_SERVER_URL = "turn:65.21.9.19:3478", TURN_USERNAME = "vesper", FILE_EXPIRY_DAYS = "30" }
+secrets = { DATABASE_URL = "DATABASE_URL", SECRET_KEY_BASE = "SECRET_KEY_BASE", TURN_PASSWORD = "TURN_PASSWORD", JWT_SECRET = "JWT_SECRET" }
+
+[service.web]
+image = "forge-registry.internal:5000/forge/pp/vesper-web-build@sha256:733cf13fa5f350e76735b73853f81f406e2989a1c4b11334ed806e1a340be7ca"
+port = 80
+health_path = "/health"
+
+[service.turn]
+image = "forge-registry.internal:5000/forge/pp/vesper-turn@sha256:4267be54ced2c495c845fbd31ff55979fd059fa6052257d971f19e1b4ad352af"
+command = ["/bin/sh", "-c", "turnserver -c /etc/turnserver.conf --static-auth-secret=$TURN_PASSWORD"]
+env = { TURN_USERNAME = "vesper" }
+secrets = { TURN_PASSWORD = "TURN_PASSWORD" }
+endpoints = ["tcp:3478", "udp:3478", "udp:50000-50100"]

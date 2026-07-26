@@ -12,7 +12,10 @@ config :vesper, Vesper.Repo,
   port: String.to_integer(System.get_env("TEST_DB_PORT", "5432")),
   database: "vesper_test#{System.get_env("MIX_TEST_PARTITION")}",
   pool: Ecto.Adapters.SQL.Sandbox,
-  pool_size: System.schedulers_online() * 2
+  pool_size:
+    String.to_integer(
+      System.get_env("TEST_DB_POOL_SIZE", Integer.to_string(System.schedulers_online() * 2))
+    )
 
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
@@ -29,6 +32,8 @@ config :swoosh, :api_client, false
 
 # Disable Oban in test
 config :vesper, Oban, testing: :inline
+config :vesper, run_migrations_on_start: false
+config :vesper, warm_room_cache_on_start: false
 
 # Print only warnings and errors during test
 config :logger, level: :warning

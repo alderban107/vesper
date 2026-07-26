@@ -98,8 +98,10 @@ export async function isCustomEmojiRendered(
   page: Page,
   emojiName: string
 ): Promise<boolean> {
-  // Custom emojis should render as <img> elements, not raw `:name:` text
-  const rawToken = page.locator(`text=:${emojiName}:`)
+  // Markdown rendering is lazy-loaded per renderer process. A message can be
+  // present one paint before the emoji component has resolved, so wait for the
+  // semantic DOM result rather than treating that intermediate fallback as a
+  // failed custom-emoji delivery.
   const renderedEmoji = page.locator(
     [
       `img[alt=":${emojiName}:"]`,
@@ -107,9 +109,15 @@ export async function isCustomEmojiRendered(
       `img.vesper-inline-custom-emoji`,
     ].join(', ')
   )
+  const deadline = Date.now() + 5_000
 
-  const hasRaw = await rawToken.count() > 0
-  const hasRendered = await renderedEmoji.count() > 0
+  while (Date.now() < deadline) {
+    if (await renderedEmoji.count() > 0) {
+      return true
+    }
 
-  return hasRendered || !hasRaw
+    await page.waitForTimeout(50)
+  }
+
+  return false
 }

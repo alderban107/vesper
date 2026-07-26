@@ -149,7 +149,7 @@ defmodule Vesper.Runtime do
          {:ok, event} <- ensure_message_event(room, message),
          {:ok, _} <- maybe_create_thread_relation(event, message) do
       update_room_last_message(room.id, message.id, message.inserted_at, event.room_seq)
-      append_user_sync_events(room, "message")
+      append_scope_sync_event(room, "message")
       {:ok, event}
     end
   end
@@ -172,7 +172,7 @@ defmodule Vesper.Runtime do
         |> case do
           {:ok, event} = result ->
             update_room_last_mutation(room.id, event.inserted_at, room_seq)
-            append_user_sync_events(room, "mutation")
+            append_scope_sync_event(room, "mutation")
             result
 
           error ->
@@ -537,16 +537,15 @@ defmodule Vesper.Runtime do
     end
   end
 
-  defp append_user_sync_events(
+  defp append_scope_sync_event(
          %Room{kind: :channel, server_id: server_id, channel_id: channel_id},
          event_type
        )
        when is_binary(server_id) and is_binary(channel_id) do
-    # append_scope_events writes to shared ScopeSyncEvent log (O(1), no user_ids needed)
     Sync.append_scope_event(event_type, "channel", channel_id)
   end
 
-  defp append_user_sync_events(
+  defp append_scope_sync_event(
          %Room{kind: :dm, conversation_id: conversation_id},
          event_type
        )
@@ -554,5 +553,5 @@ defmodule Vesper.Runtime do
     Sync.append_scope_event(event_type, "dm", conversation_id)
   end
 
-  defp append_user_sync_events(_room, _event_type), do: :ok
+  defp append_scope_sync_event(_room, _event_type), do: :ok
 end

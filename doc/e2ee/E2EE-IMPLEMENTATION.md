@@ -2,7 +2,7 @@
 
 This document describes how Vesper's end-to-end encryption works as currently implemented, how to work with it as a developer, and where the sharp edges are. Use it together with [PROTOCOL.md](../PROTOCOL.md), [doc/sdk/encryption.md](../sdk/encryption.md), [E2EE-CORRECTNESS-PLAN.md](../E2EE-CORRECTNESS-PLAN.md), and [DESIGN.md](../DESIGN.md). This document covers what the system actually does right now, in enough detail to modify it without breaking things.
 
-Last updated after the OpenMLS migration, durable checkpoint work, and SDK-owned repair move on `fix/mls-e2e-handshake`.
+Last updated after the durable control-plane, bounded recovery, multi-cohort room encryption, and live-room migration work completed in July 2026.
 
 ---
 
@@ -24,7 +24,17 @@ The system has four layers:
 └──────────────────────────────────────────────────┘
 ```
 
-Two storage backends exist: an encrypted SQLite database in Electron (the primary path) and an IndexedDB fallback for the web client. The SDK now stores per-scope checkpoints that bundle serialized group state, durable replay cursors, and pending control-plane outbox entries so restart and reconnect recovery can resume deterministically.
+Two storage backends exist: an encrypted SQLite database in Electron (the primary path) and an IndexedDB fallback for the web client. The SDK stores per-scope checkpoints that bundle serialized group state, durable replay cursors, and pending control-plane outbox entries so restart and reconnect recovery can resume deterministically.
+
+### 1.1 Room topology and application encryption
+
+Each text room has one durable topology generation. New rooms begin in `single` mode with a default target cohort size of 512 users. A populated room moves to `multi_cohort` through a prepared generation, fixed user-to-cohort assignments, authenticated cohort wrapping keys, one staged room data-key epoch, a durable cutover event, and final activation. Retries use stable request IDs; topology and key coordinators use leases, fencing tokens, and compare-and-swap transitions.
+
+MLS remains the control plane inside each cohort. Cross-cohort application payloads use the versioned `vesper-room-v1` envelope with AES-256-GCM. Its authenticated context binds the room ID, room-key epoch, sender user and device, operation, and event ID. Messages, edits, reactions, and other room mutations use the same room-key scheme after cutover. Pre-cutover ciphertext keeps its original MLS group and scheme permanently.
+
+The server stores public cohort GroupInfo proofs, signed wrapping-key publications, opaque per-cohort room-key envelopes, ciphertext, and routing metadata. It never receives a room data key, wrapping private key, MLS private state, or recovery-package plaintext. Retired room-key epochs are retained for seven days and bounded to eight rows per room. Same-user hot-state recovery packages are opaque, capped at 256 KiB, contain at most 200 cached messages per scope, expire after seven days, and advance monotonically by membership generation and event cursor.
+
+Control and application work have separate serialization domains. MLS membership mutations lock the cohort group. Room application replay locks the room. Legacy history decryption locks the immutable message group. This separation is required because the SDK lock is non-reentrant: application replay must be able to derive a current cohort wrapping key without waiting on itself.
 
 ---
 
@@ -467,17 +477,17 @@ If a budget assertion fails, it means the protocol flow has regressed — likely
 
 | Area | Current State | Target | Notes |
 |---|---|---|---|
-| Historical message recovery | Uses persisted group state, durable replay, and same-user history repair | Add explicit checkpoint snapshots for very large scopes | Current recovery is correctness-first for small and medium scopes; very large rooms still need a different topology |
-| Self-decrypt after reload | Sent-message plaintext cache is persisted and checked before repair | Keep cache bounded and scoped | MLS still consumes sender ratchet state on encrypt; the cache is the local workaround |
-| Search | FTS5 infrastructure wired, UI not connected | Full search UI with results navigation | Index is populated on decrypt — only viewed messages are searchable |
-| Large files | Single-shot AES-256-GCM | Chunked encryption (256 KB chunks) for streaming decrypt | Each chunk independently authenticated with chunk index in AAD to prevent reordering |
-| Crypto thread | Runs on renderer main thread | Web Worker for symmetric crypto offload | Full `ClientState` likely won't survive `structuredClone`. Recommended fallback: keep MLS state in main thread, offload only AES-GCM encrypt/decrypt to Worker |
-| Link previews | Receiver-side fetch with user opt-out, no server proxy | Sender-side generation with user opt-out | Current app keeps preview requests off the Vesper server; long-term target is encrypted sender-side preview data in the message payload |
-| Multi-device | Each device must independently join every MLS group | Shared identity with key sync | No "rejoin all channels" flow exists — each channel rejoins lazily on first visit |
-| Key package expiry | No server-side expiration | `expires_at` column + Oban purge job + server rejection of expired packages | |
-| Batch removes | Each member leave = separate Commit | Batch Commit with 100ms collection window | Design: start a timer on first leave event, collect additional leaves, issue single batched Remove Commit when timer fires |
-| History for new members | History bundle mechanism re-encrypts recent messages at current epoch for new joiners | Streaming history for large channels | Works for DMs and channels via `mls_history_request` / `mls_history_bundle` exchange after welcome processing |
-| Group creator race | `pendingGroupCreations` Map prevents concurrent creation within one client; DM leader election (lower UUID wins) prevents cross-client dual creation | Server-side first-wins arbitration for edge cases | DM convergence solved. Channel groups are owner-gated. Remaining edge case: two owners (unlikely) creating groups simultaneously |
+| Historical message recovery | Bounded checkpoint-plus-tail restore, lazy backfill, opaque same-user packages, and exact-device membership-window authorization | Distributed production validation for very large rooms | The local package contains at most 200 messages and 256 KiB; long history remains paginated ciphertext |
+| Self-decrypt after reload | Sent-message plaintext cache is persisted and checked before repair | Keep cache bounded and scoped | MLS consumes sender ratchet state on encrypt; room-key messages do not depend on MLS self-decrypt |
+| Search | FTS5 infrastructure wired, UI not connected | Full search UI with results navigation | Index is populated on decrypt; only locally recovered plaintext is searchable |
+| Large files | Single-shot AES-256-GCM | Chunked encryption for streaming decrypt | File size and timing remain visible to the server |
+| Crypto thread | Runs on renderer main thread | Web Worker for symmetric crypto offload | MLS state remains in the owning SDK runtime; do not duplicate protocol orchestration in a worker |
+| Link previews | Receiver-side fetch with user opt-out, no server proxy | Sender-side generation with user opt-out | Current app keeps preview requests off the Vesper server |
+| Multi-device | Every trusted device has an independent MLS identity but all devices for one user share a room cohort | Optional device-to-device state transfer beyond bounded recovery packages | Devices rejoin and recover lazily per watched scope |
+| Key package expiry | Server expiration and purge worker are active | Operational alerting for depleted package pools | Expired packages are not valid join material |
+| Membership removal | Durable fenced sponsor intents batch device removals and reject stale completion after rejoin | Production churn tuning | A removed membership cannot authorize future or away-window history recovery |
+| History for new members | Legacy history bundles carry immutable group and epoch provenance; room-key history uses the active room-key path | Streaming UX for very large backfills | The receiver verifies each server row before accepting repaired plaintext |
+| Coordinator failure | Durable topology, room-key, and dispatch state supports retry, handoff, repair, and rollback | Multi-node production fault injection | Local deterministic chaos covers process death and retry, not a distributed regional outage |
 
 ---
 

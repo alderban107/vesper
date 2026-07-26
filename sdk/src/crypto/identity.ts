@@ -6,6 +6,17 @@ function asBufferSource(value: Uint8Array): BufferSource {
   return value as unknown as BufferSource
 }
 
+const RECOVERY_PACKAGE_KEY_CONTEXT = new TextEncoder().encode(
+  'vesper.account-recovery-package-key.v1'
+)
+
+export async function deriveRecoveryPackageKey(privateKeys: Uint8Array): Promise<Uint8Array> {
+  const material = new Uint8Array(RECOVERY_PACKAGE_KEY_CONTEXT.length + privateKeys.length)
+  material.set(RECOVERY_PACKAGE_KEY_CONTEXT)
+  material.set(privateKeys, RECOVERY_PACKAGE_KEY_CONTEXT.length)
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', asBufferSource(material)))
+}
+
 // BIP39 mnemonic encoding: 24 words from the standard 2048-word English list.
 // Each word encodes 11 bits. 24 words × 11 bits = 264 bits = 256 bits of key + 8-bit checksum.
 //

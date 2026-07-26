@@ -11,12 +11,7 @@ defmodule VesperWeb.ConversationController do
 
     case Chat.create_conversation(user.id, participant_ids, opts) do
       {:ok, conversation} ->
-        Sync.append_scope_events(
-          Enum.map(conversation.participants, & &1.user_id),
-          "conversation_upsert",
-          "dm",
-          conversation.id
-        )
+        Sync.append_scope_event("conversation_upsert", "dm", conversation.id)
 
         # Notify other participants of the new conversation
         conv_payload = conversation_json(conversation)

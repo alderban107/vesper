@@ -287,7 +287,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
 
       applyAuthenticatedState(set, session, { isLoading: false, recoveryMnemonic: null })
-      fireAndForget(getRendererClient().start(true))
+      fireAndForget(getRendererClient().start(false))
       if (session.canUseE2EE) {
         fireAndForget(get().replenishKeyPackages())
         fireAndForget(refreshActiveEncryptedViews())
