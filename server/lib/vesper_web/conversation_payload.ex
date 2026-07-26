@@ -29,10 +29,22 @@ defmodule VesperWeb.ConversationPayload do
 
         {last_message, users} = compact_last_message(conversation.last_message, users)
 
-        {%{conversation | participants: participants, last_message: last_message}, users}
+        compact =
+          conversation
+          |> Map.put(:participants, participants)
+          |> Map.put(:last_message, last_message)
+          |> compact_conversation()
+
+        {compact, users}
       end)
 
     {conversations, users}
+  end
+
+  defp compact_conversation(conversation) do
+    Enum.reduce([:name, :channel_id, :disappearing_ttl], conversation, fn field, compact ->
+      if Map.get(compact, field) == nil, do: Map.delete(compact, field), else: compact
+    end)
   end
 
   defp compact_last_message(nil, users), do: {nil, users}

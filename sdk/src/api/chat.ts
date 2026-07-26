@@ -86,7 +86,13 @@ type VesperUserWire = Omit<VesperUser, 'display_name' | 'avatar_url' | 'banner_u
   banner_url?: string | null
 }
 
-type VesperConversationWire = Omit<VesperConversation, 'participants' | 'last_message'> & {
+type VesperConversationWire = Omit<
+  VesperConversation,
+  'participants' | 'last_message' | 'name' | 'channel_id' | 'disappearing_ttl'
+> & {
+  name?: string | null
+  channel_id?: string | null
+  disappearing_ttl?: number | null
   participants: Array<Omit<VesperConversationParticipant, 'user'> & { user?: VesperUserWire | null }>
   last_message:
     | (Omit<VesperConversationMessagePreview, 'sender'> & {
@@ -112,6 +118,9 @@ function hydrateConversations(
 
   return conversations.map((conversation) => ({
     ...conversation,
+    name: conversation.name ?? null,
+    channel_id: conversation.channel_id ?? null,
+    disappearing_ttl: conversation.disappearing_ttl ?? null,
     participants: conversation.participants.map((participant) => {
       const user = participant.user ?? users?.[participant.user_id]
       if (!user) {
