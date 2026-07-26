@@ -52,7 +52,7 @@ function hydrateServers(servers: VesperServerWire[] | undefined): VesperServer[]
 }
 
 export interface VesperConversationParticipant {
-  id: string
+  id?: string
   user_id: string
   joined_at: string
   user: VesperUser
