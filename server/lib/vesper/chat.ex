@@ -1,8 +1,6 @@
 defmodule Vesper.Chat do
   require Logger
   import Ecto.Query
-  alias Vesper.Dispatch
-  alias Vesper.Encryption
   alias Vesper.Repo
 
   alias Vesper.Chat.{
@@ -57,7 +55,6 @@ defmodule Vesper.Chat do
       conversation =
         %DmConversation{}
         |> DmConversation.changeset(%{type: type, name: name})
-        |> Ecto.Changeset.put_change(:inserted_at, now)
         |> Repo.insert!()
 
       case Runtime.ensure_room_for_conversation(conversation) do
@@ -106,112 +103,31 @@ defmodule Vesper.Chat do
   end
 
   @doc """
-  List the first activity-ordered conversation page for compatibility.
+  List all conversations a user participates in, with participants and last message.
   """
   def list_conversations(user_id, opts \\ []) do
-    list_conversations_page(user_id, opts).items
-  end
-
-  @doc """
-  List one stable, activity-ordered conversation page. The cursor is based on
-  the actual ordering expression, so an inactive account can be traversed
-  without offset scans while new activity is delivered through sync events.
-  """
-  def list_conversations_page(user_id, opts \\ []) do
     limit = Keyword.get(opts, :limit, 100)
-    before_cursor = decode_conversation_cursor(Keyword.get(opts, :before))
 
-    query =
-      from(room in Room,
-        join: p in DmParticipant,
-        on: p.conversation_id == room.conversation_id and p.user_id == ^user_id,
-        where: room.kind == :dm,
-        order_by: [desc: room.activity_at, desc: room.conversation_id],
-        select: {room.conversation_id, room.activity_at},
-        limit: ^(limit + 1)
+    # Custom preload: join participants + users in a single query
+    participants_with_users =
+      from(p in DmParticipant,
+        join: u in assoc(p, :user),
+        preload: [user: u]
       )
 
-    query =
-      case before_cursor do
-        {before_at, before_id} ->
-          from([room, _p] in query,
-            where:
-              room.activity_at < ^before_at or
-                (room.activity_at == ^before_at and room.conversation_id < ^before_id)
-          )
-
-        nil ->
-          query
-      end
-
-    rows = Repo.all(query)
-    has_more = length(rows) > limit
-    page_rows = Enum.take(rows, limit)
-    conversation_ids = Enum.map(page_rows, &elem(&1, 0))
-
-    conversations_by_id =
-      if conversation_ids == [] do
-        %{}
-      else
-        participants_with_users =
-          from(p in DmParticipant,
-            join: u in assoc(p, :user),
-            preload: [user: u]
-          )
-
-        from(c in DmConversation,
-          where: c.id in ^conversation_ids,
-          preload: [participants: ^participants_with_users]
-        )
-        |> Repo.all()
-        |> Map.new(&{&1.id, &1})
-      end
-
     conversations =
-      page_rows
-      |> Enum.map(fn {conversation_id, _activity_at} ->
-        Map.fetch!(conversations_by_id, conversation_id)
-      end)
-      |> conversations_with_last_message()
+      from(c in DmConversation,
+        join: p in DmParticipant,
+        on: p.conversation_id == c.id,
+        where: p.user_id == ^user_id,
+        preload: [participants: ^participants_with_users],
+        order_by: [desc: c.inserted_at],
+        limit: ^limit
+      )
+      |> Repo.all()
 
-    next_cursor =
-      if has_more do
-        {conversation_id, activity_at} = List.last(page_rows)
-        encode_conversation_cursor(activity_at, conversation_id)
-      else
-        nil
-      end
-
-    %{items: conversations, has_more: has_more, next_cursor: next_cursor}
+    conversations_with_last_message(conversations)
   end
-
-  defp encode_conversation_cursor(activity_at, conversation_id) do
-    activity_at =
-      case activity_at do
-        %DateTime{} = datetime -> DateTime.to_naive(datetime)
-        %NaiveDateTime{} = datetime -> datetime
-      end
-
-    %{activity_at: NaiveDateTime.to_iso8601(activity_at), conversation_id: conversation_id}
-    |> Jason.encode!()
-    |> Base.url_encode64(padding: false)
-  end
-
-  defp decode_conversation_cursor(nil), do: nil
-
-  defp decode_conversation_cursor(cursor) when is_binary(cursor) do
-    with {:ok, decoded} <- Base.url_decode64(cursor, padding: false),
-         {:ok, %{"activity_at" => activity_at, "conversation_id" => conversation_id}} <-
-           Jason.decode(decoded),
-         {:ok, parsed_at} <- NaiveDateTime.from_iso8601(activity_at),
-         true <- is_binary(conversation_id) do
-      {parsed_at, conversation_id}
-    else
-      _ -> nil
-    end
-  end
-
-  defp decode_conversation_cursor(_), do: nil
 
   def list_user_conversation_ids(user_id) do
     from(p in DmParticipant,
@@ -516,14 +432,10 @@ defmodule Vesper.Chat do
 
   Options:
   - `:preload` — associations to preload (default: `[:sender, :attachments]`, use `[]` to skip)
-  - `:attachment_ids` — unclaimed attachments to link inside the message transaction
-  - `:dispatch` — `(message, room_event -> dispatch_attrs)` callback persisted in the same transaction
   """
   def create_message(attrs, opts \\ []) do
     attrs = maybe_set_expires_at(attrs)
     preload = Keyword.get(opts, :preload, [:sender, :attachments])
-    attachment_ids = Keyword.get(opts, :attachment_ids, [])
-    dispatch = Keyword.get(opts, :dispatch)
     changeset = Message.encrypted_changeset(%Message{}, attrs)
 
     Repo.transaction(fn ->
@@ -532,13 +444,7 @@ defmodule Vesper.Chat do
           case Runtime.project_message(message) do
             {:ok, event} ->
               message = %{message | room_seq: event.room_seq}
-              :ok = link_attachments_to_message(attachment_ids, message.id)
-              message = maybe_preload_message(message, preload, attachment_ids != [])
-
-              case enqueue_message_dispatch(dispatch, message, event) do
-                :ok -> message
-                {:error, reason} -> Repo.rollback({:dispatch_enqueue_failed, reason})
-              end
+              maybe_preload_message(message, preload)
 
             {:error, reason} ->
               Repo.rollback({:projection_failed, reason})
@@ -932,21 +838,9 @@ defmodule Vesper.Chat do
     Enum.reject(preload, &(&1 == :sender))
   end
 
-  defp maybe_preload_message(message, preload), do: maybe_preload_message(message, preload, false)
-  defp maybe_preload_message(nil, _preload, _force), do: nil
-  defp maybe_preload_message(message, [], _force), do: message
-
-  defp maybe_preload_message(message, preload, force),
-    do: Repo.preload(message, preload, force: force)
-
-  defp enqueue_message_dispatch(nil, _message, _event), do: :ok
-
-  defp enqueue_message_dispatch(dispatch, message, event) when is_function(dispatch, 2) do
-    case Dispatch.enqueue(dispatch.(message, event)) do
-      {:ok, _dispatch} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
+  defp maybe_preload_message(nil, _preload), do: nil
+  defp maybe_preload_message(message, []), do: message
+  defp maybe_preload_message(message, preload), do: Repo.preload(message, preload)
 
   defp preload_messages_with_room_seq(message_pairs, preload) do
     message_pairs
@@ -1025,41 +919,10 @@ defmodule Vesper.Chat do
   # --- Reactions ---
 
   def add_reaction(attrs) do
-    with :ok <- validate_reaction_scheme(attrs) do
-      %Reaction{}
-      |> Reaction.changeset(attrs)
-      |> Repo.insert()
-    end
+    %Reaction{}
+    |> Reaction.changeset(attrs)
+    |> Repo.insert()
   end
-
-  defp validate_reaction_scheme(attrs) do
-    ciphertext = attrs[:ciphertext] || attrs["ciphertext"]
-
-    if is_binary(ciphertext) do
-      message_id = attrs[:message_id] || attrs["message_id"]
-      scheme = attrs[:encryption_scheme] || attrs["encryption_scheme"] || "mls"
-      epoch = attrs[:mls_epoch] || attrs["mls_epoch"]
-      group_id = attrs[:encryption_group_id] || attrs["encryption_group_id"]
-
-      with %Message{} = message <- Repo.get(Message, message_id),
-           %Room{} = room <- room_for_message_record(message) do
-        Encryption.validate_application_scheme(room.id, scheme, epoch, group_id)
-      else
-        _ -> {:error, :message_not_found}
-      end
-    else
-      :ok
-    end
-  end
-
-  defp room_for_message_record(%Message{channel_id: channel_id}) when is_binary(channel_id),
-    do: Runtime.get_room_for_channel(channel_id)
-
-  defp room_for_message_record(%Message{conversation_id: conversation_id})
-       when is_binary(conversation_id),
-       do: Runtime.get_room_for_conversation(conversation_id)
-
-  defp room_for_message_record(_message), do: nil
 
   def remove_reaction(message_id, sender_id, emoji) do
     case Repo.get_by(Reaction, message_id: message_id, sender_id: sender_id, emoji: emoji) do
