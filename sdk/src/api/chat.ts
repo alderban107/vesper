@@ -29,7 +29,9 @@ export interface VesperServer {
   icon_url: string | null
   owner_id: string
   channels: VesperChannel[]
+  channels_loaded?: boolean
   emojis?: VesperCustomEmoji[]
+  emojis_loaded?: boolean
 }
 
 export interface VesperConversationParticipant {
@@ -59,6 +61,43 @@ export interface VesperConversation {
   last_message: VesperConversationMessagePreview | null
 }
 
+type VesperConversationWire = Omit<VesperConversation, 'participants' | 'last_message'> & {
+  participants: Array<Omit<VesperConversationParticipant, 'user'> & { user?: VesperUser | null }>
+  last_message:
+    | (Omit<VesperConversationMessagePreview, 'sender'> & {
+        sender?: VesperMemberPreview | null
+      })
+    | null
+}
+
+function hydrateConversations(
+  conversations: VesperConversationWire[] | undefined,
+  users: Record<string, VesperUser> | undefined
+): VesperConversation[] {
+  if (!Array.isArray(conversations)) return []
+
+  return conversations.map((conversation) => ({
+    ...conversation,
+    participants: conversation.participants.map((participant) => {
+      const user = participant.user ?? users?.[participant.user_id]
+      if (!user) {
+        throw new Error(`Conversation participant ${participant.user_id} is missing user data`)
+      }
+      return { ...participant, user }
+    }),
+    last_message: conversation.last_message
+      ? {
+          ...conversation.last_message,
+          sender:
+            conversation.last_message.sender ??
+            (conversation.last_message.sender_id
+              ? users?.[conversation.last_message.sender_id] ?? null
+              : null)
+        }
+      : null
+  }))
+}
+
 export interface VesperMessage {
   id: string
   room_seq?: number | null
@@ -76,6 +115,8 @@ export interface VesperMessage {
   content?: string
   ciphertext?: string
   mls_epoch?: number | null
+  encryption_scheme?: 'mls' | 'vesper-room-v1'
+  encryption_group_id?: string | null
   attachments?: Array<{
     id: string
     filename: string
@@ -90,6 +131,8 @@ export interface VesperMessage {
     sender_id: string
     ciphertext?: string | null
     mls_epoch?: number | null
+    encryption_scheme?: 'mls' | 'vesper-room-v1'
+    encryption_group_id?: string | null
     inserted_at: string
   }>
   edited_at?: string | null
@@ -230,8 +273,11 @@ export interface VesperUnreadCounts {
 export interface VesperWorkspaceSyncResponse {
   token: string | null
   full: boolean
+  has_more: boolean
   servers: VesperServer[]
   conversations: VesperConversation[]
+  conversations_has_more: boolean
+  conversations_next_cursor: string | null
   conversation_resets: VesperConversationResetPatch[]
   channel_activity: VesperChannelActivityPatch[]
   unread_counts: VesperUnreadCounts
@@ -241,6 +287,7 @@ export interface VesperScopeSyncScopeRequest {
   kind: 'channel' | 'dm'
   id: string
   after?: string
+  before?: string
   after_seq?: number
 }
 
@@ -248,6 +295,8 @@ export interface VesperScopeSyncScopeResponse {
   scope_id: string
   kind: 'channel' | 'dm'
   has_more: boolean
+  older_cursor: string | null
+  latest_room_seq: number
   messages: VesperMessage[]
   events: Array<{
     id?: number | null
@@ -301,16 +350,51 @@ export async function listServers(
   return data.servers ?? []
 }
 
-export async function listConversations(
+export interface VesperConversationPage {
+  conversations: VesperConversation[]
+  unreadCounts: Record<string, number>
+  hasMore: boolean
+  nextCursor: string | null
+}
+
+export async function listConversationsPage(
+  options: { before?: string | null; limit?: number } = {},
   httpClient: VesperHttpClient = getDefaultHttpClient()
-): Promise<VesperConversation[]> {
-  const response = await httpClient.apiFetch('/api/v1/conversations')
+): Promise<VesperConversationPage> {
+  const query = new URLSearchParams()
+  query.set('limit', String(Math.min(Math.max(options.limit ?? 100, 1), 250)))
+  if (options.before) {
+    query.set('before', options.before)
+  }
+
+  const response = await httpClient.apiFetch(`/api/v1/conversations?${query.toString()}`)
   if (!response.ok) {
     throw new Error(`Could not load conversations: ${response.status}`)
   }
 
-  const data = (await response.json()) as { conversations?: VesperConversation[] }
-  return data.conversations ?? []
+  const data = (await response.json()) as {
+    conversations?: VesperConversationWire[]
+    users?: Record<string, VesperUser>
+    unread_counts?: Record<string, number>
+    has_more?: boolean
+    next_cursor?: string | null
+  }
+
+  return {
+    conversations: hydrateConversations(data.conversations, data.users),
+    unreadCounts:
+      data.unread_counts && typeof data.unread_counts === 'object'
+        ? data.unread_counts
+        : {},
+    hasMore: data.has_more === true,
+    nextCursor: typeof data.next_cursor === 'string' ? data.next_cursor : null
+  }
+}
+
+export async function listConversations(
+  httpClient: VesperHttpClient = getDefaultHttpClient()
+): Promise<VesperConversation[]> {
+  return (await listConversationsPage({}, httpClient)).conversations
 }
 
 export async function fetchWorkspaceSync(
@@ -323,13 +407,25 @@ export async function fetchWorkspaceSync(
     throw new Error(`Could not load workspace sync: ${response.status}`)
   }
 
-  const data = (await response.json()) as Partial<VesperWorkspaceSyncResponse>
+  const data = (await response.json()) as Omit<
+    Partial<VesperWorkspaceSyncResponse>,
+    'conversations'
+  > & {
+    conversations?: VesperConversationWire[]
+    users?: Record<string, VesperUser>
+  }
 
   return {
     token: typeof data.token === 'string' ? data.token : null,
     full: Boolean(data.full),
+    has_more: data.has_more === true,
     servers: Array.isArray(data.servers) ? data.servers : [],
-    conversations: Array.isArray(data.conversations) ? data.conversations : [],
+    conversations: hydrateConversations(data.conversations, data.users),
+    conversations_has_more: data.conversations_has_more === true,
+    conversations_next_cursor:
+      typeof data.conversations_next_cursor === 'string'
+        ? data.conversations_next_cursor
+        : null,
     conversation_resets: Array.isArray(data.conversation_resets)
       ? data.conversation_resets
       : [],

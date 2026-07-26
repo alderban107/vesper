@@ -2,6 +2,7 @@ defmodule VesperWeb.ConversationController do
   use VesperWeb, :controller
   alias Vesper.Chat
   alias Vesper.Sync
+  alias VesperWeb.ConversationPayload
   import VesperWeb.ControllerHelpers, only: [parse_bool: 2, parse_int: 2]
 
   def create(conn, %{"participant_ids" => participant_ids} = params) do
@@ -41,16 +42,27 @@ defmodule VesperWeb.ConversationController do
     conn |> put_status(:bad_request) |> json(%{error: "participant_ids is required"})
   end
 
-  def index(conn, _params) do
+  def index(conn, params) do
     user = conn.assigns.current_user
-    results = Chat.list_conversations(user.id)
+    limit = params |> Map.get("limit") |> parse_int(100) |> min(250) |> max(1)
+    page = Chat.list_conversations_page(user.id, limit: limit, before: params["before"])
+
+    conversation_ids = Enum.map(page.items, & &1.conversation.id)
+
+    {conversation_payloads, users} =
+      page.items
+      |> Enum.map(fn %{conversation: conv, last_message: last_msg} ->
+        conversation_json(conv)
+        |> Map.put(:last_message, if(last_msg, do: message_json(last_msg), else: nil))
+      end)
+      |> ConversationPayload.compact()
 
     json(conn, %{
-      conversations:
-        Enum.map(results, fn %{conversation: conv, last_message: last_msg} ->
-          conversation_json(conv)
-          |> Map.put(:last_message, if(last_msg, do: message_json(last_msg), else: nil))
-        end)
+      conversations: conversation_payloads,
+      users: users,
+      unread_counts: Chat.get_dm_unread_counts_snapshot(user.id, conversation_ids),
+      has_more: page.has_more,
+      next_cursor: page.next_cursor
     })
   end
 
@@ -181,7 +193,9 @@ defmodule VesperWeb.ConversationController do
     if message.ciphertext do
       Map.merge(base, %{
         ciphertext: Base.encode64(message.ciphertext),
-        mls_epoch: message.mls_epoch
+        mls_epoch: message.mls_epoch,
+        encryption_scheme: message.encryption_scheme,
+        encryption_group_id: message.encryption_group_id
       })
     else
       Map.put(base, :content, message.content)
@@ -209,6 +223,8 @@ defmodule VesperWeb.ConversationController do
         emoji: r.emoji,
         ciphertext: r.ciphertext,
         mls_epoch: r.mls_epoch,
+        encryption_scheme: r.encryption_scheme,
+        encryption_group_id: r.encryption_group_id,
         sender_id: r.sender_id,
         inserted_at: r.inserted_at
       }

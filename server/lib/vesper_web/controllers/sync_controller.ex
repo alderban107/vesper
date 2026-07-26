@@ -5,50 +5,71 @@ defmodule VesperWeb.SyncController do
   alias Vesper.Servers
   alias Vesper.Sync
   alias Vesper.SyncCursor
-  alias VesperWeb.ScopeSummary
+  alias VesperWeb.{ConversationPayload, ScopeSummary}
+
+  @default_limit 100
+  @max_limit 500
 
   def index(conn, params) do
     user = conn.assigns.current_user
     cursor = parse_since(params["since"])
-    scope_sync_event_id = cursor && cursor[:scope_sync_event_id]
-    user_sync_event_id = cursor && cursor.user_sync_event_id
-    has_event_cursor = is_integer(scope_sync_event_id) or is_integer(user_sync_event_id)
-    full_sync = is_nil(cursor) or not has_event_cursor
+    cursor_retained = SyncCursor.retained?(cursor)
+    scope_sync_event_id = cursor_retained && cursor.scope_sync_event_id
+    user_sync_event_id = cursor_retained && cursor.user_sync_event_id
+    full_sync = not (is_integer(scope_sync_event_id) and is_integer(user_sync_event_id))
+    limit = parse_limit(params["limit"])
+
+    scope_high_water =
+      (not full_sync && cursor.scope_sync_high_water) || Sync.latest_scope_event_id() || 0
+
+    user_high_water =
+      (not full_sync && cursor.user_sync_high_water) || Sync.latest_event_id_for_user(user.id) ||
+        0
 
     scope_changes =
-      cond do
-        is_integer(scope_sync_event_id) and is_integer(user_sync_event_id) ->
-          Sync.list_scope_changes_with_cursors(
-            user.id,
-            scope_sync_event_id,
-            user_sync_event_id
-          )
-
-        is_integer(scope_sync_event_id) ->
-          Sync.list_scope_changes_since(user.id, scope_sync_event_id)
-
-        is_integer(user_sync_event_id) ->
-          Sync.list_scope_changes_since(user.id, user_sync_event_id)
-
-        true ->
-          %{channel_ids: [], conversation_ids: [], read_changes: []}
+      if full_sync do
+        %{
+          channel_ids: [],
+          conversation_ids: [],
+          server_ids: [],
+          read_changes: [],
+          next_scope_event_id: scope_high_water,
+          next_user_event_id: user_high_water,
+          has_more: false
+        }
+      else
+        Sync.list_scope_changes_page(
+          user.id,
+          scope_sync_event_id,
+          user_sync_event_id,
+          scope_high_water,
+          user_high_water,
+          limit: limit
+        )
+        |> filter_authorized_scope_changes(user.id)
       end
 
     servers =
       if full_sync do
-        Servers.list_user_servers(user)
+        Servers.list_user_servers(user, include_channels: false, include_emojis: false)
       else
         # Delta sync: skip emoji preload — client already has them from full sync.
         # Saves 2 queries (emojis + emoji creators) per delta sync.
         Servers.list_user_servers_by_ids(user, scope_changes.server_ids, include_emojis: false)
       end
 
-    conversations =
+    conversation_page =
       if full_sync do
-        Chat.list_conversations(user.id)
+        Chat.list_conversations_page(user.id, limit: limit)
       else
-        Chat.list_conversations_by_ids(user.id, scope_changes.conversation_ids)
+        %{
+          items: Chat.list_conversations_by_ids(user.id, scope_changes.conversation_ids),
+          has_more: false,
+          next_cursor: nil
+        }
       end
+
+    conversations = conversation_page.items
 
     changed_conversation_ids = scope_changes.conversation_ids
 
@@ -79,15 +100,15 @@ defmodule VesperWeb.SyncController do
 
     {channel_activity, unread_counts} =
       if full_sync do
-        channel_ids = Servers.list_user_channel_ids(user.id)
-
         conversation_ids =
           Enum.map(conversations, fn %{conversation: c} -> c.id end)
 
-        unread_counts =
-          Chat.get_combined_unread_counts(user.id, channel_ids, conversation_ids)
+        unread_counts = %{
+          channels: %{},
+          conversations: Chat.get_dm_unread_counts_snapshot(user.id, conversation_ids)
+        }
 
-        {Servers.list_channel_activity_snapshots(user.id, channel_ids), unread_counts}
+        {[], unread_counts}
       else
         changed_channel_ids = scope_changes.channel_ids
         changed = Servers.list_channel_activity_snapshots(user.id, changed_channel_ids)
@@ -122,23 +143,81 @@ defmodule VesperWeb.SyncController do
         {changed, unread_counts}
       end
 
+    token_payload = %{
+      synced_at: DateTime.utc_now(),
+      user_sync_event_id: scope_changes.next_user_event_id,
+      scope_sync_event_id: scope_changes.next_scope_event_id
+    }
+
     token =
-      SyncCursor.encode(%{
-        synced_at: DateTime.utc_now(),
-        user_sync_event_id: Sync.latest_event_id_for_user(user.id),
-        scope_sync_event_id: Sync.latest_scope_event_id()
-      })
+      token_payload
+      |> maybe_put_page_high_water(scope_changes.has_more, scope_high_water, user_high_water)
+      |> SyncCursor.encode()
+
+    {conversation_payloads, users} =
+      conversations
+      |> Enum.map(&conversation_with_last_message_json/1)
+      |> ConversationPayload.compact()
 
     json(conn, %{
       token: token,
       full: full_sync,
+      has_more: scope_changes.has_more,
       servers: Enum.map(servers, &server_json/1),
-      conversations: Enum.map(conversations, &conversation_with_last_message_json/1),
+      conversations: conversation_payloads,
+      users: users,
+      conversations_has_more: conversation_page.has_more,
+      conversations_next_cursor: conversation_page.next_cursor,
       conversation_resets: conversation_resets,
       channel_activity: Enum.map(channel_activity, &channel_activity_json/1),
       unread_counts: unread_counts
     })
   end
+
+  defp filter_authorized_scope_changes(changes, user_id) do
+    visible_channel_ids =
+      user_id
+      |> Servers.list_viewable_channels(changes.channel_ids)
+      |> Enum.map(& &1.id)
+      |> MapSet.new()
+
+    visible_conversation_ids =
+      Chat.list_accessible_conversation_ids(user_id, changes.conversation_ids)
+
+    %{
+      changes
+      | channel_ids: MapSet.to_list(visible_channel_ids),
+        conversation_ids: MapSet.to_list(visible_conversation_ids),
+        read_changes:
+          Enum.filter(changes.read_changes, fn
+            {:channel, channel_id} ->
+              MapSet.member?(visible_channel_ids, channel_id)
+
+            {:dm, conversation_id} ->
+              MapSet.member?(visible_conversation_ids, conversation_id)
+          end)
+    }
+  end
+
+  defp maybe_put_page_high_water(payload, true, scope_high_water, user_high_water) do
+    payload
+    |> Map.put(:scope_sync_high_water, scope_high_water)
+    |> Map.put(:user_sync_high_water, user_high_water)
+  end
+
+  defp maybe_put_page_high_water(payload, false, _scope_high_water, _user_high_water),
+    do: payload
+
+  defp parse_limit(limit) when is_integer(limit) and limit > 0, do: min(limit, @max_limit)
+
+  defp parse_limit(limit) when is_binary(limit) do
+    case Integer.parse(limit) do
+      {value, _rest} when value > 0 -> min(value, @max_limit)
+      _ -> @default_limit
+    end
+  end
+
+  defp parse_limit(_), do: @default_limit
 
   defp parse_since(value), do: SyncCursor.decode(value)
 
@@ -148,6 +227,8 @@ defmodule VesperWeb.SyncController do
       name: server.name,
       icon_url: server.icon_url,
       owner_id: server.owner_id,
+      channels_loaded: Ecto.assoc_loaded?(server.channels),
+      emojis_loaded: Ecto.assoc_loaded?(server.emojis),
       channels:
         case server.channels do
           %Ecto.Association.NotLoaded{} -> []
