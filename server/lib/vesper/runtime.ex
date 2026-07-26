@@ -1,7 +1,6 @@
 defmodule Vesper.Runtime do
   import Ecto.Query
 
-  alias Vesper.Encryption
   alias Vesper.Sync
   alias Vesper.Chat.{DmConversation, Message}
   alias Vesper.Repo
@@ -15,10 +14,12 @@ defmodule Vesper.Runtime do
       :ets.new(@room_cache, [:set, :public, :named_table, read_concurrency: true])
     end
 
-    :ok
+    # Pre-warm cache with all rooms — avoids DB hit on first message per channel.
+    # Uses only immutable fields (id, kind, server_id, channel_id, conversation_id).
+    warm_room_cache()
   end
 
-  def warm_room_cache do
+  defp warm_room_cache do
     rooms = Repo.all(from(r in Room, select: r))
 
     for room <- rooms do
@@ -107,8 +108,7 @@ defmodule Vesper.Runtime do
         |> Room.changeset(%{
           kind: :channel,
           server_id: channel.server_id,
-          channel_id: channel.id,
-          activity_at: channel.inserted_at
+          channel_id: channel.id
         })
         |> Repo.insert()
     end
@@ -123,8 +123,7 @@ defmodule Vesper.Runtime do
         %Room{}
         |> Room.changeset(%{
           kind: :dm,
-          conversation_id: conversation.id,
-          activity_at: conversation.inserted_at
+          conversation_id: conversation.id
         })
         |> Repo.insert()
     end
@@ -139,13 +138,6 @@ defmodule Vesper.Runtime do
   """
   def project_message(%Message{} = message) do
     with {:ok, room} <- room_for_message(message),
-         :ok <-
-           Encryption.validate_application_scheme(
-             room.id,
-             message.encryption_scheme,
-             message.mls_epoch,
-             message.encryption_group_id
-           ),
          {:ok, event} <- ensure_message_event(room, message),
          {:ok, _} <- maybe_create_thread_relation(event, message) do
       update_room_last_message(room.id, message.id, message.inserted_at, event.room_seq)
@@ -327,7 +319,7 @@ defmodule Vesper.Runtime do
         now = DateTime.utc_now() |> DateTime.truncate(:second)
         event_id = Ecto.UUID.generate()
         content = message_content(message)
-        algorithm = if(message.ciphertext, do: message.encryption_scheme, else: nil)
+        algo = if(message.ciphertext, do: "mls", else: nil)
 
         sql = """
         WITH seq AS (
@@ -348,7 +340,7 @@ defmodule Vesper.Runtime do
           Ecto.UUID.dump!(message.id),
           content,
           message.ciphertext,
-          algorithm,
+          algo,
           message.mls_epoch
         ]
 
@@ -441,7 +433,6 @@ defmodule Vesper.Runtime do
       UPDATE rooms SET
         last_message_id = CASE WHEN COALESCE(last_message_seq, 0) < $3 THEN $1 ELSE last_message_id END,
         last_message_at = CASE WHEN COALESCE(last_message_seq, 0) < $3 THEN $2 ELSE last_message_at END,
-        activity_at = CASE WHEN COALESCE(last_message_seq, 0) < $3 THEN clock_timestamp() ELSE activity_at END,
         last_message_seq = GREATEST(COALESCE(last_message_seq, 0), $3),
         updated_at = $4
       WHERE id = $5
@@ -477,37 +468,27 @@ defmodule Vesper.Runtime do
       |> limit(1)
       |> Repo.one()
 
-    {message_id, inserted_at, message_seq} =
+    attrs =
       case latest_message do
         %Message{} = message ->
-          {message.id, message.inserted_at, latest_message_seq(room_id, message.id)}
+          [
+            last_message_id: message.id,
+            last_message_at: message.inserted_at,
+            last_message_seq: latest_message_seq(room_id, message.id),
+            updated_at: DateTime.utc_now() |> DateTime.truncate(:second)
+          ]
 
         nil ->
-          {nil, nil, nil}
+          [
+            last_message_id: nil,
+            last_message_at: nil,
+            last_message_seq: nil,
+            updated_at: DateTime.utc_now() |> DateTime.truncate(:second)
+          ]
       end
 
-    Repo.query!(
-      """
-      UPDATE rooms SET
-        last_message_id = $1,
-        last_message_at = $2,
-        last_message_seq = $3,
-        activity_at = COALESCE(
-          $2,
-          (SELECT inserted_at FROM dm_conversations WHERE id = rooms.conversation_id),
-          rooms.inserted_at
-        ),
-        updated_at = $4
-      WHERE id = $5
-      """,
-      [
-        if(message_id, do: Ecto.UUID.dump!(message_id), else: nil),
-        inserted_at,
-        message_seq,
-        DateTime.utc_now() |> DateTime.truncate(:second),
-        Ecto.UUID.dump!(room_id)
-      ]
-    )
+    from(room in Room, where: room.id == ^room_id)
+    |> Repo.update_all(set: attrs)
 
     :ok
   end
