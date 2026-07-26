@@ -57,13 +57,16 @@ defmodule VesperWeb.ConversationController do
       end)
       |> ConversationPayload.compact()
 
-    json(conn, %{
-      conversations: conversation_payloads,
-      users: users,
-      unread_counts: Chat.get_dm_unread_counts_snapshot(user.id, conversation_ids),
-      has_more: page.has_more,
-      next_cursor: page.next_cursor
-    })
+    payload =
+      %{
+        conversations: conversation_payloads,
+        unread_counts: Chat.get_dm_unread_counts_snapshot(user.id, conversation_ids),
+        has_more: page.has_more,
+        next_cursor: page.next_cursor
+      }
+      |> ConversationPayload.put_users(users)
+
+    json(conn, payload)
   end
 
   def show(conn, %{"id" => id}) do

@@ -159,19 +159,22 @@ defmodule VesperWeb.SyncController do
       |> Enum.map(&conversation_with_last_message_json/1)
       |> ConversationPayload.compact()
 
-    json(conn, %{
-      token: token,
-      full: full_sync,
-      has_more: scope_changes.has_more,
-      servers: Enum.map(servers, &server_json/1),
-      conversations: conversation_payloads,
-      users: users,
-      conversations_has_more: conversation_page.has_more,
-      conversations_next_cursor: conversation_page.next_cursor,
-      conversation_resets: conversation_resets,
-      channel_activity: Enum.map(channel_activity, &channel_activity_json/1),
-      unread_counts: unread_counts
-    })
+    payload =
+      %{
+        token: token,
+        full: full_sync,
+        has_more: scope_changes.has_more,
+        servers: Enum.map(servers, &server_json/1),
+        conversations: conversation_payloads,
+        conversations_has_more: conversation_page.has_more,
+        conversations_next_cursor: conversation_page.next_cursor,
+        conversation_resets: conversation_resets,
+        channel_activity: Enum.map(channel_activity, &channel_activity_json/1),
+        unread_counts: unread_counts
+      }
+      |> ConversationPayload.put_users(users)
+
+    json(conn, payload)
   end
 
   defp filter_authorized_scope_changes(changes, user_id) do

@@ -16,6 +16,9 @@ defmodule VesperWeb.ConversationPayload do
     end
   end
 
+  def put_users(payload, users) when map_size(users) == 0, do: payload
+  def put_users(payload, users), do: Map.put(payload, :users, users)
+
   def compact(conversations) when is_list(conversations) do
     {conversations, users} =
       Enum.map_reduce(conversations, %{}, fn conversation, users ->
