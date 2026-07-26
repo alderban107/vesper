@@ -410,7 +410,14 @@ function workspaceSnapshotBytes(storage, userId) {
 
 function ageCursor(token) {
   const payload = JSON.parse(Buffer.from(token, 'base64url').toString('utf8'))
-  payload.synced_at = new Date(Date.now() - 8 * DAY_MS).toISOString()
+  const expiredAt = new Date(Date.now() - 8 * DAY_MS)
+
+  if (Array.isArray(payload)) {
+    payload[1] = Math.floor(expiredAt.getTime() / 1000)
+  } else {
+    payload.synced_at = expiredAt.toISOString()
+  }
+
   return Buffer.from(JSON.stringify(payload)).toString('base64url')
 }
 
