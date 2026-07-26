@@ -42,7 +42,16 @@ defmodule VesperWeb.ConversationPayload do
   end
 
   defp put_user(users, nil), do: users
-  defp put_user(users, %{id: id} = user), do: Map.put_new(users, id, user)
+
+  defp put_user(users, %{id: id} = user) do
+    Map.put_new(users, id, compact_user(user))
+  end
+
+  defp compact_user(user) do
+    Enum.reduce([:display_name, :avatar_url, :banner_url], user, fn field, compact ->
+      if Map.get(compact, field) == nil, do: Map.delete(compact, field), else: compact
+    end)
+  end
 
   defp sender_json(nil), do: nil
 

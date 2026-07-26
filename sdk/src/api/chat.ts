@@ -78,8 +78,14 @@ export interface VesperConversation {
   last_message: VesperConversationMessagePreview | null
 }
 
+type VesperUserWire = Omit<VesperUser, 'display_name' | 'avatar_url' | 'banner_url'> & {
+  display_name?: string | null
+  avatar_url?: string | null
+  banner_url?: string | null
+}
+
 type VesperConversationWire = Omit<VesperConversation, 'participants' | 'last_message'> & {
-  participants: Array<Omit<VesperConversationParticipant, 'user'> & { user?: VesperUser | null }>
+  participants: Array<Omit<VesperConversationParticipant, 'user'> & { user?: VesperUserWire | null }>
   last_message:
     | (Omit<VesperConversationMessagePreview, 'sender'> & {
         sender?: VesperMemberPreview | null
@@ -87,9 +93,18 @@ type VesperConversationWire = Omit<VesperConversation, 'participants' | 'last_me
     | null
 }
 
+function hydrateUser(user: VesperUserWire): VesperUser {
+  return {
+    ...user,
+    display_name: user.display_name ?? null,
+    avatar_url: user.avatar_url ?? null,
+    banner_url: user.banner_url ?? null
+  }
+}
+
 function hydrateConversations(
   conversations: VesperConversationWire[] | undefined,
-  users: Record<string, VesperUser> | undefined
+  users: Record<string, VesperUserWire> | undefined
 ): VesperConversation[] {
   if (!Array.isArray(conversations)) return []
 
@@ -100,7 +115,7 @@ function hydrateConversations(
       if (!user) {
         throw new Error(`Conversation participant ${participant.user_id} is missing user data`)
       }
-      return { ...participant, user }
+      return { ...participant, user: hydrateUser(user) }
     }),
     last_message: conversation.last_message
       ? {
@@ -391,7 +406,7 @@ export async function listConversationsPage(
 
   const data = (await response.json()) as {
     conversations?: VesperConversationWire[]
-    users?: Record<string, VesperUser>
+    users?: Record<string, VesperUserWire>
     unread_counts?: Record<string, number>
     has_more?: boolean
     next_cursor?: string | null
@@ -430,7 +445,7 @@ export async function fetchWorkspaceSync(
   > & {
     servers?: VesperServerWire[]
     conversations?: VesperConversationWire[]
-    users?: Record<string, VesperUser>
+    users?: Record<string, VesperUserWire>
   }
 
   return {
