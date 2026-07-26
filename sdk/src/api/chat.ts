@@ -34,7 +34,8 @@ export interface VesperServer {
   emojis_loaded?: boolean
 }
 
-type VesperServerWire = Omit<VesperServer, 'channels' | 'emojis'> & {
+type VesperServerWire = Omit<VesperServer, 'channels' | 'emojis' | 'icon_url'> & {
+  icon_url?: string | null
   channels?: VesperChannel[]
   emojis?: VesperCustomEmoji[]
 }
@@ -44,6 +45,7 @@ function hydrateServers(servers: VesperServerWire[] | undefined): VesperServer[]
 
   return servers.map((server) => ({
     ...server,
+    icon_url: server.icon_url ?? null,
     channels: Array.isArray(server.channels) ? server.channels : [],
     channels_loaded: server.channels_loaded === true,
     emojis: Array.isArray(server.emojis) ? server.emojis : [],

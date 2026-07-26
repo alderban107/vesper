@@ -228,12 +228,15 @@ defmodule VesperWeb.SyncController do
     %{
       id: server.id,
       name: server.name,
-      icon_url: server.icon_url,
       owner_id: server.owner_id
     }
+    |> maybe_put_icon(server.icon_url)
     |> maybe_put_channels(server.channels)
     |> maybe_put_emojis(server.emojis)
   end
+
+  defp maybe_put_icon(server, nil), do: server
+  defp maybe_put_icon(server, icon_url), do: Map.put(server, :icon_url, icon_url)
 
   defp maybe_put_channels(server, %Ecto.Association.NotLoaded{}), do: server
 
