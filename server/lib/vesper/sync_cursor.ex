@@ -8,23 +8,20 @@ defmodule Vesper.SyncCursor do
   timestamp.
   """
 
-  @cursor_version 1
-
   def encode(%{synced_at: %DateTime{} = datetime} = payload) do
-    [
-      @cursor_version,
-      datetime |> DateTime.truncate(:second) |> DateTime.to_unix(),
-      Map.get(payload, :user_sync_event_id),
-      Map.get(payload, :scope_sync_event_id),
-      Map.get(payload, :user_sync_high_water),
-      Map.get(payload, :scope_sync_high_water)
-    ]
-    |> encode_token()
+    encoded =
+      payload
+      |> Map.put(:synced_at, DateTime.truncate(datetime, :second) |> DateTime.to_iso8601())
+      |> Jason.encode!()
+
+    Base.url_encode64(encoded, padding: false)
   end
 
   def encode(%DateTime{} = datetime) do
-    [@cursor_version, datetime |> DateTime.truncate(:second) |> DateTime.to_unix()]
-    |> encode_token()
+    datetime
+    |> DateTime.truncate(:second)
+    |> DateTime.to_iso8601()
+    |> Base.url_encode64(padding: false)
   end
 
   def retention_cutoff(now \\ DateTime.utc_now()) do
@@ -49,11 +46,18 @@ defmodule Vesper.SyncCursor do
         :error -> value
       end
 
-    case decode_json(decoded) do
-      {:ok, parsed} ->
-        decode_payload(parsed)
-
-      :error ->
+    with {:ok, parsed} <- decode_json(decoded),
+         {:ok, synced_at} <- decode_datetime(Map.get(parsed, "synced_at")) do
+      %{
+        # Shift back 1s to catch events inserted in the same truncated second
+        synced_at: DateTime.add(synced_at, -1, :second),
+        user_sync_event_id: decode_integer(Map.get(parsed, "user_sync_event_id")),
+        scope_sync_event_id: decode_integer(Map.get(parsed, "scope_sync_event_id")),
+        user_sync_high_water: decode_integer(Map.get(parsed, "user_sync_high_water")),
+        scope_sync_high_water: decode_integer(Map.get(parsed, "scope_sync_high_water"))
+      }
+    else
+      _ ->
         case DateTime.from_iso8601(decoded) do
           {:ok, parsed, _offset} ->
             # Shift back 1s to catch events inserted in the same truncated second
@@ -67,66 +71,12 @@ defmodule Vesper.SyncCursor do
 
   def decode(_value), do: nil
 
-  defp encode_token(payload) do
-    payload
-    |> Jason.encode!()
-    |> Base.url_encode64(padding: false)
-  end
-
   defp decode_json(value) do
     case Jason.decode(value) do
-      {:ok, parsed} when is_map(parsed) or is_list(parsed) -> {:ok, parsed}
+      {:ok, parsed} when is_map(parsed) -> {:ok, parsed}
       _ -> :error
     end
   end
-
-  defp decode_payload([
-         @cursor_version,
-         unix_seconds,
-         user_sync_event_id,
-         scope_sync_event_id,
-         user_sync_high_water,
-         scope_sync_high_water
-       ]) do
-    with {:ok, synced_at} <- decode_unix_datetime(unix_seconds) do
-      %{
-        synced_at: DateTime.add(synced_at, -1, :second),
-        user_sync_event_id: decode_integer(user_sync_event_id),
-        scope_sync_event_id: decode_integer(scope_sync_event_id),
-        user_sync_high_water: decode_integer(user_sync_high_water),
-        scope_sync_high_water: decode_integer(scope_sync_high_water)
-      }
-    else
-      _ -> nil
-    end
-  end
-
-  defp decode_payload([@cursor_version, unix_seconds]) do
-    with {:ok, synced_at} <- decode_unix_datetime(unix_seconds) do
-      %{synced_at: DateTime.add(synced_at, -1, :second), user_sync_event_id: nil}
-    else
-      _ -> nil
-    end
-  end
-
-  defp decode_payload(parsed) when is_map(parsed) do
-    with {:ok, synced_at} <- decode_datetime(Map.get(parsed, "synced_at")) do
-      %{
-        synced_at: DateTime.add(synced_at, -1, :second),
-        user_sync_event_id: decode_integer(Map.get(parsed, "user_sync_event_id")),
-        scope_sync_event_id: decode_integer(Map.get(parsed, "scope_sync_event_id")),
-        user_sync_high_water: decode_integer(Map.get(parsed, "user_sync_high_water")),
-        scope_sync_high_water: decode_integer(Map.get(parsed, "scope_sync_high_water"))
-      }
-    else
-      _ -> nil
-    end
-  end
-
-  defp decode_payload(_parsed), do: nil
-
-  defp decode_unix_datetime(value) when is_integer(value), do: DateTime.from_unix(value)
-  defp decode_unix_datetime(_value), do: :error
 
   defp decode_datetime(value) when is_binary(value) do
     case DateTime.from_iso8601(value) do
