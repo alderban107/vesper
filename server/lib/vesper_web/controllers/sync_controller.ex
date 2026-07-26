@@ -227,27 +227,21 @@ defmodule VesperWeb.SyncController do
       name: server.name,
       icon_url: server.icon_url,
       owner_id: server.owner_id,
+      channels_loaded: Ecto.assoc_loaded?(server.channels),
+      emojis_loaded: Ecto.assoc_loaded?(server.emojis),
+      channels:
+        case server.channels do
+          %Ecto.Association.NotLoaded{} -> []
+          channels -> Enum.map(channels, &channel_json/1)
+        end,
+      emojis:
+        case server.emojis do
+          %Ecto.Association.NotLoaded{} -> []
+          emojis -> Enum.map(emojis, &emoji_json/1)
+        end,
       inserted_at: server.inserted_at,
       updated_at: server.updated_at
     }
-    |> maybe_put_channels(server.channels)
-    |> maybe_put_emojis(server.emojis)
-  end
-
-  defp maybe_put_channels(server, %Ecto.Association.NotLoaded{}), do: server
-
-  defp maybe_put_channels(server, channels) do
-    server
-    |> Map.put(:channels_loaded, true)
-    |> Map.put(:channels, Enum.map(channels, &channel_json/1))
-  end
-
-  defp maybe_put_emojis(server, %Ecto.Association.NotLoaded{}), do: server
-
-  defp maybe_put_emojis(server, emojis) do
-    server
-    |> Map.put(:emojis_loaded, true)
-    |> Map.put(:emojis, Enum.map(emojis, &emoji_json/1))
   end
 
   defp channel_json(channel) do

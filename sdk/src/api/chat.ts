@@ -34,23 +34,6 @@ export interface VesperServer {
   emojis_loaded?: boolean
 }
 
-type VesperServerWire = Omit<VesperServer, 'channels' | 'emojis'> & {
-  channels?: VesperChannel[]
-  emojis?: VesperCustomEmoji[]
-}
-
-function hydrateServers(servers: VesperServerWire[] | undefined): VesperServer[] {
-  if (!Array.isArray(servers)) return []
-
-  return servers.map((server) => ({
-    ...server,
-    channels: Array.isArray(server.channels) ? server.channels : [],
-    channels_loaded: server.channels_loaded === true,
-    emojis: Array.isArray(server.emojis) ? server.emojis : [],
-    emojis_loaded: server.emojis_loaded === true
-  }))
-}
-
 export interface VesperConversationParticipant {
   id: string
   user_id: string
@@ -426,9 +409,8 @@ export async function fetchWorkspaceSync(
 
   const data = (await response.json()) as Omit<
     Partial<VesperWorkspaceSyncResponse>,
-    'servers' | 'conversations'
+    'conversations'
   > & {
-    servers?: VesperServerWire[]
     conversations?: VesperConversationWire[]
     users?: Record<string, VesperUser>
   }
@@ -437,7 +419,7 @@ export async function fetchWorkspaceSync(
     token: typeof data.token === 'string' ? data.token : null,
     full: Boolean(data.full),
     has_more: data.has_more === true,
-    servers: hydrateServers(data.servers),
+    servers: Array.isArray(data.servers) ? data.servers : [],
     conversations: hydrateConversations(data.conversations, data.users),
     conversations_has_more: data.conversations_has_more === true,
     conversations_next_cursor:
