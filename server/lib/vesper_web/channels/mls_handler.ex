@@ -13,6 +13,7 @@ defmodule VesperWeb.MlsHandler do
 
   alias Vesper.Encryption
   alias Vesper.Workers.ProcessPendingCryptoEvictions
+  alias VesperWeb.ControllerHelpers
   import VesperWeb.ChannelHelpers, only: [safe_decode64: 1]
 
   def handle_mls_request_join(payload, socket) do
@@ -385,9 +386,13 @@ defmodule VesperWeb.MlsHandler do
          membership_generation
          when is_integer(membership_generation) and membership_generation >= 0 <-
            Map.get(payload, "membership_generation"),
+         {:ok, authorization} <-
+           ControllerHelpers.authorize_history_scope(socket.assigns.user_id, scope.group_id),
          control_payload = %{
            requester_device_id: requester_device_id,
-           membership_generation: membership_generation
+           membership_generation: membership_generation,
+           authorization_generation: authorization.authorization_generation,
+           authorized_after_room_seq: authorization.authorized_after_room_seq
          },
          {:ok, result, status} <-
            run_control_operation(
@@ -404,11 +409,18 @@ defmodule VesperWeb.MlsHandler do
                           requester_id: socket.assigns.user_id,
                           requester_username: socket.assigns.username,
                           requester_client_id: requester_device_id,
-                          membership_generation: membership_generation
+                          membership_generation: membership_generation,
+                          authorization_generation: authorization.authorization_generation,
+                          authorized_after_room_seq: authorization.authorized_after_room_seq
                         }
                         |> Map.put(scope.id_key, scope.resource_id)
                       ) do
-                 {:ok, %{"id" => request.id}}
+                 {:ok,
+                  %{
+                    "id" => request.id,
+                    "authorization_generation" => request.authorization_generation,
+                    "authorized_after_room_seq" => request.authorized_after_room_seq
+                  }}
                end
              end
            ) do
@@ -417,7 +429,9 @@ defmodule VesperWeb.MlsHandler do
           id: result["id"],
           user_id: socket.assigns.user_id,
           device_id: requester_device_id,
-          membership_generation: membership_generation
+          membership_generation: membership_generation,
+          authorization_generation: result["authorization_generation"],
+          authorized_after_room_seq: result["authorized_after_room_seq"]
         })
 
         notify_fn.()
@@ -438,19 +452,22 @@ defmodule VesperWeb.MlsHandler do
         socket,
         scope
       ) do
-    recipient_device_id =
-      case Map.get(payload, "recipient_device_id") do
-        value when is_binary(value) and value != "" -> value
-        _ -> nil
-      end
+    recipient_device_id = optional_binary(Map.get(payload, "recipient_device_id"))
+    request_id = optional_binary(Map.get(payload, "request_id"))
+    membership_generation = Map.get(payload, "membership_generation")
 
     with {:ok, idempotency_key} <- require_idempotency_key(payload),
+         :ok <- validate_required_uuid(request_id, "request_id"),
+         {:ok, recipient_authorization} <-
+           ControllerHelpers.authorize_history_scope(recipient_id, scope.group_id),
          control_payload = %{
            ciphertext: ciphertext,
            mls_epoch: epoch,
            recipient_id: recipient_id,
            recipient_device_id: recipient_device_id,
-           membership_generation: Map.get(payload, "membership_generation")
+           request_id: request_id,
+           membership_generation: membership_generation,
+           authorization_generation: recipient_authorization.authorization_generation
          },
          {:ok, result, status} <-
            run_control_operation(
@@ -460,27 +477,42 @@ defmodule VesperWeb.MlsHandler do
              idempotency_key,
              control_payload,
              fn ->
+               attrs =
+                 %{
+                   group_id: scope.group_id,
+                   ciphertext: ciphertext,
+                   mls_epoch: epoch,
+                   recipient_id: recipient_id,
+                   recipient_client_id: recipient_device_id,
+                   sender_id: socket.assigns.user_id,
+                   membership_generation: membership_generation,
+                   current_authorization_generation:
+                     recipient_authorization.authorization_generation
+                 }
+                 |> Map.put(scope.id_key, scope.resource_id)
+
                with {:ok, bundle} <-
-                      Encryption.store_pending_history_bundle(
-                        %{
-                          group_id: scope.group_id,
-                          ciphertext: ciphertext,
-                          mls_epoch: epoch,
-                          recipient_id: recipient_id,
-                          recipient_client_id: recipient_device_id,
-                          sender_id: socket.assigns.user_id
-                        }
-                        |> Map.put(scope.id_key, scope.resource_id)
-                      ) do
-                 {:ok, %{"id" => bundle.id}}
+                      Encryption.fulfill_pending_history_request(request_id, attrs) do
+                 {:ok,
+                  %{
+                    "id" => bundle.id,
+                    "request_id" => bundle.request_id,
+                    "membership_generation" => bundle.membership_generation,
+                    "authorization_generation" => bundle.authorization_generation,
+                    "authorized_after_room_seq" => bundle.authorized_after_room_seq
+                  }}
                end
              end
            ) do
       if status == :new do
         broadcast!(socket, "mls_history_bundle", %{
           id: result["id"],
+          request_id: result["request_id"],
           ciphertext: ciphertext,
           mls_epoch: epoch,
+          membership_generation: result["membership_generation"],
+          authorization_generation: result["authorization_generation"],
+          authorized_after_room_seq: result["authorized_after_room_seq"],
           recipient_id: recipient_id,
           recipient_device_id: recipient_device_id,
           sender_id: socket.assigns.user_id
@@ -560,6 +592,9 @@ defmodule VesperWeb.MlsHandler do
   defp control_error_reply(reason, socket) when is_atom(reason),
     do: {:reply, {:error, %{reason: eviction_error_reason(reason)}}, socket}
 
+  defp control_error_reply(reason, socket) when is_binary(reason),
+    do: {:reply, {:error, %{reason: reason}}, socket}
+
   defp control_error_reply(_reason, socket),
     do: {:reply, {:error, %{reason: "could not store control operation"}}, socket}
 
@@ -598,6 +633,15 @@ defmodule VesperWeb.MlsHandler do
 
   def optional_binary(value) when is_binary(value) and value != "", do: value
   def optional_binary(_value), do: nil
+
+  def validate_required_uuid(nil, field), do: {:error, "missing #{field}"}
+
+  def validate_required_uuid(value, field) do
+    case Ecto.UUID.cast(value) do
+      {:ok, _uuid} -> :ok
+      :error -> {:error, "invalid #{field}"}
+    end
+  end
 
   def maybe_put(map, _key, nil), do: map
   def maybe_put(map, key, value), do: Map.put(map, key, value)

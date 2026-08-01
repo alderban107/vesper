@@ -322,6 +322,54 @@ for (const adapter of ['memory', 'file']) {
       ]
     )
   })
+
+  test(`${adapter} storage preserves encrypted room keys across runtime restart`, async (t) => {
+    const directory = adapter === 'file' ? await mkdtemp(path.join(tmpdir(), 'vesper-room-keys-')) : null
+    const filePath = directory ? path.join(directory, 'crypto.json') : null
+    const storage = adapter === 'file' ? new FileCryptoStorage(filePath) : new MemoryStorage()
+    const runtime = createCryptoStorageRuntime(storage)
+    runtime.init(`room-key-contract-${adapter}`)
+
+    t.after(async () => {
+      runtime.reset()
+      if (directory) {
+        await rm(directory, { recursive: true, force: true })
+      }
+    })
+
+    const encryptedRoomKey = {
+      roomId: 'room-1',
+      topologyGeneration: 2,
+      epoch: 7,
+      ciphertext: Uint8Array.from({ length: 48 }, (_, index) => index),
+      nonce: Uint8Array.from({ length: 12 }, (_, index) => 100 + index)
+    }
+
+    await runtime.saveScopeCheckpoint('cohort-1', {
+      groupId: 'cohort-1',
+      groupState: null,
+      lastEventSeq: 5,
+      recentCommitFingerprints: [],
+      recentHistoryBundleFingerprints: [],
+      repairState: null,
+      roomDataKeys: [encryptedRoomKey],
+      controlIntents: []
+    })
+
+    runtime.reset()
+    const restartedStorage = adapter === 'file' ? new FileCryptoStorage(filePath) : storage
+    const restarted = createCryptoStorageRuntime(restartedStorage)
+    restarted.init(`room-key-contract-${adapter}`)
+
+    const checkpoint = await restarted.loadScopeCheckpoint('cohort-1')
+    assert.equal(checkpoint.roomDataKeys.length, 1)
+    assert.equal(checkpoint.roomDataKeys[0]?.roomId, 'room-1')
+    assert.equal(checkpoint.roomDataKeys[0]?.topologyGeneration, 2)
+    assert.equal(checkpoint.roomDataKeys[0]?.epoch, 7)
+    assert.deepEqual(checkpoint.roomDataKeys[0]?.ciphertext, encryptedRoomKey.ciphertext)
+    assert.deepEqual(checkpoint.roomDataKeys[0]?.nonce, encryptedRoomKey.nonce)
+    restarted.reset()
+  })
 }
 
 test('file storage migrates legacy control records into the checkpoint journal once', async (t) => {

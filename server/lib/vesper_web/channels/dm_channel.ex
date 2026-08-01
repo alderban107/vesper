@@ -63,6 +63,7 @@ defmodule VesperWeb.DmChannel do
       end
 
     with {:ok, decoded} <- safe_decode64(ciphertext),
+         {:ok, history_signing_public_key} <- decode_history_signing_key(params),
          {:ok, relations} <-
            resolve_message_relations(params, :conversation_id, socket.assigns.conversation_id) do
       attrs =
@@ -72,6 +73,8 @@ defmodule VesperWeb.DmChannel do
           mls_epoch: epoch,
           encryption_scheme: Map.get(params, "encryption_scheme", "mls"),
           encryption_group_id: Map.get(params, "encryption_group_id"),
+          history_signing_public_key: history_signing_public_key,
+          history_revision: 0,
           conversation_id: socket.assigns.conversation_id,
           sender_id: socket.assigns.user_id,
           parent_message_id: relations.parent_message_id,
@@ -377,6 +380,8 @@ defmodule VesperWeb.DmChannel do
            epoch,
            Map.get(params, "encryption_scheme", "mls"),
            Map.get(params, "encryption_group_id"),
+           Map.get(params, "history_signing_public_key"),
+           Map.get(params, "history_revision"),
            socket
          ) do
       {:ok, payload} ->

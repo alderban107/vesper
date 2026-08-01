@@ -9,13 +9,14 @@ defmodule VesperWeb.PendingHistoryBundleController do
     current_device = conn.assigns.current_device
 
     case authorized_scope(user.id, scope_id) do
-      {:ok, authorized_group_id} ->
+      {:ok, authorization} ->
         render_bundles(
           conn,
           Encryption.get_pending_history_bundles(
             user.id,
-            authorized_group_id,
-            current_device.client_id
+            authorization.group_id,
+            current_device.client_id,
+            authorization.authorization_generation
           )
         )
 
@@ -57,8 +58,12 @@ defmodule VesperWeb.PendingHistoryBundleController do
         Enum.map(bundles, fn bundle ->
           %{
             id: bundle.id,
+            request_id: bundle.request_id,
             ciphertext: bundle.ciphertext,
             mls_epoch: bundle.mls_epoch,
+            membership_generation: bundle.membership_generation,
+            authorization_generation: bundle.authorization_generation,
+            authorized_after_room_seq: bundle.authorized_after_room_seq,
             recipient_id: bundle.recipient_id,
             recipient_client_id: bundle.recipient_client_id,
             sender_id: bundle.sender_id,
@@ -69,9 +74,6 @@ defmodule VesperWeb.PendingHistoryBundleController do
   end
 
   defp authorized_scope(user_id, scope_id) do
-    case ControllerHelpers.authorize_mls_scope(user_id, scope_id) do
-      {:ok, %{group_id: group_id}} -> {:ok, group_id}
-      error -> error
-    end
+    ControllerHelpers.authorize_history_scope(user_id, scope_id)
   end
 end

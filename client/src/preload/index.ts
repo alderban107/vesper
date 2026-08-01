@@ -1,6 +1,14 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
+interface EncryptedRoomDataKeyStorageRecord {
+  room_id: string
+  topology_generation: number
+  epoch: number
+  ciphertext: string
+  nonce: string
+}
+
 interface ControlIntentStorageRecord {
   version: 1
   operation: string
@@ -85,6 +93,7 @@ const cryptoDbApi = {
       repair_failure_count?: number
       repair_last_error?: string | null
       repair_updated_at?: string | null
+      room_data_keys?: EncryptedRoomDataKeyStorageRecord[]
       control_intents?: ControlIntentStorageRecord[]
     }
   ) =>

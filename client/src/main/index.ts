@@ -44,6 +44,14 @@ import {
   type LinkPreviewData
 } from '../shared/linkPreview'
 
+interface EncryptedRoomDataKeyStorageRecord {
+  room_id: string
+  topology_generation: number
+  epoch: number
+  ciphertext: string
+  nonce: string
+}
+
 interface ControlIntentStorageRecord {
   version: 1
   operation: string
@@ -265,6 +273,7 @@ function registerIpcHandlers(): void {
         repair_failure_count?: number
         repair_last_error?: string | null
         repair_updated_at?: string | null
+        room_data_keys?: EncryptedRoomDataKeyStorageRecord[]
         control_intents?: ControlIntentStorageRecord[]
       }
     ) => setScopeCheckpoint(groupId, checkpoint)

@@ -20,6 +20,7 @@ import {
   activateRoomKeyEpoch,
   fetchActiveRoomKeyEpoch,
   fetchCohortWrappingKey,
+  fetchRoomKeyEpoch,
   type RoomCryptoTopologyResolution,
   type RoomKeyEpochRecord,
   prepareRoomKeyEpoch,
@@ -68,6 +69,7 @@ import {
   removeMemberFromGroup,
   removeMembersFromGroup,
   serializeGroupState,
+  signWithSerializedIdentity,
   type RoomKeyEnvelopeContext,
   unwrapRoomDataKey,
   verifyCohortWrappingPublication,
@@ -82,6 +84,13 @@ import { cacheSentMessage } from '../crypto/decryptionCache.js'
 import { withGroupLock } from '../crypto/groupLock.js'
 import type { MessagePayload } from '../crypto/payload.js'
 import type { VesperClient } from './index.js'
+import { applicationHistoryIncludesRoomSeq, normalizeApplicationHistoryAuthorization, type ApplicationHistoryAuthorization } from './historyAuthorization.js'
+import {
+  messageHistorySigningBytes,
+  verifyHistoryBundlePlaintext,
+  withMessageHistoryAuthentication,
+  type MessageHistoryBinding
+} from './messageAuthenticity.js'
 import { MLSDiagnostics } from './mlsDiagnostics.js'
 import { RoomCryptoState } from './roomCryptoState.js'
 
@@ -97,7 +106,9 @@ const HISTORY_SYNC_REQUEST_COOLDOWN_MS = 1_000
 const HISTORY_BUNDLE_WAIT_MS = 5_000
 const HISTORY_BUNDLE_POLL_MS = 200
 const MAX_MESSAGES_PER_SCOPE = 200
+const MAX_HISTORY_AUTHORIZATION_ROWS = 10_000
 const MAX_SCOPE_RECOVERY_PACKAGE_BYTES = 262_144
+const MAX_PERSISTED_ROOM_KEY_EPOCHS = 8
 const SCOPE_RECOVERY_PACKAGE_VERSION = 1
 const DECRYPTION_PLACEHOLDER = '[Encrypted message unavailable]'
 const SCOPE_NOT_READY = Symbol('scope-not-ready')
@@ -126,6 +137,13 @@ interface ScopeRecoveryPackageMessage {
   insertedAt: string
 }
 
+interface ScopeRecoveryPackageRoomDataKey {
+  roomId: string
+  topologyGeneration: number
+  epoch: number
+  key: string
+}
+
 interface ScopeRecoveryPackagePayload {
   version: number
   logicalScopeId: string
@@ -135,6 +153,7 @@ interface ScopeRecoveryPackagePayload {
   lastEventSeq: number
   generatedAt: string
   messages: ScopeRecoveryPackageMessage[]
+  roomDataKeys?: ScopeRecoveryPackageRoomDataKey[]
 }
 
 export interface ProcessedScopeMessage {
@@ -342,8 +361,7 @@ type SponsoredTransitionIntentPayload = Omit<
   ratchetTreeData: string | null
   baseState: string | null
 }
-type ScopeRepairStatus =
-  | 'healthy'
+type ScopeRepairStatus = 'healthy'
   | 'replaying'
   | 'waiting_for_welcome'
   | 'waiting_for_same_user_bundle'
@@ -357,7 +375,7 @@ type ScopeRepairState = {
   updatedAt: string | null
 }
 type CommitHandlingResult =
-  | { status: 'applied'; fingerprint: string }
+  { status: 'applied'; fingerprint: string }
   | { status: 'already_applied'; fingerprint: string }
   | { status: 'buffered_waiting_for_state' }
   | { status: 'needs_repair'; error: string | null }
@@ -401,11 +419,9 @@ function samePendingGroupInfoPublish(
   left: PendingGroupInfoPublish,
   right: PendingGroupInfoPublish
 ): boolean {
-  return (
-    left.epoch === right.epoch &&
+  return left.epoch === right.epoch &&
     uint8ArraysEqual(left.groupInfoData, right.groupInfoData) &&
     uint8ArraysEqual(left.ratchetTreeData, right.ratchetTreeData)
-  )
 }
 
 function samePendingExternalCommitBroadcast(
@@ -483,6 +499,11 @@ function cloneScopeCheckpointRecord(checkpoint: ScopeCheckpointRecord): ScopeChe
           updatedAt: checkpoint.repairState.updatedAt
         }
       : null,
+    roomDataKeys: checkpoint.roomDataKeys.map((record) => ({
+      ...record,
+      ciphertext: new Uint8Array(record.ciphertext),
+      nonce: new Uint8Array(record.nonce)
+    })),
     controlIntents: checkpoint.controlIntents.map((intent) => ({ ...intent }))
   }
 }
@@ -503,7 +524,10 @@ function normalizeScopeRepairState(
 }
 
 function toScopeRepairState(
-  value: { status: string; failureCount: number; lastError: string | null; updatedAt: string | null } | null
+  value: { status: string
+    failureCount: number
+    lastError: string | null
+    updatedAt: string | null } | null
 ): ScopeRepairState | null {
   if (!value) {
     return null
@@ -591,6 +615,10 @@ function normalizePayload(payload: unknown): Record<string, unknown> | null {
   return payload && typeof payload === 'object' && !Array.isArray(payload)
     ? (payload as Record<string, unknown>)
     : null
+}
+
+type RequestHistoryAuthorization = ApplicationHistoryAuthorization & {
+  requestId: string
 }
 
 type HistoryBundleItem = {
@@ -737,6 +765,7 @@ export class VesperEncryptedChat {
   private readonly lastRepairFetchAt = new Map<string, number>()
   private readonly recoveryPackagePublishes = new Map<string, Promise<void>>()
   private readonly importedRecoveryPackageCursors = new Map<string, number>()
+  private readonly importedRecoveryPackageFingerprints = new Map<string, string>()
   private readonly roomCrypto = new RoomCryptoState()
   private readonly diagnostics = new MLSDiagnostics()
   private readonly welcomeInProgress = new Set<string>()
@@ -1045,6 +1074,8 @@ export class VesperEncryptedChat {
     this.replayBlockedScopes.clear()
     this.pendingRepairFetches.clear()
     this.lastRepairFetchAt.clear()
+    this.importedRecoveryPackageCursors.clear()
+    this.importedRecoveryPackageFingerprints.clear()
     this.roomCrypto.clear()
 
     for (const waiters of this.membershipWaiters.values()) {
@@ -1234,9 +1265,7 @@ export class VesperEncryptedChat {
       return false
     }
 
-    return (
-      findExactMemberLeafIndex(state, buildClientCredentialIdentity(userId, deviceId)) !== null
-    )
+    return findExactMemberLeafIndex(state, buildClientCredentialIdentity(userId, deviceId)) !== null
   }
 
   private dmGroupAlreadyConverged(scopeId: string, peerUserId: string): boolean {
@@ -1321,12 +1350,18 @@ export class VesperEncryptedChat {
         messages: await this.retryFailedRoomApplicationMessages(scope, applied.messages)
       }
 
-      if (applied.messages.some((message) => message.decryptionFailed)) {
-        const priorPackageCursor = this.importedRecoveryPackageCursors.get(logicalScopeId) ?? -1
-        await this.importScopeRecoveryPackage(scope)
-        const importedPackageCursor = this.importedRecoveryPackageCursors.get(logicalScopeId) ?? -1
+      if (applied.messages.some((message) => message.decryptionFailed && (message.raw.encryption_scheme ?? 'mls') === 'mls')) {
+        await this.processPendingHistoryBundles(scope)
+        const recoveredExisting = await this.loadProcessedCachedMessages(logicalScopeId)
+        applied = await this.applyScopeSyncDelta(scope, recoveredExisting, delta.messages, [])
+      }
 
-        if (importedPackageCursor > priorPackageCursor) {
+      if (applied.messages.some((message) => message.decryptionFailed)) {
+        const priorPackageFingerprint = this.importedRecoveryPackageFingerprints.get(logicalScopeId) ?? null
+        await this.importScopeRecoveryPackage(scope)
+        const importedPackageFingerprint = this.importedRecoveryPackageFingerprints.get(logicalScopeId) ?? null
+
+        if (importedPackageFingerprint != null && importedPackageFingerprint !== priorPackageFingerprint) {
           const recoveredExisting = await this.loadProcessedCachedMessages(logicalScopeId)
           applied = await this.applyScopeSyncDelta(scope, recoveredExisting, delta.messages, [])
         }
@@ -1363,8 +1398,7 @@ export class VesperEncryptedChat {
       const [syncState] = await Promise.all([syncPromise, controlPromise])
       const entry = syncState.scopes.find((candidate) => candidate.scope_id === syncId) ?? null
       const existing =
-        this.scopeMessages.get(logicalScopeId) ??
-        await this.loadProcessedCachedMessages(logicalScopeId)
+        this.scopeMessages.get(logicalScopeId) ?? (await this.loadProcessedCachedMessages(logicalScopeId))
       const applied = await this.applyScopeSyncDelta(
         scope,
         existing,
@@ -1478,12 +1512,18 @@ export class VesperEncryptedChat {
     try {
       try {
         pushed = await this.withReadyApplicationOperation(scope, true, async () => {
-          const plaintext = encodePayload(payload)
+          const clientNonce = options.clientNonce ?? crypto.randomUUID()
+          const authenticatedPayload = await this.authenticateMessagePayload(scope, payload, {
+            type: 'client_nonce',
+            value: clientNonce,
+            revision: 0
+          })
+          const plaintext = encodePayload(authenticatedPayload)
           const encrypted = await this.encryptApplicationForScope(
             scope,
             plaintext,
             'message',
-            options.clientNonce ?? crypto.randomUUID()
+            clientNonce
           )
           await cacheSentMessage(this.storage, encrypted.ciphertext, plaintext)
 
@@ -1491,7 +1531,10 @@ export class VesperEncryptedChat {
             ciphertext: encrypted.ciphertext,
             mls_epoch: encrypted.epoch,
             encryption_scheme: encrypted.scheme,
-            encryption_group_id: encrypted.groupId
+            encryption_group_id: encrypted.groupId,
+            history_signing_public_key:
+              authenticatedPayload.history_auth?.signer_public_key,
+            history_revision: 0
           }
 
           if (options.threadRootMessageId) {
@@ -1537,8 +1580,7 @@ export class VesperEncryptedChat {
 
       if (
         attemptedPush &&
-        options.clientNonce &&
-        await this.confirmDeliveredSend(scope, options.clientNonce)
+        options.clientNonce && (await this.confirmDeliveredSend(scope, options.clientNonce))
       ) {
         return
       }
@@ -1559,6 +1601,43 @@ export class VesperEncryptedChat {
     } finally {
       release()
     }
+  }
+
+  private async authenticateMessagePayload(
+    scope: EncryptedScope,
+    payload: MessagePayload,
+    binding: MessageHistoryBinding
+  ): Promise<MessagePayload> {
+    const session = this.client.getAuthSession()
+    const user = session?.user ?? this.client.getState().user
+    if (!user) {
+      throw new Error('Cannot authenticate message history without an account session')
+    }
+
+    const identity = await this.withStorageContext(async () =>
+      await this.storage.loadIdentity(user.id)
+    )
+    if (!identity?.signaturePrivateKey) {
+      throw new Error('Cannot authenticate message history without an unlocked signing key')
+    }
+
+    const scopeId = this.resolveRoomId(scope)
+    const signature = signWithSerializedIdentity(
+      buildClientCredentialIdentity(user.id, this.requireDeviceId()),
+      identity.publicIdentityKey,
+      identity.signaturePrivateKey,
+      messageHistorySigningBytes(scopeId, binding, payload)
+    )
+
+    return withMessageHistoryAuthentication(payload, {
+      v: 1,
+      scope_id: scopeId,
+      binding_type: binding.type,
+      binding: binding.value,
+      revision: binding.revision,
+      signer_public_key: uint8ToBase64(identity.publicIdentityKey),
+      signature: uint8ToBase64(signature)
+    })
   }
 
   private async queuePendingMessageSend(
@@ -1625,7 +1704,8 @@ export class VesperEncryptedChat {
       return
     }
 
-    let parsed: { payload: MessagePayload; options: SendPayloadOptions } | null = null
+    let parsed: { payload: MessagePayload
+      options: SendPayloadOptions } | null = null
     try {
       parsed = JSON.parse(pending.payloadJson)
     } catch {
@@ -1788,7 +1868,7 @@ export class VesperEncryptedChat {
     await this.withLockedScopeOperation(groupId, async () => {
       this.scopeKinds.set(groupId, scope.channelId ? 'channel' : scope.kind)
 
-      if (this.hasGroup(groupId) && !await this.ensureCurrentGroupInfoPublished(groupId)) {
+      if (this.hasGroup(groupId) && !(await this.ensureCurrentGroupInfoPublished(groupId))) {
         throw new Error(`Failed to publish GroupInfo for ${scopeTopic(scope)}`)
       }
 
@@ -1810,11 +1890,11 @@ export class VesperEncryptedChat {
     const groupId = this.resolveMlsGroupId(scope)
     await this.withStorageContext(async () => {
       if (
-        !await this.pushResyncRequestForScope(groupId, scope.channelId ? 'channel' : scope.kind, {
+        !(await this.pushResyncRequestForScope(groupId, scope.channelId ? 'channel' : scope.kind, {
           lastKnownEpoch: options.lastKnownEpoch ?? null,
           reason: options.reason ?? null,
           username: options.username ?? null
-        })
+        }))
       ) {
         throw new Error(`Failed to request resync for ${scopeTopic(scope)}`)
       }
@@ -1872,7 +1952,7 @@ export class VesperEncryptedChat {
       if (!this.hasGroup(groupId)) {
         return false
       }
-      if (!await this.ensureCurrentGroupInfoPublished(groupId)) {
+      if (!(await this.ensureCurrentGroupInfoPublished(groupId))) {
         return false
       }
       return true
@@ -2066,7 +2146,7 @@ export class VesperEncryptedChat {
 
   async publishScopeCohortWrappingKey(scope: EncryptedScope): Promise<boolean> {
     const topology = await this.ensureScopeTopology(scope)
-    if (!await this.publishCohortWrappingKeyForTopology(topology)) {
+    if (!(await this.publishCohortWrappingKeyForTopology(topology))) {
       return false
     }
 
@@ -2207,20 +2287,18 @@ export class VesperEncryptedChat {
       mlsEpoch: stored.mlsEpoch
     }
 
-    return await verifyCohortWrappingPublication(
+    return (await verifyCohortWrappingPublication(
       expected,
       publication,
       publishedGroupInfo.groupInfoData,
       publishedGroupInfo.ratchetTreeData
-    )
-      ? publication
+    )) ? publication
       : null
   }
 
   async coordinateRoomKeyEpoch(
     scope: EncryptedScope,
-    reason:
-      | 'initial'
+    reason: 'initial'
       | 'membership_change'
       | 'topology_change'
       | 'wrapping_key_rotation'
@@ -2254,8 +2332,7 @@ export class VesperEncryptedChat {
   private async coordinateRoomKeyEpochForTopology(
     scope: EncryptedScope,
     topology: RoomCryptoTopologyResolution,
-    reason:
-      | 'initial'
+    reason: 'initial'
       | 'membership_change'
       | 'topology_change'
       | 'wrapping_key_rotation'
@@ -2369,7 +2446,10 @@ export class VesperEncryptedChat {
     const completed = stage
       ? await stageRoomKeyEpoch(epoch.id, epoch.fencingToken, this.client.getHttpClient())
       : await activateRoomKeyEpoch(epoch.id, epoch.fencingToken, this.client.getHttpClient())
-    this.roomCrypto.rememberDataKey(completed.roomId, completed.epoch, roomKey)
+    await this.rememberRoomDataKey(scope, completed.topologyGeneration, completed.epoch, roomKey)
+    void this.publishScopeRecoveryPackage(scope).catch((error) => {
+      this.logIgnoredError('publish room-key recovery package', error)
+    })
     return completed
   }
 
@@ -2393,6 +2473,12 @@ export class VesperEncryptedChat {
     const cachedKey = this.roomCrypto.dataKey(topology.roomId, active.epoch)
     if (cachedKey) {
       return cachedKey
+    }
+
+    const persisted = await this.loadPersistedRoomDataKey(scope, active.epoch, active.topologyGeneration)
+    if (persisted) {
+      this.roomCrypto.rememberDataKey(topology.roomId, active.epoch, persisted.key)
+      return persisted.key
     }
 
     const ownEnvelope = active.envelopes.find(
@@ -2421,7 +2507,54 @@ export class VesperEncryptedChat {
           ownEnvelope.wrappingMlsEpoch
         )
       )
-      this.roomCrypto.rememberDataKey(active.roomId, active.epoch, roomKey)
+      await this.rememberRoomDataKey(scope, active.topologyGeneration, active.epoch, roomKey)
+      return roomKey
+    } catch {
+      return null
+    }
+  }
+
+  private async loadRoomDataKeyForEpoch(scope: EncryptedScope, epochNumber: number): Promise<Uint8Array | null> {
+    const topology = await this.ensureScopeTopology(scope)
+    if (topology.mode !== 'multi_cohort') {
+      return null
+    }
+
+    const cached = this.roomCrypto.dataKey(topology.roomId, epochNumber)
+    if (cached) {
+      return cached
+    }
+
+    const persisted = await this.loadPersistedRoomDataKey(scope, epochNumber)
+    if (persisted) {
+      this.roomCrypto.rememberDataKey(topology.roomId, epochNumber, persisted.key)
+      return persisted.key
+    }
+
+    const retained = await fetchRoomKeyEpoch(this.resolveRoomId(scope), epochNumber, this.client.getHttpClient())
+    const ownEnvelope = retained?.envelopes[0]
+    if (!retained || !ownEnvelope) {
+      return null
+    }
+
+    const historicalTopology: RoomCryptoTopologyResolution = {
+      ...topology,
+      generation: retained.topologyGeneration,
+      cohortId: ownEnvelope.cohortId,
+      groupId: ownEnvelope.groupId
+    }
+    const wrapping = await this.deriveCohortWrappingKeyForTopology(historicalTopology)
+    if (!wrapping || ownEnvelope.wrappingMlsEpoch !== wrapping.publication.mlsEpoch) {
+      return null
+    }
+
+    try {
+      const roomKey = await unwrapRoomDataKey(
+        ownEnvelope,
+        wrapping.privateKey,
+        this.roomKeyEnvelopeContext(retained, { cohortId: ownEnvelope.cohortId, groupId: ownEnvelope.groupId }, ownEnvelope.wrappingMlsEpoch)
+      )
+      await this.rememberRoomDataKey(scope, retained.topologyGeneration, retained.epoch, roomKey)
       return roomKey
     } catch {
       return null
@@ -2542,20 +2675,41 @@ export class VesperEncryptedChat {
     const release = await this.acquireScopeWatch(scope)
     try {
       await this.withReadyApplicationOperation(scope, false, async () => {
+        const currentMessage = (
+          this.scopeMessages.get(scope.id) ??
+          this.scopeMessages.get(this.resolveRoomId(scope)) ??
+          []
+        ).find((message) => message.id === messageId)
+        if (!currentMessage) {
+          throw new Error(`Cannot edit unloaded message ${messageId}`)
+        }
+        const currentRevision = currentMessage.raw.history_revision ?? 0
+        if (!Number.isSafeInteger(currentRevision) || currentRevision < 0) {
+          throw new Error(`Invalid message history revision for ${messageId}`)
+        }
+        const revision = currentRevision + 1
+        const payload = await this.authenticateMessagePayload(
+          scope,
+          { v: 1, type: 'text', text },
+          { type: 'message_id', value: messageId, revision }
+        )
+        const plaintext = encodePayload(payload)
         const encrypted = await this.encryptApplicationForScope(
           scope,
-          encodePayload({ v: 1, type: 'text', text }),
+          plaintext,
           'edit',
           messageId
         )
-        await cacheSentMessage(this.storage, encrypted.ciphertext, text)
+        await cacheSentMessage(this.storage, encrypted.ciphertext, plaintext)
 
         const pushed = await this.pushScopeEventResolved(scope, 'edit_message', {
           message_id: messageId,
           ciphertext: encrypted.ciphertext,
           mls_epoch: encrypted.epoch,
           encryption_scheme: encrypted.scheme,
-          encryption_group_id: encrypted.groupId
+          encryption_group_id: encrypted.groupId,
+          history_signing_public_key: payload.history_auth?.signer_public_key,
+          history_revision: revision
         })
         if (!pushed) {
           throw new Error(`Failed to edit message in ${scopeTopic(scope)}`)
@@ -2754,8 +2908,8 @@ export class VesperEncryptedChat {
       // Non-DM scope (channel) — External Commit into the sender's group.
       // Retry once after a short delay if the first attempt fails — the
       // GroupInfo publish may still be in flight when this event arrives.
-      if (!await this.tryJoinViaExternalCommit(groupId)) {
-        await new Promise(r => setTimeout(r, 500))
+      if (!(await this.tryJoinViaExternalCommit(groupId))) {
+        await new Promise((r) => setTimeout(r, 500))
         await this.tryJoinViaExternalCommit(groupId)
       }
       return { scope, event, payload }
@@ -2770,6 +2924,8 @@ export class VesperEncryptedChat {
       const requesterId = this.getString(payload, 'user_id')
       const requesterDeviceId = this.getString(payload, 'device_id')
       const requesterMembershipGeneration = this.getNumber(payload, 'membership_generation')
+      const pendingRequestId = this.getString(payload, 'id')
+      const requestAuthorization = normalizeApplicationHistoryAuthorization(payload?.authorization_generation, payload?.authorized_after_room_seq)
       const localUserId = this.client.getAuthSession()?.user.id ?? this.client.getState().user?.id
       const localDeviceId = this.client.deviceIdentity?.id ?? null
 
@@ -2777,6 +2933,8 @@ export class VesperEncryptedChat {
         requesterId &&
         requesterDeviceId &&
         requesterMembershipGeneration != null &&
+        pendingRequestId &&
+        requestAuthorization &&
         localUserId &&
         localDeviceId &&
         !(requesterId === localUserId && requesterDeviceId === localDeviceId) &&
@@ -2786,9 +2944,7 @@ export class VesperEncryptedChat {
           scope,
           requesterId,
           requesterDeviceId,
-          requesterMembershipGeneration,
-          this.getString(payload, 'id')
-        )
+          requesterMembershipGeneration, { ...requestAuthorization, requestId: pendingRequestId })
       }
 
       return { scope, event, payload }
@@ -2804,11 +2960,9 @@ export class VesperEncryptedChat {
         recipientId === localUserId &&
         recipientDeviceId === localDeviceId
       ) {
-        await this.processHistoryBundle(scope, {
-          id: this.getString(payload, 'id'),
-          ciphertext: this.getString(payload, 'ciphertext') ?? '',
-          mlsEpoch: this.getNumber(payload, 'mls_epoch')
-        })
+        // Treat the websocket event as a wake-up signal. The stored bundle is
+        // consumed only after its authoritative message rows have been fetched.
+        await this.processPendingHistoryBundles(scope)
       }
 
       return { scope, event, payload }
@@ -3175,11 +3329,11 @@ export class VesperEncryptedChat {
         membership_generation: candidate.membershipGeneration
       }))
       const idempotencyKey = await sha256Hex(
-        `${groupId}\nmls_remove_batch\n${candidates
-          .map((candidate) => candidate.id)
-          .sort()
-          .join(',')}`
-      )
+          `${groupId}\nmls_remove_batch\n${candidates
+            .map((candidate) => candidate.id)
+            .sort()
+            .join(',')}`
+        )
       const first = candidates[0]!
       const eventPayload = {
         removed_user_id: first.targetUserId,
@@ -3267,7 +3421,7 @@ export class VesperEncryptedChat {
         return false
       }
 
-      if (!await this.scopeRequiresExternalJoin(topology, resourceId, localUserId)) {
+      if (!(await this.scopeRequiresExternalJoin(topology, resourceId, localUserId))) {
         return true
       }
 
@@ -3275,7 +3429,7 @@ export class VesperEncryptedChat {
         return true
       }
 
-      if (!await this.ensureCurrentGroupInfoPublished(groupId)) {
+      if (!(await this.ensureCurrentGroupInfoPublished(groupId))) {
         return false
       }
 
@@ -3290,8 +3444,7 @@ export class VesperEncryptedChat {
     }
 
     if (
-      topology.mode !== 'multi_cohort' &&
-      await this.channelHasExistingActivity(resourceId)
+      topology.mode !== 'multi_cohort' && (await this.channelHasExistingActivity(resourceId))
     ) {
       return false
     }
@@ -3312,11 +3465,11 @@ export class VesperEncryptedChat {
 
     this.scopesWithoutRemoteGroup.delete(groupId)
 
-    if (!await this.ensureCurrentGroupInfoPublished(groupId)) {
+    if (!(await this.ensureCurrentGroupInfoPublished(groupId))) {
       return false
     }
 
-    if (!await this.scopeRequiresExternalJoin(topology, resourceId, localUserId)) {
+    if (!(await this.scopeRequiresExternalJoin(topology, resourceId, localUserId))) {
       return true
     }
 
@@ -3343,8 +3496,7 @@ export class VesperEncryptedChat {
     }
 
     if (
-      topology.mode !== 'multi_cohort' &&
-      await this.channelHasExistingActivity(resourceId)
+      topology.mode !== 'multi_cohort' && (await this.channelHasExistingActivity(resourceId))
     ) {
       return false
     }
@@ -3364,7 +3516,7 @@ export class VesperEncryptedChat {
       return false
     }
 
-    if (!await this.ensureCurrentGroupInfoPublished(groupId)) {
+    if (!(await this.ensureCurrentGroupInfoPublished(groupId))) {
       return false
     }
 
@@ -3435,7 +3587,7 @@ export class VesperEncryptedChat {
       this.ensureBackgroundChannelMembershipRetry(scope)
     }
 
-    if (!await this.maybeRequestScopeResync(scope, options)) {
+    if (!(await this.maybeRequestScopeResync(scope, options))) {
       return false
     }
 
@@ -3692,7 +3844,7 @@ export class VesperEncryptedChat {
         if (result.status === 'conflict') {
           if (attempt < MAX_RETRIES - 1) {
             // Another joiner won this epoch. Jitter and retry with fresh GroupInfo.
-            await new Promise(r => setTimeout(r, 50 + Math.floor(Math.random() * 300 * (attempt + 1))))
+            await new Promise((r) => setTimeout(r, 50 + Math.floor(Math.random() * 300 * (attempt + 1))))
             continue
           }
           return false
@@ -3716,7 +3868,7 @@ export class VesperEncryptedChat {
         return true
       } catch (err) {
         if (attempt < MAX_RETRIES - 1) {
-          await new Promise(r => setTimeout(r, 50 + Math.floor(Math.random() * 300 * (attempt + 1))))
+          await new Promise((r) => setTimeout(r, 50 + Math.floor(Math.random() * 300 * (attempt + 1))))
           continue
         }
         return false
@@ -3802,8 +3954,7 @@ export class VesperEncryptedChat {
             result.status !== 'already_applied'
           ) {
             if (
-              result.status === 'needs_repair' &&
-              await this.isPublishedStatePastReplayCommit(scopeId, result.error)
+              result.status === 'needs_repair' && (await this.isPublishedStatePastReplayCommit(scopeId, result.error))
             ) {
               await this.advanceDurableReplayCursor(scopeId, event.seq)
               this.replayBlockedScopes.delete(scopeId)
@@ -3894,6 +4045,94 @@ export class VesperEncryptedChat {
     )
   }
 
+  private roomDataKeyAad(ownerId: string, roomId: string, topologyGeneration: number, epoch: number): Uint8Array {
+    return new TextEncoder().encode(`vesper.room-data-key.v1\n${ownerId}\n${roomId}\n${topologyGeneration}\n${epoch}`)
+  }
+
+  private async persistRoomDataKey(scope: EncryptedScope, topologyGeneration: number, epoch: number, roomKey: Uint8Array): Promise<void> {
+    const roomId = this.resolveRoomId(scope)
+    const ownerId = this.client.getAuthSession()?.user.id ?? this.client.getState().user?.id
+    if (!ownerId || roomKey.byteLength !== 32) {
+      return
+    }
+
+    const key = await this.recoveryPackageKey(roomId, ownerId)
+    if (!key) {
+      return
+    }
+
+    const nonce = crypto.getRandomValues(new Uint8Array(12))
+    const ciphertext = new Uint8Array(
+      await crypto.subtle.encrypt(
+        {
+          name: 'AES-GCM',
+          iv: nonce as unknown as BufferSource,
+          additionalData: this.roomDataKeyAad(ownerId, roomId, topologyGeneration, epoch) as unknown as BufferSource
+        },
+        key,
+        roomKey as unknown as BufferSource
+      )
+    )
+
+    await this.withScopeCheckpointMutation(roomId, (checkpoint) => {
+      const retained = checkpoint.roomDataKeys
+        .filter((record) => !(record.roomId === roomId && record.epoch === epoch))
+        .concat({ roomId, topologyGeneration, epoch, ciphertext, nonce })
+        .sort((left, right) => right.epoch - left.epoch)
+        .slice(0, MAX_PERSISTED_ROOM_KEY_EPOCHS)
+      checkpoint.roomDataKeys = retained
+    })
+  }
+
+  private async loadPersistedRoomDataKey(scope: EncryptedScope, epoch: number, expectedTopologyGeneration?: number): Promise<{ key: Uint8Array; topologyGeneration: number } | null> {
+    const roomId = this.resolveRoomId(scope)
+    const ownerId = this.client.getAuthSession()?.user.id ?? this.client.getState().user?.id
+    if (!ownerId) {
+      return null
+    }
+
+    const checkpoint = await this.storage.loadScopeCheckpoint(roomId).catch(() => null)
+    const record = checkpoint?.roomDataKeys.find(
+      (candidate) => candidate.roomId === roomId && candidate.epoch === epoch && (expectedTopologyGeneration == null || candidate.topologyGeneration === expectedTopologyGeneration)
+    )
+    if (!record) {
+      return null
+    }
+
+    const key = await this.recoveryPackageKey(roomId, ownerId)
+    if (!key) {
+      return null
+    }
+
+    try {
+      const plaintext = new Uint8Array(
+        await crypto.subtle.decrypt(
+          {
+            name: 'AES-GCM',
+            iv: record.nonce as unknown as BufferSource,
+            additionalData: this.roomDataKeyAad(ownerId, roomId, record.topologyGeneration, record.epoch) as unknown as BufferSource
+          },
+          key,
+          record.ciphertext as unknown as BufferSource
+        )
+      )
+      if (plaintext.byteLength !== 32) {
+        return null
+      }
+
+      return { key: plaintext, topologyGeneration: record.topologyGeneration }
+    } catch {
+      return null
+    }
+  }
+
+  private async rememberRoomDataKey(scope: EncryptedScope, topologyGeneration: number, epoch: number, roomKey: Uint8Array): Promise<void> {
+    this.roomCrypto.rememberDataKey(this.resolveRoomId(scope), epoch, roomKey)
+    await this.persistRoomDataKey(scope, topologyGeneration, epoch, roomKey).catch((error) => {
+      this.logIgnoredError('persist room data key', error)
+    })
+  }
+
   private async publishScopeRecoveryPackage(scope: EncryptedScope): Promise<void> {
     const logicalScopeId = this.resolveRoomId(scope)
     const mlsGroupId = this.resolveMlsGroupId(scope)
@@ -3909,8 +4148,9 @@ export class VesperEncryptedChat {
         return
       }
 
-      const [checkpoint, cached] = await Promise.all([
+      const [checkpoint, roomKeyCheckpoint, cached] = await Promise.all([
         this.storage.loadScopeCheckpoint(mlsGroupId),
+          this.storage.loadScopeCheckpoint(logicalScopeId),
         this.storage.loadCachedMessages(logicalScopeId)
       ])
       const messages = cached
@@ -3934,7 +4174,41 @@ export class VesperEncryptedChat {
         .filter((message) => message.plaintext.length > 0)
         .slice(-MAX_MESSAGES_PER_SCOPE)
 
-      if (messages.length === 0) {
+        const roomDataKeys = (
+          await Promise.all(
+            roomKeyCheckpoint.roomDataKeys
+              .filter((record) => record.roomId === logicalScopeId)
+              .map(async (record): Promise<ScopeRecoveryPackageRoomDataKey | null> => {
+                try {
+                  const plaintext = new Uint8Array(
+                    await crypto.subtle.decrypt(
+                      {
+                        name: 'AES-GCM',
+                        iv: record.nonce as unknown as BufferSource,
+                        additionalData: this.roomDataKeyAad(ownerId, record.roomId, record.topologyGeneration, record.epoch) as unknown as BufferSource
+                      },
+                      key,
+                      record.ciphertext as unknown as BufferSource
+                    )
+                  )
+                  if (plaintext.byteLength !== 32) {
+                    return null
+                  }
+
+                  return {
+                    roomId: record.roomId,
+                    topologyGeneration: record.topologyGeneration,
+                    epoch: record.epoch,
+                    key: uint8ToBase64(plaintext)
+                  }
+                } catch {
+                  return null
+                }
+              })
+          )
+        ).filter((record): record is ScopeRecoveryPackageRoomDataKey => record != null)
+
+        if (messages.length === 0 && roomDataKeys.length === 0) {
         return
       }
 
@@ -3946,8 +4220,9 @@ export class VesperEncryptedChat {
         membershipGeneration: checkpoint.groupState?.epoch ?? 0,
         lastEventSeq: checkpoint.lastEventSeq,
         generatedAt: new Date().toISOString(),
-        messages
-      }
+        messages,
+          roomDataKeys
+        }
       const encoded = new TextEncoder().encode(JSON.stringify(payload))
       if (encoded.byteLength > MAX_SCOPE_RECOVERY_PACKAGE_BYTES - 28) {
         return
@@ -4011,7 +4286,7 @@ export class VesperEncryptedChat {
       return
     }
 
-    const result = await response.json().catch(() => null) as {
+    const result = (await response.json().catch(() => null)) as {
       package?: {
         ciphertext?: string
         nonce?: string
@@ -4033,10 +4308,15 @@ export class VesperEncryptedChat {
       typeof byteSize !== 'number' ||
       !Number.isInteger(byteSize) ||
       byteSize > MAX_SCOPE_RECOVERY_PACKAGE_BYTES ||
-      lastEventSeq <= (this.importedRecoveryPackageCursors.get(logicalScopeId) ?? -1) ||
+      lastEventSeq < (this.importedRecoveryPackageCursors.get(logicalScopeId) ?? -1) ||
       typeof packageData.ciphertext !== 'string' ||
       typeof packageData.nonce !== 'string'
     ) {
+      return
+    }
+
+    const packageFingerprint = await sha256Hex(`${logicalScopeId}\n${packageData.nonce}\n${packageData.ciphertext}`)
+    if (this.importedRecoveryPackageFingerprints.get(logicalScopeId) === packageFingerprint) {
       return
     }
 
@@ -4066,10 +4346,38 @@ export class VesperEncryptedChat {
         payload.membershipGeneration !== packageData.membership_generation ||
         payload.lastEventSeq !== packageData.last_event_seq ||
         !Array.isArray(payload.messages) ||
-        payload.messages.length > MAX_MESSAGES_PER_SCOPE
+        payload.messages.length > MAX_MESSAGES_PER_SCOPE ||
+        (payload.roomDataKeys != null && !Array.isArray(payload.roomDataKeys)) ||
+        (payload.roomDataKeys?.length ?? 0) > MAX_PERSISTED_ROOM_KEY_EPOCHS
       ) {
         return
       }
+
+      const recoveredRoomDataKeys = (payload.roomDataKeys ?? []).map((record) => {
+        if (
+          !record ||
+          record.roomId !== logicalScopeId ||
+          !Number.isSafeInteger(record.topologyGeneration) ||
+          record.topologyGeneration < 0 ||
+          !Number.isSafeInteger(record.epoch) ||
+          record.epoch < 0 ||
+          typeof record.key !== 'string'
+        ) {
+          throw new Error('invalid recovery package room key')
+        }
+
+        const roomKey = base64ToUint8(record.key)
+        if (roomKey.byteLength !== 32) {
+          throw new Error('invalid recovery package room key length')
+        }
+        return { ...record, key: roomKey }
+      })
+
+      await Promise.all(
+        recoveredRoomDataKeys.map(async (record) => {
+          await this.rememberRoomDataKey(scope, record.topologyGeneration, record.epoch, record.key)
+        })
+      )
 
       await Promise.all(payload.messages.map(async (message) => {
         if (!message || typeof message.id !== 'string' || typeof message.plaintext !== 'string') {
@@ -4098,6 +4406,7 @@ export class VesperEncryptedChat {
         })
       }))
       this.importedRecoveryPackageCursors.set(logicalScopeId, payload.lastEventSeq)
+      this.importedRecoveryPackageFingerprints.set(logicalScopeId, packageFingerprint)
     } catch {
       // Invalid, stale, or wrong-key packages are deliberately ignored before persistence.
     }
@@ -4662,7 +4971,7 @@ export class VesperEncryptedChat {
       }
     }
 
-    if (!await this.ensureCurrentGroupInfoPublished(scopeId)) {
+    if (!(await this.ensureCurrentGroupInfoPublished(scopeId))) {
       return false
     }
 
@@ -4690,7 +4999,7 @@ export class VesperEncryptedChat {
       }
     }
 
-    if (!await this.ensureCurrentGroupInfoPublished(scopeId)) {
+    if (!(await this.ensureCurrentGroupInfoPublished(scopeId))) {
       return false
     }
 
@@ -4906,7 +5215,8 @@ export class VesperEncryptedChat {
         request.requester_id,
         request.requester_client_id
       )
-      if (!canSend) {
+      const requestAuthorization = normalizeApplicationHistoryAuthorization(request.authorization_generation, request.authorized_after_room_seq)
+      if (!canSend || !requestAuthorization) {
         continue
       }
 
@@ -4914,9 +5224,7 @@ export class VesperEncryptedChat {
         scope,
         request.requester_id,
         request.requester_client_id,
-        request.membership_generation,
-        request.id
-      )
+        request.membership_generation, { ...requestAuthorization, requestId: request.id })
     }
   }
 
@@ -4937,6 +5245,17 @@ export class VesperEncryptedChat {
       return
     }
 
+    if (bundles.length === 0) {
+      return
+    }
+
+    let authoritativeMessages: VesperMessage[]
+    try {
+      authoritativeMessages = await this.fetchHistoryBundleAuthorizationWindow(scope)
+    } catch {
+      return
+    }
+
     for (const bundle of bundles) {
       if (
         bundle.recipient_id !== localUserId ||
@@ -4950,9 +5269,12 @@ export class VesperEncryptedChat {
         {
           id: bundle.id,
           ciphertext: bundle.ciphertext,
-          mlsEpoch: bundle.mls_epoch
+          mlsEpoch: bundle.mls_epoch,
+          authorizationGeneration: bundle.authorization_generation,
+          authorizedAfterRoomSeq: bundle.authorized_after_room_seq
         },
-        groupId
+        groupId,
+        authoritativeMessages
       )
     }
   }
@@ -4962,8 +5284,12 @@ export class VesperEncryptedChat {
     recipientId: string,
     recipientDeviceId: string,
     requestMembershipGeneration: number,
-    pendingRequestId: string | null = null
+    requestAuthorization: RequestHistoryAuthorization | null = null
   ): Promise<void> {
+    if (!requestAuthorization) {
+      return
+    }
+
     const groupId = this.resolveMlsGroupId(scope)
     const localGeneration = this.getGroupEpoch(groupId)
     if (
@@ -5011,7 +5337,7 @@ export class VesperEncryptedChat {
         sourceEpoch == null ||
         !Number.isInteger(sourceEpoch) ||
         sourceEpoch < 0 ||
-        !membershipRangeIncludesEpoch(membershipRanges, sourceEpoch)
+        (requestAuthorization ? !applicationHistoryIncludesRoomSeq(requestAuthorization, knownMessage.raw.room_seq) : !membershipRangeIncludesEpoch(membershipRanges, sourceEpoch))
       ) {
         continue
       }
@@ -5026,7 +5352,14 @@ export class VesperEncryptedChat {
           ? await this.storage.loadCachedMessageDecryption(cachedMessage.id)
           : null)
 
-      if (!content) {
+      if (
+        !content ||
+        !verifyHistoryBundlePlaintext(
+          content,
+          this.resolveRoomId(scope),
+          knownMessage.raw
+        )
+      ) {
         continue
       }
 
@@ -5068,7 +5401,17 @@ export class VesperEncryptedChat {
         sourceEpoch == null ||
         !Number.isInteger(sourceEpoch) ||
         sourceEpoch < 0 ||
-        !membershipRangeIncludesEpoch(membershipRanges, sourceEpoch)
+        (requestAuthorization ? !applicationHistoryIncludesRoomSeq(requestAuthorization, message.raw.room_seq) : !membershipRangeIncludesEpoch(membershipRanges, sourceEpoch))
+      ) {
+        continue
+      }
+
+      if (
+        !verifyHistoryBundlePlaintext(
+          message.plaintext,
+          this.resolveRoomId(scope),
+          message.raw
+        )
       ) {
         continue
       }
@@ -5092,26 +5435,27 @@ export class VesperEncryptedChat {
       bundledIds.add(message.id)
     }
 
-    if (items.length === 0) {
+    const boundedItems = items.slice(-MAX_MESSAGES_PER_SCOPE)
+    if (boundedItems.length === 0) {
       return
     }
 
     const bundlePayload = encodePayload({
       v: 1,
       type: 'text',
-      text: JSON.stringify(items)
+      text: JSON.stringify(boundedItems)
     })
     const encrypted = await this.encryptForScope(groupId, bundlePayload)
 
-    const idempotencyKey = pendingRequestId ??
-      await this.computeHistoryBundleFingerprint(groupId, encrypted.ciphertext)
+    const idempotencyKey = requestAuthorization?.requestId ?? (await this.computeHistoryBundleFingerprint(groupId, encrypted.ciphertext))
     const eventPayload = {
       ciphertext: encrypted.ciphertext,
       mls_epoch: encrypted.epoch,
       recipient_id: recipientId,
       recipient_device_id: recipientDeviceId,
+      request_id: requestAuthorization?.requestId ?? null,
       idempotency_key: idempotencyKey,
-      membership_generation: encrypted.epoch
+      membership_generation: requestMembershipGeneration
     }
     const intent = await this.queueJournaledControlIntent(
       'mls_history_bundle',
@@ -5126,8 +5470,8 @@ export class VesperEncryptedChat {
       }
     )
     const pushed = await this.dispatchJournaledControlIntent(intent)
-    if (pushed && pendingRequestId) {
-      await ackPendingHistoryRequest(pendingRequestId, this.client.getHttpClient()).catch((error) =>
+    if (pushed && requestAuthorization) {
+      await ackPendingHistoryRequest(requestAuthorization.requestId, this.client.getHttpClient()).catch((error) =>
         this.logIgnoredError('ack pending history request', error)
       )
     }
@@ -5138,11 +5482,9 @@ export class VesperEncryptedChat {
     requesterId: string,
     requesterDeviceId: string | null
   ): requesterDeviceId is string {
-    return (
-      typeof requesterDeviceId === 'string' &&
+    return typeof requesterDeviceId === 'string' &&
       requesterDeviceId.length > 0 &&
       this.hasMemberDevice(scopeId, requesterId, requesterDeviceId)
-    )
   }
 
   private async processHistoryBundle(
@@ -5151,8 +5493,11 @@ export class VesperEncryptedChat {
       id: string | null
       ciphertext: string
       mlsEpoch: number | null
+      authorizationGeneration: string | null
+      authorizedAfterRoomSeq: number | null
     },
-    groupId = this.resolveMlsGroupId(scope)
+    groupId = this.resolveMlsGroupId(scope),
+    authoritativeMessages: VesperMessage[] = []
   ): Promise<void> {
     const fingerprint = await this.computeHistoryBundleFingerprint(groupId, input.ciphertext)
 
@@ -5170,7 +5515,7 @@ export class VesperEncryptedChat {
       return
     }
 
-    const run = this.processHistoryBundleOnce(scope, input, fingerprint, groupId)
+    const run = this.processHistoryBundleOnce(scope, input, fingerprint, groupId, authoritativeMessages)
     this.inFlightHistoryBundleProcesses.set(processKey, run)
 
     try {
@@ -5190,11 +5535,14 @@ export class VesperEncryptedChat {
       id: string | null
       ciphertext: string
       mlsEpoch: number | null
+      authorizationGeneration: string | null
+      authorizedAfterRoomSeq: number | null
     },
     fingerprint: string,
-    groupId: string
+    groupId: string,
+    authoritativeMessages: VesperMessage[]
   ): Promise<boolean> {
-    const decrypted = await this.decryptHistoryBundle(
+    const decrypted = await this.decryptHistoryBundleDraft(
       scope,
       input.ciphertext,
       input.mlsEpoch,
@@ -5206,52 +5554,69 @@ export class VesperEncryptedChat {
 
     let items: HistoryBundleItem[] = []
     try {
-      const payload = decodePayload(decrypted)
+      const payload = decodePayload(decrypted.plaintext)
       if (payload.type !== 'text' || !payload.text) {
         return false
       }
 
-      const parsed = JSON.parse(payload.text)
-      if (!Array.isArray(parsed)) {
+      const parsed: unknown = JSON.parse(payload.text)
+      if (!Array.isArray(parsed) || parsed.length === 0 || parsed.length > MAX_MESSAGES_PER_SCOPE) {
         return false
       }
 
-      items = parsed
+      const normalized = parsed
         .map((value) => normalizeHistoryBundleItem(value))
-        .filter((value): value is HistoryBundleItem => value != null)
+      if (normalized.some((value) => value == null)) {
+        return false
+      }
+      items = normalized as HistoryBundleItem[]
     } catch {
       return false
     }
 
-    const localUserId = this.client.getAuthSession()?.user.id ?? this.client.getState().user?.id
-    const localDeviceId = this.client.deviceIdentity?.id ?? null
-    if (!localUserId || !localDeviceId) {
-      return false
-    }
-
-    let membershipRanges: MembershipEpochRange[]
-    try {
-      membershipRanges = await this.loadMembershipEpochRanges(groupId, localUserId, localDeviceId)
-    } catch {
+    const applicationAuthorization = normalizeApplicationHistoryAuthorization(
+      input.authorizationGeneration,
+      input.authorizedAfterRoomSeq
+    )
+    if (!applicationAuthorization) {
       return false
     }
 
     const existingMessages = this.scopeMessages.get(scope.id) ?? []
     const existingMessagesById = new Map(existingMessages.map((message) => [message.id, message]))
+    const authoritativeMessagesById = new Map<string, VesperMessage>()
+    for (const message of existingMessages) {
+      authoritativeMessagesById.set(message.id, message.raw)
+    }
+    for (const message of authoritativeMessages) {
+      authoritativeMessagesById.set(message.id, message)
+    }
+
     const cachedMessages = await this.storage.loadCachedMessages(scope.id).catch(() => [])
     const cachedMessagesById = new Map(cachedMessages.map((message) => [message.id, message]))
-    items = items.filter((item) => {
-      const existingMessage = existingMessagesById.get(item.id)
+    const everyItemIsAuthorized = items.every((item) => {
+      const authoritativeMessage = authoritativeMessagesById.get(item.id)
       return (
-        existingMessage != null &&
-        (existingMessage.raw.encryption_scheme ?? 'mls') === 'mls' &&
-        (existingMessage.raw.encryption_group_id ?? groupId) === groupId &&
-        existingMessage.raw.mls_epoch === item.mlsEpoch &&
-        membershipRangeIncludesEpoch(membershipRanges, item.mlsEpoch)
+        authoritativeMessage != null &&
+        (authoritativeMessage.encryption_scheme ?? 'mls') === 'mls' &&
+        (authoritativeMessage.encryption_group_id ?? groupId) === groupId &&
+        authoritativeMessage.mls_epoch === item.mlsEpoch &&
+        verifyHistoryBundlePlaintext(
+          item.content,
+          this.resolveRoomId(scope),
+          authoritativeMessage
+        ) &&
+        applicationHistoryIncludesRoomSeq(
+          applicationAuthorization,
+          authoritativeMessage.room_seq
+        )
       )
     })
 
-    if (items.length === 0) {
+    // Do not advance the one-shot MLS receive ratchet unless every plaintext
+    // entry is bound to an authoritative message row in the recipient's current
+    // server window. A later sync can retry the untouched ciphertext.
+    if (!everyItemIsAuthorized) {
       return false
     }
     const contentById = new Map(items.map((item) => [item.id, item.content]))
@@ -5278,44 +5643,30 @@ export class VesperEncryptedChat {
 
     await Promise.all(
       items.map(async (item) => {
+        const authoritativeMessage = authoritativeMessagesById.get(item.id)!
         const existingMessage = existingMessagesById.get(item.id) ?? null
         const cachedMessage = cachedMessagesById.get(item.id) ?? null
-        const sender = item.sender ?? existingMessage?.raw.sender ?? null
-        const channelId =
-          item.channelId ??
-          existingMessage?.channelId ??
+        const sender = authoritativeMessage.sender ?? null
+        const channelId = authoritativeMessage.channel_id ??
           cachedMessage?.channelId ??
           (scope.kind === 'channel' ? scope.id : null)
-        const conversationId =
-          item.conversationId ??
-          existingMessage?.conversationId ??
+        const conversationId = authoritativeMessage.conversation_id ??
           cachedMessage?.conversationId ??
           (scope.kind === 'dm' ? scope.id : null)
-        const ciphertext =
-          cachedMessage?.ciphertext ??
-          (typeof existingMessage?.raw.ciphertext === 'string'
-            ? Buffer.from(existingMessage.raw.ciphertext, 'base64')
-            : null)
-        const insertedAt =
-          item.insertedAt ??
-          existingMessage?.insertedAt ??
-          cachedMessage?.insertedAt ??
-          new Date().toISOString()
+        const ciphertext = typeof authoritativeMessage.ciphertext === 'string'
+            ? Buffer.from(authoritativeMessage.ciphertext, 'base64')
+            : (cachedMessage?.ciphertext ?? null)
 
         await this.storage.saveCachedMessageDecryption(item.id, item.content).catch(() => {})
         await this.storage.cacheMessage({
           id: item.id,
-          roomSeq: cachedMessage?.roomSeq ?? existingMessage?.raw.room_seq ?? null,
+          roomSeq: authoritativeMessage.room_seq ?? null,
           channelId,
           conversationId,
-          serverId:
-            item.serverId ??
-            existingMessage?.raw.server_id ??
+          serverId: authoritativeMessage.server_id ??
             cachedMessage?.serverId ??
             null,
-          senderId:
-            item.senderId ??
-            existingMessage?.senderId ??
+          senderId: authoritativeMessage.sender_id ??
             cachedMessage?.senderId ??
             sender?.id ??
             null,
@@ -5324,41 +5675,29 @@ export class VesperEncryptedChat {
             existingMessage?.senderUsername ??
             cachedMessage?.senderUsername ??
             null,
-          parentMessageId:
-            item.parentMessageId ??
-            existingMessage?.parentMessageId ??
+          parentMessageId: authoritativeMessage.parent_message_id ??
             cachedMessage?.parentMessageId ??
             null,
-          threadRootMessageId:
-            item.threadRootMessageId ??
-            existingMessage?.threadRootMessageId ??
-            cachedMessage?.threadRootMessageId ??
-            existingMessage?.raw.thread_root_message_id ??
-            null,
-          replyToMessageId:
-            item.replyToMessageId ??
-            existingMessage?.replyToMessageId ??
-            cachedMessage?.replyToMessageId ??
-            existingMessage?.raw.reply_to_message_id ??
-            null,
-          isReply:
-            item.isReply ??
-            existingMessage?.raw.is_reply ??
+          threadRootMessageId: authoritativeMessage.thread_root_message_id ??
+            cachedMessage?.threadRootMessageId ?? null,
+          replyToMessageId: authoritativeMessage.reply_to_message_id ??
+            cachedMessage?.replyToMessageId ?? null,
+          isReply: authoritativeMessage.is_reply ??
             cachedMessage?.isReply ??
             false,
           ciphertext,
           decryptedContent: item.content,
           mlsEpoch: item.mlsEpoch,
-          insertedAt
-        }).catch(() => {})
+          insertedAt: authoritativeMessage.inserted_at
+          }).catch(() => {})
         await this.storage
           .indexDecryptedMessage(item.id, scope.id, coerceDisplayText(item.content))
           .catch(() => {})
       })
     )
 
-    await this.persistHistoryBundleAppliedState(groupId, fingerprint)
-    this.setScopeRepairState(groupId, 'healthy', null, { persist: true })
+    this.setScopeRepairState(groupId, 'healthy', null, { persist: false })
+    await this.persistHistoryBundleAppliedState(groupId, decrypted.newState, fingerprint)
     return true
   }
 
@@ -5372,13 +5711,13 @@ export class VesperEncryptedChat {
     )
   }
 
-  private async decryptHistoryBundle(
+  private async decryptHistoryBundleDraft(
     scope: EncryptedScope,
     ciphertext: string,
     mlsEpoch: number | null,
     groupId = this.resolveMlsGroupId(scope)
-  ): Promise<string | null> {
-    const decrypted = await this.decryptForScope(groupId, ciphertext)
+  ): Promise<{ plaintext: string; newState: GroupState } | null> {
+    const decrypted = await this.decryptForScopeDraft(groupId, ciphertext)
     if (decrypted) {
       return decrypted
     }
@@ -5393,7 +5732,7 @@ export class VesperEncryptedChat {
     }
 
     await this.replayDurableEvents(groupId)
-    return await this.decryptForScope(groupId, ciphertext)
+    return await this.decryptForScopeDraft(groupId, ciphertext)
   }
 
   private async processPendingCommits(scopeId: string): Promise<void> {
@@ -5574,10 +5913,7 @@ export class VesperEncryptedChat {
       return null
     }
 
-    let roomKey = this.roomCrypto.dataKey(topology.roomId, envelope.roomKeyEpoch)
-    if (!roomKey) {
-      roomKey = await this.loadActiveRoomDataKey(scope)
-    }
+    const roomKey = await this.loadRoomDataKeyForEpoch(scope, envelope.roomKeyEpoch)
     if (!roomKey) return null
 
     const decrypted = await decryptRoomApplication(roomKey, ciphertext, {
@@ -5614,21 +5950,22 @@ export class VesperEncryptedChat {
   }
 
   private async decryptForScope(scopeId: string, ciphertext: string): Promise<string | null> {
-    const state = this.groupStates.get(scopeId)
-    if (!state) {
-      return null
-    }
-
-    const decrypted = await decryptMessage(
-      this.cloneGroupState(state),
-      Buffer.from(ciphertext, 'base64')
-    )
+    const decrypted = await this.decryptForScopeDraft(scopeId, ciphertext)
     if (!decrypted) {
       return null
     }
 
     await this.setGroupState(scopeId, decrypted.newState)
     return decrypted.plaintext
+  }
+
+  private async decryptForScopeDraft(scopeId: string, ciphertext: string): Promise<{ plaintext: string; newState: GroupState } | null> {
+    const state = this.groupStates.get(scopeId)
+    if (!state) {
+      return null
+    }
+
+    return await decryptMessage(this.cloneGroupState(state), Buffer.from(ciphertext, 'base64'))
   }
 
   private async decryptForScopeWithRecovery(
@@ -5816,6 +6153,49 @@ export class VesperEncryptedChat {
     }
 
     return null
+  }
+
+  private async fetchHistoryBundleAuthorizationWindow(
+    scope: EncryptedScope
+  ): Promise<VesperMessage[]> {
+    const syncKind = scope.channelId ? 'channel' : scope.kind
+    const syncId = scope.channelId ?? scope.id
+    const messagesById = new Map<string, VesperMessage>()
+    const seenCursors = new Set<string>()
+    let page = await this.fetchInitialScopeWindow(scope, MAX_MESSAGES_PER_SCOPE)
+
+    while (true) {
+      for (const message of page.messages) {
+        messagesById.set(message.id, message)
+      }
+
+      if (
+        !page.hasMore ||
+        !page.olderCursor ||
+        messagesById.size >= MAX_HISTORY_AUTHORIZATION_ROWS ||
+        seenCursors.has(page.olderCursor)
+      ) {
+        break
+      }
+
+      seenCursors.add(page.olderCursor)
+      const syncState = await this.client.fetchScopeSync({
+        scopes: [{ kind: syncKind, id: syncId, before: page.olderCursor }],
+        limit: MAX_MESSAGES_PER_SCOPE
+      })
+      const entry = syncState.scopes.find((candidate) => candidate.scope_id === syncId) ?? null
+      page = {
+        messages: sortRawMessages(entry?.messages ?? []),
+        events: [],
+        hasMore: entry?.has_more ?? false,
+        olderCursor: entry?.older_cursor ?? null,
+        latestRoomSeq: entry?.latest_room_seq ?? page.latestRoomSeq
+      }
+    }
+
+    return sortRawMessages([...messagesById.values()]).slice(
+      -MAX_HISTORY_AUTHORIZATION_ROWS
+    )
   }
 
   private async fetchInitialScopeWindow(
@@ -6219,18 +6599,28 @@ export class VesperEncryptedChat {
   }
 
   private async persistHistoryBundleAppliedState(
-    scopeId: string,
-    fingerprint: string
+    scopeId: string, state: GroupState, fingerprint: string
   ): Promise<void> {
-    const recentHistoryBundleFingerprints = this.rememberHistoryBundleFingerprint(
-      scopeId,
-      fingerprint
-    )
+    const recentHistoryBundleFingerprints = [
+      fingerprint,
+      ...this.getRecentHistoryBundleFingerprints(scopeId).filter(
+        (value) => value !== fingerprint
+      )
+    ].slice(0, MAX_RECENT_HISTORY_BUNDLE_FINGERPRINTS)
+    const serializedState = serializeGroupState(state)
+    const epoch = Number(state.groupContext.epoch)
 
     await this.withScopeCheckpointMutation(scopeId, (checkpoint) => {
+      checkpoint.groupState = {
+        state: serializedState,
+        epoch
+      }
       checkpoint.recentHistoryBundleFingerprints = recentHistoryBundleFingerprints
       checkpoint.repairState = this.currentScopeRepairState(scopeId) ?? checkpoint.repairState
     })
+
+    this.recentHistoryBundleFingerprints.set(scopeId, recentHistoryBundleFingerprints)
+    this.finishLocalGroupStateUpdate(scopeId, state)
   }
 
   private async advanceDurableReplayCursor(
@@ -6589,11 +6979,10 @@ export class VesperEncryptedChat {
             payload.event,
             payload.eventPayload
           )
-        : payload.scope != null && await this.pushScopeEventResolved(
+        : payload.scope != null && (await this.pushScopeEventResolved(
             payload.scope,
             payload.event,
-            payload.eventPayload
-          )
+            payload.eventPayload))
     } catch (error) {
       this.logIgnoredError(`dispatch ${intent.operation}`, error)
     }
@@ -6752,9 +7141,11 @@ export class VesperEncryptedChat {
   private buildSponsoredTransitionGroupInfo(
     scopeId: string,
     pending: PendingSponsoredTransition
-  ): PendingGroupInfoPublish & {
+  ):
+    | (PendingGroupInfoPublish & {
     previousEpoch: number
-  } | null {
+  })
+    | null {
     const pendingGroupInfo = this.pendingGroupInfoPublishes.get(scopeId)
     const currentState = this.groupStates.get(scopeId)
     const groupInfoData =
@@ -7014,7 +7405,7 @@ export class VesperEncryptedChat {
       return
     }
 
-    if (!await this.broadcastExternalCommit(scopeId, pending.commitData, pending.commitId)) {
+    if (!(await this.broadcastExternalCommit(scopeId, pending.commitData, pending.commitId))) {
       this.scheduleExternalCommitBroadcastRetry(scopeId)
     }
   }
@@ -7096,7 +7487,7 @@ export class VesperEncryptedChat {
       cached.map(async (message) => {
         const ciphertext = message.ciphertext ? Buffer.from(message.ciphertext).toString('base64') : undefined
         const plaintext =
-          message.decryptedContent ?? await this.storage.loadCachedMessageDecryption(message.id)
+          message.decryptedContent ?? (await this.storage.loadCachedMessageDecryption(message.id))
         const content =
           plaintext != null
             ? coerceDisplayText(plaintext)
@@ -7419,7 +7810,7 @@ export class VesperEncryptedChat {
           return
         }
 
-        if (!await this.ensureCurrentGroupInfoPublished(scopeId)) {
+        if (!(await this.ensureCurrentGroupInfoPublished(scopeId))) {
           return
         }
 
@@ -7993,6 +8384,17 @@ export class VesperEncryptedChat {
     const content = this.getString(payload, 'content')
     raw.edited_at = this.getString(payload, 'edited_at')
     raw.mls_epoch = this.getNumber(payload, 'mls_epoch') ?? raw.mls_epoch ?? null
+    raw.encryption_scheme =
+      (this.getString(payload, 'encryption_scheme') as VesperMessage['encryption_scheme']) ??
+      raw.encryption_scheme
+    raw.encryption_group_id =
+      this.getString(payload, 'encryption_group_id') ?? raw.encryption_group_id ?? null
+    raw.history_signing_public_key = this.getString(
+      payload,
+      'history_signing_public_key'
+    )
+    raw.history_revision =
+      this.getNumber(payload, 'history_revision') ?? raw.history_revision ?? 0
     raw.channel_id = this.getString(payload, 'channel_id') ?? raw.channel_id ?? null
     raw.conversation_id =
       this.getString(payload, 'conversation_id') ?? raw.conversation_id ?? null
@@ -8098,13 +8500,13 @@ export class VesperEncryptedChat {
     const deadline = Date.now() + OUTBOUND_SCOPE_READY_WAIT_MS
 
     while (Date.now() < deadline) {
-      if (!await this.ensureScopeReady(scope, allowCreate)) {
+      if (!(await this.ensureScopeReady(scope, allowCreate))) {
         await new Promise((resolve) => setTimeout(resolve, OUTBOUND_SCOPE_READY_RETRY_MS))
         continue
       }
 
       const result = await this.withLockedScopeOperation(scope.channelId ?? scope.id, async () => {
-        if (!await this.ensureScopeReady(scope, allowCreate)) {
+        if (!(await this.ensureScopeReady(scope, allowCreate))) {
           return SCOPE_NOT_READY
         }
 

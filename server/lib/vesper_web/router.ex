@@ -213,6 +213,7 @@ defmodule VesperWeb.Router do
     # Fenced room data-key coordination
     get("/room-key-epochs/:scope_id/material", RoomKeyEpochController, :material)
     get("/room-key-epochs/:scope_id/active", RoomKeyEpochController, :active)
+    get("/room-key-epochs/:scope_id/:epoch", RoomKeyEpochController, :show)
     post("/room-key-epochs/:scope_id/prepare", RoomKeyEpochController, :prepare)
     post("/room-key-epoch/:epoch_id/claim", RoomKeyEpochController, :claim)
     post("/room-key-epoch/:epoch_id/renew", RoomKeyEpochController, :renew)

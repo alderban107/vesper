@@ -36,6 +36,12 @@ export class RoomCryptoState {
     return key ? new Uint8Array(key) : null
   }
 
+  dataKeyEntries(roomId: string): Array<{ epoch: number; key: Uint8Array }> {
+    return [...(this.dataKeys.get(roomId)?.entries() ?? [])]
+      .sort(([left], [right]) => left - right)
+      .map(([epoch, key]) => ({ epoch, key: new Uint8Array(key) }))
+  }
+
   rememberDataKey(roomId: string, epoch: number, key: Uint8Array): void {
     const epochs = this.dataKeys.get(roomId) ?? new Map<number, Uint8Array>()
     epochs.set(epoch, new Uint8Array(key))

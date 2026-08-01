@@ -53,4 +53,9 @@ test('room crypto state copies key bytes and bounds retained epochs', () => {
   assert.equal(state.dataKey(topology.roomId, 1), null)
   assert.deepEqual(state.dataKey(topology.roomId, 3), new Uint8Array([3]))
   assert.deepEqual(state.dataKey(topology.roomId, 10), new Uint8Array([10]))
+
+  const entries = state.dataKeyEntries(topology.roomId)
+  assert.deepEqual(entries.map((entry) => entry.epoch), [3, 4, 5, 6, 7, 8, 9, 10])
+  entries[0].key[0] = 99
+  assert.deepEqual(state.dataKey(topology.roomId, 3), new Uint8Array([3]))
 })

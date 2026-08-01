@@ -60,17 +60,30 @@ defmodule Vesper.Chat do
         |> Ecto.Changeset.put_change(:inserted_at, now)
         |> Repo.insert!()
 
-      case Runtime.ensure_room_for_conversation(conversation) do
-        {:ok, _room} -> :ok
-        {:error, changeset} -> Repo.rollback(changeset)
-      end
+      room =
+        case Runtime.ensure_room_for_conversation(conversation) do
+          {:ok, room} -> room
+          {:error, changeset} -> Repo.rollback(changeset)
+        end
 
-      for user_id <- user_ids do
-        %DmParticipant{}
-        |> DmParticipant.changeset(%{conversation_id: conversation.id, user_id: user_id})
-        |> Ecto.Changeset.put_change(:joined_at, now)
-        |> Repo.insert!()
-      end
+      participants =
+        for user_id <- user_ids do
+          %DmParticipant{}
+          |> DmParticipant.changeset(%{conversation_id: conversation.id, user_id: user_id})
+          |> Ecto.Changeset.put_change(:joined_at, now)
+          |> Repo.insert!()
+        end
+
+      Enum.each(participants, fn participant ->
+        case Encryption.grant_room_history_authorization(
+               room.id,
+               participant.user_id,
+               participant.id
+             ) do
+          {:ok, _authorization} -> :ok
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
 
       # Create backing DM channel for unified MLS path
       channel = create_backing_dm_channel!(conversation, type, user_ids, now)
@@ -353,6 +366,10 @@ defmodule Vesper.Chat do
     |> Repo.exists?()
   end
 
+  def get_participant(user_id, conversation_id) do
+    Repo.get_by(DmParticipant, user_id: user_id, conversation_id: conversation_id)
+  end
+
   @doc """
   Look up the backing channel_id for a DM conversation.
   Returns {:ok, channel_id} or :error.
@@ -464,6 +481,39 @@ defmodule Vesper.Chat do
     message
     |> Message.encrypted_changeset(attrs)
     |> Repo.update()
+  end
+
+  def update_message_revision(message_id, sender_id, revision, attrs)
+      when is_integer(revision) and revision > 0 do
+    Repo.transaction(fn ->
+      message =
+        Repo.one(
+          from(candidate in Message,
+            where: candidate.id == ^message_id,
+            lock: "FOR UPDATE"
+          )
+        )
+
+      cond do
+        is_nil(message) ->
+          Repo.rollback(:not_found)
+
+        message.sender_id != sender_id ->
+          Repo.rollback(:forbidden)
+
+        revision != message.history_revision + 1 ->
+          Repo.rollback(:stale_history_revision)
+
+        true ->
+          message
+          |> Message.encrypted_changeset(Map.put(attrs, :history_revision, revision))
+          |> Repo.update!()
+      end
+    end)
+    |> case do
+      {:ok, message} -> {:ok, message}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   def delete_message(%Message{} = message) do

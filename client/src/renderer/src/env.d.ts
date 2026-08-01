@@ -14,6 +14,14 @@ interface ControlIntentStorageRecord {
   updated_at: string
 }
 
+interface EncryptedRoomDataKeyStorageRecord {
+  room_id: string
+  topology_generation: number
+  epoch: number
+  ciphertext: string
+  nonce: string
+}
+
 interface CryptoDbApi {
   // Identity keys
   getIdentityKeys(userId: string): Promise<{
@@ -73,6 +81,7 @@ interface CryptoDbApi {
     repair_failure_count: number
     repair_last_error: string | null
     repair_updated_at: string | null
+    room_data_keys: EncryptedRoomDataKeyStorageRecord[]
     control_intents: ControlIntentStorageRecord[]
   }>
   getKnownScopeIds(): Promise<string[]>
@@ -88,6 +97,7 @@ interface CryptoDbApi {
       repair_failure_count?: number
       repair_last_error?: string | null
       repair_updated_at?: string | null
+      room_data_keys?: EncryptedRoomDataKeyStorageRecord[]
       control_intents?: ControlIntentStorageRecord[]
     }
   ): Promise<void>

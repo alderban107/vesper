@@ -4,6 +4,7 @@
  * In the web client, falls back to an IndexedDB adapter scoped to the
  * current user (vesper-crypto-{userId}).
  */
+import { base64ToUint8, uint8ToBase64 } from '../api/encoding.js'
 import { createIndexedDbAdapter } from './indexedDbStorage.js'
 
 type AsyncStorageStore = {
@@ -67,6 +68,14 @@ export interface ControlIntentRecord {
   updatedAt: string
 }
 
+export interface EncryptedRoomDataKeyRecord {
+  roomId: string
+  topologyGeneration: number
+  epoch: number
+  ciphertext: Uint8Array
+  nonce: Uint8Array
+}
+
 export interface ScopeCheckpointRecord {
   groupId: string
   groupState: {
@@ -77,6 +86,7 @@ export interface ScopeCheckpointRecord {
   recentCommitFingerprints: string[]
   recentHistoryBundleFingerprints: string[]
   repairState: ScopeRepairStateRecord | null
+  roomDataKeys: EncryptedRoomDataKeyRecord[]
   controlIntents: ControlIntentRecord[]
 }
 
@@ -222,6 +232,43 @@ export interface CryptoStorageRuntime {
     insertedAt: string
   }): Promise<void>
   deletePendingMessageSend(clientNonce: string): Promise<void>
+}
+
+function decodeRoomDataKeyRecords(
+  records: EncryptedRoomDataKeyStorageRecord[]
+): EncryptedRoomDataKeyRecord[] {
+  return records.flatMap((record) => {
+    if (
+      typeof record.room_id !== 'string' ||
+      record.room_id.length === 0 ||
+      !Number.isSafeInteger(record.topology_generation) ||
+      record.topology_generation < 0 ||
+      !Number.isSafeInteger(record.epoch) ||
+      record.epoch < 0 ||
+      typeof record.ciphertext !== 'string' ||
+      typeof record.nonce !== 'string'
+    ) {
+      return []
+    }
+
+    try {
+      const ciphertext = base64ToUint8(record.ciphertext)
+      const nonce = base64ToUint8(record.nonce)
+      if (ciphertext.byteLength !== 48 || nonce.byteLength !== 12) {
+        return []
+      }
+
+      return [{
+        roomId: record.room_id,
+        topologyGeneration: record.topology_generation,
+        epoch: record.epoch,
+        ciphertext,
+        nonce
+      }]
+    } catch {
+      return []
+    }
+  })
 }
 
 export class DefaultCryptoStorageRuntime implements CryptoStorageRuntime {
@@ -435,6 +482,7 @@ export class DefaultCryptoStorageRuntime implements CryptoStorageRuntime {
             updatedAt: result.repair_updated_at
           }
         : null,
+      roomDataKeys: decodeRoomDataKeyRecords(result.room_data_keys ?? []),
       controlIntents: (result.control_intents ?? []).map((intent) => ({
         version: 1,
         operation: intent.operation as ControlIntentOperation,
@@ -466,6 +514,13 @@ export class DefaultCryptoStorageRuntime implements CryptoStorageRuntime {
       repair_failure_count: checkpoint.repairState?.failureCount ?? 0,
       repair_last_error: checkpoint.repairState?.lastError ?? null,
       repair_updated_at: checkpoint.repairState?.updatedAt ?? null,
+      room_data_keys: (checkpoint.roomDataKeys ?? []).map((record) => ({
+        room_id: record.roomId,
+        topology_generation: record.topologyGeneration,
+        epoch: record.epoch,
+        ciphertext: uint8ToBase64(record.ciphertext),
+        nonce: uint8ToBase64(record.nonce)
+      })),
       control_intents: checkpoint.controlIntents.map((intent) => ({
         version: 1,
         operation: intent.operation,

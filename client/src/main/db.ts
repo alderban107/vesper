@@ -106,6 +106,7 @@ const SCHEMA_SQL = `
     repair_failure_count INTEGER NOT NULL DEFAULT 0,
     repair_last_error TEXT,
     repair_updated_at TEXT,
+    room_data_keys TEXT NOT NULL DEFAULT '[]',
     control_intents TEXT NOT NULL DEFAULT '[]'
   );
 
@@ -259,6 +260,14 @@ interface PendingSponsoredTransitionRow {
   inserted_at: string
 }
 
+interface EncryptedRoomDataKeyStorageRecord {
+  room_id: string
+  topology_generation: number
+  epoch: number
+  ciphertext: string
+  nonce: string
+}
+
 interface ScopeCheckpointRow {
   group_id: string
   state: Buffer | null
@@ -270,6 +279,7 @@ interface ScopeCheckpointRow {
   repair_failure_count: number
   repair_last_error: string | null
   repair_updated_at: string | null
+  room_data_keys: EncryptedRoomDataKeyStorageRecord[]
   control_intents: ControlIntentStorageRecord[]
 }
 
@@ -401,6 +411,7 @@ export function initDb(): void {
     'recent_history_bundle_fingerprints',
     "TEXT NOT NULL DEFAULT '[]'"
   )
+  ensureColumn('mls_scope_metadata', 'room_data_keys', "TEXT NOT NULL DEFAULT '[]'")
   ensureColumn('mls_scope_metadata', 'control_intents', "TEXT NOT NULL DEFAULT '[]'")
   migrateLegacyControlIntents()
   ensureMessageCacheIndexes()
@@ -780,6 +791,7 @@ export function getScopeCheckpoint(groupId: string): ScopeCheckpointRow {
          repair_failure_count,
          repair_last_error,
          repair_updated_at,
+         room_data_keys,
          control_intents
        FROM mls_scope_metadata
        WHERE group_id = ?`
@@ -792,6 +804,7 @@ export function getScopeCheckpoint(groupId: string): ScopeCheckpointRow {
         repair_failure_count: number
         repair_last_error: string | null
         repair_updated_at: string | null
+        room_data_keys: string | null
         control_intents: string | null
       }
     | undefined
@@ -834,6 +847,8 @@ export function getScopeCheckpoint(groupId: string): ScopeCheckpointRow {
     repair_failure_count: metadata?.repair_failure_count ?? 0,
     repair_last_error: metadata?.repair_last_error ?? null,
     repair_updated_at: metadata?.repair_updated_at ?? null,
+    room_data_keys:
+      safeJsonArray<EncryptedRoomDataKeyStorageRecord>(metadata?.room_data_keys),
     control_intents: safeJsonArray<ControlIntentStorageRecord>(metadata?.control_intents)
   }
 }
@@ -864,6 +879,7 @@ export function setScopeCheckpoint(
     repair_failure_count?: number
     repair_last_error?: string | null
     repair_updated_at?: string | null
+    room_data_keys?: EncryptedRoomDataKeyStorageRecord[]
     control_intents?: ControlIntentStorageRecord[]
   }
 ): void {
@@ -881,6 +897,7 @@ export function setScopeCheckpoint(
         repair_failure_count?: number
         repair_last_error?: string | null
         repair_updated_at?: string | null
+        room_data_keys?: EncryptedRoomDataKeyStorageRecord[]
         control_intents?: ControlIntentStorageRecord[]
       }
     ) => {
@@ -924,8 +941,9 @@ export function setScopeCheckpoint(
              repair_failure_count,
              repair_last_error,
              repair_updated_at,
+             room_data_keys,
              control_intents
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(group_id) DO UPDATE SET
              recent_commit_fingerprints = excluded.recent_commit_fingerprints,
              recent_history_bundle_fingerprints = excluded.recent_history_bundle_fingerprints,
@@ -933,6 +951,7 @@ export function setScopeCheckpoint(
              repair_failure_count = excluded.repair_failure_count,
              repair_last_error = excluded.repair_last_error,
              repair_updated_at = excluded.repair_updated_at,
+             room_data_keys = excluded.room_data_keys,
              control_intents = excluded.control_intents`
         )
         .run(
@@ -943,6 +962,7 @@ export function setScopeCheckpoint(
           payload.repair_failure_count ?? 0,
           payload.repair_last_error ?? null,
           payload.repair_updated_at ?? null,
+          JSON.stringify(payload.room_data_keys ?? []),
           JSON.stringify(payload.control_intents ?? [])
         )
     }

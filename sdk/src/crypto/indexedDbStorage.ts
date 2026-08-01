@@ -593,6 +593,9 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
           typeof metadata?.repair_last_error === 'string' ? metadata.repair_last_error : null,
         repair_updated_at:
           typeof metadata?.repair_updated_at === 'string' ? metadata.repair_updated_at : null,
+        room_data_keys: Array.isArray(metadata?.room_data_keys)
+          ? metadata.room_data_keys
+          : [],
         control_intents: Array.isArray(metadata?.control_intents)
           ? metadata.control_intents
           : []
@@ -659,6 +662,7 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
           repair_failure_count: checkpoint.repair_failure_count ?? 0,
           repair_last_error: checkpoint.repair_last_error ?? null,
           repair_updated_at: checkpoint.repair_updated_at ?? null,
+          room_data_keys: checkpoint.room_data_keys ?? [],
           control_intents: checkpoint.control_intents ?? []
         })
       )

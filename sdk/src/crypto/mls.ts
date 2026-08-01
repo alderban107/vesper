@@ -151,6 +151,21 @@ export async function createSigningIdentity(identityName: string): Promise<{
  * Generate a batch of key packages using a previously created signing identity.
  * Each key package gets its own Provider copy (for independent key lifecycle).
  */
+export function signWithSerializedIdentity(
+  identityName: string,
+  signaturePublicKey: Uint8Array,
+  privateKeyBundle: Uint8Array,
+  message: Uint8Array
+): Uint8Array {
+  const provider = new Provider()
+  provider.deserialize_storage(privateKeyBundle)
+  const identity = Identity.deserialize(
+    provider,
+    buildIdentityData(identityName, signaturePublicKey)
+  )
+  return new Uint8Array(identity.sign(message))
+}
+
 export async function createKeyPackageBatch(
   identityData: Uint8Array,
   privateKeyBundle: Uint8Array,

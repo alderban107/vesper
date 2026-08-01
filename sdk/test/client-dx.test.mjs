@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { createVesperClient } from '../dist/index.js'
+import { verifyHistoryBundlePlaintext } from '../dist/client/messageAuthenticity.js'
 import { MemoryStorage } from '../dist/storage/index.js'
 import { createMemorySessionStore, VesperSocketClient } from '../dist/transport/index.js'
 import { bootServerStack, teardownServerStack } from '../dist/testing/index.js'
@@ -1247,23 +1248,53 @@ test('sdk preserves first DM messages for a peer that opens after the sender', {
     await leaderChat.watchScope(scope)
     assert.equal(await leaderChat.ensureScopeReady(scope, true), true)
 
-    // Follower joins the group via External Commit before any messages
+    // The application already authorizes the follower as a DM participant, but
+    // the follower has not watched the scope or joined its MLS group yet. Send
+    // more rows than the follower's first sync window so bundle consumption is
+    // proven against an authoritative backfill rather than one visible row.
+    const beforeOpenContents = Array.from({ length: 12 }, (_value, index) => `dm-before-follower-open-${index}`)
+    for (const content of beforeOpenContents) {
+      await leaderChat.sendText(scope, content)
+    }
+
+    const sentBeforeJoin = await waitFor('leader to retain the epoch-zero DM messages', async () => {
+      const synced = await leaderChat.syncScope(scope, { limit: 20 })
+      const firstMessage = synced.messages.find((message) => message.content === beforeOpenContents[0])
+      return firstMessage && synced.messages.filter((message) => beforeOpenContents.includes(message.content)).length === beforeOpenContents.length ? firstMessage : null
+    })
+    assert.equal(sentBeforeJoin.raw.mls_epoch, 0)
+    const originalPlaintext = await leader.storage.getSentMessagePlaintext(
+      sentBeforeJoin.raw.ciphertext
+    )
+    assert.equal(
+      verifyHistoryBundlePlaintext(
+        originalPlaintext,
+        scope.channelId || scope.id,
+        sentBeforeJoin.raw
+      ),
+      true
+    )
+
     await followerChat.watchScope(scope)
-    await waitFor('follower to join the DM group', async () => {
+    await waitFor('follower to join the DM group after the message', async () => {
       return await followerChat.ensureMembership(scope)
     })
+    assert.ok(followerChat.getGroupEpoch(scope.channelId || scope.id) > sentBeforeJoin.raw.mls_epoch)
 
-    // Now send the message — both are in the group, follower can decrypt
-    await leaderChat.sendText(scope, 'dm-before-follower-open')
-
-    const recovered = await waitFor('follower to decrypt the DM message', async () => {
+    const recovered = await waitFor('follower to recover the bounded pre-device-join DM window', async () => {
       const synced = await followerChat.syncScope(scope, { limit: 10 })
-      return synced.messages.find(
-        (message) => message.content === 'dm-before-follower-open' && !message.decryptionFailed
-      ) ?? null
+      const visible = synced.messages.filter(
+        (message) => beforeOpenContents.includes(message.content) && !message.decryptionFailed
+      )
+      const firstCached = await follower.storage.getCachedMessageDecryption(sentBeforeJoin.id)
+      const firstCachedPayload = firstCached ? JSON.parse(firstCached) : null
+      return visible.length === 10 && firstCachedPayload?.text === beforeOpenContents[0]
+        ? { visible, firstCached: firstCachedPayload.text }
+        : null
     })
 
-    assert.equal(recovered.decryptionFailed, false)
+    assert.equal(recovered.visible.length, 10)
+    assert.equal(recovered.firstCached, beforeOpenContents[0])
   } finally {
     first.client.stop()
     second.client.stop()
@@ -1627,6 +1658,36 @@ test('sdk migrates a populated room through one durable cutover without losing m
     assert.equal(mixed.current.raw.encryption_group_id, null)
     assert.ok(mixed.legacy.raw.room_seq < activeTopology.cutover_room_seq)
     assert.ok(mixed.current.raw.room_seq > activeTopology.cutover_room_seq)
+
+    const receiver = harnesses[receiverIndex]
+    const receiverGroupId = preparedTopologies[receiverIndex].groupId
+    const logicalRoomId = scope.channelId || scope.id
+    const [groupCheckpointBeforeRestart, roomCheckpointBeforeRestart] = await Promise.all([receiver.storage.getScopeCheckpoint(receiverGroupId), receiver.storage.getScopeCheckpoint(logicalRoomId)])
+    assert.equal(groupCheckpointBeforeRestart.room_data_keys.length, 0)
+    assert.equal(roomCheckpointBeforeRestart.room_data_keys.length, 1)
+
+    receiver.client.stop()
+    const restartedReceiver = createClientHarness(stack.apiUrl, 'migration-restarted-receiver', {
+      device: receiver.device,
+      sessionStore: receiver.sessionStore,
+      storage: receiver.storage
+    })
+    const restartedChat = restartedReceiver.client.createEncryptedChat()
+
+    try {
+      await restartedReceiver.client.start(false)
+      await restartedChat.watchScope(scope)
+
+      const afterRestart = await waitFor('room-key history after restart', async () => {
+        const synced = await restartedChat.syncScope(scope, { limit: 20 })
+        const current = synced.messages.find((message) => message.content === 'room-key-after-topology-cutover')
+        return current && !current.decryptionFailed ? current : null
+      })
+
+      assert.equal(afterRestart.raw.encryption_scheme, 'vesper-room-v1')
+    } finally {
+      restartedReceiver.client.stop()
+    }
   } finally {
     for (const harness of harnesses) {
       harness.client.stop()
