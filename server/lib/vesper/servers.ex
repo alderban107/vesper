@@ -1763,58 +1763,80 @@ defmodule Vesper.Servers do
   def use_invite(invite_code, user) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
-    case Repo.get_by(Invite, code: invite_code) do
-      nil ->
-        {:error, :not_found}
+    transaction_result =
+      Repo.transaction(fn ->
+        invite =
+          Repo.one(
+            from(i in Invite,
+              where: i.code == ^invite_code,
+              lock: "FOR UPDATE"
+            )
+          )
 
-      invite ->
         cond do
+          is_nil(invite) ->
+            Repo.rollback(:not_found)
+
           invite.expires_at && DateTime.compare(now, invite.expires_at) == :gt ->
-            {:error, :expired}
+            Repo.rollback(:expired)
 
           invite.max_uses && invite.uses >= invite.max_uses ->
-            {:error, :max_uses_reached}
+            Repo.rollback(:max_uses_reached)
 
           true ->
             server = get_server(invite.server_id)
 
-            if is_nil(server) do
-              {:error, :not_found}
-            else
-              if banned?(server.id, user.id) do
-                {:error, :banned}
-              else
-                result =
-                  %Membership{
-                    user_id: user.id,
-                    server_id: server.id,
-                    role: "member",
-                    joined_at: now
-                  }
-                  |> Repo.insert(on_conflict: :nothing, conflict_target: [:user_id, :server_id])
+            cond do
+              is_nil(server) ->
+                Repo.rollback(:not_found)
 
-                # Only increment uses and broadcast when a new membership was actually inserted
-                case result do
-                  {:ok, %Membership{id: id}} when not is_nil(id) ->
-                    maybe_assign_invite_role(id, invite.role_id)
+              banned?(server.id, user.id) ->
+                Repo.rollback(:banned)
 
-                    # Atomic increment with max_uses guard to prevent race condition
-                    from(i in Invite,
-                      where: i.id == ^invite.id,
-                      where: is_nil(i.max_uses) or i.uses < i.max_uses
-                    )
+              true ->
+                membership_id = Ecto.UUID.generate()
+
+                {inserted_count, _rows} =
+                  Repo.insert_all(
+                    Membership,
+                    [
+                      %{
+                        id: membership_id,
+                        user_id: user.id,
+                        server_id: server.id,
+                        role: "member",
+                        joined_at: now
+                      }
+                    ],
+                    on_conflict: :nothing,
+                    conflict_target: [:user_id, :server_id]
+                  )
+
+                if inserted_count == 1 do
+                  maybe_assign_invite_role(membership_id, invite.role_id)
+
+                  {1, _rows} =
+                    from(i in Invite, where: i.id == ^invite.id)
                     |> Repo.update_all(inc: [uses: 1])
 
-                    broadcast_membership_change(server.id, user.id, :member_joined)
-
-                  _ ->
-                    :ok
+                  {server, true}
+                else
+                  {server, false}
                 end
-
-                {:ok, server |> Repo.preload([:channels, [emojis: :creator]])}
-              end
             end
         end
+      end)
+
+    case transaction_result do
+      {:ok, {server, true}} ->
+        broadcast_membership_change(server.id, user.id, :member_joined)
+        {:ok, server}
+
+      {:ok, {server, false}} ->
+        {:ok, server}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
