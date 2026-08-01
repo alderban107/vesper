@@ -1,5 +1,4 @@
 defmodule Vesper.Chat do
-  require Logger
   import Ecto.Query
   alias Vesper.Dispatch
   alias Vesper.Encryption
@@ -28,27 +27,45 @@ defmodule Vesper.Chat do
   Create a DM conversation between participants.
   For direct (1:1) DMs, returns existing conversation if one already exists.
   """
-  def create_conversation(creator_id, participant_ids, opts \\ []) do
+  @max_dm_participants 100
+
+  def create_conversation(creator_id, participant_ids, opts \\ [])
+
+  def create_conversation(creator_id, participant_ids, opts)
+      when is_list(participant_ids) do
     all_user_ids = Enum.uniq([creator_id | participant_ids])
-    type = if length(all_user_ids) == 2, do: "direct", else: "group"
-    name = Keyword.get(opts, :name)
 
-    # For direct DMs, check if conversation already exists between these two users
-    if type == "direct" do
-      case find_direct_conversation(
-             creator_id,
-             List.first(participant_ids -- [creator_id]) || creator_id
-           ) do
-        %DmConversation{} = existing ->
-          {:ok, Repo.preload(existing, participants: :user)}
+    cond do
+      length(all_user_ids) < 2 ->
+        {:error, :participant_required}
 
-        nil ->
+      length(all_user_ids) > @max_dm_participants ->
+        {:error, :too_many_participants}
+
+      true ->
+        type = if length(all_user_ids) == 2, do: "direct", else: "group"
+        name = Keyword.get(opts, :name)
+
+        # For direct DMs, check if conversation already exists between these two users.
+        if type == "direct" do
+          case find_direct_conversation(
+                 creator_id,
+                 List.first(participant_ids -- [creator_id])
+               ) do
+            %DmConversation{} = existing ->
+              {:ok, Repo.preload(existing, participants: :user)}
+
+            nil ->
+              do_create_conversation(type, name, all_user_ids)
+          end
+        else
           do_create_conversation(type, name, all_user_ids)
-      end
-    else
-      do_create_conversation(type, name, all_user_ids)
+        end
     end
   end
+
+  def create_conversation(_creator_id, _participant_ids, _opts),
+    do: {:error, :invalid_participants}
 
   defp do_create_conversation(type, name, user_ids) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
@@ -422,6 +439,39 @@ defmodule Vesper.Chat do
     :ok
   end
 
+  defp claim_message_attachments([], _message_id, _uploader_id), do: :ok
+
+  defp claim_message_attachments(attachment_ids, message_id, uploader_id) do
+    {claimed, _rows} =
+      from(a in Attachment,
+        where:
+          a.id in ^attachment_ids and is_nil(a.message_id) and
+            a.uploader_id == ^uploader_id
+      )
+      |> Repo.update_all(set: [message_id: message_id])
+
+    if claimed == length(attachment_ids),
+      do: :ok,
+      else: Repo.rollback(:invalid_attachment_ids)
+  end
+
+  defp normalize_attachment_ids(ids) when is_list(ids) do
+    unique_ids = Enum.uniq(ids)
+
+    cond do
+      length(unique_ids) > 10 ->
+        {:error, :too_many_attachments}
+
+      Enum.any?(unique_ids, &(not match?({:ok, _uuid}, Ecto.UUID.cast(&1)))) ->
+        {:error, :invalid_attachment_ids}
+
+      true ->
+        {:ok, unique_ids}
+    end
+  end
+
+  defp normalize_attachment_ids(_ids), do: {:error, :invalid_attachment_ids}
+
   # --- Messages ---
 
   def get_message(id) do
@@ -580,32 +630,35 @@ defmodule Vesper.Chat do
     attrs = maybe_set_expires_at(attrs)
     preload = Keyword.get(opts, :preload, [:sender, :attachments])
     attachment_ids = Keyword.get(opts, :attachment_ids, [])
-    dispatch = Keyword.get(opts, :dispatch)
-    changeset = Message.encrypted_changeset(%Message{}, attrs)
 
-    Repo.transaction(fn ->
-      case insert_or_fetch_existing(changeset, attrs) do
-        {:new, message} ->
-          case Runtime.project_message(message) do
-            {:ok, event} ->
-              message = %{message | room_seq: event.room_seq}
-              :ok = link_attachments_to_message(attachment_ids, message.id)
-              message = maybe_preload_message(message, preload, attachment_ids != [])
+    with {:ok, attachment_ids} <- normalize_attachment_ids(attachment_ids) do
+      dispatch = Keyword.get(opts, :dispatch)
+      changeset = Message.encrypted_changeset(%Message{}, attrs)
 
-              case enqueue_message_dispatch(dispatch, message, event) do
-                :ok -> message
-                {:error, reason} -> Repo.rollback({:dispatch_enqueue_failed, reason})
-              end
+      Repo.transaction(fn ->
+        case insert_or_fetch_existing(changeset, attrs) do
+          {:new, message} ->
+            case Runtime.project_message(message) do
+              {:ok, event} ->
+                message = %{message | room_seq: event.room_seq}
+                :ok = claim_message_attachments(attachment_ids, message.id, message.sender_id)
+                message = maybe_preload_message(message, preload, attachment_ids != [])
 
-            {:error, reason} ->
-              Repo.rollback({:projection_failed, reason})
-          end
+                case enqueue_message_dispatch(dispatch, message, event) do
+                  :ok -> message
+                  {:error, reason} -> Repo.rollback({:dispatch_enqueue_failed, reason})
+                end
 
-        {:existing, message} ->
-          # Idempotent retry — message already created and projected
-          maybe_preload_message(message, preload)
-      end
-    end)
+              {:error, reason} ->
+                Repo.rollback({:projection_failed, reason})
+            end
+
+          {:existing, message} ->
+            # Idempotent retry — message already created and projected
+            maybe_preload_message(message, preload)
+        end
+      end)
+    end
   end
 
   defp insert_or_fetch_existing(changeset, attrs) do

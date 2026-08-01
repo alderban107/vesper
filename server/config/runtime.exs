@@ -16,6 +16,28 @@ import Config
 #
 # Alternatively, you can use `mix phx.gen.release` to generate a `bin/server`
 # script that automatically sets the env var above.
+case System.get_env("REGISTRATION_MODE") do
+  nil -> :ok
+  "open" -> config :vesper, :registration_mode, :open
+  "invite_only" -> config :vesper, :registration_mode, :invite_only
+  "closed" -> config :vesper, :registration_mode, :closed
+  value -> raise "invalid REGISTRATION_MODE value: #{inspect(value)}"
+end
+
+case System.get_env("REGISTRATION_INVITE_SECRET") do
+  nil ->
+    :ok
+
+  "" ->
+    :ok
+
+  registration_invite_secret when byte_size(registration_invite_secret) >= 16 ->
+    config :vesper, :registration_invite_secret, registration_invite_secret
+
+  _short ->
+    raise "REGISTRATION_INVITE_SECRET must be at least 16 bytes"
+end
+
 case System.get_env("VESPER_ENABLE_MULTI_COHORT_TOPOLOGY_MUTATIONS") do
   nil ->
     :ok

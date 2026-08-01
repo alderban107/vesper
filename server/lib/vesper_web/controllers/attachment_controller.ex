@@ -18,44 +18,60 @@ defmodule VesperWeb.AttachmentController do
     if file_size > max_size do
       conn |> put_status(:request_entity_too_large) |> json(%{error: "file too large"})
     else
-      case FileStorage.store(upload.path, upload.filename) do
-        {:ok, storage_key} ->
-          expiry_days = Application.get_env(:vesper, :file_expiry_days, 30)
+      expiry_days = Application.get_env(:vesper, :file_expiry_days, 30)
 
-          expires_at =
-            DateTime.utc_now()
-            |> DateTime.add(expiry_days * 86_400, :second)
-            |> DateTime.truncate(:second)
+      expires_at =
+        DateTime.utc_now()
+        |> DateTime.add(expiry_days * 86_400, :second)
+        |> DateTime.truncate(:second)
 
-          attrs = %{
-            filename: upload.filename,
-            content_type: upload.content_type,
-            size_bytes: file_size,
-            storage_key: storage_key,
-            encrypted: params["encrypted"] == "true",
-            expires_at: expires_at,
-            uploader_id: user.id
-          }
+      attrs = %{
+        filename: upload.filename,
+        content_type: upload.content_type,
+        size_bytes: file_size,
+        storage_key: "pending-validation",
+        encrypted: params["encrypted"] == "true",
+        expires_at: expires_at,
+        uploader_id: user.id
+      }
 
-          # Link to message if provided (optional now)
-          attrs =
-            case params["message_id"] do
-              nil -> attrs
-              id -> Map.put(attrs, :message_id, id)
+      attrs =
+        case params["message_id"] do
+          nil -> attrs
+          id -> Map.put(attrs, :message_id, id)
+        end
+
+      validation = Attachment.changeset(%Attachment{}, attrs)
+
+      if validation.valid? do
+        case FileStorage.store(upload.path, upload.filename) do
+          {:ok, storage_key} ->
+            changeset =
+              Attachment.changeset(%Attachment{}, Map.put(attrs, :storage_key, storage_key))
+
+            case Repo.insert(changeset) do
+              {:ok, attachment} ->
+                conn
+                |> put_status(:created)
+                |> json(%{attachment: attachment_json(attachment)})
+
+              {:error, _changeset} ->
+                FileStorage.delete(storage_key)
+
+                conn
+                |> put_status(:unprocessable_entity)
+                |> json(%{error: "could not save attachment"})
             end
 
-          case %Attachment{} |> Attachment.changeset(attrs) |> Repo.insert() do
-            {:ok, attachment} ->
-              conn |> put_status(:created) |> json(%{attachment: attachment_json(attachment)})
-
-            {:error, _changeset} ->
-              conn
-              |> put_status(:unprocessable_entity)
-              |> json(%{error: "could not save attachment"})
-          end
-
-        {:error, _reason} ->
-          conn |> put_status(:internal_server_error) |> json(%{error: "could not store file"})
+          {:error, _reason} ->
+            conn
+            |> put_status(:internal_server_error)
+            |> json(%{error: "could not store file"})
+        end
+      else
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "invalid attachment metadata"})
       end
     end
   end

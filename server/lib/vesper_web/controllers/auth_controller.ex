@@ -6,7 +6,8 @@ defmodule VesperWeb.AuthController do
   import VesperWeb.ControllerHelpers, only: [format_errors: 1]
 
   def register(conn, %{"username" => _, "password" => _} = params) do
-    with :ok <- validate_crypto_params(params),
+    with :ok <- authorize_registration(params),
+         :ok <- validate_crypto_params(params),
          {:ok, device_attrs} <- extract_device_attrs(params) do
       case Accounts.register_user(params) do
         {:ok, user} ->
@@ -35,6 +36,16 @@ defmodule VesperWeb.AuthController do
           |> json(%{errors: format_errors(changeset)})
       end
     else
+      {:error, :registration_closed} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "registration is closed"})
+
+      {:error, :invalid_registration_invite} ->
+        conn
+        |> put_status(:forbidden)
+        |> json(%{error: "a valid registration invite is required"})
+
       {:error, :invalid_base64} ->
         conn
         |> put_status(:bad_request)
@@ -51,6 +62,31 @@ defmodule VesperWeb.AuthController do
     conn
     |> put_status(:bad_request)
     |> json(%{error: "username and password are required"})
+  end
+
+  defp authorize_registration(params) do
+    case Application.get_env(:vesper, :registration_mode, :closed) do
+      :open ->
+        :ok
+
+      :closed ->
+        {:error, :registration_closed}
+
+      :invite_only ->
+        expected = Application.get_env(:vesper, :registration_invite_secret)
+        supplied = params["registration_invite"]
+
+        if is_binary(expected) and is_binary(supplied) and
+             byte_size(expected) == byte_size(supplied) and
+             Plug.Crypto.secure_compare(expected, supplied) do
+          :ok
+        else
+          {:error, :invalid_registration_invite}
+        end
+
+      _invalid ->
+        {:error, :registration_closed}
+    end
   end
 
   def login(conn, %{"username" => username, "password" => password} = params) do

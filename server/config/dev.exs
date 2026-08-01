@@ -52,6 +52,7 @@ config :vesper, VesperWeb.Endpoint,
 
 # Enable dev routes for dashboard and mailbox
 config :vesper, dev_routes: true
+config :vesper, :registration_mode, :open
 
 # Do not include metadata nor timestamps in development logs
 config :logger, :default_formatter, format: "[$level] $message\n"
