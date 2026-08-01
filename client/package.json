@@ -8,6 +8,7 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit",
+    "test:unit": "vitest run",
     "check:web": "npm run typecheck && npm run build:web",
     "dist": "electron-vite build && electron-builder --config electron-builder.yml",
     "dist:linux": "electron-vite build && electron-builder --linux --config electron-builder.yml",
@@ -21,7 +22,7 @@
     "test:e2e:watch": "npx playwright test -c e2e/playwright.config.ts --ui",
     "test:sdk:e2e": "npm run test:integration -w @vesper/sdk",
     "test:sdk:e2e:watch": "npm run test:integration:watch -w @vesper/sdk",
-    "postinstall": "node -e \"const fs=require('fs');const src='node_modules/twemoji-emojis/vendor/svg';const dst='src/renderer/public/twemoji';if(fs.existsSync(src)){fs.mkdirSync(dst,{recursive:true});for(const f of fs.readdirSync(src))fs.copyFileSync(src+'/'+f,dst+'/'+f)}\""
+    "postinstall": "node -e \"const fs=require('fs');const src='node_modules/@twemoji/svg';const dst='src/renderer/public/twemoji';if(fs.existsSync(src)){fs.mkdirSync(dst,{recursive:true});for(const f of fs.readdirSync(src)){if(f.endsWith('.svg'))fs.copyFileSync(src+'/'+f,dst+'/'+f)}}\""
   },
   "keywords": [
     "messaging",
@@ -49,8 +50,8 @@
     "electron": "^40.6.1",
     "electron-builder": "^26.8.1",
     "electron-vite": "^5.0.0",
-    "twemoji-emojis": "^14.1.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10"
   },
   "dependencies": {
     "@hpke/core": "^1.8.0",
@@ -58,15 +59,17 @@
     "@noble/curves": "^2.0.1",
     "@noble/hashes": "^2.0.1",
     "@tailwindcss/postcss": "^4.2.1",
+    "@twemoji/svg": "^15.0.0",
     "better-sqlite3-multiple-ciphers": "^12.6.2",
     "buffer": "^6.0.3",
-    "electron-updater": "^6.8.3",
+    "electron-updater": "^6.8.9",
     "hash-wasm": "^4.12.0",
     "highlight.js": "^11.11.1",
+    "ipaddr.js": "^2.4.0",
     "katex": "^0.16.38",
     "lucide-react": "^0.576.0",
-    "mermaid": "^11.12.0",
-    "music-metadata-browser": "^2.5.11",
+    "mermaid": "^11.16.0",
+    "music-metadata": "^11.14.0",
     "phoenix": "^1.8.4",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",

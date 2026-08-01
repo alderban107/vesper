@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
+import type { AuthRefreshResult } from '../shared/authSession'
 
 interface EncryptedRoomDataKeyStorageRecord {
   room_id: string
@@ -162,6 +163,15 @@ const cryptoDbApi = {
     ipcRenderer.invoke('cryptoDb:deletePendingMessageSend', clientNonce)
 }
 
+const authSessionApi = {
+  setRefreshToken: (refreshToken: string, serverUrl: string): boolean =>
+    ipcRenderer.sendSync('authSession:setRefreshToken', refreshToken, serverUrl) === true,
+  clearRefreshToken: (): boolean =>
+    ipcRenderer.sendSync('authSession:clearRefreshToken') === true,
+  refreshAccessToken: (serverUrl: string): Promise<AuthRefreshResult> =>
+    ipcRenderer.invoke('authSession:refreshAccessToken', serverUrl)
+}
+
 const notificationApi = {
   showMessageNotification: (data: {
     title: string
@@ -182,5 +192,6 @@ const linkPreviewApi = {
 
 contextBridge.exposeInMainWorld('electron', electronAPI)
 contextBridge.exposeInMainWorld('cryptoDb', cryptoDbApi)
+contextBridge.exposeInMainWorld('authSession', authSessionApi)
 contextBridge.exposeInMainWorld('notifications', notificationApi)
 contextBridge.exposeInMainWorld('linkPreview', linkPreviewApi)

@@ -1,5 +1,5 @@
 # Stage 1: Build the web client
-FROM node:22-alpine AS build
+FROM node:24-alpine AS build
 
 WORKDIR /app/client
 COPY client/package.json client/package-lock.json ./
@@ -10,10 +10,8 @@ COPY sdk/ /app/sdk/
 RUN ln -s /app/client/node_modules /app/sdk/node_modules
 # Make the WASM package available for Vite resolution
 RUN ln -s /app/sdk/wasm/pkg /app/client/node_modules/vesper-openmls-wasm
-# Copy twemoji SVGs: run the package's postinstall to download them
-# (npm ci --ignore-scripts skips this), then copy into public/
-RUN cd node_modules/twemoji-emojis && node postinstall.js
-RUN node -e "const fs=require('fs');const src='node_modules/twemoji-emojis/vendor/svg';const dst='src/renderer/public/twemoji';if(!fs.existsSync(src))throw new Error('twemoji SVGs missing');fs.mkdirSync(dst,{recursive:true});for(const f of fs.readdirSync(src))fs.copyFileSync(src+'/'+f,dst+'/'+f);console.log('Copied '+fs.readdirSync(dst).length+' twemoji SVGs')"
+# Copy the packaged Twemoji SVG assets into the web bundle.
+RUN node -e "const fs=require('fs');const src='node_modules/@twemoji/svg';const dst='src/renderer/public/twemoji';if(!fs.existsSync(src))throw new Error('twemoji SVGs missing');fs.mkdirSync(dst,{recursive:true});for(const f of fs.readdirSync(src)){if(f.endsWith('.svg'))fs.copyFileSync(src+'/'+f,dst+'/'+f)}console.log('Copied '+fs.readdirSync(dst).length+' twemoji SVGs')"
 RUN npm run build:web
 
 # Stage 2: Serve with nginx
@@ -40,6 +38,11 @@ server {\n\
     listen 80;\n\
     root /usr/share/nginx/html;\n\
     index index.html;\n\
+    add_header Content-Security-Policy "default-src '\''self'\''; script-src '\''self'\''; style-src '\''self'\'' '\''unsafe-inline'\''; img-src '\''self'\'' data: blob: https:; font-src '\''self'\'' data:; connect-src '\''self'\'' https: wss:; media-src '\''self'\'' blob:; worker-src '\''self'\'' blob:; child-src '\''self'\'' blob:; object-src '\''none'\''; base-uri '\''none'\''; form-action '\''self'\''; frame-ancestors '\''none'\''; frame-src '\''none'\''; manifest-src '\''self'\''" always;\n\
+    add_header X-Content-Type-Options "nosniff" always;\n\
+    add_header X-Frame-Options "DENY" always;\n\
+    add_header Referrer-Policy "no-referrer" always;\n\
+    add_header Permissions-Policy "camera=(self), microphone=(self), geolocation=(), payment=(), usb=()" always;\n\
     \n\
     # Twemoji SVGs: immutable, cache forever\n\
     location /twemoji/ {\n\

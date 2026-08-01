@@ -1,5 +1,4 @@
 import { app, shell, BrowserWindow, ipcMain, Notification, dialog } from 'electron'
-import { lookup } from 'node:dns/promises'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { autoUpdater } from 'electron-updater'
@@ -36,13 +35,22 @@ import {
   removeFromFtsIndex,
   getPendingMessageSends,
   setPendingMessageSend,
-  deletePendingMessageSend
+  deletePendingMessageSend,
+  getRefreshToken as getStoredRefreshToken,
+  setRefreshToken as setStoredRefreshToken,
+  clearRefreshToken as clearStoredRefreshToken
 } from './db'
+import { fetchLinkPreviewMetadata } from './linkPreviewFetcher'
 import {
-  isBlockedLinkPreviewUrl,
-  parseLinkPreview,
-  type LinkPreviewData
-} from '../shared/linkPreview'
+  classifyRefreshHttpFailure,
+  type AuthRefreshResult
+} from '../shared/authSession'
+import {
+  isAllowedExternalUrl,
+  isAllowedRendererNavigation,
+  normalizeHttpOrigin,
+  secureWebPreferences
+} from './electronSecurity'
 
 interface EncryptedRoomDataKeyStorageRecord {
   room_id: string
@@ -66,93 +74,6 @@ interface ControlIntentStorageRecord {
   updated_at: string
 }
 
-const LINK_PREVIEW_TIMEOUT_MS = 5_000
-const MAX_LINK_PREVIEW_HTML_LENGTH = 524_288
-
-function isPrivateIpAddress(address: string): boolean {
-  if (address === '::1') {
-    return true
-  }
-
-  if (address.startsWith('fe80:') || address.startsWith('fc') || address.startsWith('fd')) {
-    return true
-  }
-
-  const match = address.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
-  if (!match) {
-    return false
-  }
-
-  const [a, b] = match.slice(1).map(Number)
-  if ([a, b].some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
-    return true
-  }
-
-  if (a === 10 || a === 127 || a === 0) {
-    return true
-  }
-
-  if (a === 169 && b === 254) {
-    return true
-  }
-
-  if (a === 172 && b >= 16 && b <= 31) {
-    return true
-  }
-
-  if (a === 192 && b === 168) {
-    return true
-  }
-
-  return false
-}
-
-async function isSafeLinkPreviewUrl(rawUrl: string): Promise<boolean> {
-  if (isBlockedLinkPreviewUrl(rawUrl)) {
-    return false
-  }
-
-  try {
-    const url = new URL(rawUrl)
-    const addresses = await lookup(url.hostname, { all: true })
-    return addresses.every((entry) => !isPrivateIpAddress(entry.address))
-  } catch {
-    return false
-  }
-}
-
-async function fetchLinkPreviewMetadata(rawUrl: string): Promise<LinkPreviewData | null> {
-  if (!(await isSafeLinkPreviewUrl(rawUrl))) {
-    return null
-  }
-
-  try {
-    const response = await fetch(rawUrl, {
-      signal: AbortSignal.timeout(LINK_PREVIEW_TIMEOUT_MS),
-      redirect: 'follow'
-    })
-
-    if (!response.ok) {
-      return null
-    }
-
-    const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
-    if (!contentType.includes('text/html') && !contentType.includes('application/xhtml+xml')) {
-      return null
-    }
-
-    const finalUrl = response.url || rawUrl
-    if (!(await isSafeLinkPreviewUrl(finalUrl))) {
-      return null
-    }
-
-    const html = (await response.text()).slice(0, MAX_LINK_PREVIEW_HTML_LENGTH)
-    return parseLinkPreview(html, finalUrl)
-  } catch {
-    return null
-  }
-}
-
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
     width: 1200,
@@ -161,12 +82,7 @@ function createWindow(): void {
     minHeight: 600,
     show: false,
     autoHideMenuBar: true,
-    webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false
-    }
+    webPreferences: secureWebPreferences(join(__dirname, '../preload/index.js'))
   })
 
   mainWindow.on('ready-to-show', () => {
@@ -174,8 +90,20 @@ function createWindow(): void {
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+    if (isAllowedExternalUrl(details.url)) {
+      void shell.openExternal(details.url)
+    }
     return { action: 'deny' }
+  })
+
+  mainWindow.webContents.on('will-navigate', (event, targetUrl) => {
+    if (!isAllowedRendererNavigation(mainWindow.webContents.getURL(), targetUrl)) {
+      event.preventDefault()
+    }
+  })
+
+  mainWindow.webContents.on('will-attach-webview', (event) => {
+    event.preventDefault()
   })
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
@@ -186,6 +114,80 @@ function createWindow(): void {
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.on(
+    'authSession:setRefreshToken',
+    (event, refreshToken: unknown, rawServerUrl: unknown) => {
+      const serverOrigin =
+        typeof rawServerUrl === 'string' ? normalizeHttpOrigin(rawServerUrl) : null
+      if (
+        typeof refreshToken !== 'string' ||
+        refreshToken.length === 0 ||
+        refreshToken.length > 8192 ||
+        !serverOrigin
+      ) {
+        event.returnValue = false
+        return
+      }
+      setStoredRefreshToken(refreshToken, serverOrigin)
+      event.returnValue = true
+    }
+  )
+
+  ipcMain.on('authSession:clearRefreshToken', (event) => {
+    clearStoredRefreshToken()
+    event.returnValue = true
+  })
+
+  ipcMain.handle(
+    'authSession:refreshAccessToken',
+    async (_event, rawServerUrl: unknown): Promise<AuthRefreshResult> => {
+      const serverOrigin =
+        typeof rawServerUrl === 'string' ? normalizeHttpOrigin(rawServerUrl) : null
+      const refreshToken = serverOrigin ? getStoredRefreshToken(serverOrigin) : null
+      if (!refreshToken || !serverOrigin || typeof rawServerUrl !== 'string') {
+        return { status: 'invalid' }
+      }
+
+      try {
+        const endpoint = new URL('/api/v1/auth/refresh', rawServerUrl)
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          redirect: 'error',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+          signal: AbortSignal.timeout(10_000)
+        })
+        if (!response.ok) {
+          const failure = classifyRefreshHttpFailure(response.status)
+          if (failure === 'invalid') {
+            clearStoredRefreshToken()
+          }
+          return { status: failure }
+        }
+
+        const payload = (await response.json()) as {
+          access_token?: unknown
+          refresh_token?: unknown
+        }
+        if (
+          typeof payload.access_token !== 'string' ||
+          typeof payload.refresh_token !== 'string' ||
+          payload.access_token.length === 0 ||
+          payload.refresh_token.length === 0 ||
+          payload.access_token.length > 8192 ||
+          payload.refresh_token.length > 8192
+        ) {
+          return { status: 'retryable' }
+        }
+
+        setStoredRefreshToken(payload.refresh_token, serverOrigin)
+        return { status: 'ok', accessToken: payload.access_token }
+      } catch {
+        return { status: 'retryable' }
+      }
+    }
+  )
+
   // Identity keys
   ipcMain.handle('cryptoDb:getIdentityKeys', (_, userId: string) =>
     getIdentityKeys(userId)

@@ -239,6 +239,15 @@ interface VesperE2eeTestBridge {
 
 interface Window {
   cryptoDb: CryptoDbApi
+  authSession?: {
+    setRefreshToken(refreshToken: string, serverUrl: string): boolean
+    clearRefreshToken(): boolean
+    refreshAccessToken(serverUrl: string): Promise<
+      | { status: 'ok'; accessToken: string }
+      | { status: 'invalid' }
+      | { status: 'retryable' }
+    >
+  }
   __mlsDiagnostics?: {
     forScope(scopeId: string): E2eeScopeDiagnosticsSnapshot | null
     allScopes(): Record<string, E2eeScopeDiagnosticsSnapshot>

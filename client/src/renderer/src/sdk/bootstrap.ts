@@ -3,6 +3,22 @@ import { useSettingsStore } from '../stores/settingsStore'
 import { getStoredValue, setStoredValue, removeStoredValue } from '../utils/localStorage'
 
 const SESSION_NOTICE_KEY = 'vesperSessionNotice'
+const desktopAuthSession = window.authSession
+let desktopAccessToken: string | null = null
+
+if (desktopAuthSession) {
+  desktopAccessToken = getStoredValue('accessToken')
+  const legacyRefreshToken = getStoredValue('refreshToken')
+  const serverUrl = useSettingsStore.getState().serverUrl.trim()
+  if (
+    legacyRefreshToken &&
+    serverUrl &&
+    desktopAuthSession.setRefreshToken(legacyRefreshToken, serverUrl)
+  ) {
+    removeStoredValue('refreshToken')
+  }
+  removeStoredValue('accessToken')
+}
 
 function emitSessionNotice(): void {
   window.dispatchEvent(new CustomEvent(SESSION_NOTICE_EVENT))
@@ -10,7 +26,7 @@ function emitSessionNotice(): void {
 
 export { SESSION_NOTICE_EVENT, type SessionNotice }
 
-export const rendererSessionStore: SessionStore = {
+const sessionStore: SessionStore = {
   getServerUrl(): string {
     const serverUrl = useSettingsStore.getState().serverUrl.trim()
     if (!serverUrl) {
@@ -21,19 +37,33 @@ export const rendererSessionStore: SessionStore = {
   },
 
   getAccessToken(): string | null {
-    return getStoredValue('accessToken')
+    return desktopAuthSession ? desktopAccessToken : getStoredValue('accessToken')
   },
 
   getRefreshToken(): string | null {
-    return getStoredValue('refreshToken')
+    return desktopAuthSession ? null : getStoredValue('refreshToken')
   },
 
   setTokens(accessToken: string, refreshToken: string): void {
+    if (desktopAuthSession) {
+      if (!desktopAuthSession.setRefreshToken(refreshToken, sessionStore.getServerUrl())) {
+        throw new Error('Could not store the desktop refresh token securely')
+      }
+      desktopAccessToken = accessToken
+      return
+    }
+
     setStoredValue('accessToken', accessToken)
     setStoredValue('refreshToken', refreshToken)
   },
 
   clearTokens(): void {
+    if (desktopAuthSession) {
+      desktopAccessToken = null
+      desktopAuthSession.clearRefreshToken()
+      return
+    }
+
     removeStoredValue('accessToken')
     removeStoredValue('refreshToken')
   },
@@ -72,3 +102,16 @@ export const rendererSessionStore: SessionStore = {
   emitSessionNotice
 }
 
+if (desktopAuthSession) {
+  sessionStore.refreshAccessToken = async () => {
+    const result = await desktopAuthSession.refreshAccessToken(sessionStore.getServerUrl())
+    if (result.status === 'ok') {
+      desktopAccessToken = result.accessToken
+    } else if (result.status === 'invalid') {
+      desktopAccessToken = null
+    }
+    return result
+  }
+}
+
+export const rendererSessionStore = sessionStore

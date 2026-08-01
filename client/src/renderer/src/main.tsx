@@ -1,5 +1,5 @@
 import { Buffer } from 'buffer'
-// music-metadata-browser uses Node.js Buffer at runtime
+// Audio metadata parsing still consumes Buffer-backed tag payloads in browsers.
 ;(globalThis as Record<string, unknown>).Buffer = Buffer
 
 import React from 'react'

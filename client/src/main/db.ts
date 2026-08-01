@@ -5,6 +5,7 @@ import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync } from 
 import { join } from 'path'
 
 let db: Database.Database | null = null
+let volatileRefreshSession: { token: string; serverOrigin: string } | null = null
 
 // ---------------------------------------------------------------------------
 // Encryption key management
@@ -62,6 +63,12 @@ function applyKey(database: Database.Database, hexKey: string): void {
 // ---------------------------------------------------------------------------
 
 const SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS auth_session (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    encrypted_refresh_token BLOB NOT NULL,
+    server_origin TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS identity_keys (
     user_id TEXT PRIMARY KEY,
     public_identity_key BLOB,
@@ -406,6 +413,7 @@ export function initDb(): void {
 
   db.exec(SCHEMA_SQL)
   ensureMessageCacheColumns()
+  ensureColumn('auth_session', 'server_origin', 'TEXT')
   ensureColumn(
     'mls_scope_metadata',
     'recent_history_bundle_fingerprints',
@@ -418,10 +426,66 @@ export function initDb(): void {
 }
 
 export function closeDb(): void {
+  volatileRefreshSession = null
   if (db) {
     db.close()
     db = null
   }
+}
+
+export function getRefreshToken(serverOrigin: string): string | null {
+  if (volatileRefreshSession) {
+    return volatileRefreshSession.serverOrigin === serverOrigin
+      ? volatileRefreshSession.token
+      : null
+  }
+  if (!safeStorage.isEncryptionAvailable()) {
+    return null
+  }
+
+  const row = getDb()
+    .prepare(
+      'SELECT encrypted_refresh_token, server_origin FROM auth_session WHERE id = 1'
+    )
+    .get() as { encrypted_refresh_token: Buffer; server_origin: string | null } | undefined
+  if (!row || row.server_origin !== serverOrigin) {
+    return null
+  }
+
+  try {
+    volatileRefreshSession = {
+      token: safeStorage.decryptString(row.encrypted_refresh_token),
+      serverOrigin: row.server_origin
+    }
+    return volatileRefreshSession.token
+  } catch {
+    clearRefreshToken()
+    return null
+  }
+}
+
+export function setRefreshToken(refreshToken: string, serverOrigin: string): void {
+  volatileRefreshSession = { token: refreshToken, serverOrigin }
+  if (!safeStorage.isEncryptionAvailable()) {
+    getDb().prepare('DELETE FROM auth_session WHERE id = 1').run()
+    return
+  }
+
+  const encrypted = safeStorage.encryptString(refreshToken)
+  getDb()
+    .prepare(
+      `INSERT INTO auth_session (id, encrypted_refresh_token, server_origin)
+       VALUES (1, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         encrypted_refresh_token = excluded.encrypted_refresh_token,
+         server_origin = excluded.server_origin`
+    )
+    .run(encrypted, serverOrigin)
+}
+
+export function clearRefreshToken(): void {
+  volatileRefreshSession = null
+  getDb().prepare('DELETE FROM auth_session WHERE id = 1').run()
 }
 
 function getDb(): Database.Database {

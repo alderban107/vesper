@@ -65,12 +65,12 @@ async function resizeCoverArt(data: Uint8Array, mime: string): Promise<Blob | nu
 
 /**
  * Extract audio metadata (title, artist, album, duration, cover art) from a file.
- * Uses music-metadata-browser to parse ID3/Vorbis/MP4 tags.
+ * Uses music-metadata's browser parser to parse ID3/Vorbis/MP4 tags.
  * Returns null if parsing fails or no metadata exists.
  */
 export async function extractAudioMetadata(file: File): Promise<AudioMetadataResult | null> {
   try {
-    const { parseBlob, selectCover } = await import('music-metadata-browser')
+    const { parseBlob, selectCover } = await import('music-metadata')
     const metadata = await parseBlob(file)
 
     const title = truncate(metadata.common.title, 128)
