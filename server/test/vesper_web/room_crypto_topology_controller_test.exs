@@ -1,5 +1,5 @@
 defmodule VesperWeb.RoomCryptoTopologyControllerTest do
-  use Vesper.ConnCase, async: true
+  use Vesper.ConnCase, async: false
 
   alias Vesper.Encryption
   alias Vesper.Runtime
@@ -52,6 +52,67 @@ defmodule VesperWeb.RoomCryptoTopologyControllerTest do
       |> RoomCryptoTopologyController.show(%{"scope_id" => channel.id})
 
     assert %{"error" => "not a member"} = json_response(outsider_conn, 403)
+  end
+
+  test "multi-cohort prepare and cutover are gated while single topology remains available", %{
+    conn: conn
+  } do
+    previous = Application.get_env(:vesper, :multi_cohort_topology_mutations_enabled)
+    Application.put_env(:vesper, :multi_cohort_topology_mutations_enabled, false)
+
+    on_exit(fn ->
+      Application.put_env(:vesper, :multi_cohort_topology_mutations_enabled, previous)
+    end)
+
+    owner = insert_user()
+    {:ok, server} = Servers.create_server(owner, %{name: "Topology mutation gate"})
+    channel = Enum.find(server.channels, &(&1.type == "text"))
+    room = Runtime.get_room_for_channel(channel.id)
+
+    rejected_prepare =
+      conn
+      |> Plug.Conn.assign(:current_user, owner)
+      |> RoomCryptoTopologyController.prepare(%{
+        "scope_id" => channel.id,
+        "mode" => "multi_cohort",
+        "target_cohort_size" => 2,
+        "request_id" => "disabled-prepare-request"
+      })
+
+    assert %{"error" => "multi_cohort_mutations_disabled"} =
+             json_response(rejected_prepare, 409)
+
+    single_update =
+      Phoenix.ConnTest.build_conn()
+      |> Plug.Conn.assign(:current_user, owner)
+      |> RoomCryptoTopologyController.update(%{
+        "scope_id" => channel.id,
+        "mode" => "single",
+        "target_cohort_size" => 2
+      })
+
+    assert %{"topology" => %{"mode" => "single"}} = json_response(single_update, 200)
+
+    assert {:ok, preparing} =
+             Encryption.prepare_room_topology(
+               room.id,
+               :multi_cohort,
+               2,
+               "prepared-before-gate"
+             )
+
+    rejected_cutover =
+      Phoenix.ConnTest.build_conn()
+      |> Plug.Conn.assign(:current_user, owner)
+      |> RoomCryptoTopologyController.cutover(%{
+        "scope_id" => channel.id,
+        "topology_id" => preparing.id
+      })
+
+    assert %{"error" => "multi_cohort_mutations_disabled"} =
+             json_response(rejected_cutover, 409)
+
+    assert Vesper.Repo.get!(Vesper.Encryption.RoomTopology, preparing.id).state == :preparing
   end
 
   test "topology IDs cannot cross the authorized room boundary", %{conn: conn} do

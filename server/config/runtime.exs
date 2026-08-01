@@ -16,6 +16,20 @@ import Config
 #
 # Alternatively, you can use `mix phx.gen.release` to generate a `bin/server`
 # script that automatically sets the env var above.
+case System.get_env("VESPER_ENABLE_MULTI_COHORT_TOPOLOGY_MUTATIONS") do
+  nil ->
+    :ok
+
+  value when value in ["1", "true", "TRUE"] ->
+    config :vesper, :multi_cohort_topology_mutations_enabled, true
+
+  value when value in ["0", "false", "FALSE"] ->
+    config :vesper, :multi_cohort_topology_mutations_enabled, false
+
+  value ->
+    raise "invalid VESPER_ENABLE_MULTI_COHORT_TOPOLOGY_MUTATIONS value: #{inspect(value)}"
+end
+
 if System.get_env("PHX_SERVER") do
   config :vesper, VesperWeb.Endpoint, server: true
 end

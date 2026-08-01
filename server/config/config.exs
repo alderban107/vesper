@@ -10,7 +10,8 @@ import Config
 config :vesper,
   ecto_repos: [Vesper.Repo],
   generators: [timestamp_type: :utc_datetime, binary_id: true],
-  sync_event_retention_days: 7
+  sync_event_retention_days: 7,
+  multi_cohort_topology_mutations_enabled: false
 
 # Configure the endpoint
 config :vesper, VesperWeb.Endpoint,
