@@ -95,6 +95,10 @@ jobs:
           npm ci --workspaces=false
           node ./scripts/link-sdk-node-modules.mjs
 
+      - name: Rebuild native Electron dependencies
+        working-directory: client
+        run: npx electron-builder install-app-deps
+
       - name: Build Electron boundary
         working-directory: client
         run: |

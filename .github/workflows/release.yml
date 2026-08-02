@@ -150,6 +150,10 @@ jobs:
           mix deps.get
           mix compile --warnings-as-errors
 
+      - name: Rebuild native Electron dependencies
+        working-directory: client
+        run: npx electron-builder install-app-deps
+
       - name: Build Electron boundary and install Chromium
         working-directory: client
         run: |
