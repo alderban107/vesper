@@ -22,7 +22,7 @@
         lib = pkgs.lib;
         nodejs = pkgs.nodejs_20;
         beamPackages = pkgs.beamPackages;
-        version = "0.1.0";
+        version = "0.2.0";
 
         server = beamPackages.mixRelease {
           pname = "vesper-server";

@@ -232,7 +232,7 @@ if config_env() == :prod do
 
   # Upload directory — absolute path for file storage. In releases,
   # Application.app_dir resolves to a versioned path inside the release
-  # (e.g. /app/lib/vesper-0.1.0/priv/uploads) which is wiped on container
+  # (e.g. /app/lib/vesper-<version>/priv/uploads) which is wiped on container
   # recreation. Default to a stable path that Docker volumes can mount.
   config :vesper, :upload_dir, System.get_env("UPLOAD_DIR") || "/var/lib/vesper/uploads"
 

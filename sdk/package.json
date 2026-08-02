@@ -1,6 +1,6 @@
 {
   "name": "@vesper/sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "TypeScript SDK for building Vesper clients",
   "license": "AGPL-3.0-only",
   "type": "module",

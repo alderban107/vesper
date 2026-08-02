@@ -3,7 +3,7 @@ defmodule Vesper.Chat.FileStorageTest do
   Tests for FileStorage, focusing on the upload directory resolution.
 
   In Docker releases, Application.app_dir resolves to a versioned path
-  (e.g. /app/lib/vesper-0.1.0/priv/uploads) that is wiped on container
+  (e.g. /app/lib/vesper-<version>/priv/uploads) that is wiped on container
   recreation. PR #41 fixed this by reading from :upload_dir app config
   with a stable default in production.
   """
