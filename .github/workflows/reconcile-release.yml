@@ -430,10 +430,11 @@ jobs:
               raise SystemExit(f'{image} final manifest is missing a release platform')
           PY
 
-            manifest_digest="$(
-              docker buildx imagetools inspect "$final_ref" \
-                | awk '$1 == "Digest:" {print $2; exit}'
-            )"
+            # The human-readable Buildx renderer exits 255 on indexes that
+            # contain BuildKit attestation descriptors even though --raw is
+            # valid. The OCI index digest is the SHA-256 of those exact raw
+            # manifest bytes already checked above.
+            manifest_digest="sha256:$(sha256sum "$final_raw" | cut -d' ' -f1)"
             [[ "$manifest_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
             printf '%s=%s\n' "$image" "$manifest_digest" >> /tmp/container-reconciliation/digests.env
             printf '%s_digest=%s\n' "$image" "$manifest_digest" >> "$GITHUB_OUTPUT"
