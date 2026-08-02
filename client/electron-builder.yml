@@ -43,6 +43,13 @@ win:
   target:
     - nsis
     - portable
+nsis:
+  # Keep published names aligned with latest.yml. GitHub otherwise replaces
+  # spaces in electron-builder's default names with periods after checksums
+  # have already been generated.
+  artifactName: ${productName}-Setup-${version}.${ext}
+portable:
+  artifactName: ${productName}-${version}.${ext}
 publish:
   provider: github
   owner: alderban107
