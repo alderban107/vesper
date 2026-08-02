@@ -1,0 +1,73 @@
+name: Validate Public Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      public_url:
+        description: 'Public HTTPS origin to validate'
+        required: true
+      turn_server_url:
+        description: 'Public TURN URL without embedded credentials'
+        required: true
+        default: 'turn:127.0.0.1:3478'
+
+permissions:
+  contents: read
+
+jobs:
+  external-boundaries:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PUBLIC_URL: ${{ inputs.public_url }}
+      TURN_SERVER_URL: ${{ inputs.turn_server_url }}
+      TURN_USERNAME: ${{ secrets.BETA_TURN_USERNAME }}
+      TURN_PASSWORD: ${{ secrets.BETA_TURN_PASSWORD }}
+      TURN_EVIDENCE_PATH: external-turn-evidence.json
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Require controlled external-test credentials
+        shell: bash
+        run: |
+          test -n "$TURN_USERNAME"
+          test -n "$TURN_PASSWORD"
+          case "$PUBLIC_URL" in https://*) ;; *) echo 'public_url must use HTTPS' >&2; exit 1 ;; esac
+          case "$TURN_SERVER_URL" in turn:*|turns:*) ;; *) echo 'turn_server_url must use turn: or turns:' >&2; exit 1 ;; esac
+
+      - name: Validate public web, API, and WebSocket edge
+        shell: bash
+        run: |
+          curl --fail --show-error --silent --retry 5 --retry-all-errors \
+            --connect-timeout 10 --max-time 30 "$PUBLIC_URL/health" \
+            | tee public-health.json
+          jq -e '.status == "ok" and .database == "ok" and .migrations == "ok"' public-health.json
+          curl --fail --show-error --silent --retry 5 --retry-all-errors \
+            --connect-timeout 10 --max-time 30 "$PUBLIC_URL/" >/dev/null
+
+      - name: Install Chromium boundary
+        working-directory: client
+        run: |
+          npm ci --workspaces=false
+          npx playwright install chromium --with-deps
+
+      - name: Prove relay-only UDP and TCP payloads externally
+        run: node client/scripts/test-external-turn.mjs
+
+      - name: Upload sanitized deployment evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: public-deployment-evidence
+          path: |
+            public-health.json
+            external-turn-evidence.json
+          if-no-files-found: warn
+          retention-days: 14

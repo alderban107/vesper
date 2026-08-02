@@ -185,7 +185,7 @@ scripts/                 repo-level tooling
   test-client.yml          client CI — typecheck + production build
   docker-server.yml        build & push attested main/SHA server snapshots
   docker-web.yml           build & push attested main/SHA web snapshots
-  release.yml              signed desktop + attested container release gate
+  release.yml              explicit signed/unsigned-beta desktop + attested container gate
   nightly.yml              CI-only distributed recovery soak
 .github/CI.md             CI/CD pipeline documentation
 
@@ -316,7 +316,7 @@ To change the limit, update **both** values. They must match — if `Plug.Parser
 
 ## Security and release operations
 
-Report vulnerabilities through [SECURITY.md](SECURITY.md). Operators and release maintainers should follow the [public-beta release runbook](docs/RELEASE-RUNBOOK.md) for signing, migration rehearsal, canarying, monitoring, and rollback.
+Report vulnerabilities through [SECURITY.md](SECURITY.md). Operators and release maintainers should follow the [public-beta release runbook](docs/RELEASE-RUNBOOK.md) for native trust disclosure, migration rehearsal, canarying, monitoring, and rollback.
 
 ## Contributing
 

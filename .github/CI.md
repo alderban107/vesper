@@ -55,22 +55,27 @@ A push to `main` builds native `linux/amd64` and `linux/arm64` images and publis
 
 These workflows emit SBOMs and build provenance, but they do not publish versioned production tags. Operators must not deploy mutable `main` tags as releases.
 
-### `release.yml` — stable release gate
+### `release.yml` — exact-source validation and release gate
 
-This workflow is manually dispatched from an existing `v<version>` tag, with the same tag supplied as its input. It fails unless the selected ref, checked-out commit, GitHub workflow identity, and `client/package.json` version agree.
+This workflow has two deliberately separate modes. A validation-only dispatch from `main` (`publish=false`) runs the complete protocol, browser/Electron, desktop-platform, and container matrix without creating a tag or release. Publication (`publish=true`) must be dispatched from an existing immutable `v<version>` tag with the same tag supplied as input. Both modes fail unless the checked-out commit, GitHub workflow identity, requested release identity, and `client/package.json` version agree.
+
+The caller also selects an explicit native trust policy:
+
+- `signed` requires and verifies Apple Developer ID/notarization plus Windows Authenticode credentials;
+- `unsigned-beta` disables certificate discovery, marks the GitHub release as a prerelease, and adds an attested `UNSIGNED-NATIVE-BUILDS.txt` disclosure. Checksums and GitHub provenance still bind the produced bytes, but do not claim native platform trust.
 
 The release gate performs, in order:
 
 1. server and SDK audits, warnings-as-errors compilation, migration verification, server tests, and live SDK protocol tests;
-2. the retained browser/Electron invariant suite against the exact tag, with failure evidence retained for 14 days;
-3. native desktop builds for Linux, macOS x64/arm64, and Windows;
-4. mandatory macOS signing/notarization and Windows Authenticode verification;
+2. the retained browser/Electron invariant suite against the selected exact source, with failure evidence retained for 14 days;
+3. native desktop builds for Linux, macOS x64/arm64, and Windows under the selected trust policy;
+4. mandatory native signature/notarization verification in `signed` mode, or explicit untrusted-beta disclosure in `unsigned-beta` mode;
 5. native amd64/arm64 candidate builds for both container images, each with SBOM and provenance;
-6. release-set validation, checksums, GitHub build-provenance attestation, and a complete draft GitHub release;
+6. on a publication run only, release-set validation, checksums, GitHub build-provenance attestation, and a complete draft GitHub release;
 7. publication of versioned multi-architecture container manifests;
-8. conversion of the verified draft into a public release.
+8. conversion of the verified draft into a public release or prerelease.
 
-If required signing credentials or any platform artifact are absent, no public GitHub release is created. GitHub Releases and GHCR are separate publication systems and cannot commit atomically: all candidates and the draft are validated first, but a failure while creating the two final OCI manifests can leave one version tag visible while the GitHub release remains draft. Treat that as a failed release, remove the partial OCI tag, and rerun only after reconciling both registries. Follow `docs/RELEASE-RUNBOOK.md` for credentials, canarying, migration, verification, and rollback.
+A missing platform artifact always blocks publication; missing signing credentials block only the `signed` policy. GitHub Releases and GHCR are separate publication systems and cannot commit atomically: all candidates and the draft are validated first, but a failure while creating the two final OCI manifests can leave one version tag visible while the GitHub release remains draft. Treat that as a failed release, remove the partial OCI tag, and rerun only after reconciling both registries. Follow `docs/RELEASE-RUNBOOK.md` for trust policy, canarying, migration, verification, and rollback.
 
 ### `nightly.yml` — distributed recovery validation only
 
@@ -90,4 +95,4 @@ The multiplier absorbs runner variance; it is not permission to ignore order-of-
 - CI service images and Docker base images are pinned by digest.
 - Stable desktop and versioned OCI artifacts come only from `release.yml`.
 - Production Compose deployments require explicit release images through `VESPER_APP_IMAGE` and `VESPER_WEB_IMAGE`; mutable `main`, `latest`, and former nightly tags are not release inputs.
-- The Electron updater follows stable signed releases (`allowPrerelease=false`).
+- The Electron updater follows stable releases (`allowPrerelease=false`); an unsigned beta is deliberately marked prerelease and is never offered as an automatic stable update.

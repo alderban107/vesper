@@ -84,7 +84,7 @@ The bundled server uses coturn long-term credentials because Vesper currently re
 
 `TURN_SERVER_URL` is delivered to remote clients, so `turn:coturn:3478` is invalid. If the relay is behind NAT, set `TURN_EXTERNAL_IP` in coturn's `public-ip/private-ip` form. A `turns:` URL requires certificates and TLS ingress configured separately; setting the URL alone does not enable TLS.
 
-After deployment, prove relay behavior from outside the server's network. Host reachability is not enough: establish a WebRTC call with relay-only ICE policy and verify a `relay` candidate carries media in both directions.
+After deployment, prove relay behavior from outside the server's network. Host reachability is not enough: establish a WebRTC call with relay-only ICE policy and verify a `relay` candidate carries media in both directions. Repository maintainers can temporarily configure the `BETA_TURN_USERNAME`/`BETA_TURN_PASSWORD` Actions secrets and dispatch `validate-public-deployment.yml`; its GitHub-hosted Chromium proves relay-only UDP and TCP payload round trips and uploads sanitized evidence. Remove those temporary secrets after validation.
 
 ## Initial deployment
 
