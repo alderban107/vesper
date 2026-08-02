@@ -69,9 +69,14 @@ test('Electron SQLite adapter preserves the checkpoint control journal', async (
         ? 'client/node_modules/electron/dist/electron.exe'
         : 'client/node_modules/electron/dist/electron'
   )
+  // GitHub-hosted Linux runners mount the workspace without a usable SUID
+  // sandbox and disable unprivileged user namespaces. This process is an
+  // isolated storage-contract fixture, not the packaged application; stable
+  // builds keep their normal sandbox policy.
+  const ciSandboxArgs = process.platform === 'linux' && process.env.CI ? ['--no-sandbox'] : []
   const app = await electron.launch({
     executablePath: electronExecutablePath,
-    args: [executable, `--user-data-dir=${userDataDir}`],
+    args: [...ciSandboxArgs, executable, `--user-data-dir=${userDataDir}`],
     env: {
       ...process.env,
       NODE_ENV: 'production'
