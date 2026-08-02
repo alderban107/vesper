@@ -107,7 +107,10 @@ jobs:
 
       - name: Run retained browser invariant suite
         working-directory: client
-        run: npx playwright test -c e2e/playwright.config.ts --project=p1-extended --project=p2-reliability
+        run: >-
+          xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24"
+          npx playwright test -c e2e/playwright.config.ts
+          --project=p1-extended --project=p2-reliability
 
       - name: Upload test artifacts
         if: failure()
