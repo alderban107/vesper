@@ -305,15 +305,26 @@ jobs:
         working-directory: client
         run: npm run build
 
-      - name: Package native artifacts
+      - name: Package signed native artifacts
+        if: inputs.signing_mode == 'signed'
         working-directory: client
         env:
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ inputs.signing_mode == 'signed' && 'true' || 'false' }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "true"
           CSC_LINK: ${{ matrix.platform == 'mac' && secrets.MACOS_CSC_LINK || secrets.WINDOWS_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ matrix.platform == 'mac' && secrets.MACOS_CSC_KEY_PASSWORD || secrets.WINDOWS_CSC_KEY_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npx electron-builder ${{ matrix.args }} --publish never
+
+      - name: Package unsigned beta artifacts
+        if: inputs.signing_mode == 'unsigned-beta'
+        working-directory: client
+        env:
+          # Do not export empty CSC_LINK/APPLE_* variables here. electron-builder
+          # treats an exported empty CSC_LINK as the project directory and tries
+          # to import it as a certificate instead of following unsigned mode.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npx electron-builder ${{ matrix.args }} --publish never
 
       - name: Verify macOS application signature and notarization
