@@ -9,4 +9,7 @@ case "${PUBLIC_SCHEME:-http}" in
     ;;
 esac
 
-sed -i "s/__VESPER_PUBLIC_SCHEME__/${PUBLIC_SCHEME:-http}/g" /etc/nginx/conf.d/proxy_headers.inc
+sed "s/__VESPER_PUBLIC_SCHEME__/${PUBLIC_SCHEME:-http}/g" \
+  /etc/nginx/vesper/proxy_headers.inc.template > /tmp/proxy_headers.inc
+
+exec "$@"

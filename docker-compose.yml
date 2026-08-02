@@ -30,11 +30,13 @@ services:
       PORT: "4000"
       DNS_CLUSTER_QUERY: ${DNS_CLUSTER_QUERY:-}
       CORS_ORIGIN: ${CORS_ORIGIN:?CORS_ORIGIN required}
+      # Safe only because the bundled nginx proxy overwrites X-Forwarded-For.
+      TRUST_PROXY_HEADERS: "true"
       JWT_SECRET: ${JWT_SECRET:-}
       METRICS_TOKEN: ${METRICS_TOKEN:?METRICS_TOKEN required}
       REGISTRATION_MODE: ${REGISTRATION_MODE:-closed}
       REGISTRATION_INVITE_SECRET: ${REGISTRATION_INVITE_SECRET:-}
-      TURN_SERVER_URL: ${TURN_SERVER_URL:-turn:coturn:3478}
+      TURN_SERVER_URL: ${TURN_SERVER_URL:?TURN_SERVER_URL must be publicly reachable}
       TURN_USERNAME: ${TURN_USERNAME:-vesper}
       TURN_PASSWORD: ${TURN_PASSWORD:?TURN_PASSWORD required}
       FILE_EXPIRY_DAYS: ${FILE_EXPIRY_DAYS:-30}
@@ -46,6 +48,10 @@ services:
       VAPID_SUBJECT: ${VAPID_SUBJECT:-}
     volumes:
       - uploads:/var/lib/vesper/uploads
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     # Run migrations as a fail-closed release task before accepting traffic.
     # This avoids serving against a partially migrated schema; orchestrated
     # multi-replica deployments should run the same task as a separate job.
@@ -70,8 +76,15 @@ services:
     depends_on:
       app:
         condition: service_healthy
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=167772160,uid=101,gid=101,mode=1777
     ports:
-      - "${WEB_PORT:-8080}:80"
+      - "${WEB_PORT:-8080}:8080"
 
   coturn:
     image: coturn/coturn@sha256:01fc8655e7c262fa4ccfb8dca74ff80fb372b0ee021e80370a4d3e3dd01a951e
@@ -81,7 +94,10 @@ services:
       - ./turnserver.conf:/etc/turnserver.conf:ro
     command: [
       "-c", "/etc/turnserver.conf",
-      "--static-auth-secret=${TURN_PASSWORD:?TURN_PASSWORD required}"
+      "--lt-cred-mech",
+      "--user=${TURN_USERNAME:-vesper}:${TURN_PASSWORD:?TURN_PASSWORD required}",
+      "--realm=${TURN_REALM:-vesper}",
+      "--external-ip=${TURN_EXTERNAL_IP:?TURN_EXTERNAL_IP required}"
     ]
 
 volumes:

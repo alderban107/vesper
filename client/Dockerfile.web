@@ -14,79 +14,22 @@ RUN ln -s /app/sdk/wasm/pkg /app/client/node_modules/vesper-openmls-wasm
 RUN node -e "const fs=require('fs');const src='node_modules/@twemoji/svg';const dst='src/renderer/public/twemoji';if(!fs.existsSync(src))throw new Error('twemoji SVGs missing');fs.mkdirSync(dst,{recursive:true});for(const f of fs.readdirSync(src)){if(f.endsWith('.svg'))fs.copyFileSync(src+'/'+f,dst+'/'+f)}console.log('Copied '+fs.readdirSync(dst).length+' twemoji SVGs')"
 RUN npm run build:web
 
-# Stage 2: Serve with nginx
+# Stage 2: serve as the image's fixed nginx user. Configuration and application
+# assets remain root-owned/read-only; only bounded runtime state lives in /tmp.
 FROM nginx:alpine@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752
 
 COPY --from=build /app/client/dist-web /usr/share/nginx/html
-COPY client/docker-entrypoint.d/40-vesper-public-scheme.sh /docker-entrypoint.d/40-vesper-public-scheme.sh
-RUN chmod +x /docker-entrypoint.d/40-vesper-public-scheme.sh && \
-    printf 'window.VESPER_API_URL = window.location.origin;\n' > /usr/share/nginx/html/config.js
+COPY client/docker/nginx.conf /etc/nginx/nginx.conf
+COPY client/docker/default.conf /etc/nginx/conf.d/default.conf
+COPY client/docker/proxy_headers.inc.template /etc/nginx/vesper/proxy_headers.inc.template
+COPY client/docker-entrypoint.d/40-vesper-public-scheme.sh /usr/local/bin/vesper-web-entrypoint
 
-# SPA fallback, cache headers, and same-origin API proxy
-RUN printf 'proxy_set_header Host $host;\n\
-proxy_set_header X-Real-IP $remote_addr;\n\
-proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
-proxy_set_header X-Forwarded-Proto __VESPER_PUBLIC_SCHEME__;\n' > /etc/nginx/conf.d/proxy_headers.inc
-RUN printf 'upstream vesper_api {\n\
-    server app:4000;\n\
-}\n\
-\n\
-server {\n\
-    listen 80;\n\
-    root /usr/share/nginx/html;\n\
-    index index.html;\n\
-    add_header Content-Security-Policy "default-src '\''self'\''; script-src '\''self'\'' '\''wasm-unsafe-eval'\''; style-src '\''self'\'' '\''unsafe-inline'\''; img-src '\''self'\'' data: blob: https:; font-src '\''self'\'' data:; connect-src '\''self'\'' https: wss:; media-src '\''self'\'' blob:; worker-src '\''self'\'' blob:; child-src '\''self'\'' blob:; object-src '\''none'\''; base-uri '\''none'\''; form-action '\''self'\''; frame-ancestors '\''none'\''; frame-src '\''none'\''; manifest-src '\''self'\''" always;\n\
-    add_header X-Content-Type-Options "nosniff" always;\n\
-    add_header X-Frame-Options "DENY" always;\n\
-    add_header Referrer-Policy "no-referrer" always;\n\
-    add_header Permissions-Policy "camera=(self), microphone=(self), geolocation=(), payment=(), usb=()" always;\n\
-    \n\
-    # Twemoji SVGs: immutable, cache forever\n\
-    location /twemoji/ {\n\
-        add_header Cache-Control "public, max-age=31536000, immutable";\n\
-        try_files $uri =404;\n\
-    }\n\
-    \n\
-    # Vite hashed assets: immutable\n\
-    location /assets/ {\n\
-        add_header Cache-Control "public, max-age=31536000, immutable";\n\
-        try_files $uri =404;\n\
-    }\n\
-    \n\
-    location /api/ {\n\
-        proxy_pass http://vesper_api;\n\
-        include /etc/nginx/conf.d/proxy_headers.inc;\n\
-    }\n\
-    \n\
-    location /uploads/ {\n\
-        proxy_pass http://vesper_api;\n\
-        include /etc/nginx/conf.d/proxy_headers.inc;\n\
-    }\n\
-    \n\
-    location /socket/ {\n\
-        proxy_pass http://vesper_api;\n\
-        proxy_http_version 1.1;\n\
-        proxy_set_header Upgrade $http_upgrade;\n\
-        proxy_set_header Connection "upgrade";\n\
-        include /etc/nginx/conf.d/proxy_headers.inc;\n\
-        proxy_read_timeout 86400;\n\
-    }\n\
-    \n\
-    location /health {\n\
-        proxy_pass http://vesper_api;\n\
-        include /etc/nginx/conf.d/proxy_headers.inc;\n\
-    }\n\
-    \n\
-    location /metrics {\n\
-        proxy_pass http://vesper_api;\n\
-        include /etc/nginx/conf.d/proxy_headers.inc;\n\
-    }\n\
-    \n\
-    location / {\n\
-        try_files $uri $uri/ /index.html;\n\
-    }\n\
-}\n' > /etc/nginx/conf.d/default.conf
+RUN chmod 0555 /usr/local/bin/vesper-web-entrypoint && \
+    printf 'window.VESPER_API_URL = window.location.origin;\n' > /usr/share/nginx/html/config.js && \
+    chmod -R a-w /etc/nginx /usr/share/nginx/html
 
+USER nginx
+ENTRYPOINT ["/usr/local/bin/vesper-web-entrypoint"]
 CMD ["nginx", "-g", "daemon off;"]
 
-EXPOSE 80
+EXPOSE 8080
