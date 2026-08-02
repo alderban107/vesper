@@ -355,6 +355,23 @@ jobs:
           release_version="${RELEASE_TAG#v}"
           mkdir -p /tmp/container-reconciliation
 
+          inspect_raw_with_retry() {
+            ref="$1"
+            destination="$2"
+            for attempt in $(seq 1 20); do
+              if docker buildx imagetools inspect --raw "$ref" \
+                > "${destination}.tmp" 2> /tmp/imagetools-inspect.err \
+                && test -s "${destination}.tmp"; then
+                mv "${destination}.tmp" "$destination"
+                return 0
+              fi
+              sleep 2
+            done
+            cat /tmp/imagetools-inspect.err >&2
+            echo "Registry did not expose $ref after 20 attempts" >&2
+            return 1
+          }
+
           for image in app web; do
             for arch in amd64 arm64; do
               ref="ghcr.io/${GITHUB_REPOSITORY}-${image}:candidate-${SOURCE_RUN_ID}-${arch}"
@@ -396,7 +413,7 @@ jobs:
                 --tag "$final_ref" \
                 "${candidate_base}-amd64" \
                 "${candidate_base}-arm64"
-              docker buildx imagetools inspect --raw "$final_ref" > "$final_raw"
+              inspect_raw_with_retry "$final_ref" "$final_raw"
             fi
 
             python3 - "$image" <<'PY'
