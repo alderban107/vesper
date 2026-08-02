@@ -759,6 +759,7 @@ export class VesperEncryptedChat {
   private readonly recentCommitFingerprints = new Map<string, string[]>()
   private readonly recentHistoryBundleFingerprints = new Map<string, string[]>()
   private readonly inFlightHistoryBundleProcesses = new Map<string, Promise<boolean>>()
+  private readonly durableReplayProcesses = new Map<string, Promise<void>>()
   private readonly scopeRepairStates = new Map<string, ScopeRepairState>()
   private readonly replayBlockedScopes = new Set<string>()
   private readonly pendingRepairFetches = new Map<string, Promise<void>>()
@@ -1070,6 +1071,7 @@ export class VesperEncryptedChat {
     this.recentCommitFingerprints.clear()
     this.recentHistoryBundleFingerprints.clear()
     this.inFlightHistoryBundleProcesses.clear()
+    this.durableReplayProcesses.clear()
     this.scopeRepairStates.clear()
     this.replayBlockedScopes.clear()
     this.pendingRepairFetches.clear()
@@ -1351,7 +1353,15 @@ export class VesperEncryptedChat {
       }
 
       if (applied.messages.some((message) => message.decryptionFailed && (message.raw.encryption_scheme ?? 'mls') === 'mls')) {
-        await this.processPendingHistoryBundles(scope)
+        const groupId = this.resolveMlsGroupId(scope)
+        // A history bundle advances the same one-shot MLS receive ratchet as
+        // commits and ordinary ciphertext. Keep draft decryption and checkpoint
+        // persistence under the group lock; otherwise a bundle started at epoch
+        // N can finish after an external commit and overwrite epoch N+1 while
+        // retaining its advanced durable-event cursor.
+        await this.withLockedScopeOperation(groupId, async () => {
+          await this.processPendingHistoryBundles(scope, groupId)
+        }, 'urgent')
         const recoveredExisting = await this.loadProcessedCachedMessages(logicalScopeId)
         applied = await this.applyScopeSyncDelta(scope, recoveredExisting, delta.messages, [])
       }
@@ -2980,6 +2990,10 @@ export class VesperEncryptedChat {
       const localDeviceId = this.client.deviceIdentity?.id ?? null
 
       if (senderId !== localUserId || senderDeviceId !== localDeviceId) {
+        // The server stores commits durably before broadcasting them. Replay
+        // that ordered log first so concurrent prepare/sync paths cannot apply
+        // the same epoch transition from independent stale drafts.
+        await this.replayDurableEvents(groupId)
         const result = await this.handleCommit(
           groupId,
           this.getString(payload, 'commit_data'),
@@ -3916,6 +3930,22 @@ export class VesperEncryptedChat {
   }
 
   private async replayDurableEvents(scopeId: string): Promise<void> {
+    const existing = this.durableReplayProcesses.get(scopeId)
+    if (existing) {
+      await existing
+      return
+    }
+
+    const run = this.replayDurableEventsOnce(scopeId).finally(() => {
+      if (this.durableReplayProcesses.get(scopeId) === run) {
+        this.durableReplayProcesses.delete(scopeId)
+      }
+    })
+    this.durableReplayProcesses.set(scopeId, run)
+    await run
+  }
+
+  private async replayDurableEventsOnce(scopeId: string): Promise<void> {
     const session = this.client.getAuthSession()
     const localDeviceId = this.client.deviceIdentity?.id ?? null
     if (!session || !localDeviceId) {

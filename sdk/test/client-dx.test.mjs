@@ -1000,7 +1000,79 @@ test('sdk external commit is durably stored and broadcast without a client-side 
   }
 })
 
-test('sdk advances durable replay after restart when a live commit was already applied', { concurrency: false }, async (t) => {
+test('sdk coalesces concurrent durable replay and preserves ordered multi-commit state', { concurrency: false }, async (t) => {
+  const stack = await bootServerStack()
+  t.after(async () => {
+    await teardownServerStack(stack)
+  })
+
+  const owner = createClientHarness(stack.apiUrl, 'replay-owner')
+  const firstJoiner = createClientHarness(stack.apiUrl, 'replay-first-joiner')
+  const secondJoiner = createClientHarness(stack.apiUrl, 'replay-second-joiner')
+  const password = 'vesper-sdk-concurrent-replay-password'
+
+  try {
+    await owner.client.register(uniqueUsername('sdkreplayowner'), password)
+    await firstJoiner.client.register(uniqueUsername('sdkreplayfirst'), password)
+    await secondJoiner.client.register(uniqueUsername('sdkreplaysecond'), password)
+    await owner.client.start(false)
+    await firstJoiner.client.start(false)
+    await secondJoiner.client.start(false)
+
+    const ownerChat = owner.client.createEncryptedChat()
+    const firstJoinerChat = firstJoiner.client.createEncryptedChat()
+    const secondJoinerChat = secondJoiner.client.createEncryptedChat()
+    const server = await owner.client.createServer(`SDK Concurrent Replay ${Date.now()}`)
+    const channel = server.channels.find((entry) => entry.name === 'general') ?? null
+    assert.ok(channel, 'expected the default general channel')
+    const invite = await owner.client.createServerInvite(server.id, {})
+    await firstJoiner.client.joinServerByInvite(invite.code)
+    await secondJoiner.client.joinServerByInvite(invite.code)
+    const scope = { kind: 'channel', id: channel.id }
+
+    assert.equal(await ownerChat.createScopeGroup(scope), true)
+    assert.equal(ownerChat.getGroupEpoch(channel.id), 0)
+    assert.equal(await firstJoinerChat.ensureMembership(scope), true)
+    assert.equal(firstJoinerChat.getGroupEpoch(channel.id), 1)
+    assert.equal(await secondJoinerChat.ensureMembership(scope), true)
+    assert.equal(secondJoinerChat.getGroupEpoch(channel.id), 2)
+    assert.equal(ownerChat.getGroupEpoch(channel.id), 0)
+
+    const ownerHttp = owner.client.getHttpClient()
+    const originalApiFetch = ownerHttp.apiFetch.bind(ownerHttp)
+    let replayFetches = 0
+    ownerHttp.apiFetch = async (...args) => {
+      if (String(args[0]).includes(`/api/v1/mls-events/${channel.id}`)) {
+        replayFetches += 1
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+      return await originalApiFetch(...args)
+    }
+
+    try {
+      const replay = async () => await owner.client.runWithStorageContext(async () => {
+        await ownerChat.replayDurableEvents(channel.id)
+      })
+      await Promise.all([replay(), replay(), replay(), replay()])
+    } finally {
+      ownerHttp.apiFetch = originalApiFetch
+    }
+
+    assert.equal(replayFetches, 1)
+    assert.equal(ownerChat.getGroupEpoch(channel.id), 2)
+    assert.equal(ownerChat.getMemberCount(channel.id), 3)
+
+    const checkpoint = await owner.storage.getScopeCheckpoint(channel.id)
+    assert.equal(checkpoint.epoch, 2)
+    assert.ok(checkpoint.last_event_seq > 0)
+  } finally {
+    owner.client.stop()
+    firstJoiner.client.stop()
+    secondJoiner.client.stop()
+  }
+})
+
+test('sdk applies live commits through the durable cursor and preserves them across restart', { concurrency: false }, async (t) => {
   const stack = await bootServerStack()
   t.after(async () => {
     await teardownServerStack(stack)
@@ -1036,7 +1108,7 @@ test('sdk advances durable replay after restart when a live commit was already a
       return ownerChat.getGroupEpoch(channel.id) === 1
     })
 
-    assert.equal(await ownerShared.storage.getGroupSyncCursor(channel.id), 0)
+    assert.ok(await ownerShared.storage.getGroupSyncCursor(channel.id) >= 1)
 
     const checkpointBeforeRestart = await ownerShared.storage.getScopeCheckpoint(channel.id)
     assert.ok(
@@ -1064,7 +1136,7 @@ test('sdk advances durable replay after restart when a live commit was already a
 
       await restartedChat.replayScopeEvents(channel.id)
 
-      await waitFor('replay cursor to advance after restart', async () => {
+      await waitFor('durable replay cursor to remain advanced after restart', async () => {
         return (await ownerShared.storage.getGroupSyncCursor(channel.id)) >= 1
       })
 
