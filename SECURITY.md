@@ -8,7 +8,7 @@ Do not open a public issue for a vulnerability that could expose message content
 
 ## Supported versions
 
-Only the newest published release receives security fixes. Release artifacts are accepted only from the repository's release workflow; verify `SHA256SUMS`, GitHub build provenance, and native platform signatures on macOS/Windows before installation. Linux packages rely on the checksums and GitHub provenance rather than a separate native signature.
+Only the newest published release receives security fixes. Release artifacts are accepted only from the repository's release workflow. Always verify `SHA256SUMS` and GitHub build provenance. A release marked `unsigned-beta` intentionally lacks Apple Developer ID/notarization and Windows Authenticode trust; verify its attested `UNSIGNED-NATIVE-BUILDS.txt` disclosure and expect operating-system warnings. For a release using the `signed` policy, additionally verify native platform signatures. Linux packages rely on checksums and GitHub provenance rather than a separate native signature in either mode.
 
 ## Deployment defaults
 

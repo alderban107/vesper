@@ -4,8 +4,21 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing release tag to build (for example v0.2.0)'
+        description: 'Release identity to validate or publish (for example v0.2.0)'
         required: true
+      publish:
+        description: 'Publish the existing immutable tag; false validates current main without creating a release'
+        required: true
+        type: boolean
+        default: false
+      signing_mode:
+        description: 'Native desktop trust policy'
+        required: true
+        type: choice
+        default: unsigned-beta
+        options:
+          - unsigned-beta
+          - signed
 
 permissions:
   contents: read
@@ -42,18 +55,23 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.publish && inputs.tag || github.sha }}
           fetch-depth: 0
 
       - name: Verify protocol-gate source identity
         shell: bash
         env:
           RELEASE_TAG: ${{ inputs.tag }}
+          PUBLISH: ${{ inputs.publish }}
         run: |
           expected="v$(node -p "require('./client/package.json').version")"
           test "$RELEASE_TAG" = "$expected"
-          test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          if [ "$PUBLISH" = true ]; then
+            test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
+          else
+            test "$GITHUB_REF" = "refs/heads/main"
+          fi
 
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
         with:
@@ -108,18 +126,23 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.publish && inputs.tag || github.sha }}
           fetch-depth: 0
 
       - name: Verify browser-gate source identity
         shell: bash
         env:
           RELEASE_TAG: ${{ inputs.tag }}
+          PUBLISH: ${{ inputs.publish }}
         run: |
           expected="v$(node -p "require('./client/package.json').version")"
           test "$RELEASE_TAG" = "$expected"
-          test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          if [ "$PUBLISH" = true ]; then
+            test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
+          else
+            test "$GITHUB_REF" = "refs/heads/main"
+          fi
 
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
         with:
@@ -203,7 +226,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.publish && inputs.tag || github.sha }}
           fetch-depth: 0
 
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -212,24 +235,32 @@ jobs:
           cache: npm
           cache-dependency-path: client/package-lock.json
 
-      - name: Verify tag matches the packaged version
+      - name: Verify release source identity
         shell: bash
         env:
           RELEASE_TAG: ${{ inputs.tag }}
+          PUBLISH: ${{ inputs.publish }}
         run: |
           expected="v$(node -p "require('./client/package.json').version")"
           test "$RELEASE_TAG" = "$expected" || {
-            echo "Release tag $RELEASE_TAG does not match client version $expected" >&2
-            exit 1
-          }
-          test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG" || {
-            echo "Dispatch this workflow from the $RELEASE_TAG tag ref so provenance matches the built commit" >&2
+            echo "Release identity $RELEASE_TAG does not match client version $expected" >&2
             exit 1
           }
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          if [ "$PUBLISH" = true ]; then
+            test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG" || {
+              echo "Publication must be dispatched from refs/tags/$RELEASE_TAG" >&2
+              exit 1
+            }
+          else
+            test "$GITHUB_REF" = "refs/heads/main" || {
+              echo "Validation-only runs must be dispatched from main" >&2
+              exit 1
+            }
+          fi
 
       - name: Require native signing credentials
-        if: matrix.platform != 'linux'
+        if: matrix.platform != 'linux' && inputs.signing_mode == 'signed'
         shell: bash
         env:
           CSC_LINK: ${{ matrix.platform == 'mac' && secrets.MACOS_CSC_LINK || secrets.WINDOWS_CSC_LINK }}
@@ -267,9 +298,10 @@ jobs:
         working-directory: client
         run: npm run build
 
-      - name: Package signed artifacts
+      - name: Package native artifacts
         working-directory: client
         env:
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ inputs.signing_mode == 'signed' && 'true' || 'false' }}
           CSC_LINK: ${{ matrix.platform == 'mac' && secrets.MACOS_CSC_LINK || secrets.WINDOWS_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ matrix.platform == 'mac' && secrets.MACOS_CSC_KEY_PASSWORD || secrets.WINDOWS_CSC_KEY_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -277,8 +309,8 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npx electron-builder ${{ matrix.args }} --publish never
 
-      - name: Verify macOS application signature
-        if: matrix.platform == 'mac'
+      - name: Verify macOS application signature and notarization
+        if: matrix.platform == 'mac' && inputs.signing_mode == 'signed'
         shell: bash
         run: |
           app_count=0
@@ -290,7 +322,7 @@ jobs:
           test "$app_count" -ge 2
 
       - name: Verify Windows executable signatures
-        if: matrix.platform == 'win'
+        if: matrix.platform == 'win' && inputs.signing_mode == 'signed'
         shell: pwsh
         run: |
           $executables = Get-ChildItem client/dist -Filter *.exe
@@ -312,7 +344,7 @@ jobs:
             -exec cp {} "release-${{ matrix.platform }}/" \;
           test "$(find "release-${{ matrix.platform }}" -type f | wc -l)" -gt 0
 
-      - name: Upload verified build artifacts
+      - name: Upload gated build artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: vesper-${{ matrix.platform }}
@@ -354,16 +386,23 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.publish && inputs.tag || github.sha }}
           fetch-depth: 0
 
       - name: Verify container source identity
         shell: bash
         env:
           RELEASE_TAG: ${{ inputs.tag }}
+          PUBLISH: ${{ inputs.publish }}
         run: |
-          test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
+          expected="v$(node -p "require('./client/package.json').version")"
+          test "$RELEASE_TAG" = "$expected"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          if [ "$PUBLISH" = true ]; then
+            test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
+          else
+            test "$GITHUB_REF" = "refs/heads/main"
+          fi
 
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
@@ -391,6 +430,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=release-${{ matrix.image }}-${{ matrix.arch }}
 
   publish:
+    if: inputs.publish
     needs: [build, container-build]
     runs-on: ubuntu-latest
     permissions:
@@ -427,6 +467,24 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Add unsigned beta disclosure
+        if: inputs.signing_mode == 'unsigned-beta'
+        shell: bash
+        run: |
+          cat > release-assets/UNSIGNED-NATIVE-BUILDS.txt <<'EOF'
+          Vesper unsigned native beta
+          ===========================
+
+          The macOS and Windows artifacts in this beta are intentionally not
+          signed with Apple Developer ID or Windows Authenticode certificates,
+          and the macOS applications are not notarized. Operating-system trust
+          warnings are expected.
+
+          SHA256SUMS and GitHub build-provenance attestations establish the
+          exact bytes produced by Vesper's release workflow; they do not replace
+          native platform trust or remove Gatekeeper/SmartScreen warnings.
+          EOF
+
       - name: Verify release set and generate checksums
         shell: bash
         run: |
@@ -462,6 +520,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag }}
+          SIGNING_MODE: ${{ inputs.signing_mode }}
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             is_draft="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq .draft)"
@@ -472,11 +531,22 @@ jobs:
             gh release delete "$RELEASE_TAG" --yes
           fi
 
-          gh release create "$RELEASE_TAG" release-assets/* \
-            --verify-tag \
-            --draft \
-            --generate-notes \
-            --title "Vesper $RELEASE_TAG"
+          title="Vesper $RELEASE_TAG"
+          release_flags=(--verify-tag --draft --generate-notes --title "$title")
+          if [ "$SIGNING_MODE" = unsigned-beta ]; then
+            release_flags+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" release-assets/* "${release_flags[@]}"
+
+          if [ "$SIGNING_MODE" = unsigned-beta ]; then
+            gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq .body > /tmp/generated-notes.md
+            {
+              printf '%s\n\n' '> [!WARNING]'
+              printf '%s\n\n' '> This public beta contains unsigned Windows and unnotarized macOS builds. See `UNSIGNED-NATIVE-BUILDS.txt` before installing.'
+              cat /tmp/generated-notes.md
+            } > /tmp/release-notes.md
+            gh release edit "$RELEASE_TAG" --notes-file /tmp/release-notes.md
+          fi
 
           local_count="$(find release-assets -maxdepth 1 -type f | wc -l)"
           remote_count="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.assets | length')"

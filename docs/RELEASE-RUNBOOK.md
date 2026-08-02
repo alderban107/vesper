@@ -4,12 +4,10 @@ A Vesper release is not ready because it compiles. The operator must be able to 
 
 ## Required release inputs
 
-- A tag exactly matching `client/package.json` (`v<version>`).
-- macOS Developer ID certificate and notarization credentials:
-  `MACOS_CSC_LINK`, `MACOS_CSC_KEY_PASSWORD`, `APPLE_ID`,
-  `APPLE_APP_SPECIFIC_PASSWORD`, and `APPLE_TEAM_ID`.
-- Windows Authenticode certificate:
-  `WINDOWS_CSC_LINK` and `WINDOWS_CSC_KEY_PASSWORD`.
+- A release identity exactly matching `client/package.json` (`v<version>`). Run the full workflow once from current `main` with `publish=false` before creating that immutable tag; publication then requires the tag ref and `publish=true`.
+- An explicit native trust policy:
+  - `signed`: macOS Developer ID certificate and notarization credentials (`MACOS_CSC_LINK`, `MACOS_CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, and `APPLE_TEAM_ID`) plus a Windows Authenticode certificate (`WINDOWS_CSC_LINK` and `WINDOWS_CSC_KEY_PASSWORD`);
+  - `unsigned-beta`: no native signing credentials, but the release is forced to GitHub prerelease status and includes `UNSIGNED-NATIVE-BUILDS.txt`. Gatekeeper and SmartScreen warnings are expected and must not be described as signed or trusted builds.
 - Production runtime secrets of at least 32 random bytes where required:
   `SECRET_KEY_BASE`, `METRICS_TOKEN`, `TURN_PASSWORD`, and, when used,
   `REGISTRATION_INVITE_SECRET`.
@@ -19,7 +17,9 @@ A Vesper release is not ready because it compiles. The operator must be able to 
 - A tested PostgreSQL backup and a restore target separate from production.
 - `VESPER_APP_IMAGE` and `VESPER_WEB_IMAGE` pinned to the same release version or immutable OCI digests. Production must not use `main`, `latest`, or a nightly artifact.
 
-The release workflow fails closed if native signing/notarization credentials are absent. It publishes only after all three desktop platforms and both architectures of both container images pass, creates `SHA256SUMS`, verifies those checksums, emits GitHub build-provenance attestations, and publishes SBOM/provenance-bearing OCI manifests. The nightly workflow is validation-only and cannot publish public artifacts.
+The release workflow fails closed against the selected trust policy: `signed` requires credentials and verifies native trust, while `unsigned-beta` disables certificate discovery and requires an attested disclosure. It publishes only after all three desktop platforms and both architectures of both container images pass, creates `SHA256SUMS`, verifies those checksums, emits GitHub build-provenance attestations, and publishes SBOM/provenance-bearing OCI manifests. Validation-only release runs and the nightly workflow cannot publish public artifacts.
+
+After first deployment, temporarily set `BETA_TURN_USERNAME` and `BETA_TURN_PASSWORD` as Actions secrets and dispatch `validate-public-deployment.yml` with the exact public HTTPS origin and TURN URL. Its GitHub-hosted Chromium establishes relay-only data channels over both UDP and TCP and uploads sanitized evidence. Delete the temporary Actions secrets after the run; a local browser or a client on the TURN host's own network is not external evidence.
 
 ## Code gates
 
@@ -112,7 +112,7 @@ for artifact in Vesper-* vesper_* latest*.yml *.blockmap SHA256SUMS; do
 done
 ```
 
-Also verify the macOS code signature/notarization and Windows Authenticode signature before distributing links. Linux AppImage/deb artifacts do not have a separate native platform signature in this workflow; they rely on `SHA256SUMS` plus GitHub provenance. A checksum proves integrity relative to the release manifest; native signatures and provenance establish who produced it.
+For a `signed` release, also verify the macOS Developer ID signature/notarization and Windows Authenticode signature before distributing links. For `unsigned-beta`, verify that GitHub marks the release as a prerelease, that `UNSIGNED-NATIVE-BUILDS.txt` is present in `SHA256SUMS` and the provenance set, and that release notes clearly warn about Gatekeeper/SmartScreen. Linux AppImage/deb artifacts do not have a separate native platform signature in either mode; they rely on `SHA256SUMS` plus GitHub provenance. A checksum proves integrity relative to the release manifest, provenance identifies the producing workflow, and only native signatures establish native platform trust.
 
 Resolve and pin the published container digests rather than relying on a mutable tag:
 
