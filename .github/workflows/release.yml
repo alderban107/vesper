@@ -503,6 +503,27 @@ jobs:
           native platform trust or remove Gatekeeper/SmartScreen warnings.
           EOF
 
+      - name: Normalize release asset names
+        shell: bash
+        run: |
+          # GitHub replaces spaces in uploaded asset names with periods. Use
+          # stable hyphenated names before checksumming so SHA256SUMS and the
+          # electron-updater metadata remain directly usable after download.
+          while IFS= read -r -d '' source; do
+            target="${source// /-}"
+            test ! -e "$target" || {
+              echo "Release asset normalization collision: $source -> $target" >&2
+              exit 1
+            }
+            mv "$source" "$target"
+          done < <(find release-assets -maxdepth 1 -type f -name '* *' -print0)
+          while IFS= read -r -d '' asset; do
+            basename "$asset" | grep -Eq '^[A-Za-z0-9._-]+$' || {
+              echo "Unsafe release asset name: $asset" >&2
+              exit 1
+            }
+          done < <(find release-assets -maxdepth 1 -type f -print0)
+
       - name: Verify release set and generate checksums
         shell: bash
         run: |
@@ -522,6 +543,14 @@ jobs:
           require_count '*.exe' 2
           require_count '*arm64*.dmg' 1
           require_count '*arm64*.zip' 1
+          for metadata in release-assets/latest*.yml; do
+            while IFS= read -r referenced_asset; do
+              test -f "release-assets/$referenced_asset" || {
+                echo "$metadata references missing asset $referenced_asset" >&2
+                exit 1
+              }
+            done < <(awk '$1 == "-" && $2 == "url:" {print $3}' "$metadata")
+          done
           cd release-assets
           find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' \
             | LC_ALL=C sort -z \
@@ -540,13 +569,26 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
           SIGNING_MODE: ${{ inputs.signing_mode }}
         run: |
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            is_draft="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq .draft)"
+          # GitHub's releases-by-tag endpoint and `gh release view` return 404
+          # for drafts. Enumerate releases so partial publication can be
+          # detected and reconciled without ever replacing a public release.
+          existing_release="$(
+            gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq "[.[] | select(.tag_name == \"$RELEASE_TAG\")]"
+          )"
+          existing_count="$(jq 'length' <<< "$existing_release")"
+          test "$existing_count" -le 1 || {
+            echo "Multiple releases exist for $RELEASE_TAG" >&2
+            exit 1
+          }
+          if [ "$existing_count" = 1 ]; then
+            is_draft="$(jq -r '.[0].draft' <<< "$existing_release")"
             test "$is_draft" = true || {
               echo "Refusing to replace an already-public release" >&2
               exit 1
             }
-            gh release delete "$RELEASE_TAG" --yes
+            existing_id="$(jq -r '.[0].id' <<< "$existing_release")"
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$existing_id"
           fi
 
           title="Vesper $RELEASE_TAG"
@@ -556,18 +598,28 @@ jobs:
           fi
           gh release create "$RELEASE_TAG" release-assets/* "${release_flags[@]}"
 
+          release_json="$(
+            gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq "[.[] | select(.tag_name == \"$RELEASE_TAG\")]"
+          )"
+          test "$(jq 'length' <<< "$release_json")" = 1
+          release_id="$(jq -r '.[0].id' <<< "$release_json")"
+          test "$(jq -r '.[0].draft' <<< "$release_json")" = true
+
           if [ "$SIGNING_MODE" = unsigned-beta ]; then
-            gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq .body > /tmp/generated-notes.md
+            jq -r '.[0].body' <<< "$release_json" > /tmp/generated-notes.md
             {
-              printf '%s\n\n' '> [!WARNING]'
+              printf '%s\n' '> [!WARNING]'
               printf '%s\n\n' '> This public beta contains unsigned Windows and unnotarized macOS builds. See `UNSIGNED-NATIVE-BUILDS.txt` before installing.'
               cat /tmp/generated-notes.md
             } > /tmp/release-notes.md
-            gh release edit "$RELEASE_TAG" --notes-file /tmp/release-notes.md
+            jq -Rs '{body: .}' /tmp/release-notes.md > /tmp/release-notes.json
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+              --input /tmp/release-notes.json >/dev/null
           fi
 
           local_count="$(find release-assets -maxdepth 1 -type f | wc -l)"
-          remote_count="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.assets | length')"
+          remote_count="$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" --jq '.assets | length')"
           test "$local_count" = "$remote_count"
 
       - name: Publish verified multi-architecture containers
@@ -594,4 +646,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag }}
-        run: gh release edit "$RELEASE_TAG" --draft=false
+        run: |
+          release_json="$(
+            gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq "[.[] | select(.tag_name == \"$RELEASE_TAG\")]"
+          )"
+          test "$(jq 'length' <<< "$release_json")" = 1
+          release_id="$(jq -r '.[0].id' <<< "$release_json")"
+          test "$(jq -r '.[0].draft' <<< "$release_json")" = true
+          printf '{"draft":false}' > /tmp/publish-release.json
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+            --input /tmp/publish-release.json >/dev/null

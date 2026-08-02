@@ -1,0 +1,568 @@
+name: Reconcile partial release publication
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Immutable release tag whose draft must be reconciled'
+        required: true
+      source_run_id:
+        description: 'Failed Build & Release run that produced the draft and container candidates'
+        required: true
+      signing_mode:
+        description: 'Native desktop trust policy used by the source run'
+        required: true
+        type: choice
+        default: unsigned-beta
+        options:
+          - unsigned-beta
+          - signed
+
+concurrency:
+  group: reconcile-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      attestations: write
+      contents: write
+      id-token: write
+      packages: write
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Verify immutable tag and source release run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          test "$GITHUB_REF" = refs/heads/main || {
+            echo "Reconciliation must be dispatched from main" >&2
+            exit 1
+          }
+          [[ "$SOURCE_RUN_ID" =~ ^[0-9]+$ ]] || {
+            echo "source_run_id must be numeric" >&2
+            exit 1
+          }
+
+          expected="v$(node -p "require('./client/package.json').version")"
+          test "$RELEASE_TAG" = "$expected" || {
+            echo "Release identity $RELEASE_TAG does not match client version $expected" >&2
+            exit 1
+          }
+          tag_commit="$(git rev-parse "$RELEASE_TAG^{}")"
+          test "$(git rev-parse HEAD)" = "$tag_commit"
+
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID" > /tmp/source-run.json
+          jq -e \
+            --arg tag "$RELEASE_TAG" \
+            --arg sha "$tag_commit" \
+            --arg run_id "$SOURCE_RUN_ID" \
+            '.id == ($run_id | tonumber)
+             and .name == "Build & Release"
+             and .path == ".github/workflows/release.yml"
+             and .event == "workflow_dispatch"
+             and .status == "completed"
+             and .conclusion == "failure"
+             and .head_branch == $tag
+             and .head_sha == $sha' \
+            /tmp/source-run.json >/dev/null
+
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/jobs?per_page=100" \
+            > /tmp/source-jobs.json
+          required_success=(
+            'protocol-gate'
+            'browser-gate'
+            'build (ubuntu-latest, linux, --linux --x64)'
+            'build (windows-latest, win, --win --x64)'
+            'build (macos-latest, mac, --mac --x64 --arm64)'
+            'container-build (ubuntu-24.04-arm, arm64, web, ., ./client/Dockerfile.web)'
+            'container-build (ubuntu-latest, amd64, web, ., ./client/Dockerfile.web)'
+            'container-build (ubuntu-24.04-arm, arm64, app, ./server, ./server/Dockerfile)'
+            'container-build (ubuntu-latest, amd64, app, ./server, ./server/Dockerfile)'
+          )
+          for job_name in "${required_success[@]}"; do
+            jq -e --arg name "$job_name" \
+              '[.jobs[] | select(.name == $name and .status == "completed" and .conclusion == "success")] | length == 1' \
+              /tmp/source-jobs.json >/dev/null
+          done
+          jq -e \
+            '[.jobs[] | select(.name == "publish" and .status == "completed" and .conclusion == "failure")] | length == 1' \
+            /tmp/source-jobs.json >/dev/null
+          jq -e \
+            '[.jobs[] | select(.name != "publish" and .conclusion != "success")] | length == 0' \
+            /tmp/source-jobs.json >/dev/null
+
+          printf 'TAG_COMMIT=%s\n' "$tag_commit" >> "$GITHUB_ENV"
+
+      - name: Verify draft assets and exact-tag provenance
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          SIGNING_MODE: ${{ inputs.signing_mode }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > /tmp/releases.json
+          jq --arg tag "$RELEASE_TAG" '[.[] | select(.tag_name == $tag)]' \
+            /tmp/releases.json > /tmp/release-matches.json
+          test "$(jq 'length' /tmp/release-matches.json)" = 1 || {
+            echo "Expected exactly one release for $RELEASE_TAG" >&2
+            exit 1
+          }
+          jq '.[0]' /tmp/release-matches.json > /tmp/release.json
+          jq -e --arg tag "$RELEASE_TAG" \
+            '.tag_name == $tag and .draft == true and (.assets | length > 0)' \
+            /tmp/release.json >/dev/null
+          if [ "$SIGNING_MODE" = unsigned-beta ]; then
+            jq -e '.prerelease == true' /tmp/release.json >/dev/null
+          else
+            jq -e '.prerelease == false' /tmp/release.json >/dev/null
+          fi
+
+          release_id="$(jq -r '.id' /tmp/release.json)"
+          release_version="${RELEASE_TAG#v}"
+          rename_release_asset() {
+            old_name="$1"
+            new_name="$2"
+            old_id="$(jq -r --arg name "$old_name" '[.assets[] | select(.name == $name)] | if length == 1 then .[0].id else "" end' /tmp/release.json)"
+            new_count="$(jq -r --arg name "$new_name" '[.assets[] | select(.name == $name)] | length' /tmp/release.json)"
+            if [ -n "$old_id" ]; then
+              test "$new_count" = 0 || {
+                echo "Release asset rename collision: $old_name -> $new_name" >&2
+                exit 1
+              }
+              jq -n --arg name "$new_name" '{name: $name}' > /tmp/rename-release-asset.json
+              gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/assets/$old_id" \
+                --input /tmp/rename-release-asset.json >/dev/null
+            else
+              test "$new_count" = 1 || {
+                echo "Expected exactly one release asset named $old_name or $new_name" >&2
+                exit 1
+              }
+            fi
+          }
+          # The source run used electron-builder's space-bearing Windows names;
+          # GitHub silently converted those spaces to periods. Align the draft
+          # with latest.yml before producing the public checksum index.
+          rename_release_asset "Vesper.${release_version}.exe" "Vesper-${release_version}.exe"
+          rename_release_asset "Vesper.Setup.${release_version}.exe" "Vesper-Setup-${release_version}.exe"
+          rename_release_asset "Vesper.Setup.${release_version}.exe.blockmap" "Vesper-Setup-${release_version}.exe.blockmap"
+          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" > /tmp/release.json
+
+          sums_id="$(jq -r '[.assets[] | select(.name == "SHA256SUMS")] | if length == 1 then .[0].id else "" end' /tmp/release.json)"
+          build_sums_id="$(jq -r '[.assets[] | select(.name == "SHA256SUMS.build-names")] | if length == 1 then .[0].id else "" end' /tmp/release.json)"
+          disclosure_id="$(jq -r '[.assets[] | select(.name == "UNSIGNED-NATIVE-BUILDS.txt")] | if length == 1 then .[0].id else "" end' /tmp/release.json)"
+          latest_windows_id="$(jq -r '[.assets[] | select(.name == "latest.yml")] | if length == 1 then .[0].id else "" end' /tmp/release.json)"
+          test -n "$latest_windows_id"
+          if [ -n "$build_sums_id" ]; then
+            source_sums_id="$build_sums_id"
+            source_sums_name=SHA256SUMS.build-names
+          else
+            source_sums_id="$sums_id"
+            source_sums_name=SHA256SUMS
+          fi
+          test -n "$source_sums_id" || {
+            echo "The draft has no source-run checksum manifest" >&2
+            exit 1
+          }
+          if [ "$SIGNING_MODE" = unsigned-beta ]; then
+            test -n "$disclosure_id"
+          fi
+
+          gh api -H 'Accept: application/octet-stream' \
+            "repos/$GITHUB_REPOSITORY/releases/assets/$source_sums_id" \
+            > /tmp/SHA256SUMS.build-source
+          if [ -n "$build_sums_id" ] && [ -n "$sums_id" ]; then
+            gh api -H 'Accept: application/octet-stream' \
+              "repos/$GITHUB_REPOSITORY/releases/assets/$sums_id" \
+              > /tmp/SHA256SUMS.current
+          fi
+          if [ "$SIGNING_MODE" = unsigned-beta ]; then
+            gh api -H 'Accept: application/octet-stream' \
+              "repos/$GITHUB_REPOSITORY/releases/assets/$disclosure_id" \
+              > /tmp/UNSIGNED-NATIVE-BUILDS.txt
+            grep -Fq 'not signed with Apple Developer ID or Windows Authenticode certificates' \
+              /tmp/UNSIGNED-NATIVE-BUILDS.txt
+            grep -Fq 'do not replace native platform trust' /tmp/UNSIGNED-NATIVE-BUILDS.txt
+          fi
+          gh api -H 'Accept: application/octet-stream' \
+            "repos/$GITHUB_REPOSITORY/releases/assets/$latest_windows_id" \
+            > /tmp/latest.yml
+          grep -Fq "url: Vesper-Setup-${release_version}.exe" /tmp/latest.yml
+          grep -Fq "path: Vesper-Setup-${release_version}.exe" /tmp/latest.yml
+          printf '%s\n' "$source_sums_name" > /tmp/source-sums-name
+
+          python3 <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import re
+
+          release = json.loads(pathlib.Path('/tmp/release.json').read_text())
+          assets = release['assets']
+          names = [asset['name'] for asset in assets]
+          if len(names) != len(set(names)):
+              raise SystemExit('duplicate release asset names')
+          if any(asset['state'] != 'uploaded' or asset['size'] <= 0 for asset in assets):
+              raise SystemExit('release contains an incomplete or empty asset')
+          if any(not re.fullmatch(r'sha256:[0-9a-f]{64}', asset.get('digest') or '') for asset in assets):
+              raise SystemExit('release asset is missing its GitHub SHA-256 digest')
+
+          required = {
+              '.AppImage': 1,
+              '.deb': 1,
+              '.dmg': 2,
+              '.zip': 2,
+              '.exe': 2,
+          }
+          for suffix, minimum in required.items():
+              if sum(name.endswith(suffix) for name in names) < minimum:
+                  raise SystemExit(f'missing required {suffix} assets')
+          if not any('arm64' in name and name.endswith('.dmg') for name in names):
+              raise SystemExit('missing arm64 DMG')
+          if not any('arm64' in name and name.endswith('.zip') for name in names):
+              raise SystemExit('missing arm64 ZIP')
+
+          source_name = pathlib.Path('/tmp/source-sums-name').read_text().strip()
+          source_bytes = pathlib.Path('/tmp/SHA256SUMS.build-source').read_bytes()
+          source_digest = hashlib.sha256(source_bytes).hexdigest()
+          remote = {asset['name']: asset['digest'].removeprefix('sha256:') for asset in assets}
+          if remote[source_name] != source_digest:
+              raise SystemExit('source-run checksum asset digest mismatch')
+
+          sums = {}
+          for line in source_bytes.decode().splitlines():
+              match = re.fullmatch(r'([0-9a-f]{64}) [ *](.+)', line)
+              if not match or match.group(2) in sums:
+                  raise SystemExit(f'invalid source SHA256SUMS line: {line!r}')
+              sums[match.group(2)] = match.group(1)
+
+          checksum_names = {'SHA256SUMS', 'SHA256SUMS.build-names'}
+          normal_assets = [asset for asset in assets if asset['name'] not in checksum_names]
+          remote_digests = [asset['digest'].removeprefix('sha256:') for asset in normal_assets]
+          if len(remote_digests) != len(set(remote_digests)):
+              raise SystemExit('release assets have ambiguous duplicate digests')
+          if len(sums) != len(normal_assets) or set(sums.values()) != set(remote_digests):
+              raise SystemExit('source SHA256SUMS does not account for the exact binary asset set')
+
+          canonical_lines = [
+              f"{asset['digest'].removeprefix('sha256:')}  {asset['name']}"
+              for asset in sorted(normal_assets, key=lambda item: item['name'])
+          ]
+          canonical_normal = ('\n'.join(canonical_lines) + '\n').encode()
+          rewrite = source_name == 'SHA256SUMS.build-names' or source_bytes != canonical_normal
+          if rewrite:
+              canonical_lines.append(f'{source_digest}  SHA256SUMS.build-names')
+              canonical_lines.sort(key=lambda line: line.split('  ', 1)[1])
+          canonical = ('\n'.join(canonical_lines) + '\n').encode()
+          pathlib.Path('/tmp/SHA256SUMS').write_bytes(canonical)
+          pathlib.Path('/tmp/checksum-rewrite').write_text('true' if rewrite else 'false')
+
+          current = pathlib.Path('/tmp/SHA256SUMS.current')
+          if current.exists() and current.read_bytes() != canonical:
+              raise SystemExit('existing canonical SHA256SUMS does not match release assets')
+          PY
+
+          gh attestation verify /tmp/SHA256SUMS.build-source \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref "refs/tags/$RELEASE_TAG" \
+            --source-digest "$TAG_COMMIT" \
+            --deny-self-hosted-runners \
+            --format json > /tmp/attestation-verification.json
+          test "$(jq 'length' /tmp/attestation-verification.json)" -ge 1
+
+          printf 'release_id=%s\n' "$release_id" >> "$GITHUB_OUTPUT"
+          printf 'source_sums_id=%s\n' "$source_sums_id" >> "$GITHUB_OUTPUT"
+          printf 'source_sums_name=%s\n' "$source_sums_name" >> "$GITHUB_OUTPUT"
+          if [ -n "$build_sums_id" ]; then
+            printf 'canonical_sums_id=%s\n' "$sums_id" >> "$GITHUB_OUTPUT"
+          else
+            printf 'canonical_sums_id=\n' >> "$GITHUB_OUTPUT"
+          fi
+          printf 'checksum_rewrite=%s\n' "$(cat /tmp/checksum-rewrite)" >> "$GITHUB_OUTPUT"
+
+      - name: Add or verify native trust disclosure
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.release.outputs.release_id }}
+          SIGNING_MODE: ${{ inputs.signing_mode }}
+        run: |
+          if [ "$SIGNING_MODE" = unsigned-beta ]; then
+            python3 <<'PY'
+          import json
+          import pathlib
+
+          release = json.loads(pathlib.Path('/tmp/release.json').read_text())
+          warning = (
+              '> [!WARNING]\n'
+              '> This public beta contains unsigned Windows and unnotarized macOS builds. '
+              'See `UNSIGNED-NATIVE-BUILDS.txt` before installing.\n'
+          )
+          if pathlib.Path('/tmp/checksum-rewrite').read_text().strip() == 'true':
+              warning += (
+                  '>\n'
+                  '> `SHA256SUMS` uses the final GitHub asset names. '
+                  '`SHA256SUMS.build-names` preserves the exact build-time '
+                  'checksum manifest covered by the source release attestation.\n'
+              )
+          warning += '\n'
+          body = release.get('body') or ''
+          if not body.startswith(warning):
+              body = warning + body
+          pathlib.Path('/tmp/release-notes.json').write_text(json.dumps({'body': body}))
+          PY
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+              --input /tmp/release-notes.json >/dev/null
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > /tmp/release-after-notes.json
+          jq -e '.draft == true' /tmp/release-after-notes.json >/dev/null
+          if [ "$SIGNING_MODE" = unsigned-beta ]; then
+            jq -e '.body | startswith("> [!WARNING]")' /tmp/release-after-notes.json >/dev/null
+          fi
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify and promote exact-run container candidates
+        id: containers
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          release_version="${RELEASE_TAG#v}"
+          mkdir -p /tmp/container-reconciliation
+
+          for image in app web; do
+            for arch in amd64 arm64; do
+              ref="ghcr.io/${GITHUB_REPOSITORY}-${image}:candidate-${SOURCE_RUN_ID}-${arch}"
+              raw="/tmp/container-reconciliation/${image}-${arch}.json"
+              docker buildx imagetools inspect --raw "$ref" > "$raw"
+              jq -e --arg arch "$arch" \
+                '.mediaType == "application/vnd.oci.image.index.v1+json"
+                 and ([.manifests[] | select(.platform.os == "linux" and .platform.architecture == $arch)] | length == 1)
+                 and ([.manifests[] | select(.platform.os == "unknown" and .platform.architecture == "unknown")] | length >= 1)' \
+                "$raw" >/dev/null
+
+              docker pull --platform "linux/$arch" "$ref" >/dev/null
+              test "$(docker image inspect "$ref" --format '{{.Os}}/{{.Architecture}}')" = "linux/$arch"
+              docker image inspect "$ref" --format '{{json .Config.Labels}}' \
+                > "/tmp/container-reconciliation/${image}-${arch}-labels.json"
+              jq -e \
+                --arg revision "$TAG_COMMIT" \
+                --arg version "$RELEASE_TAG" \
+                --arg source "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+                '."org.opencontainers.image.revision" == $revision
+                 and ."org.opencontainers.image.version" == $version
+                 and ."org.opencontainers.image.source" == $source' \
+                "/tmp/container-reconciliation/${image}-${arch}-labels.json" >/dev/null
+            done
+
+            candidate_base="ghcr.io/${GITHUB_REPOSITORY}-${image}:candidate-${SOURCE_RUN_ID}"
+            final_ref="ghcr.io/${GITHUB_REPOSITORY}-${image}:${release_version}"
+            final_raw="/tmp/container-reconciliation/${image}-final.json"
+            if docker buildx imagetools inspect --raw "$final_ref" > "$final_raw" 2>/dev/null; then
+              # Release image tags are immutable. An idempotent retry may reuse
+              # an exact existing manifest, but it must never replace another.
+              final_already_exists=true
+            else
+              final_already_exists=false
+            fi
+
+            if [ "$final_already_exists" = false ]; then
+              docker buildx imagetools create \
+                --tag "$final_ref" \
+                "${candidate_base}-amd64" \
+                "${candidate_base}-arm64"
+              docker buildx imagetools inspect --raw "$final_ref" > "$final_raw"
+            fi
+
+            python3 - "$image" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          image = sys.argv[1]
+          root = pathlib.Path('/tmp/container-reconciliation')
+          candidate_digests = set()
+          for arch in ('amd64', 'arm64'):
+              candidate = json.loads((root / f'{image}-{arch}.json').read_text())
+              candidate_digests.update(item['digest'] for item in candidate['manifests'])
+          final = json.loads((root / f'{image}-final.json').read_text())
+          final_digests = {item['digest'] for item in final['manifests']}
+          if final_digests != candidate_digests:
+              raise SystemExit(f'{image} final manifest is not the exact union of candidate descriptors')
+          platforms = {
+              (item.get('platform') or {}).get('os', '') + '/' +
+              (item.get('platform') or {}).get('architecture', '')
+              for item in final['manifests']
+          }
+          if not {'linux/amd64', 'linux/arm64'}.issubset(platforms):
+              raise SystemExit(f'{image} final manifest is missing a release platform')
+          PY
+
+            manifest_digest="$(
+              docker buildx imagetools inspect "$final_ref" \
+                | awk '$1 == "Digest:" {print $2; exit}'
+            )"
+            [[ "$manifest_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            printf '%s=%s\n' "$image" "$manifest_digest" >> /tmp/container-reconciliation/digests.env
+            printf '%s_digest=%s\n' "$image" "$manifest_digest" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Publish canonical checksum names
+        if: steps.release.outputs.checksum_rewrite == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.release.outputs.release_id }}
+          SOURCE_SUMS_ID: ${{ steps.release.outputs.source_sums_id }}
+          SOURCE_SUMS_NAME: ${{ steps.release.outputs.source_sums_name }}
+          CANONICAL_SUMS_ID: ${{ steps.release.outputs.canonical_sums_id }}
+        run: |
+          if [ "$SOURCE_SUMS_NAME" = SHA256SUMS ]; then
+            printf '{"name":"SHA256SUMS.build-names"}' > /tmp/rename-source-sums.json
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/assets/$SOURCE_SUMS_ID" \
+              --input /tmp/rename-source-sums.json >/dev/null
+          else
+            test "$SOURCE_SUMS_NAME" = SHA256SUMS.build-names
+          fi
+
+          if [ -z "$CANONICAL_SUMS_ID" ]; then
+            upload_response="$(
+              gh api --method POST \
+                -H 'Content-Type: application/octet-stream' \
+                "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=SHA256SUMS" \
+                --input /tmp/SHA256SUMS
+            )"
+            CANONICAL_SUMS_ID="$(jq -r '.id' <<< "$upload_response")"
+          fi
+
+          gh api -H 'Accept: application/octet-stream' \
+            "repos/$GITHUB_REPOSITORY/releases/assets/$CANONICAL_SUMS_ID" \
+            > /tmp/SHA256SUMS.remote
+          cmp /tmp/SHA256SUMS /tmp/SHA256SUMS.remote
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > /tmp/release-canonical-sums.json
+
+          python3 <<'PY'
+          import json
+          import pathlib
+          import re
+
+          release = json.loads(pathlib.Path('/tmp/release-canonical-sums.json').read_text())
+          assets = release['assets']
+          names = [asset['name'] for asset in assets]
+          if names.count('SHA256SUMS') != 1 or names.count('SHA256SUMS.build-names') != 1:
+              raise SystemExit('canonical and source-run checksum assets are not unique')
+          remote = {asset['name']: asset['digest'].removeprefix('sha256:') for asset in assets}
+          sums = {}
+          for line in pathlib.Path('/tmp/SHA256SUMS.remote').read_text().splitlines():
+              match = re.fullmatch(r'([0-9a-f]{64}) [ *](.+)', line)
+              if not match or match.group(2) in sums:
+                  raise SystemExit(f'invalid canonical SHA256SUMS line: {line!r}')
+              sums[match.group(2)] = match.group(1)
+          if set(sums) != set(remote) - {'SHA256SUMS'}:
+              raise SystemExit('canonical SHA256SUMS does not cover the exact published asset set')
+          for name, digest in sums.items():
+              if remote[name] != digest:
+                  raise SystemExit(f'canonical checksum mismatch for {name}')
+          PY
+          mkdir -p reconciliation-attestation
+          cp /tmp/SHA256SUMS reconciliation-attestation/SHA256SUMS
+
+      - name: Attest canonical checksum index
+        if: steps.release.outputs.checksum_rewrite == 'true'
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: reconciliation-attestation/SHA256SUMS
+
+      - name: Verify canonical checksum attestation
+        if: steps.release.outputs.checksum_rewrite == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh attestation verify /tmp/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/reconcile-release.yml" \
+            --source-ref refs/heads/main \
+            --source-digest "$GITHUB_SHA" \
+            --deny-self-hosted-runners \
+            --format json > /tmp/canonical-attestation-verification.json
+          test "$(jq 'length' /tmp/canonical-attestation-verification.json)" -ge 1
+
+      - name: Make the reconciled release public
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.release.outputs.release_id }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          SIGNING_MODE: ${{ inputs.signing_mode }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > /tmp/release-before-publish.json
+          jq -e --arg tag "$RELEASE_TAG" \
+            '.tag_name == $tag and .draft == true' \
+            /tmp/release-before-publish.json >/dev/null
+          if [ "$SIGNING_MODE" = unsigned-beta ]; then
+            jq -e '.prerelease == true and (.body | startswith("> [!WARNING]"))' \
+              /tmp/release-before-publish.json >/dev/null
+          fi
+
+          printf '{"draft":false}' > /tmp/publish-release.json
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            --input /tmp/publish-release.json >/dev/null
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > /tmp/release-published.json
+          jq -e --arg tag "$RELEASE_TAG" \
+            '.tag_name == $tag and .draft == false' \
+            /tmp/release-published.json >/dev/null
+
+          {
+            echo '## Release reconciliation complete'
+            echo
+            printf -- '- Tag commit: `%s`\n' "$TAG_COMMIT"
+            printf -- '- Source run: `%s`\n' "${{ inputs.source_run_id }}"
+            printf -- '- Release: %s\n' "$(jq -r '.html_url' /tmp/release-published.json)"
+            printf -- '- App image: `ghcr.io/%s-app:%s@%s`\n' \
+              "$GITHUB_REPOSITORY" "${RELEASE_TAG#v}" "${{ steps.containers.outputs.app_digest }}"
+            printf -- '- Web image: `ghcr.io/%s-web:%s@%s`\n' \
+              "$GITHUB_REPOSITORY" "${RELEASE_TAG#v}" "${{ steps.containers.outputs.web_digest }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload reconciliation evidence
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-reconciliation-${{ inputs.tag }}
+          path: |
+            /tmp/source-run.json
+            /tmp/source-jobs.json
+            /tmp/release-published.json
+            /tmp/SHA256SUMS
+            /tmp/SHA256SUMS.build-source
+            /tmp/attestation-verification.json
+            /tmp/canonical-attestation-verification.json
+            /tmp/release-canonical-sums.json
+            /tmp/container-reconciliation/
+          if-no-files-found: error
+          retention-days: 30
