@@ -4,6 +4,7 @@ defmodule VesperWeb.UserSocket do
   alias Vesper.Accounts.Token
 
   channel "chat:channel:*", VesperWeb.ChatChannel
+  channel "crypto:cohort:*", VesperWeb.CohortChannel
   channel "dm:*", VesperWeb.DmChannel
   channel "voice:channel:*", VesperWeb.VoiceChannel
   channel "voice:dm:*", VesperWeb.VoiceChannel

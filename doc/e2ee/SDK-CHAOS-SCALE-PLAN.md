@@ -16,58 +16,24 @@ This is the current engineering target for SDK-first sync, multi-device recovery
   - DM restore across relogin
   - join/leave/rejoin churn
 
-## Current hard constraints
+## Current validation limits
 
-### Membership churn is not cryptographic churn yet
+Membership leave, kick, and rejoin now use durable sponsor intents, fenced leases, batched device removals, and generation checks. An old eviction cannot complete after a user rejoins. Legacy peer-history recovery checks exact device membership-generation intervals, so current membership does not authorize ciphertext sent while the device was absent.
 
-[`Vesper.Servers.leave_server/2`](/Users/pp/code/vesper/server/lib/vesper/servers.ex#L478) and [`Vesper.Servers.kick_member/3`](/Users/pp/code/vesper/server/lib/vesper/servers.ex#L498) delete membership rows and broadcast membership changes, but they do not create MLS remove commits for the affected channel scopes.
+The SDK load runner now creates physical multi-cohort rooms, authenticated wrapping keys, staged room-key epochs, durable cutovers, room-key application traffic, reconnects, and bounded restores. The July 2026 CI-sized fixture used 6 users, 9 actor devices, 10 physical participants, 2 rooms, 6 cohorts, and 6 room-key envelopes. It sent 280 messages with 280 application fanout publishes, zero failures, zero decrypt failures, zero restore misses, and no repair events. Measured p95 values were 44.43 ms send acknowledgement, 86.67 ms sampled delivery, 98.53 ms reconnect restore, 126.74 ms login restore, 15.46 ms scope sync, and 49.76 ms wide restore.
 
-The chat and DM channels do support client-driven `mls_remove` events in:
+These are deterministic local regression results, not proof of 50k or 500k concurrent production users. The `simulatedUsers` field weights logical operations for budget accounting; it does not create that many sockets, devices, PostgreSQL connections, or geographic network paths. Distributed load, multi-node failover, regional latency, and production hardware saturation remain unverified.
 
-- [`server/lib/vesper_web/channels/chat_channel.ex`](/Users/pp/code/vesper/server/lib/vesper_web/channels/chat_channel.ex)
-- [`server/lib/vesper_web/channels/dm_channel.ex`](/Users/pp/code/vesper/server/lib/vesper_web/channels/dm_channel.ex)
+## Shipped protocol invariants
 
-That means the protocol has the pieces, but server-side leave and kick are still weaker than the privacy model we want. If a device leaves a server through the REST path alone, we are relying on application membership rules, not a fresh MLS epoch.
-
-### 500k users cannot be “proven” by a toy loop
-
-The current SDK load runner is useful for cohort compression and hot-path checks, but it is not evidence that the whole system can sustain 500k active users with sub-30ms behavior. That claim needs staged validation with real concurrency, proper metrics, and honest limits.
-
-## Protocol work that still needs to land
-
-### 1. Make server membership changes drive MLS removal
-
-Needed outcome:
-
-- Leave, kick, and ban must result in MLS remove commits for each encrypted scope the member still belongs to.
-- Every surviving member must advance to a fresh epoch before the removed member can be considered fully out.
-- The removed device must not be able to decrypt future traffic after the removal point.
-
-Practical direction:
-
-- Introduce a scope-removal coordinator that asks an online trusted member of each scope to author the remove commit.
-- Persist “removal pending” state until at least one valid remove commit is durably recorded.
-- Treat the REST membership delete as incomplete until the MLS side is finished or explicitly marked degraded.
-
-### 2. Keep restore correctness tied to durable ordering
-
-Restore must continue to obey:
-
-- apply Welcome before replaying later commits
-- replay durable commits in order
-- fetch and decrypt messages oldest to newest by `room_seq`, then `inserted_at`, then `id`
-- persist the scope cursor after each durable event sequence
-
-The SDK harness already follows this ordering in the current restore path, and the chaos tests exercise that path directly.
-
-### 3. Treat history restore as a bounded hot path
-
-The latency target for “latest message” sync is realistic locally. Full history restore needs tighter rules:
-
-- latest-message sync should stay on a narrow query path
-- backlog restore should page and decrypt incrementally
-- restore should not do repeated whole-scope refetches while MLS bootstrap is still unresolved
-- local storage writes should not block every decrypt on the critical path
+- Apply Welcome before later commits and replay durable control events in sequence.
+- Persist group state, replay cursor, and pending control intents through one atomic checkpoint write.
+- Serialize cohort MLS mutations separately from room application replay so room-key derivation cannot recurse into the same non-reentrant lock.
+- Fetch current hot state through bounded scope queries; page older history incrementally.
+- Keep pre-cutover ciphertext on its immutable MLS group and use `vesper-room-v1` only after the durable topology cutover event.
+- Assign one user's trusted devices to one cohort and publish one opaque room-key envelope per cohort.
+- Treat duplicate requests as idempotent, stale fencing tokens as conflicts, incomplete envelope sets as non-activatable, and corrupt or missing state as explicit repair.
+- Await test-stack teardown and roll back failed bootstrap so local partition databases and Phoenix artifacts do not accumulate.
 
 ## Performance work that matters most next
 

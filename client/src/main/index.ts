@@ -1,5 +1,4 @@
 import { app, shell, BrowserWindow, ipcMain, Notification, dialog } from 'electron'
-import { lookup } from 'node:dns/promises'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { autoUpdater } from 'electron-updater'
@@ -13,16 +12,13 @@ import {
   setGroupSyncCursor,
   getScopeCheckpoint,
   setScopeCheckpoint,
-  getPendingGroupInfoPublishes,
-  setPendingGroupInfoPublish,
-  deletePendingGroupInfoPublish,
-  getPendingExternalCommitBroadcasts,
-  getPendingSponsoredTransitions,
-  setPendingExternalCommitBroadcast,
-  deletePendingExternalCommitBroadcast,
   getIdentityKeys,
   setIdentityKeys,
   deleteIdentityKeys,
+  getWorkspaceSnapshot,
+  setWorkspaceSnapshot,
+  getRecoveryPackageKey,
+  setRecoveryPackageKey,
   getLocalKeyPackages,
   setLocalKeyPackages,
   consumeLocalKeyPackage,
@@ -36,99 +32,46 @@ import {
   setSentMessagePlaintext,
   searchMessages,
   indexDecryptedMessage,
-  removeFromFtsIndex
+  removeFromFtsIndex,
+  getPendingMessageSends,
+  setPendingMessageSend,
+  deletePendingMessageSend,
+  getRefreshToken as getStoredRefreshToken,
+  setRefreshToken as setStoredRefreshToken,
+  clearRefreshToken as clearStoredRefreshToken
 } from './db'
+import { fetchLinkPreviewMetadata } from './linkPreviewFetcher'
 import {
-  isBlockedLinkPreviewUrl,
-  parseLinkPreview,
-  type LinkPreviewData
-} from '../shared/linkPreview'
+  classifyRefreshHttpFailure,
+  type AuthRefreshResult
+} from '../shared/authSession'
+import {
+  isAllowedExternalUrl,
+  isAllowedRendererNavigation,
+  normalizeHttpOrigin,
+  secureWebPreferences
+} from './electronSecurity'
 
-const LINK_PREVIEW_TIMEOUT_MS = 5_000
-const MAX_LINK_PREVIEW_HTML_LENGTH = 524_288
-
-function isPrivateIpAddress(address: string): boolean {
-  if (address === '::1') {
-    return true
-  }
-
-  if (address.startsWith('fe80:') || address.startsWith('fc') || address.startsWith('fd')) {
-    return true
-  }
-
-  const match = address.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
-  if (!match) {
-    return false
-  }
-
-  const [a, b] = match.slice(1).map(Number)
-  if ([a, b].some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
-    return true
-  }
-
-  if (a === 10 || a === 127 || a === 0) {
-    return true
-  }
-
-  if (a === 169 && b === 254) {
-    return true
-  }
-
-  if (a === 172 && b >= 16 && b <= 31) {
-    return true
-  }
-
-  if (a === 192 && b === 168) {
-    return true
-  }
-
-  return false
+interface EncryptedRoomDataKeyStorageRecord {
+  room_id: string
+  topology_generation: number
+  epoch: number
+  ciphertext: string
+  nonce: string
 }
 
-async function isSafeLinkPreviewUrl(rawUrl: string): Promise<boolean> {
-  if (isBlockedLinkPreviewUrl(rawUrl)) {
-    return false
-  }
-
-  try {
-    const url = new URL(rawUrl)
-    const addresses = await lookup(url.hostname, { all: true })
-    return addresses.every((entry) => !isPrivateIpAddress(entry.address))
-  } catch {
-    return false
-  }
-}
-
-async function fetchLinkPreviewMetadata(rawUrl: string): Promise<LinkPreviewData | null> {
-  if (!(await isSafeLinkPreviewUrl(rawUrl))) {
-    return null
-  }
-
-  try {
-    const response = await fetch(rawUrl, {
-      signal: AbortSignal.timeout(LINK_PREVIEW_TIMEOUT_MS),
-      redirect: 'follow'
-    })
-
-    if (!response.ok) {
-      return null
-    }
-
-    const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
-    if (!contentType.includes('text/html') && !contentType.includes('application/xhtml+xml')) {
-      return null
-    }
-
-    const finalUrl = response.url || rawUrl
-    if (!(await isSafeLinkPreviewUrl(finalUrl))) {
-      return null
-    }
-
-    const html = (await response.text()).slice(0, MAX_LINK_PREVIEW_HTML_LENGTH)
-    return parseLinkPreview(html, finalUrl)
-  } catch {
-    return null
-  }
+interface ControlIntentStorageRecord {
+  version: 1
+  operation: string
+  idempotency_key: string
+  scope_id: string
+  membership_generation: number
+  payload_json: string
+  attempts: number
+  state: string
+  result_json: string | null
+  created_at: string
+  updated_at: string
 }
 
 function createWindow(): void {
@@ -139,12 +82,7 @@ function createWindow(): void {
     minHeight: 600,
     show: false,
     autoHideMenuBar: true,
-    webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false
-    }
+    webPreferences: secureWebPreferences(join(__dirname, '../preload/index.js'))
   })
 
   mainWindow.on('ready-to-show', () => {
@@ -152,8 +90,20 @@ function createWindow(): void {
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+    if (isAllowedExternalUrl(details.url)) {
+      void shell.openExternal(details.url)
+    }
     return { action: 'deny' }
+  })
+
+  mainWindow.webContents.on('will-navigate', (event, targetUrl) => {
+    if (!isAllowedRendererNavigation(mainWindow.webContents.getURL(), targetUrl)) {
+      event.preventDefault()
+    }
+  })
+
+  mainWindow.webContents.on('will-attach-webview', (event) => {
+    event.preventDefault()
   })
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
@@ -164,6 +114,80 @@ function createWindow(): void {
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.on(
+    'authSession:setRefreshToken',
+    (event, refreshToken: unknown, rawServerUrl: unknown) => {
+      const serverOrigin =
+        typeof rawServerUrl === 'string' ? normalizeHttpOrigin(rawServerUrl) : null
+      if (
+        typeof refreshToken !== 'string' ||
+        refreshToken.length === 0 ||
+        refreshToken.length > 8192 ||
+        !serverOrigin
+      ) {
+        event.returnValue = false
+        return
+      }
+      setStoredRefreshToken(refreshToken, serverOrigin)
+      event.returnValue = true
+    }
+  )
+
+  ipcMain.on('authSession:clearRefreshToken', (event) => {
+    clearStoredRefreshToken()
+    event.returnValue = true
+  })
+
+  ipcMain.handle(
+    'authSession:refreshAccessToken',
+    async (_event, rawServerUrl: unknown): Promise<AuthRefreshResult> => {
+      const serverOrigin =
+        typeof rawServerUrl === 'string' ? normalizeHttpOrigin(rawServerUrl) : null
+      const refreshToken = serverOrigin ? getStoredRefreshToken(serverOrigin) : null
+      if (!refreshToken || !serverOrigin || typeof rawServerUrl !== 'string') {
+        return { status: 'invalid' }
+      }
+
+      try {
+        const endpoint = new URL('/api/v1/auth/refresh', rawServerUrl)
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          redirect: 'error',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+          signal: AbortSignal.timeout(10_000)
+        })
+        if (!response.ok) {
+          const failure = classifyRefreshHttpFailure(response.status)
+          if (failure === 'invalid') {
+            clearStoredRefreshToken()
+          }
+          return { status: failure }
+        }
+
+        const payload = (await response.json()) as {
+          access_token?: unknown
+          refresh_token?: unknown
+        }
+        if (
+          typeof payload.access_token !== 'string' ||
+          typeof payload.refresh_token !== 'string' ||
+          payload.access_token.length === 0 ||
+          payload.refresh_token.length === 0 ||
+          payload.access_token.length > 8192 ||
+          payload.refresh_token.length > 8192
+        ) {
+          return { status: 'retryable' }
+        }
+
+        setStoredRefreshToken(payload.refresh_token, serverOrigin)
+        return { status: 'ok', accessToken: payload.access_token }
+      } catch {
+        return { status: 'retryable' }
+      }
+    }
+  )
+
   // Identity keys
   ipcMain.handle('cryptoDb:getIdentityKeys', (_, userId: string) =>
     getIdentityKeys(userId)
@@ -183,6 +207,31 @@ function registerIpcHandlers(): void {
   )
   ipcMain.handle('cryptoDb:deleteIdentityKeys', (_, userId: string) =>
     deleteIdentityKeys(userId)
+  )
+  ipcMain.handle('cryptoDb:getWorkspaceSnapshot', (_, userId: string) =>
+    getWorkspaceSnapshot(userId)
+  )
+  ipcMain.handle(
+    'cryptoDb:setWorkspaceSnapshot',
+    (
+      _,
+      userId: string,
+      snapshot: {
+        version: number
+        token: string | null
+        servers_json: string
+        conversations_json: string
+        unread_counts_json: string
+        updated_at: string
+      }
+    ) => setWorkspaceSnapshot(userId, snapshot)
+  )
+  ipcMain.handle('cryptoDb:getRecoveryPackageKey', (_, userId: string) =>
+    getRecoveryPackageKey(userId)
+  )
+  ipcMain.handle(
+    'cryptoDb:setRecoveryPackageKey',
+    (_, userId: string, key: Buffer) => setRecoveryPackageKey(userId, key)
   )
 
   // MLS groups
@@ -226,66 +275,11 @@ function registerIpcHandlers(): void {
         repair_failure_count?: number
         repair_last_error?: string | null
         repair_updated_at?: string | null
-        pending_group_info_publish?: {
-          group_info_data: Buffer
-          ratchet_tree_data: Buffer | null
-          epoch: number
-        } | null
-        pending_external_commit_broadcast?: {
-          commit_data: string
-          commit_id: string
-        } | null
-        pending_sponsored_transition?: {
-          recipient_id: string
-          recipient_client_id: string | null
-          recipient_key_package_ref: string | null
-          commit_data: string
-          commit_id: string
-          remove_commit_data: string | null
-          welcome_data: string | null
-          group_info_data: Buffer | null
-          ratchet_tree_data: Buffer | null
-          epoch: number | null
-          previous_epoch: number | null
-          base_state: Buffer | null
-          base_epoch: number | null
-        } | null
+        room_data_keys?: EncryptedRoomDataKeyStorageRecord[]
+        control_intents?: ControlIntentStorageRecord[]
       }
     ) => setScopeCheckpoint(groupId, checkpoint)
   )
-  ipcMain.handle('cryptoDb:getPendingGroupInfoPublishes', () =>
-    getPendingGroupInfoPublishes()
-  )
-  ipcMain.handle(
-    'cryptoDb:setPendingGroupInfoPublish',
-    (
-      _,
-      groupId: string,
-      groupInfoData: Buffer,
-      ratchetTreeData: Buffer | null,
-      epoch: number
-    ) => setPendingGroupInfoPublish(groupId, groupInfoData, ratchetTreeData, epoch)
-  )
-  ipcMain.handle(
-    'cryptoDb:deletePendingGroupInfoPublish',
-    (_, groupId: string) => deletePendingGroupInfoPublish(groupId)
-  )
-  ipcMain.handle('cryptoDb:getPendingExternalCommitBroadcasts', () =>
-    getPendingExternalCommitBroadcasts()
-  )
-  ipcMain.handle('cryptoDb:getPendingSponsoredTransitions', () =>
-    getPendingSponsoredTransitions()
-  )
-  ipcMain.handle(
-    'cryptoDb:setPendingExternalCommitBroadcast',
-    (_, groupId: string, commitData: string, commitId: string) =>
-      setPendingExternalCommitBroadcast(groupId, commitData, commitId)
-  )
-  ipcMain.handle(
-    'cryptoDb:deletePendingExternalCommitBroadcast',
-    (_, groupId: string) => deletePendingExternalCommitBroadcast(groupId)
-  )
-
   // Key packages
   ipcMain.handle('cryptoDb:getLocalKeyPackages', () => getLocalKeyPackages())
   ipcMain.handle(
@@ -416,6 +410,26 @@ function registerIpcHandlers(): void {
     removeFromFtsIndex(messageId)
   )
 
+  // Pending message send outbox
+  ipcMain.handle('cryptoDb:getPendingMessageSends', () => getPendingMessageSends())
+  ipcMain.handle(
+    'cryptoDb:setPendingMessageSend',
+    (
+      _,
+      entry: {
+        client_nonce: string
+        scope_kind: 'channel' | 'dm'
+        scope_id: string
+        scope_channel_id: string | null
+        payload_json: string
+        inserted_at: string
+      }
+    ) => setPendingMessageSend(entry)
+  )
+  ipcMain.handle('cryptoDb:deletePendingMessageSend', (_, clientNonce: string) =>
+    deletePendingMessageSend(clientNonce)
+  )
+
   ipcMain.handle('linkPreview:fetchMetadata', (_, url: string) =>
     fetchLinkPreviewMetadata(url)
   )
@@ -424,7 +438,9 @@ function registerIpcHandlers(): void {
 function setupAutoUpdater(): void {
   autoUpdater.autoDownload = true
   autoUpdater.autoInstallOnAppQuit = true
-  autoUpdater.allowPrerelease = true // Include nightly prerelease builds
+  // Public builds follow the signed stable channel. Nightly validation no
+  // longer publishes binaries, and prereleases must never bypass that gate.
+  autoUpdater.allowPrerelease = false
 
   autoUpdater.on('update-available', (info) => {
     const notification = new Notification({

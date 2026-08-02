@@ -4,7 +4,7 @@
  */
 
 import type { Page, BrowserContext } from '@playwright/test'
-import { readRunState, getRecoveryKey } from '../harness/state'
+import { readRunState, getRecoveryKey, saveRecoveryKey } from '../harness/state'
 import { waitForAppShell, waitForDeviceTrustGate, waitForRecoveryModal, waitForRegisterPage, waitForSocketConnected } from './wait'
 
 export interface UserContext {
@@ -94,6 +94,7 @@ export async function signup(user: UserContext): Promise<void> {
   const modal = page.locator('[data-testid="recovery-modal"]')
   const words = await modal.locator('.font-mono').allTextContents()
   user.recoveryKey = words.join(' ')
+  saveRecoveryKey(username, user.recoveryKey)
 
   // Confirm and dismiss the recovery modal
   await modal.locator('input[type="checkbox"]').check()
@@ -134,14 +135,22 @@ export async function login(
     return
   }
 
-  // Race: app shell appears cleanly, or device trust gate intercepts.
+  // Race: app shell appears cleanly, device trust intercepts, or a standalone
+  // project discovers that the shared fixture account has not been created yet.
   const appShell = page.locator('[data-testid="main-page"], [data-testid="app-shell"]')
   const trustGate = page.locator('[data-testid="device-trust-gate"]')
 
   await Promise.race([
-    appShell.waitFor({ state: 'visible', timeout: 15_000 }),
-    trustGate.waitFor({ state: 'visible', timeout: 15_000 }),
+    appShell.waitFor({ state: 'visible', timeout: 15_000 }).catch(() => undefined),
+    trustGate.waitFor({ state: 'visible', timeout: 15_000 }).catch(() => undefined),
+    page.waitForTimeout(3_000),
   ])
+
+  if (await page.locator('[data-testid="login-form"]').isVisible()) {
+    await signup(user)
+    await waitForSocketConnected(page)
+    return
+  }
 
   // If the trust gate is showing, auto-approve with the persisted recovery key
   if (await trustGate.isVisible()) {

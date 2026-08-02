@@ -50,7 +50,7 @@ defmodule Vesper.SyncFuzzTest do
 
     conversations = [dm_one, dm_two]
 
-    _baseline_event_id = Sync.latest_event_id_for_user(user.id) || 0
+    baseline_user_event_id = Sync.latest_event_id_for_user(user.id) || 0
     baseline_scope_event_id = Sync.latest_scope_event_id() || 0
 
     state =
@@ -58,10 +58,12 @@ defmodule Vesper.SyncFuzzTest do
         apply_random_op(state, step, user.id, peer.id, channels, conversations)
       end)
 
-    all_scope_ids =
-      Enum.map(channels, & &1.id) ++ Enum.map(conversations, & &1.id) ++ [server.id]
-
-    changes = Sync.list_scope_changes_since(user.id, baseline_scope_event_id, all_scope_ids)
+    changes =
+      Sync.list_scope_changes_with_cursors(
+        user.id,
+        baseline_scope_event_id,
+        baseline_user_event_id
+      )
 
     assert MapSet.new(changes.channel_ids) == state.changed_channels
     assert MapSet.new(changes.conversation_ids) == state.changed_conversations

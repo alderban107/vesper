@@ -27,31 +27,36 @@ export default function VoiceControls(): React.JSX.Element | null {
 
       <div className="flex gap-1.5">
         <button
+          type="button"
           data-testid="mute-button"
           onClick={toggleMute}
           className={`flex-1 py-1.5 rounded-lg flex items-center justify-center gap-1.5 text-xs font-medium transition-all ${
             muted
-              ? 'bg-red-600/20 text-red-400'
+              ? 'bg-error/20 text-error'
               : 'bg-bg-tertiary/50 text-text-muted hover:text-text-primary hover:bg-bg-tertiary'
           }`}
           title={muted ? 'Unmute' : 'Mute'}
+          aria-label={muted ? 'Unmute' : 'Mute'}
         >
           {muted ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
         </button>
 
         <button
+          type="button"
           onClick={toggleDeafen}
           className={`flex-1 py-1.5 rounded-lg flex items-center justify-center gap-1.5 text-xs font-medium transition-all ${
             deafened
-              ? 'bg-red-600/20 text-red-400'
+              ? 'bg-error/20 text-error'
               : 'bg-bg-tertiary/50 text-text-muted hover:text-text-primary hover:bg-bg-tertiary'
           }`}
           title={deafened ? 'Undeafen' : 'Deafen'}
+          aria-label={deafened ? 'Undeafen' : 'Deafen'}
         >
           {deafened ? <HeadphoneOff className="w-3.5 h-3.5" /> : <Headphones className="w-3.5 h-3.5" />}
         </button>
 
         <button
+          type="button"
           data-testid="camera-button"
           onClick={() => {
             void toggleCamera()
@@ -59,15 +64,17 @@ export default function VoiceControls(): React.JSX.Element | null {
           disabled={!canShareVideo}
           className={`flex-1 py-1.5 rounded-lg flex items-center justify-center gap-1.5 text-xs font-medium transition-all ${
             cameraEnabled
-              ? 'bg-emerald-600/20 text-emerald-300'
+              ? 'bg-success/20 text-success'
               : 'bg-bg-tertiary/50 text-text-muted hover:text-text-primary hover:bg-bg-tertiary'
           } ${!canShareVideo ? 'opacity-45 cursor-not-allowed' : ''}`}
           title={cameraEnabled ? 'Stop Camera' : 'Start Camera'}
+          aria-label={cameraEnabled ? 'Stop Camera' : 'Start Camera'}
         >
           {cameraEnabled ? <VideoOff className="w-3.5 h-3.5" /> : <Video className="w-3.5 h-3.5" />}
         </button>
 
         <button
+          type="button"
           data-testid="screen-share-button"
           onClick={() => {
             void toggleScreenShare()
@@ -75,10 +82,11 @@ export default function VoiceControls(): React.JSX.Element | null {
           disabled={!canShareVideo}
           className={`flex-1 py-1.5 rounded-lg flex items-center justify-center gap-1.5 text-xs font-medium transition-all ${
             screenShareEnabled
-              ? 'bg-emerald-600/20 text-emerald-300'
+              ? 'bg-success/20 text-success'
               : 'bg-bg-tertiary/50 text-text-muted hover:text-text-primary hover:bg-bg-tertiary'
           } ${!canShareVideo ? 'opacity-45 cursor-not-allowed' : ''}`}
           title={screenShareEnabled ? 'Stop Screen Share' : 'Start Screen Share'}
+          aria-label={screenShareEnabled ? 'Stop Screen Share' : 'Start Screen Share'}
         >
           {screenShareEnabled
             ? <ScreenShareOff className="w-3.5 h-3.5" />
@@ -86,10 +94,12 @@ export default function VoiceControls(): React.JSX.Element | null {
         </button>
 
         <button
+          type="button"
           data-testid="disconnect-call"
           onClick={disconnect}
-          className="px-3 py-1.5 rounded-lg bg-red-600/20 text-red-400 hover:bg-red-600/30 flex items-center justify-center transition-colors"
+          className="px-3 py-1.5 rounded-lg bg-error/20 text-error hover:bg-error/30 flex items-center justify-center transition-colors"
           title="Disconnect"
+          aria-label="Disconnect from voice"
         >
           <PhoneOff className="w-3.5 h-3.5" />
         </button>

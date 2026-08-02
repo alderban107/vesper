@@ -1,8 +1,7 @@
 defmodule VesperWeb.PendingHistoryBundleController do
   use VesperWeb, :controller
-  alias Vesper.Chat
   alias Vesper.Encryption
-  alias Vesper.Servers
+  alias VesperWeb.ControllerHelpers
 
   @doc "GET /api/v1/pending-history-bundles/:channel_id — fetch pending same-user history bundles for the current MLS scope"
   def index(conn, %{"channel_id" => scope_id}) do
@@ -10,13 +9,14 @@ defmodule VesperWeb.PendingHistoryBundleController do
     current_device = conn.assigns.current_device
 
     case authorized_scope(user.id, scope_id) do
-      {:ok, authorized_group_id} ->
+      {:ok, authorization} ->
         render_bundles(
           conn,
           Encryption.get_pending_history_bundles(
             user.id,
-            authorized_group_id,
-            current_device.client_id
+            authorization.group_id,
+            current_device.client_id,
+            authorization.authorization_generation
           )
         )
 
@@ -58,8 +58,12 @@ defmodule VesperWeb.PendingHistoryBundleController do
         Enum.map(bundles, fn bundle ->
           %{
             id: bundle.id,
+            request_id: bundle.request_id,
             ciphertext: bundle.ciphertext,
             mls_epoch: bundle.mls_epoch,
+            membership_generation: bundle.membership_generation,
+            authorization_generation: bundle.authorization_generation,
+            authorized_after_room_seq: bundle.authorized_after_room_seq,
             recipient_id: bundle.recipient_id,
             recipient_client_id: bundle.recipient_client_id,
             sender_id: bundle.sender_id,
@@ -70,41 +74,6 @@ defmodule VesperWeb.PendingHistoryBundleController do
   end
 
   defp authorized_scope(user_id, scope_id) do
-    with {:ok, uuid} <- Ecto.UUID.cast(scope_id) do
-      case authorize_channel_scope(user_id, uuid) do
-        {:error, :not_found} -> authorize_conversation_scope(user_id, uuid)
-        result -> result
-      end
-    else
-      :error -> {:error, :invalid_scope}
-    end
-  end
-
-  defp authorize_channel_scope(user_id, channel_id) do
-    case Servers.get_channel(channel_id) do
-      nil ->
-        {:error, :not_found}
-
-      channel ->
-        if Servers.user_can_view_channel?(user_id, channel) do
-          {:ok, channel_id}
-        else
-          {:error, :forbidden}
-        end
-    end
-  end
-
-  defp authorize_conversation_scope(user_id, conversation_id) do
-    case Chat.get_conversation(conversation_id) do
-      nil ->
-        {:error, :not_found}
-
-      _conversation ->
-        if Chat.user_is_participant?(user_id, conversation_id) do
-          {:ok, conversation_id}
-        else
-          {:error, :forbidden}
-        end
-    end
+    ControllerHelpers.authorize_history_scope(user_id, scope_id)
   end
 end

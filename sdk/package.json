@@ -1,6 +1,6 @@
 {
   "name": "@vesper/sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "TypeScript SDK for building Vesper clients",
   "license": "AGPL-3.0-only",
   "type": "module",
@@ -16,6 +16,8 @@
     "test:db:profile": "sh ./scripts/profile-localdb-queries.sh",
     "chaos:load": "npm run build && node scripts/run-chaos-load.mjs",
     "chaos:load:localdb": "sh ./scripts/run-chaos-load-localdb.sh",
+    "profile:account-sync": "npm run build && node --expose-gc scripts/profile-account-sync.mjs",
+    "profile:account-sync:smoke": "npm run build && node --expose-gc scripts/profile-account-sync.mjs --smoke",
     "test:integration": "npm run build && node --test --test-concurrency=1 test/**/*.test.mjs",
     "test:integration:localdb": "sh ./scripts/run-integration-with-localdb.sh",
     "test:integration:watch": "sh ./scripts/run-integration-watch-with-localdb.sh",

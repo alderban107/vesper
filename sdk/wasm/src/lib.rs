@@ -13,7 +13,7 @@ use js_sys::Uint8Array;
 use openmls::{
     credentials::{BasicCredential, CredentialWithKey},
     framing::{MlsMessageBodyIn, MlsMessageIn, MlsMessageOut, ProcessedMessageContent},
-    group::{GroupId, MlsGroup, MlsGroupJoinConfig, StagedWelcome},
+    group::{GroupId, MlsGroup, MlsGroupJoinConfig, ProposalStore, PublicGroup, StagedWelcome},
     key_packages::KeyPackage as OpenMlsKeyPackage,
     prelude::{LeafNodeIndex, SignatureScheme},
     treesync::RatchetTreeIn,
@@ -21,7 +21,7 @@ use openmls::{
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_memory_storage::MemoryStorage;
-use openmls_traits::{types::Ciphersuite, OpenMlsProvider};
+use openmls_traits::{signatures::Signer, types::Ciphersuite, OpenMlsProvider};
 use tls_codec::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
@@ -184,6 +184,13 @@ impl Identity {
         self.keypair.to_public_vec()
     }
 
+    /// Sign a purpose-bound application payload with this MLS leaf identity.
+    pub fn sign(&self, payload: &[u8]) -> Result<Vec<u8>, JsError> {
+        self.keypair
+            .sign(payload)
+            .map_err(|_| JsError::new("identity signing failed"))
+    }
+
     /// Serialize the identity to bytes for persistence.
     /// Only stores the name and public key — the private key is in the Provider's storage.
     /// Format: name_len(u32-be) name pub_key_len(u32-be) pub_key
@@ -325,6 +332,58 @@ impl GroupInfo {
             bytes: bytes.to_vec(),
         }
     }
+}
+
+/// Verify a published MLS GroupInfo against its ratchet tree without joining the group.
+/// Returns only identities authenticated by the verified public MLS state.
+#[wasm_bindgen]
+pub fn verify_public_group_snapshot(
+    group_info_bytes: &[u8],
+    ratchet_tree_bytes: &[u8],
+) -> Result<String, JsError> {
+    let mut group_info_buffer = group_info_bytes;
+    let verifiable_group_info = match MlsMessageIn::tls_deserialize(&mut group_info_buffer)?.extract() {
+        MlsMessageBodyIn::GroupInfo(group_info) => group_info,
+        other => {
+            return Err(JsError::new(&format!(
+                "expected GroupInfo, got {other:?}"
+            )))
+        }
+    };
+
+    let mut tree_buffer = ratchet_tree_bytes;
+    let ratchet_tree = RatchetTreeIn::tls_deserialize(&mut tree_buffer)
+        .map_err(|error| JsError::new(&format!("RatchetTree deserialization error: {error}")))?;
+    let provider = OpenMlsRustCrypto::default();
+    let (public_group, _verified_group_info) = PublicGroup::from_external(
+        provider.crypto(),
+        provider.storage(),
+        ratchet_tree,
+        verifiable_group_info,
+        ProposalStore::new(),
+    )
+    .map_err(|error| JsError::new(&format!("public group verification error: {error}")))?;
+
+    let members: Vec<serde_json::Value> = public_group
+        .members()
+        .filter_map(|member| {
+            let basic = BasicCredential::try_from(member.credential).ok()?;
+            let name = String::from_utf8(basic.identity().to_vec()).ok()?;
+            Some(serde_json::json!({
+                "name": name,
+                "signature_public_key": member.signature_key
+            }))
+        })
+        .collect();
+    let group_id = String::from_utf8(public_group.group_id().as_slice().to_vec())
+        .unwrap_or_else(|_| format!("{:?}", public_group.group_id().as_slice()));
+
+    serde_json::to_string(&serde_json::json!({
+        "group_id": group_id,
+        "epoch": public_group.group_context().epoch().as_u64(),
+        "members": members
+    }))
+    .map_err(|error| JsError::new(&format!("public group JSON error: {error}")))
 }
 
 // ============================================================
@@ -617,6 +676,53 @@ impl Group {
         })
     }
 
+    /// Remove several members in one MLS commit.
+    pub fn remove_members(
+        &mut self,
+        provider: &Provider,
+        sender: &Identity,
+        leaf_indices: Vec<u32>,
+    ) -> Result<CommitBundle, JsError> {
+        if leaf_indices.is_empty() {
+            return Err(JsError::new("At least one leaf index is required"));
+        }
+
+        let members = leaf_indices
+            .into_iter()
+            .map(|leaf_index| {
+                self.mls_group
+                    .member_at(LeafNodeIndex::new(leaf_index))
+                    .map(|member| member.index)
+                    .ok_or_else(|| JsError::new(&format!("No member at leaf index {leaf_index}")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let (commit_msg, welcome_msg, group_info_opt) = self
+            .mls_group
+            .remove_members(&provider.0, &sender.keypair, &members)?;
+
+        let mut commit_bytes = vec![];
+        commit_msg.tls_serialize(&mut commit_bytes)?;
+
+        let welcome_bytes = welcome_msg.map(|w| {
+            let mut b = vec![];
+            w.tls_serialize(&mut b).unwrap();
+            b
+        });
+
+        let group_info_bytes = group_info_opt.map(|gi| {
+            let mut b = vec![];
+            gi.tls_serialize(&mut b).unwrap();
+            b
+        });
+
+        Ok(CommitBundle {
+            commit_bytes,
+            welcome_bytes,
+            group_info_bytes,
+        })
+    }
+
     /// Merge a pending commit (after add/remove/external commit)
     pub fn merge_pending_commit(&mut self, provider: &Provider) -> Result<(), JsError> {
         self.mls_group
@@ -723,6 +829,25 @@ impl Group {
                 } else {
                     None
                 }
+            })
+            .collect();
+
+        serde_json::to_string(&identities).unwrap()
+    }
+
+    /// Get credential names and Ed25519 public keys for signature verification.
+    pub fn member_signing_identities(&self) -> String {
+        let identities: Vec<serde_json::Value> = self
+            .mls_group
+            .members()
+            .filter_map(|member| {
+                let credential = member.credential;
+                let basic = BasicCredential::try_from(credential).ok()?;
+                let name = String::from_utf8(basic.identity().to_vec()).ok()?;
+                Some(serde_json::json!({
+                    "name": name,
+                    "signature_public_key": member.signature_key.as_slice()
+                }))
             })
             .collect();
 

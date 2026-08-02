@@ -287,7 +287,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
 
       applyAuthenticatedState(set, session, { isLoading: false, recoveryMnemonic: null })
-      fireAndForget(getRendererClient().start(true))
+      fireAndForget(getRendererClient().start(false))
       if (session.canUseE2EE) {
         fireAndForget(get().replenishKeyPackages())
         fireAndForget(refreshActiveEncryptedViews())
@@ -312,7 +312,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       devices: nextState.devices,
       currentDevice: nextState.currentDevice,
       canUseE2EE: nextState.canUseE2EE,
-      error: nextState.currentDevice?.trust_state === 'trusted' ? null : state.error
+      error: nextState.canUseE2EE ? null : state.error
     })
 
     if (wasUsingE2EE && !nextState.canUseE2EE) {
@@ -412,7 +412,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       ],
       currentDevice: nextCurrentDevice,
       canUseE2EE: nextCanUseE2EE,
-      error: nextCurrentDevice?.trust_state === 'trusted' ? null : state.error
+      error: nextCanUseE2EE ? null : state.error
     })
 
     if (state.canUseE2EE && !nextCanUseE2EE) {

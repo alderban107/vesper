@@ -99,6 +99,8 @@ export default function ChannelSettingsModal(): React.JSX.Element | null {
   const [targetType, setTargetType] = useState<'role' | 'user'>('role')
   const [targetId, setTargetId] = useState('')
   const [deleteConfirm, setDeleteConfirm] = useState('')
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   useEffect(() => {
     setName(channel?.name ?? '')
@@ -109,6 +111,8 @@ export default function ChannelSettingsModal(): React.JSX.Element | null {
     setTargetId('')
     setPermissionsSavingKey(null)
     setDeleteConfirm('')
+    setIsDeleting(false)
+    setDeleteError(null)
     setActiveSection('overview')
   }, [channel?.category_id, channel?.disappearing_ttl, channel?.id, channel?.name, channel?.topic])
 
@@ -209,14 +213,21 @@ export default function ChannelSettingsModal(): React.JSX.Element | null {
   }
 
   const handleDelete = async (): Promise<void> => {
-    if (deleteConfirm !== channel.name) {
+    if (deleteConfirm !== channel.name || isDeleting) {
       return
     }
 
+    setIsDeleting(true)
+    setDeleteError(null)
     const deleted = await deleteChannel(activeServerId, channel.id)
+
     if (deleted) {
       closeChannelSettingsModal()
+      return
     }
+
+    setDeleteError(`Could not delete this ${isCategory ? 'category' : 'channel'}. Please try again.`)
+    setIsDeleting(false)
   }
 
   const roleOptions = roles.filter((role) => role.id.length > 0)
@@ -632,22 +643,28 @@ export default function ChannelSettingsModal(): React.JSX.Element | null {
               <input
                 type="text"
                 value={deleteConfirm}
-                onChange={(event) => setDeleteConfirm(event.target.value)}
+                onChange={(event) => {
+                  setDeleteConfirm(event.target.value)
+                  setDeleteError(null)
+                }}
                 placeholder={channel.name}
+                disabled={isDeleting}
                 className="vesper-settings-input"
               />
             </label>
+            {deleteError && <p className="text-sm text-error">{deleteError}</p>}
             <div className="vesper-settings-card-actions">
               <button
                 type="button"
                 onClick={() => {
                   void handleDelete()
                 }}
-                disabled={deleteConfirm !== channel.name}
+                disabled={deleteConfirm !== channel.name || isDeleting}
+                title={deleteConfirm !== channel.name ? `Type "${channel.name}" above to confirm` : undefined}
                 className="vesper-settings-danger-button"
               >
                 <Trash2 className="w-4 h-4" />
-                Delete {isCategory ? 'Category' : 'Channel'}
+                {isDeleting ? 'Deleting…' : `Delete ${isCategory ? 'Category' : 'Channel'}`}
               </button>
             </div>
           </div>

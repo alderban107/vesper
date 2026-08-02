@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { Plus } from 'lucide-react'
 import { useDmStore, type DmConversation } from '../../stores/dmStore'
 import { useAuthStore } from '../../stores/authStore'
@@ -11,6 +12,10 @@ export default function DmSidebar(): React.JSX.Element {
   const conversations = useDmStore((s) => s.conversations)
   const selectedId = useDmStore((s) => s.selectedConversationId)
   const selectConversation = useDmStore((s) => s.selectConversation)
+  const hasMoreConversations = useDmStore((s) => s.hasMoreConversations)
+  const loadingMoreConversations = useDmStore((s) => s.loadingMoreConversations)
+  const loadMoreConversations = useDmStore((s) => s.loadMoreConversations)
+  const loadMoreRef = useRef<HTMLDivElement>(null)
   const joinDmChat = useMessageStore((s) => s.joinDmChat)
   const fetchDmMessages = useMessageStore((s) => s.fetchDmMessages)
   const openNewDmModal = useUIStore((s) => s.openNewDmModal)
@@ -20,6 +25,25 @@ export default function DmSidebar(): React.JSX.Element {
   const getPresenceStatus = usePresenceStore((s) => s.getStatus)
   const isMobileLayout = typeof window !== 'undefined' && window.innerWidth <= 768
 
+  useEffect(() => {
+    const target = loadMoreRef.current
+    if (!target || !hasMoreConversations) {
+      return
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          void loadMoreConversations()
+        }
+      },
+      { rootMargin: '160px 0px' }
+    )
+
+    observer.observe(target)
+    return () => observer.disconnect()
+  }, [hasMoreConversations, loadMoreConversations])
+
   const getDisplayName = (conv: DmConversation): string => {
     if (conv.name) return conv.name
     const others = conv.participants.filter((p) => p.user_id !== currentUserId)
@@ -27,11 +51,7 @@ export default function DmSidebar(): React.JSX.Element {
     return others.map((p) => p.user.display_name || p.user.username).join(', ')
   }
 
-  const getPreview = (conv: DmConversation): string => {
-    if (!conv.last_message) return ''
-    if (conv.last_message.ciphertext) return 'Encrypted message'
-    return conv.last_message.content || ''
-  }
+  const getPreview = (conv: DmConversation): string => conv.last_message?.content || ''
 
   const handleConversationSelect = (conversationId: string): void => {
     const isReselectingCurrent = conversationId === selectedId
@@ -66,48 +86,64 @@ export default function DmSidebar(): React.JSX.Element {
             No conversations yet
           </div>
         ) : (
-          conversations.map((conv) => {
-            const unread = dmUnreads[conv.id] || 0
-            const otherParticipant = conv.participants.find((p) => p.user_id !== currentUserId)
-            const liveStatus = otherParticipant ? getPresenceStatus(otherParticipant.user_id) : undefined
-            return (
-              <button
-                data-testid="dm-row"
-                key={conv.id}
-                onClick={() => handleConversationSelect(conv.id)}
-                className={`w-full text-left px-3 py-2 flex items-center gap-2 transition-colors ${
-                  conv.id === selectedId
-                    ? 'bg-bg-tertiary/80 text-text-primary'
-                    : 'text-text-muted hover:text-text-primary hover:bg-bg-tertiary/30'
-                }`}
-              >
-                <div className="shrink-0">
-                  <Avatar
-                    userId={otherParticipant?.user_id || conv.id}
-                    avatarUrl={otherParticipant?.user?.avatar_url}
-                    displayName={getDisplayName(conv)}
-                    size="sm"
-                    status={liveStatus}
-                  />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className={`text-sm truncate ${
-                    unread > 0 && conv.id !== selectedId
-                      ? 'font-semibold text-text-primary'
-                      : 'font-medium'
-                  }`}>
-                    {getDisplayName(conv)}
-                  </p>
-                  <p className="text-xs text-text-faint truncate">{getPreview(conv)}</p>
-                </div>
-                {unread > 0 && conv.id !== selectedId && (
-                  <span className="vesper-dm-unread-badge min-w-[18px] h-[18px] bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center px-1 shrink-0">
-                    {unread > 99 ? '99+' : unread}
-                  </span>
+          <>
+            {conversations.map((conv) => {
+              const unread = dmUnreads[conv.id] || 0
+              const otherParticipant = conv.participants.find(
+                (participant) => participant.user_id !== currentUserId
+              )
+              const liveStatus = otherParticipant
+                ? getPresenceStatus(otherParticipant.user_id)
+                : undefined
+
+              return (
+                <button
+                  data-testid="dm-row"
+                  key={conv.id}
+                  onClick={() => handleConversationSelect(conv.id)}
+                  className={`w-full text-left px-3 py-2 flex items-center gap-2 transition-colors ${
+                    conv.id === selectedId
+                      ? 'bg-bg-tertiary/80 text-text-primary'
+                      : 'text-text-muted hover:text-text-primary hover:bg-bg-tertiary/30'
+                  }`}
+                >
+                  <div className="shrink-0">
+                    <Avatar
+                      userId={otherParticipant?.user_id || conv.id}
+                      avatarUrl={otherParticipant?.user?.avatar_url}
+                      displayName={getDisplayName(conv)}
+                      size="sm"
+                      status={liveStatus}
+                    />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p
+                      className={`text-sm truncate ${
+                        unread > 0 && conv.id !== selectedId
+                          ? 'font-semibold text-text-primary'
+                          : 'font-medium'
+                      }`}
+                    >
+                      {getDisplayName(conv)}
+                    </p>
+                    <p className="text-xs text-text-faint truncate">{getPreview(conv)}</p>
+                  </div>
+                  {unread > 0 && conv.id !== selectedId && (
+                    <span className="vesper-dm-unread-badge min-w-[18px] h-[18px] bg-accent text-bg-base text-[10px] font-bold rounded-full flex items-center justify-center px-1 shrink-0">
+                      {unread > 99 ? '99+' : unread}
+                    </span>
+                  )}
+                </button>
+              )
+            })}
+            {(hasMoreConversations || loadingMoreConversations) && (
+              <div ref={loadMoreRef} className="h-8 flex items-center justify-center" role="status">
+                {loadingMoreConversations && (
+                  <span className="text-xs text-text-faint">Loading older conversations…</span>
                 )}
-              </button>
-            )
-          })
+              </div>
+            )}
+          </>
         )}
       </div>
     </>

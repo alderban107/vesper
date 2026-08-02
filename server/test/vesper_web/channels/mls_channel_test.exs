@@ -40,7 +40,8 @@ defmodule VesperWeb.MlsChannelTest do
       remove_ref =
         push(socket, "mls_remove", %{
           "removed_user_id" => recipient.id,
-          "commit_data" => "remove-commit"
+          "commit_data" => "remove-commit",
+          "idempotency_key" => "chat-remove-1"
         })
 
       assert_reply remove_ref, :ok, %{seq: remove_seq} when is_integer(remove_seq)
@@ -60,7 +61,8 @@ defmodule VesperWeb.MlsChannelTest do
           "recipient_id" => recipient.id,
           "welcome_data" => Base.encode64(<<1, 2, 3>>),
           "recipient_device_id" => "device-a",
-          "key_package_ref" => "kp-ref"
+          "key_package_ref" => "kp-ref",
+          "idempotency_key" => "chat-welcome-1"
         })
 
       assert_reply welcome_ref, :ok, %{id: welcome_id} when is_binary(welcome_id)
@@ -68,6 +70,66 @@ defmodule VesperWeb.MlsChannelTest do
       welcome = Encryption.get_pending_welcome(welcome_id)
       assert welcome.recipient_id == recipient.id
       assert welcome.recipient_client_id == "device-a"
+    end
+
+    test "deduplicates remove and Welcome controls without repeating mutation" do
+      user = insert_user()
+      recipient = insert_user()
+      {:ok, server} = Servers.create_server(user, %{name: "idempotent chat server"})
+      channel = Enum.find(server.channels, &(&1.type == "text"))
+
+      socket = connect_user_socket(user, "idempotent-chat-client")
+      {:ok, _reply, socket} = subscribe_and_join(socket, "chat:channel:#{channel.id}")
+
+      remove_payload = %{
+        "removed_user_id" => recipient.id,
+        "commit_data" => "remove-commit",
+        "idempotency_key" => "chat-remove-dedup"
+      }
+
+      first_remove = push(socket, "mls_remove", remove_payload)
+      assert_reply first_remove, :ok, %{seq: remove_seq}
+
+      duplicate_remove = push(socket, "mls_remove", remove_payload)
+      assert_reply duplicate_remove, :ok, %{seq: ^remove_seq}
+
+      conflicting_remove =
+        push(socket, "mls_remove", %{remove_payload | "commit_data" => "different-commit"})
+
+      assert_reply conflicting_remove, :error, %{reason: "idempotency_conflict"}
+
+      assert Repo.aggregate(
+               from(event in MlsEvent,
+                 where:
+                   event.group_id == ^channel.id and
+                     event.event_type == "mls_remove" and
+                     event.sender_id == ^user.id
+               ),
+               :count
+             ) == 1
+
+      welcome_payload = %{
+        "recipient_id" => recipient.id,
+        "welcome_data" => Base.encode64(<<1, 2, 3>>),
+        "recipient_device_id" => "device-dedup",
+        "key_package_ref" => "kp-dedup",
+        "idempotency_key" => "chat-welcome-dedup"
+      }
+
+      first_welcome = push(socket, "mls_welcome", welcome_payload)
+      assert_reply first_welcome, :ok, %{id: welcome_id}
+
+      duplicate_welcome = push(socket, "mls_welcome", welcome_payload)
+      assert_reply duplicate_welcome, :ok, %{id: ^welcome_id}
+
+      conflicting_welcome =
+        push(socket, "mls_welcome", %{
+          welcome_payload
+          | "welcome_data" => Base.encode64(<<9, 9, 9>>)
+        })
+
+      assert_reply conflicting_welcome, :error, %{reason: "idempotency_conflict"}
+      assert Encryption.get_pending_welcome(welcome_id).welcome_data == <<1, 2, 3>>
     end
 
     test "replays the newest join_all events, not the oldest" do
@@ -228,7 +290,8 @@ defmodule VesperWeb.MlsChannelTest do
       remove_ref =
         push(socket, "mls_remove", %{
           "removed_user_id" => peer.id,
-          "commit_data" => "remove-commit"
+          "commit_data" => "remove-commit",
+          "idempotency_key" => "voice-remove-1"
         })
 
       assert_reply remove_ref, :ok, %{seq: remove_seq} when is_integer(remove_seq)
@@ -248,7 +311,8 @@ defmodule VesperWeb.MlsChannelTest do
           "recipient_id" => peer.id,
           "welcome_data" => Base.encode64(<<4, 5, 6>>),
           "recipient_device_id" => "voice-device-a",
-          "key_package_ref" => "voice-kp"
+          "key_package_ref" => "voice-kp",
+          "idempotency_key" => "voice-welcome-1"
         })
 
       assert_reply welcome_ref, :ok, %{id: welcome_id} when is_binary(welcome_id)
@@ -256,6 +320,31 @@ defmodule VesperWeb.MlsChannelTest do
       welcome = Encryption.get_pending_welcome(welcome_id)
       assert welcome.recipient_id == peer.id
       assert welcome.recipient_client_id == "voice-device-a"
+    end
+
+    test "rejects a malformed history request id without terminating the channel" do
+      owner = insert_user()
+      recipient = insert_user()
+      {:ok, server} = Servers.create_server(owner, %{name: "history id validation"})
+      {:ok, _server} = Servers.join_server(recipient, server.invite_code)
+      channel = Enum.find(server.channels, &(&1.type == "text"))
+
+      socket = connect_user_socket(owner, "history-sponsor")
+      {:ok, _reply, socket} = subscribe_and_join(socket, "chat:channel:#{channel.id}")
+
+      ref =
+        push(socket, "mls_history_bundle", %{
+          "ciphertext" => "opaque",
+          "mls_epoch" => 1,
+          "recipient_id" => recipient.id,
+          "recipient_device_id" => "recipient-device",
+          "request_id" => "not-a-uuid",
+          "membership_generation" => 1,
+          "idempotency_key" => "malformed-history-request-id"
+        })
+
+      assert_reply ref, :error, %{reason: "invalid request_id"}
+      assert Process.alive?(socket.channel_pid)
     end
   end
 end

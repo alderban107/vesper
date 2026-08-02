@@ -1,35 +1,35 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { useServerStore } from '../../stores/serverStore'
 import { useDmStore } from '../../stores/dmStore'
-import { useMessageStore, type Message } from '../../stores/messageStore'
+import {
+  resolveDmChannelId,
+  useMessageStore,
+  type Message
+} from '../../stores/messageStore'
 import { useUnreadStore } from '../../stores/unreadStore'
 import MessageFeed from './message/MessageFeed'
 
 const EMPTY_MESSAGES: Message[] = []
 const EMPTY_TYPING: { user_id: string; username: string }[] = []
 
+
 interface Props {
   scope: { kind: 'channel'; id: string } | { kind: 'dm'; id: string }
 }
 
 export default function MessageList({ scope }: Props): React.JSX.Element {
-  const dmChannelId = useDmStore((s) => {
-    if (scope.kind !== 'dm') return null
-    return s.conversations.find(c => c.id === scope.id)?.channel_id ?? null
-  })
+  useDmStore((s) => s.conversations)
+  const dmChannelId = scope.kind === 'dm' ? resolveDmChannelId(scope.id) : null
 
-  const resolvedScope = useMemo(() => {
-    if (scope.kind === 'dm' && dmChannelId) {
-      return { kind: 'channel' as const, id: dmChannelId }
-    }
-    return scope
-  }, [scope, dmChannelId])
+  const resolvedScope = scope.kind === 'dm' && dmChannelId
+    ? { kind: 'channel' as const, id: dmChannelId }
+    : scope
 
   const scopeId = resolvedScope.id
   const allMessages = useMessageStore((s) =>
     s.messagesByChannel[scopeId] ?? EMPTY_MESSAGES
   )
-  const messages = useMemo(() => allMessages, [allMessages])
+  const messages = allMessages
   const typingUsers = useMessageStore((s) =>
     s.typingUsers[scopeId] ?? EMPTY_TYPING
   )
@@ -83,7 +83,7 @@ export default function MessageList({ scope }: Props): React.JSX.Element {
 
   const handleLoadNewer = (): void => {
     if (hasNewer) {
-      const fetch = scope.kind === 'channel' ? fetchNewerMessages : fetchNewerDmMessages
+      const fetch = resolvedScope.kind === 'channel' ? fetchNewerMessages : fetchNewerDmMessages
       fetch(scopeId)
     }
   }
@@ -97,10 +97,10 @@ export default function MessageList({ scope }: Props): React.JSX.Element {
       messages={messages}
       messageLookup={allMessages}
       typingUsers={typingUsers}
-      isLoading={!hasLoaded || isLoading}
+      isLoading={messages.length === 0 && (!hasLoaded || isLoading)}
       hasMore={hasMore}
       hasNewer={hasNewer}
-      emptyState="No messages yet. Say something!"
+      emptyState={scope.kind === 'dm' ? 'This is the start of your conversation.' : 'No messages yet.'}
       onLoadMore={handleLoadMore}
       onLoadNewer={handleLoadNewer}
       onIsAtBottomChange={handleIsAtBottomChange}

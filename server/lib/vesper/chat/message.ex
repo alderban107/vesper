@@ -10,6 +10,10 @@ defmodule Vesper.Chat.Message do
     field :ciphertext, :binary
     field :client_nonce, :string
     field :mls_epoch, :integer
+    field :encryption_scheme, :string, default: "mls"
+    field :encryption_group_id, :string
+    field :history_signing_public_key, :binary
+    field :history_revision, :integer, default: 0
     field :expires_at, :utc_datetime
     field :edited_at, :utc_datetime
     field :is_reply, :boolean, default: false
@@ -34,6 +38,10 @@ defmodule Vesper.Chat.Message do
       :ciphertext,
       :client_nonce,
       :mls_epoch,
+      :encryption_scheme,
+      :encryption_group_id,
+      :history_signing_public_key,
+      :history_revision,
       :channel_id,
       :conversation_id,
       :sender_id,
@@ -44,7 +52,9 @@ defmodule Vesper.Chat.Message do
       :edited_at,
       :is_reply
     ])
-    |> validate_required([:ciphertext, :mls_epoch, :sender_id])
+    |> validate_required([:ciphertext, :mls_epoch, :encryption_scheme, :sender_id])
+    |> validate_number(:history_revision, greater_than_or_equal_to: 0)
+    |> validate_history_signing_key()
     |> validate_target()
   end
 
@@ -55,6 +65,10 @@ defmodule Vesper.Chat.Message do
       :ciphertext,
       :client_nonce,
       :mls_epoch,
+      :encryption_scheme,
+      :encryption_group_id,
+      :history_signing_public_key,
+      :history_revision,
       :channel_id,
       :conversation_id,
       :sender_id,
@@ -65,8 +79,18 @@ defmodule Vesper.Chat.Message do
       :edited_at,
       :is_reply
     ])
-    |> validate_required([:ciphertext, :mls_epoch, :sender_id])
+    |> validate_required([:ciphertext, :mls_epoch, :encryption_scheme, :sender_id])
+    |> validate_number(:history_revision, greater_than_or_equal_to: 0)
+    |> validate_history_signing_key()
     |> validate_target()
+  end
+
+  defp validate_history_signing_key(changeset) do
+    case get_field(changeset, :history_signing_public_key) do
+      nil -> changeset
+      key when byte_size(key) == 32 -> changeset
+      _key -> add_error(changeset, :history_signing_public_key, "must be 32 bytes")
+    end
   end
 
   defp validate_target(changeset) do

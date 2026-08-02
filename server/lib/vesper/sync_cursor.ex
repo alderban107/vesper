@@ -24,6 +24,19 @@ defmodule Vesper.SyncCursor do
     |> Base.url_encode64(padding: false)
   end
 
+  def retention_cutoff(now \\ DateTime.utc_now()) do
+    retention_days = Application.fetch_env!(:vesper, :sync_event_retention_days)
+    DateTime.add(now, -retention_days * 86_400, :second)
+  end
+
+  def retained?(cursor, now \\ DateTime.utc_now())
+
+  def retained?(%{synced_at: %DateTime{} = synced_at}, now) do
+    DateTime.compare(synced_at, retention_cutoff(now)) != :lt
+  end
+
+  def retained?(_cursor, _now), do: false
+
   def decode(nil), do: nil
 
   def decode(value) when is_binary(value) do
@@ -39,7 +52,9 @@ defmodule Vesper.SyncCursor do
         # Shift back 1s to catch events inserted in the same truncated second
         synced_at: DateTime.add(synced_at, -1, :second),
         user_sync_event_id: decode_integer(Map.get(parsed, "user_sync_event_id")),
-        scope_sync_event_id: decode_integer(Map.get(parsed, "scope_sync_event_id"))
+        scope_sync_event_id: decode_integer(Map.get(parsed, "scope_sync_event_id")),
+        user_sync_high_water: decode_integer(Map.get(parsed, "user_sync_high_water")),
+        scope_sync_high_water: decode_integer(Map.get(parsed, "scope_sync_high_water"))
       }
     else
       _ ->

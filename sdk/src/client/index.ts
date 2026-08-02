@@ -8,6 +8,7 @@ import {
   fetchPendingResyncRequests,
   fetchPendingWelcomes
 } from '../api/crypto.js'
+import { fetchRoomCryptoTopology } from '../api/roomCrypto.js'
 import {
   createConversation,
   createServer,
@@ -20,7 +21,7 @@ import {
   getServerInviteCode,
   joinServerByInvite,
   leaveServer,
-  listConversations,
+  listConversationsPage,
   listServers,
   searchUsers,
   type CreateServerChannelInput,
@@ -86,6 +87,8 @@ export interface VesperClientState {
   canUseE2EE: boolean
   servers: VesperServer[]
   conversations: VesperConversation[]
+  conversationsHasMore: boolean
+  conversationsNextCursor: string | null
   unreadCounts: VesperUnreadCounts
   syncToken: string | null
 }
@@ -182,9 +185,7 @@ const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000
 const UNREAD_EVENT_DEDUPE_WINDOW_MS = 15_000
 const FIRE_AND_FORGET_SCOPE_EVENTS = new Set([
   'typing_start',
-  'typing_stop',
-  'mls_resync_request',
-  'mls_history_request'
+  'typing_stop'
 ])
 
 function defaultState(): VesperClientState {
@@ -198,6 +199,8 @@ function defaultState(): VesperClientState {
     canUseE2EE: false,
     servers: [],
     conversations: [],
+    conversationsHasMore: false,
+    conversationsNextCursor: null,
     unreadCounts: {
       channels: {},
       conversations: {}
@@ -413,7 +416,14 @@ function mergeServers(existing: VesperServer[], incoming: VesperServer[]): Vespe
     merged.set(server.id, {
       ...current,
       ...server,
-      channels: mergeServerChannels(current.channels, server.channels)
+      channels:
+        server.channels_loaded === false
+          ? current.channels
+          : mergeServerChannels(current.channels, server.channels),
+      emojis:
+        server.emojis_loaded === false
+          ? current.emojis
+          : server.emojis ?? current.emojis
     })
   }
 
@@ -534,6 +544,7 @@ export class VesperClient {
   private state: VesperClientState = defaultState()
   private userTopic: string | null = null
   private heartbeat: ReturnType<typeof setInterval> | null = null
+  private workspaceSyncPromise: Promise<VesperClientState> | null = null
   private unsubscribeSocketOpen: (() => void) | null = null
   private unsubscribeSocketClose: (() => void) | null = null
   private unsubscribeSocketError: (() => void) | null = null
@@ -722,7 +733,7 @@ export class VesperClient {
     await this.auth.verifyRecoveryKey(mnemonic)
   }
 
-  async start(forceFull = true): Promise<VesperClientState | null> {
+  async start(forceFull = false): Promise<VesperClientState | null> {
     const session =
       this.authSession ??
       (this.state.user
@@ -738,6 +749,10 @@ export class VesperClient {
     if (!session?.user) {
       return null
     }
+
+    await this.runWithStorageContext(async () => {
+      await this.hydrateWorkspaceSnapshot(session.user.id)
+    })
 
     if (!this.unsubscribeSocketOpen) {
       this.unsubscribeSocketOpen = this.socketClient.onSocketOpen(() => {
@@ -837,40 +852,92 @@ export class VesperClient {
   }
 
   async syncNow(forceFull = false): Promise<VesperClientState> {
-    const since = forceFull ? null : this.state.syncToken
-    const syncState = await fetchWorkspaceSync(since, this.httpClient)
-
-    this.setState({
-      status: this.state.user ? 'ready' : 'signed_out',
-      servers: mergeServers(
-        forceFull ? [] : this.state.servers,
-        syncState.servers
-      ),
-      conversations: mergeConversations(
-        forceFull ? [] : this.state.conversations,
-        syncState.conversations
-      ),
-      unreadCounts: syncState.full || forceFull
-        ? syncState.unread_counts
-        : {
-            channels: {
-              ...this.state.unreadCounts.channels,
-              ...syncState.unread_counts.channels
-            },
-            conversations: {
-              ...this.state.unreadCounts.conversations,
-              ...syncState.unread_counts.conversations
-            }
-          },
-      syncToken: syncState.token ?? this.state.syncToken
-    })
-
-    for (const activity of syncState.channel_activity) {
-      this.applyChannelActivity(activity)
+    if (this.workspaceSyncPromise) {
+      const current = await this.workspaceSyncPromise
+      return forceFull ? await this.syncNow(true) : current
     }
 
-    for (const reset of syncState.conversation_resets) {
-      this.applyConversationReset(reset)
+    const syncPromise = this.performWorkspaceSync(forceFull)
+    this.workspaceSyncPromise = syncPromise
+
+    try {
+      return await syncPromise
+    } finally {
+      if (this.workspaceSyncPromise === syncPromise) {
+        this.workspaceSyncPromise = null
+      }
+    }
+  }
+
+  private async performWorkspaceSync(forceFull: boolean): Promise<VesperClientState> {
+    let cursor = forceFull ? null : this.state.syncToken
+    let replaceWorkspace = forceFull
+
+    while (true) {
+      const syncState = await fetchWorkspaceSync(cursor, this.httpClient)
+      const nextToken = syncState.token ?? cursor
+
+      if (syncState.has_more && (!nextToken || nextToken === cursor)) {
+        throw new Error('Workspace sync returned a non-advancing continuation cursor')
+      }
+
+      const shouldReplaceWorkspace = replaceWorkspace || syncState.full
+
+      this.setState({
+        status: this.state.user ? 'ready' : 'signed_out',
+        servers: mergeServers(
+          shouldReplaceWorkspace ? [] : this.state.servers,
+          syncState.servers
+        ),
+        conversations: mergeConversations(
+          shouldReplaceWorkspace ? [] : this.state.conversations,
+          syncState.conversations
+        ),
+        conversationsHasMore: shouldReplaceWorkspace
+          ? syncState.conversations_has_more
+          : this.state.conversationsHasMore,
+        conversationsNextCursor: shouldReplaceWorkspace
+          ? syncState.conversations_next_cursor
+          : this.state.conversationsNextCursor,
+        unreadCounts: shouldReplaceWorkspace
+          ? syncState.unread_counts
+          : {
+              channels: {
+                ...this.state.unreadCounts.channels,
+                ...syncState.unread_counts.channels
+              },
+              conversations: {
+                ...this.state.unreadCounts.conversations,
+                ...syncState.unread_counts.conversations
+              }
+            },
+        syncToken: this.state.syncToken
+      })
+
+      for (const activity of syncState.channel_activity) {
+        this.applyChannelActivity(activity)
+      }
+
+      for (const reset of syncState.conversation_resets) {
+        this.applyConversationReset(reset)
+      }
+
+      const userId = this.authSession?.user.id ?? this.state.user?.id
+      if (!userId) {
+        throw new Error('Workspace sync completed without an authenticated user')
+      }
+
+      await this.runWithStorageContext(async () => {
+        await this.persistWorkspaceSnapshot(userId, nextToken)
+      })
+      this.setState({ syncToken: nextToken })
+
+      cursor = nextToken
+      replaceWorkspace = false
+
+      if (!syncState.has_more) {
+        break
+      }
     }
 
     this.emitter.emit('workspace.updated', this.getState())
@@ -978,12 +1045,54 @@ export class VesperClient {
   }
 
   async listConversations(): Promise<VesperConversation[]> {
-    const conversations = await listConversations(this.httpClient)
+    const page = await listConversationsPage({}, this.httpClient)
     this.setState({
-      conversations: mergeConversations(this.state.conversations, conversations)
+      conversations: mergeConversations(this.state.conversations, page.conversations),
+      conversationsHasMore: page.hasMore,
+      conversationsNextCursor: page.nextCursor,
+      unreadCounts: {
+        channels: this.state.unreadCounts.channels,
+        conversations: {
+          ...this.state.unreadCounts.conversations,
+          ...page.unreadCounts
+        }
+      }
     })
+    await this.persistCurrentWorkspace()
     this.emitter.emit('conversations.updated', [...this.state.conversations])
-    return conversations
+    return page.conversations
+  }
+
+  async loadMoreConversations(limit = 100): Promise<VesperConversation[]> {
+    if (!this.state.conversationsHasMore) {
+      return []
+    }
+
+    const cursor = this.state.conversationsNextCursor
+    if (!cursor) {
+      throw new Error('Conversation paging is missing its continuation cursor')
+    }
+
+    const page = await listConversationsPage({ before: cursor, limit }, this.httpClient)
+    if (page.hasMore && (!page.nextCursor || page.nextCursor === cursor)) {
+      throw new Error('Conversation paging returned a non-advancing continuation cursor')
+    }
+
+    this.setState({
+      conversations: mergeConversations(this.state.conversations, page.conversations),
+      conversationsHasMore: page.hasMore,
+      conversationsNextCursor: page.nextCursor,
+      unreadCounts: {
+        channels: this.state.unreadCounts.channels,
+        conversations: {
+          ...this.state.unreadCounts.conversations,
+          ...page.unreadCounts
+        }
+      }
+    })
+    await this.persistCurrentWorkspace()
+    this.emitter.emit('conversations.updated', [...this.state.conversations])
+    return page.conversations
   }
 
   async replenishKeyPackages(): Promise<void> {
@@ -1021,6 +1130,7 @@ export class VesperClient {
 
   async joinServerByInvite(inviteCode: string): Promise<VesperServer> {
     const server = await joinServerByInvite(inviteCode, this.httpClient)
+    await this.resetChannelScopes(server.channels.map((channel) => channel.id))
     this.setState({
       servers: mergeServers(this.state.servers, [server]),
       unreadCounts: {
@@ -1052,7 +1162,10 @@ export class VesperClient {
   }
 
   async fetchServerChannels(serverId: string): Promise<VesperChannel[]> {
-    const data = await this.fetchJson<{ channels?: VesperChannel[] }>(
+    const data = await this.fetchJson<{
+      channels?: VesperChannel[]
+      unread_counts?: Record<string, number>
+    }>(
       `/api/v1/servers/${serverId}/channels`,
       {},
       'Could not load server channels'
@@ -1060,8 +1173,16 @@ export class VesperClient {
     const channels = data.channels ?? []
 
     this.setState({
-      servers: replaceServerChannels(this.state.servers, serverId, channels)
+      servers: replaceServerChannels(this.state.servers, serverId, channels),
+      unreadCounts: {
+        channels: {
+          ...this.state.unreadCounts.channels,
+          ...(data.unread_counts ?? {})
+        },
+        conversations: this.state.unreadCounts.conversations
+      }
     })
+    await this.persistCurrentWorkspace()
     this.emitter.emit('servers.updated', [...this.state.servers])
 
     return channels
@@ -1490,6 +1611,8 @@ export class VesperClient {
 
   async fetchUrgentSyncEvents(since?: string | null): Promise<{
     token: string | null
+    cursorExpired: boolean
+    hasMore: boolean
     events: Array<{
       id: number
       scope_kind: 'channel' | 'dm'
@@ -1502,6 +1625,8 @@ export class VesperClient {
     const query = since ? `?since=${encodeURIComponent(since)}` : ''
     const data = await this.fetchJson<{
       token?: string | null
+      cursor_expired?: boolean
+      has_more?: boolean
       events?: Array<{
         id: number
         scope_kind: 'channel' | 'dm'
@@ -1514,6 +1639,8 @@ export class VesperClient {
 
     return {
       token: typeof data.token === 'string' ? data.token : null,
+      cursorExpired: data.cursor_expired === true,
+      hasMore: data.has_more === true,
       events: Array.isArray(data.events) ? data.events : []
     }
   }
@@ -1605,6 +1732,10 @@ export class VesperClient {
     since?: string | null
   }): Promise<VesperScopeSyncResponse> {
     return await fetchScopesSync(input, this.httpClient)
+  }
+
+  async fetchRoomCryptoTopology(scopeId: string, topologyId?: string) {
+    return await fetchRoomCryptoTopology(scopeId, this.httpClient, topologyId)
   }
 
   subscribeTopic(topic: string, listener: TopicListener): () => void {
@@ -1788,7 +1919,8 @@ export class VesperClient {
 
       existing.disposeChannel()
       this.scopeWatchers.delete(watcherKey)
-      const recovered = await this.ensureScopeWatcher(kind, scopeId)
+      const recovered = await this.createScopeWatcher(kind, scopeId, existing.listeners)
+      this.scopeWatchers.set(watcherKey, recovered)
       return await this.socketClient.pushToChannelWithAck(recovered.topic, event, payload)
     }
 
@@ -1859,6 +1991,7 @@ export class VesperClient {
       return existing
     }
 
+    const existingListeners = existing?.listeners
     if (existing) {
       existing.disposeChannel()
       this.scopeWatchers.delete(watcherKey)
@@ -1870,7 +2003,7 @@ export class VesperClient {
     }
 
     const join = (async () => {
-      const watcher = await this.createScopeWatcher(kind, scopeId)
+      const watcher = await this.createScopeWatcher(kind, scopeId, existingListeners)
       this.scopeWatchers.set(watcherKey, watcher)
       return watcher
     })()
@@ -1948,9 +2081,106 @@ export class VesperClient {
     }
   }
 
+  private async hydrateWorkspaceSnapshot(userId: string): Promise<boolean> {
+    try {
+      const snapshot = await this.storageRuntime.loadWorkspaceSnapshot(userId)
+      if (!snapshot) {
+        return false
+      }
+
+      const servers = JSON.parse(snapshot.serversJson) as unknown
+      const conversationSnapshot = JSON.parse(snapshot.conversationsJson) as unknown
+      const unreadCounts = JSON.parse(snapshot.unreadCountsJson) as unknown
+      const conversationData = Array.isArray(conversationSnapshot)
+        ? {
+            items: conversationSnapshot,
+            hasMore: false,
+            nextCursor: null
+          }
+        : conversationSnapshot
+
+      if (
+        !Array.isArray(servers) ||
+        typeof conversationData !== 'object' ||
+        conversationData === null ||
+        Array.isArray(conversationData) ||
+        !Array.isArray((conversationData as { items?: unknown }).items) ||
+        typeof unreadCounts !== 'object' ||
+        unreadCounts === null ||
+        Array.isArray(unreadCounts)
+      ) {
+        return false
+      }
+
+      const conversations = conversationData as {
+        items: VesperConversation[]
+        hasMore?: boolean
+        nextCursor?: string | null
+      }
+      const unread = unreadCounts as Partial<VesperUnreadCounts>
+      this.setState({
+        servers: servers as VesperServer[],
+        conversations: conversations.items,
+        conversationsHasMore: conversations.hasMore === true,
+        conversationsNextCursor:
+          typeof conversations.nextCursor === 'string' ? conversations.nextCursor : null,
+        unreadCounts: {
+          channels:
+            unread.channels && typeof unread.channels === 'object' ? unread.channels : {},
+          conversations:
+            unread.conversations && typeof unread.conversations === 'object'
+              ? unread.conversations
+              : {}
+        },
+        syncToken: snapshot.token
+      })
+      this.emitter.emit('workspace.updated', this.getState())
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  private async persistCurrentWorkspace(): Promise<void> {
+    const userId = this.authSession?.user.id ?? this.state.user?.id
+    if (!userId) {
+      return
+    }
+
+    await this.runWithStorageContext(async () => {
+      await this.persistWorkspaceSnapshot(userId, this.state.syncToken)
+    })
+  }
+
+  private async persistWorkspaceSnapshot(userId: string, token: string | null): Promise<void> {
+    await this.storageRuntime.saveWorkspaceSnapshot(userId, {
+      version: 1,
+      token,
+      serversJson: JSON.stringify(this.state.servers),
+      conversationsJson: JSON.stringify({
+        items: this.state.conversations,
+        hasMore: this.state.conversationsHasMore,
+        nextCursor: this.state.conversationsNextCursor
+      }),
+      unreadCountsJson: JSON.stringify(this.state.unreadCounts),
+      updatedAt: new Date().toISOString()
+    })
+  }
+
   private async applySession(session: VesperAuthSession): Promise<void> {
+    const previousUserId = this.state.user?.id ?? null
     this.authSession = session
     this.setState({
+      ...(previousUserId && previousUserId !== session.user.id
+        ? {
+            servers: [],
+            conversations: [],
+            conversationsHasMore: false,
+            conversationsNextCursor: null,
+            unreadCounts: { channels: {}, conversations: {} },
+            syncToken: null
+          }
+        : {}),
       status: 'ready',
       user: session.user,
       currentDevice: session.currentDevice,

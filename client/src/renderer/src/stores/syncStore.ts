@@ -1,6 +1,6 @@
 import { create } from 'zustand'
-import { useDmStore, type DmConversation } from './dmStore'
-import { useServerStore, type Server } from './serverStore'
+import { useDmStore } from './dmStore'
+import { useServerStore } from './serverStore'
 import { useUnreadStore } from './unreadStore'
 import { getRendererClient } from '../sdk/client'
 import { getStoredValue, writeStoredValue } from '../utils/localStorage'
@@ -19,29 +19,6 @@ export function persistSyncTokens(token: string | null, urgentToken: string | nu
     token,
     urgentToken
   })
-}
-
-interface ChannelActivityPatch {
-  channel_id: string
-  message_id: string | null
-  inserted_at: string | null
-  sender_id: string | null
-  sender?: {
-    id: string
-    username: string
-    display_name?: string | null
-    avatar_url?: string | null
-  } | null
-}
-
-interface ConversationResetPatch {
-  conversation_id: string
-  last_message: DmConversation['last_message'] | null
-}
-
-interface UnreadCountsPatch {
-  channels?: Record<string, number>
-  conversations?: Record<string, number>
 }
 
 interface SyncState {
@@ -73,65 +50,18 @@ export const useSyncStore = create<SyncState>((set, get) => ({
       try {
         while (true) {
           try {
-            const token = nextForceFull ? null : get().token
-            const data = await getRendererClient().fetchWorkspaceDelta(token)
-            const nextToken = typeof data.token === 'string' ? data.token : null
-            const servers = Array.isArray(data.servers) ? (data.servers as Server[]) : []
-            const conversations = Array.isArray(data.conversations)
-              ? (data.conversations as DmConversation[])
-              : []
-            const conversationResets = Array.isArray(data.conversation_resets)
-              ? (data.conversation_resets as ConversationResetPatch[])
-              : []
-            const channelActivity = Array.isArray(data.channel_activity)
-              ? (data.channel_activity as ChannelActivityPatch[])
-              : []
-            const unreadCounts =
-              typeof data.unread_counts === 'object' && data.unread_counts !== null
-                ? (data.unread_counts as UnreadCountsPatch)
-                : null
+            const clientState = await getRendererClient().syncNow(nextForceFull)
 
-            if (servers.length > 0) {
-              useServerStore.getState().mergeServers(servers)
-            }
+            useServerStore.getState().mergeServers(clientState.servers)
+            useDmStore.getState().mergeConversations(clientState.conversations)
+            useDmStore.getState().setConversationPageState(clientState.conversationsHasMore)
+            useUnreadStore.getState().setChannelUnreads(clientState.unreadCounts.channels)
+            useUnreadStore.getState().setDmUnreads(clientState.unreadCounts.conversations)
 
-            if (conversations.length > 0) {
-              useDmStore.getState().mergeConversations(conversations)
-            }
-
-            for (const reset of conversationResets) {
-              useDmStore.getState().syncConversationLastMessage({
-                conversationId: reset.conversation_id,
-                lastMessage: reset.last_message ?? null
-              })
-            }
-
-            for (const activity of channelActivity) {
-              useServerStore.getState().syncChannelLastMessage({
-                channelId: activity.channel_id,
-                lastMessage:
-                  activity.message_id && activity.inserted_at
-                    ? {
-                        id: activity.message_id,
-                        inserted_at: activity.inserted_at,
-                        sender_id: activity.sender_id,
-                        sender: activity.sender ?? null
-                      }
-                    : null
-              })
-            }
-
-            if (unreadCounts) {
-              if (data.full) {
-                useUnreadStore.getState().setChannelUnreads(unreadCounts.channels ?? {})
-                useUnreadStore.getState().setDmUnreads(unreadCounts.conversations ?? {})
-              } else {
-                useUnreadStore.getState().mergeChannelUnreads(unreadCounts.channels ?? {})
-                useUnreadStore.getState().mergeDmUnreads(unreadCounts.conversations ?? {})
-              }
-            }
-
-            persistSyncTokens(nextToken, nextToken)
+            persistSyncTokens(
+              clientState.syncToken,
+              get().urgentToken ?? clientState.syncToken
+            )
           } catch {
             // ignore
           }
@@ -161,27 +91,46 @@ export const useSyncStore = create<SyncState>((set, get) => ({
 
     currentUrgentSyncPromise = (async () => {
       try {
-        const data = await getRendererClient().fetchUrgentSyncEvents(get().urgentToken)
-        const nextToken = typeof data.token === 'string' ? data.token : null
-        const events = Array.isArray(data.events)
-          ? (data.events as Array<{
-              id: number
-              scope_kind: 'channel' | 'dm'
-              scope_id: string
-              event_type: string
-              inserted_at: string
-              payload?: Record<string, unknown>
-            }>)
-          : []
+        let cursor = get().urgentToken
 
-        if (events.length > 0) {
-          const { processUrgentSyncEvents } = await import('./messageStore')
-          await processUrgentSyncEvents(events)
+        while (true) {
+          const data = await getRendererClient().fetchUrgentSyncEvents(cursor)
+          const nextToken = typeof data.token === 'string' ? data.token : null
+          const events = Array.isArray(data.events)
+            ? (data.events as Array<{
+                id: number
+                scope_kind: 'channel' | 'dm'
+                scope_id: string
+                event_type: string
+                inserted_at: string
+                payload?: Record<string, unknown>
+              }>)
+            : []
+
+          if (data.cursorExpired) {
+            await get().syncNow(true)
+            persistSyncTokens(get().token, nextToken)
+            break
+          }
+
+          if (data.hasMore && (!nextToken || nextToken === cursor)) {
+            throw new Error('Urgent sync returned a non-advancing continuation cursor')
+          }
+
+          if (events.length > 0) {
+            const { processUrgentSyncEvents } = await import('./messageStore')
+            await processUrgentSyncEvents(events)
+          }
+
+          persistSyncTokens(get().token, nextToken)
+          cursor = nextToken
+
+          if (!data.hasMore) {
+            break
+          }
         }
-
-        persistSyncTokens(get().token, nextToken)
       } catch {
-        // ignore
+        // Keep the last locally committed cursor so the next trigger resumes the page drain.
       } finally {
         currentUrgentSyncPromise = null
       }

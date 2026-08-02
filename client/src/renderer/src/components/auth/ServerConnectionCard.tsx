@@ -4,7 +4,7 @@ import { useSettingsStore } from '../../stores/settingsStore'
 
 type ServerStatus = 'idle' | 'testing' | 'success' | 'error'
 
-export default function ServerConnectionCard(): React.JSX.Element {
+export default function ServerConnectionCard({ onSave }: { onSave?: () => void }): React.JSX.Element {
   const serverUrl = useSettingsStore((state) => state.serverUrl)
   const setServerUrl = useSettingsStore((state) => state.setServerUrl)
   const [draft, setDraft] = useState('')
@@ -19,6 +19,7 @@ export default function ServerConnectionCard(): React.JSX.Element {
     if (!trimmed) return
     setServerUrl(trimmed)
     setStatus('idle')
+    onSave?.()
   }
 
   const handleTest = async (): Promise<void> => {

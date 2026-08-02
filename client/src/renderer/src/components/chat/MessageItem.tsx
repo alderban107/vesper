@@ -229,12 +229,16 @@ export default memo(function MessageItem({
 
   const handleSaveEdit = useCallback((markdown: string): void => {
     const trimmed = markdown.trim()
-    if (trimmed && trimmed !== message.content) {
-      editMessage(targetId, topic, message.id, trimmed)
+    const nextContent = parsed.type === 'file'
+      ? JSON.stringify({ ...parsed, text: trimmed })
+      : trimmed
+
+    if ((parsed.type === 'file' || trimmed) && nextContent !== message.content) {
+      editMessage(targetId, topic, message.id, nextContent)
     } else {
       setEditingMessage(null)
     }
-  }, [editMessage, message.content, message.id, setEditingMessage, targetId, topic])
+  }, [editMessage, message.content, message.id, parsed, setEditingMessage, targetId, topic])
 
   const handleDelete = (): void => {
     deleteMessage(targetId, topic, message.id)
@@ -487,7 +491,7 @@ export default memo(function MessageItem({
             <div className="rounded-xl border border-border bg-bg-secondary/70 px-3 py-2 text-sm text-text-secondary focus-within:border-accent/50">
               <VesperEditor
                 mode="edit"
-                initialValue={message.content}
+                initialValue={parsed.type === 'file' ? (parsed.text ?? '') : message.content}
                 onSubmit={handleSaveEdit}
                 onCancel={() => setEditingMessage(null)}
                 placeholder="Edit message..."

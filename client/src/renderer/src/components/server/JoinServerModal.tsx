@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { ArrowRightToLine, Loader2 } from 'lucide-react'
 import { useServerStore } from '../../stores/serverStore'
 import { useUIStore } from '../../stores/uiStore'
+import { useFocusTrap } from '../../hooks/useFocusTrap'
 
 export default function JoinServerModal(): React.JSX.Element {
   const [inviteCode, setInviteCode] = useState('')
@@ -10,6 +11,7 @@ export default function JoinServerModal(): React.JSX.Element {
   const joinServer = useServerStore((s) => s.joinServer)
   const setActiveServer = useServerStore((s) => s.setActiveServer)
   const closeModal = useUIStore((s) => s.closeJoinServerModal)
+  const trapRef = useFocusTrap<HTMLFormElement>(true)
 
   const handleSubmit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault()
@@ -29,8 +31,14 @@ export default function JoinServerModal(): React.JSX.Element {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
+    <div
+      className="fixed inset-0 bg-[#0d0f1a]/80 backdrop-blur-sm flex items-center justify-center z-50"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Join a server"
+    >
       <form
+        ref={trapRef}
         onSubmit={handleSubmit}
         className="glass-card rounded-2xl p-6 w-96 max-w-[calc(100vw-2rem)] animate-scale-in"
       >

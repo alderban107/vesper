@@ -1,9 +1,8 @@
 defmodule VesperWeb.MlsEventController do
   use VesperWeb, :controller
 
-  alias Vesper.Chat
   alias Vesper.Encryption
-  alias Vesper.Servers
+  alias VesperWeb.ControllerHelpers
 
   @default_limit 200
   @max_limit 500
@@ -12,8 +11,8 @@ defmodule VesperWeb.MlsEventController do
   def index(conn, %{"channel_id" => scope_id} = params) do
     user = conn.assigns.current_user
 
-    case authorized_scope(user.id, scope_id) do
-      {:ok, authorized_group_id} ->
+    case ControllerHelpers.authorize_mls_scope(user.id, scope_id) do
+      {:ok, %{group_id: authorized_group_id}} ->
         after_seq = parse_non_negative_integer(Map.get(params, "after_seq"), 0)
         limit = parse_non_negative_integer(Map.get(params, "limit"), @default_limit)
 
@@ -67,57 +66,4 @@ defmodule VesperWeb.MlsEventController do
   end
 
   defp parse_non_negative_integer(_, default), do: default
-
-  defp authorized_scope(user_id, "voice:channel:" <> channel_id) do
-    case authorize_channel_scope(user_id, channel_id) do
-      {:ok, _channel_id} -> {:ok, "voice:channel:#{channel_id}"}
-      error -> error
-    end
-  end
-
-  defp authorized_scope(user_id, "voice:dm:" <> conversation_id) do
-    case authorize_conversation_scope(user_id, conversation_id) do
-      {:ok, _conversation_id} -> {:ok, "voice:dm:#{conversation_id}"}
-      error -> error
-    end
-  end
-
-  defp authorized_scope(user_id, scope_id) do
-    with {:ok, uuid} <- Ecto.UUID.cast(scope_id) do
-      case authorize_channel_scope(user_id, uuid) do
-        {:error, :not_found} -> authorize_conversation_scope(user_id, uuid)
-        result -> result
-      end
-    else
-      :error -> {:error, :invalid_scope}
-    end
-  end
-
-  defp authorize_channel_scope(user_id, channel_id) do
-    case Servers.get_channel(channel_id) do
-      nil ->
-        {:error, :not_found}
-
-      channel ->
-        if Servers.user_can_view_channel?(user_id, channel) do
-          {:ok, channel_id}
-        else
-          {:error, :forbidden}
-        end
-    end
-  end
-
-  defp authorize_conversation_scope(user_id, conversation_id) do
-    case Chat.get_conversation(conversation_id) do
-      nil ->
-        {:error, :not_found}
-
-      _conversation ->
-        if Chat.user_is_participant?(user_id, conversation_id) do
-          {:ok, conversation_id}
-        else
-          {:error, :forbidden}
-        end
-    end
-  end
 end

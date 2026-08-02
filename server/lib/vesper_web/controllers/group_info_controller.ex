@@ -7,16 +7,15 @@ defmodule VesperWeb.GroupInfoController do
   """
   use VesperWeb, :controller
 
-  alias Vesper.Chat
   alias Vesper.Encryption
-  alias Vesper.Servers
+  alias VesperWeb.ControllerHelpers
 
   @doc "GET /api/v1/group-info/:scope_id — fetch latest GroupInfo for External Commit"
   def show(conn, %{"scope_id" => scope_id}) do
     user = conn.assigns.current_user
 
-    case authorized_scope(user.id, scope_id) do
-      {:ok, authorized_group_id} ->
+    case ControllerHelpers.authorize_mls_public_read(user.id, scope_id) do
+      {:ok, %{group_id: authorized_group_id}} ->
         case Encryption.get_group_info(authorized_group_id) do
           nil ->
             conn |> put_status(:not_found) |> json(%{error: "no group info published"})
@@ -54,11 +53,13 @@ defmodule VesperWeb.GroupInfoController do
     user = conn.assigns.current_user
     device = conn.assigns.current_device
 
-    with {:ok, authorized_group_id} <- authorized_scope(user.id, scope_id),
+    with {:ok, authorization} <- ControllerHelpers.authorize_mls_scope(user.id, scope_id),
+         authorized_group_id = authorization.group_id,
          {:ok, group_info_data} <- decode_required_base64(params, "group_info_data"),
          {:ok, ratchet_tree_data} <- decode_optional_base64(params, "ratchet_tree_data"),
          epoch when is_integer(epoch) <- parse_epoch(params) do
-      {channel_id, conversation_id} = scope_ids(scope_id)
+      channel_id = authorization.channel_id
+      conversation_id = authorization.conversation_id
       previous_epoch = parse_optional_epoch(params, "previous_epoch")
       commit_data = external_commit_data(params)
       commit_id = external_commit_id(params)
@@ -103,7 +104,7 @@ defmodule VesperWeb.GroupInfoController do
                ) do
             {:ok, %{group_info: group_info, event: event}} ->
               broadcast_external_commit(
-                scope_id,
+                control_topic(authorization),
                 event.id,
                 commit_data,
                 user.id,
@@ -247,106 +248,22 @@ defmodule VesperWeb.GroupInfoController do
     end
   end
 
-  defp broadcast_external_commit(scope_id, seq, commit_data, sender_id, sender_device_id) do
-    case scope_topic(scope_id) do
-      nil ->
-        :ok
-
-      topic ->
-        VesperWeb.Endpoint.broadcast(topic, "mls_commit", %{
-          seq: seq,
-          commit_data: commit_data,
-          sender_id: sender_id,
-          sender_device_id: sender_device_id
-        })
-    end
+  defp broadcast_external_commit(topic, seq, commit_data, sender_id, sender_device_id) do
+    VesperWeb.Endpoint.broadcast(topic, "mls_commit", %{
+      seq: seq,
+      commit_data: commit_data,
+      sender_id: sender_id,
+      sender_device_id: sender_device_id
+    })
   end
 
-  defp scope_topic("voice:channel:" <> channel_id), do: "voice:channel:#{channel_id}"
-  defp scope_topic("voice:dm:" <> conversation_id), do: "voice:dm:#{conversation_id}"
+  defp control_topic(%{cohort_id: cohort_id, group_id: group_id})
+       when is_binary(cohort_id),
+       do: "crypto:cohort:#{group_id}"
 
-  defp scope_topic(scope_id) do
-    case scope_ids(scope_id) do
-      {channel_id, nil} when is_binary(channel_id) -> "chat:channel:#{channel_id}"
-      {nil, conversation_id} when is_binary(conversation_id) -> "dm:#{conversation_id}"
-      _ -> nil
-    end
-  end
+  defp control_topic(%{channel_id: channel_id}) when is_binary(channel_id),
+    do: "chat:channel:#{channel_id}"
 
-  defp scope_ids(scope_id) do
-    cond do
-      String.starts_with?(scope_id, "voice:") ->
-        {nil, nil}
-
-      true ->
-        case Ecto.UUID.cast(scope_id) do
-          {:ok, uuid} ->
-            # Could be channel or conversation — check which exists.
-            # For the upsert, we just try channel first.
-            cond do
-              Servers.get_channel(uuid) != nil -> {uuid, nil}
-              Chat.get_conversation(uuid) != nil -> {nil, uuid}
-              true -> {nil, nil}
-            end
-
-          :error ->
-            {nil, nil}
-        end
-    end
-  end
-
-  # --- Scope authorization (same pattern as other MLS controllers) ---
-
-  defp authorized_scope(user_id, "voice:channel:" <> channel_id) do
-    case authorize_channel_scope(user_id, channel_id) do
-      {:ok, _channel_id} -> {:ok, "voice:channel:#{channel_id}"}
-      error -> error
-    end
-  end
-
-  defp authorized_scope(user_id, "voice:dm:" <> conversation_id) do
-    case authorize_conversation_scope(user_id, conversation_id) do
-      {:ok, _conversation_id} -> {:ok, "voice:dm:#{conversation_id}"}
-      error -> error
-    end
-  end
-
-  defp authorized_scope(user_id, scope_id) do
-    with {:ok, uuid} <- Ecto.UUID.cast(scope_id) do
-      case authorize_channel_scope(user_id, uuid) do
-        {:error, :not_found} -> authorize_conversation_scope(user_id, uuid)
-        result -> result
-      end
-    else
-      :error -> {:error, :invalid_scope}
-    end
-  end
-
-  defp authorize_channel_scope(user_id, channel_id) do
-    case Servers.get_channel(channel_id) do
-      nil ->
-        {:error, :not_found}
-
-      channel ->
-        if Servers.user_can_view_channel?(user_id, channel) do
-          {:ok, channel_id}
-        else
-          {:error, :forbidden}
-        end
-    end
-  end
-
-  defp authorize_conversation_scope(user_id, conversation_id) do
-    case Chat.get_conversation(conversation_id) do
-      nil ->
-        {:error, :not_found}
-
-      _conversation ->
-        if Chat.user_is_participant?(user_id, conversation_id) do
-          {:ok, conversation_id}
-        else
-          {:error, :forbidden}
-        end
-    end
-  end
+  defp control_topic(%{conversation_id: conversation_id}) when is_binary(conversation_id),
+    do: "dm:#{conversation_id}"
 end

@@ -55,6 +55,7 @@ interface LastMessage {
 interface ConversationActivity {
   conversationId: string
   messageId: string
+  content: string | null
   senderId: string | null
   sender: { id: string; username: string } | null
   insertedAt: string
@@ -101,9 +102,13 @@ function mergeConversation(existing: DmConversation | undefined, incoming: DmCon
 interface DmState {
   conversations: DmConversation[]
   selectedConversationId: string | null
+  hasMoreConversations: boolean
+  loadingMoreConversations: boolean
 
   fetchConversations: () => Promise<void>
+  loadMoreConversations: () => Promise<void>
   mergeConversations: (conversations: DmConversation[]) => void
+  setConversationPageState: (hasMore: boolean) => void
   createConversation: (userIds: string[], name?: string) => Promise<DmConversation | null>
   addConversation: (conversation: DmConversation) => void
   applyConversationActivity: (activity: ConversationActivity) => boolean
@@ -116,11 +121,14 @@ interface DmState {
 export const useDmStore = create<DmState>((set, get) => ({
   conversations: [],
   selectedConversationId: readStoredConversationId(),
+  hasMoreConversations: false,
+  loadingMoreConversations: false,
 
   fetchConversations: async () => {
     try {
-      const incomingConversations =
-        await getRendererClient().listConversations() as DmConversation[]
+      const client = getRendererClient()
+      const incomingConversations = await client.listConversations() as DmConversation[]
+      const clientState = client.getState()
 
       set((state) => {
         const mergedById = new Map<string, DmConversation>()
@@ -150,11 +158,35 @@ export const useDmStore = create<DmState>((set, get) => ({
 
         return {
           conversations,
-          selectedConversationId: restoredConversation?.id ?? null
+          selectedConversationId: restoredConversation?.id ?? null,
+          hasMoreConversations: clientState.conversationsHasMore
         }
       })
     } catch {
       // ignore
+    }
+  },
+
+  loadMoreConversations: async () => {
+    const state = get()
+    if (state.loadingMoreConversations || !state.hasMoreConversations) {
+      return
+    }
+
+    set({ loadingMoreConversations: true })
+    try {
+      const client = getRendererClient()
+      const conversations = await client.loadMoreConversations() as DmConversation[]
+      const clientState = client.getState()
+      get().mergeConversations(conversations)
+      set({ hasMoreConversations: clientState.conversationsHasMore })
+
+      const { useUnreadStore } = await import('./unreadStore')
+      useUnreadStore.getState().setDmUnreads(clientState.unreadCounts.conversations)
+    } catch {
+      // Keep the cursor unchanged so a later scroll can retry the same page.
+    } finally {
+      set({ loadingMoreConversations: false })
     }
   },
 
@@ -197,6 +229,10 @@ export const useDmStore = create<DmState>((set, get) => ({
         selectedConversationId: restoredConversation?.id ?? null
       }
     })
+  },
+
+  setConversationPageState: (hasMore) => {
+    set({ hasMoreConversations: hasMore })
   },
 
   createConversation: async (userIds, name?) => {
@@ -260,7 +296,7 @@ export const useDmStore = create<DmState>((set, get) => ({
         ...existingConversation,
         last_message: {
           id: activity.messageId,
-          ciphertext: 'encrypted',
+          ...(activity.content ? { content: activity.content } : {}),
           sender_id: activity.senderId,
           sender: activity.sender,
           inserted_at: activity.insertedAt

@@ -1,5 +1,6 @@
 defmodule VesperWeb.ChannelController do
   use VesperWeb, :controller
+  alias Vesper.Chat
   alias Vesper.Servers
   alias Vesper.Servers.Permissions
   alias Vesper.Sync
@@ -10,7 +11,30 @@ defmodule VesperWeb.ChannelController do
 
     if Servers.user_is_member?(user.id, server_id) do
       channels = Servers.list_channels(server_id)
-      json(conn, %{channels: Enum.map(channels, &channel_json/1)})
+
+      channels =
+        user.id
+        |> Servers.list_viewable_channels(Enum.map(channels, & &1.id))
+        |> Enum.sort_by(&{&1.position, &1.name})
+
+      channel_ids = Enum.map(channels, & &1.id)
+
+      activity_by_channel =
+        user.id
+        |> Servers.list_channel_activity_snapshots(channel_ids)
+        |> Map.new(&{&1.channel_id, &1.message})
+
+      overrides_by_channel = Servers.list_channel_permission_overrides(channel_ids)
+
+      json(conn, %{
+        channels:
+          Enum.map(channels, fn channel ->
+            channel
+            |> channel_json(Map.fetch!(overrides_by_channel, channel.id))
+            |> put_channel_activity(Map.get(activity_by_channel, channel.id))
+          end),
+        unread_counts: Chat.get_channel_unread_counts_snapshot(user.id, channel_ids)
+      })
     else
       conn |> put_status(:forbidden) |> json(%{error: "not a member"})
     end
@@ -22,12 +46,7 @@ defmodule VesperWeb.ChannelController do
     if Servers.user_can?(user.id, server_id, Permissions.manage_channels()) do
       case Servers.create_channel(server_id, params) do
         {:ok, channel} ->
-          Sync.append_scope_events(
-            Servers.list_member_ids(server_id),
-            "server",
-            "server",
-            server_id
-          )
+          Sync.append_scope_event("server", "server", server_id)
 
           VesperWeb.Endpoint.broadcast!(
             "presence:server:#{server_id}",
@@ -83,12 +102,7 @@ defmodule VesperWeb.ChannelController do
               {:ok, updated} ->
                 case maybe_update_permission_overrides(updated, params) do
                   :ok ->
-                    Sync.append_scope_events(
-                      Servers.list_member_ids(server_id),
-                      "server",
-                      "server",
-                      server_id
-                    )
+                    Sync.append_scope_event("server", "server", server_id)
 
                     VesperWeb.Endpoint.broadcast!(
                       "presence:server:#{server_id}",
@@ -132,12 +146,7 @@ defmodule VesperWeb.ChannelController do
       else
         Servers.delete_channel(channel)
 
-        Sync.append_scope_events(
-          Servers.list_member_ids(server_id),
-          "server",
-          "server",
-          server_id
-        )
+        Sync.append_scope_event("server", "server", server_id)
 
         VesperWeb.Endpoint.broadcast!(
           "presence:server:#{server_id}",
@@ -194,6 +203,10 @@ defmodule VesperWeb.ChannelController do
   end
 
   defp channel_json(channel) do
+    channel_json(channel, Servers.list_channel_permission_overrides(channel.id))
+  end
+
+  defp channel_json(channel, permission_overrides) do
     %{
       id: channel.id,
       server_id: channel.server_id,
@@ -203,10 +216,35 @@ defmodule VesperWeb.ChannelController do
       topic: channel.topic,
       position: channel.position,
       disappearing_ttl: channel.disappearing_ttl,
-      permission_overrides: Servers.list_channel_permission_overrides(channel.id),
+      permission_overrides: permission_overrides,
       inserted_at: channel.inserted_at,
       updated_at: channel.updated_at
     }
+  end
+
+  defp put_channel_activity(channel, nil) do
+    Map.merge(channel, %{
+      last_message_id: nil,
+      last_message_inserted_at: nil,
+      last_message_sender: nil
+    })
+  end
+
+  defp put_channel_activity(channel, message) do
+    Map.merge(channel, %{
+      last_message_id: message.id,
+      last_message_inserted_at: message.inserted_at,
+      last_message_sender:
+        if(message.sender,
+          do: %{
+            id: message.sender.id,
+            username: message.sender.username,
+            display_name: message.sender.display_name,
+            avatar_url: message.sender.avatar_url
+          },
+          else: nil
+        )
+    })
   end
 
   defp maybe_update_permission_overrides(channel, params) do

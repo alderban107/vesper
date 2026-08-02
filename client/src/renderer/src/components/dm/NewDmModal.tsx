@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { MessageCircle, Loader2, User } from 'lucide-react'
 import { useDmStore } from '../../stores/dmStore'
 import { useUIStore } from '../../stores/uiStore'
+import { useFocusTrap } from '../../hooks/useFocusTrap'
 
 export default function NewDmModal(): React.JSX.Element {
   const [username, setUsername] = useState('')
@@ -10,6 +11,7 @@ export default function NewDmModal(): React.JSX.Element {
   const closeNewDmModal = useUIStore((s) => s.closeNewDmModal)
   const searchUsers = useDmStore((s) => s.searchUsers)
   const createConversation = useDmStore((s) => s.createConversation)
+  const trapRef = useFocusTrap<HTMLDivElement>(true)
 
   const handleSubmit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault()
@@ -40,8 +42,13 @@ export default function NewDmModal(): React.JSX.Element {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
-      <div className="glass-card rounded-2xl p-6 w-96 max-w-[calc(100vw-2rem)] animate-scale-in">
+    <div
+      className="fixed inset-0 bg-[#0d0f1a]/80 backdrop-blur-sm flex items-center justify-center z-50"
+      role="dialog"
+      aria-modal="true"
+      aria-label="New message"
+    >
+      <div ref={trapRef} className="glass-card rounded-2xl p-6 w-96 max-w-[calc(100vw-2rem)] animate-scale-in">
         <div className="flex items-center gap-3 mb-4">
           <div className="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center">
             <MessageCircle className="w-5 h-5 text-accent" />

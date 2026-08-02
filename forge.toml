@@ -1,0 +1,22 @@
+[build]
+context = "."
+dockerfile = "client/Dockerfile.web"
+
+[app]
+port = 80
+health_path = "/health"
+hostname = "vesper-web-build.irrigate.cc"
+
+[resources]
+cpu_request = "100m"
+cpu_limit = 2
+memory_request = "256Mi"
+memory_limit = "512Mi"
+
+[storage]
+size = "1Gi"
+mount_path = "/var/cache/nginx"
+retain = false
+
+[network]
+egress = "none"

@@ -1,5 +1,5 @@
 import { Suspense, useState, useEffect } from 'react'
-import { Pin, PinOff, X } from 'lucide-react'
+import { Pin, PinOff, Loader2, X } from 'lucide-react'
 import { useMessageStore } from '../../stores/messageStore'
 import { getRendererClient } from '../../sdk/client'
 import type { VesperChannelPin } from '@vesper/sdk/api'
@@ -63,7 +63,10 @@ export default function PinsPanel({ channelId, topic, onClose }: Props): React.J
 
       <div className="flex-1 overflow-y-auto p-3 space-y-2">
         {loading ? (
-          <div className="text-text-faintest text-xs text-center py-8">Loading...</div>
+          <div className="flex items-center justify-center gap-2 text-text-faintest text-xs py-8">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            Loading...
+          </div>
         ) : pins.length === 0 ? (
           <div className="text-text-faintest text-xs text-center py-8">
             No pinned messages in this channel
@@ -73,7 +76,7 @@ export default function PinsPanel({ channelId, topic, onClose }: Props): React.J
             <div
               data-testid="pinned-message"
               key={pin.id}
-              className="glass-card rounded-lg p-3 group"
+              className="bg-bg-secondary border border-border rounded-lg p-3 group"
             >
               <div className="flex items-baseline gap-2 mb-1">
                 <span className="text-text-primary font-medium text-xs">
@@ -87,7 +90,7 @@ export default function PinsPanel({ channelId, topic, onClose }: Props): React.J
                 </span>
                 <button
                   onClick={() => handleUnpin(pin.message.id)}
-                  className="ml-auto opacity-0 group-hover:opacity-100 text-text-faint hover:text-red-400 transition-all p-0.5 rounded hover:bg-bg-tertiary/50"
+                  className="ml-auto opacity-0 group-hover:opacity-100 text-text-faint hover:text-error transition-all p-0.5 rounded hover:bg-bg-tertiary/50"
                   title="Unpin"
                 >
                   <PinOff className="w-3 h-3" />

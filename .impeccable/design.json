@@ -1,0 +1,319 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-05-11T00:00:00Z",
+  "title": "Design System: Vesper",
+  "extensions": {
+    "colorMeta": {
+      "midnight-base": {
+        "role": "neutral",
+        "displayName": "Midnight Base",
+        "canonical": "oklch(10% 0.02 264)",
+        "tonalRamp": ["#0d0f1a", "#141625", "#1c1f33", "#262a42", "#33384f", "#424762", "#555a78", "#6b708f"]
+      },
+      "twilight-primary": {
+        "role": "neutral",
+        "displayName": "Twilight Primary",
+        "canonical": "oklch(13% 0.025 264)",
+        "tonalRamp": ["#0d0f1a", "#141625", "#1c1f33", "#262a42", "#33384f", "#424762", "#555a78", "#6b708f"]
+      },
+      "twilight-secondary": {
+        "role": "neutral",
+        "displayName": "Twilight Secondary",
+        "canonical": "oklch(17% 0.025 264)",
+        "tonalRamp": ["#0d0f1a", "#141625", "#1c1f33", "#262a42", "#33384f", "#424762", "#555a78", "#6b708f"]
+      },
+      "twilight-tertiary": {
+        "role": "neutral",
+        "displayName": "Twilight Tertiary",
+        "canonical": "oklch(21% 0.025 264)",
+        "tonalRamp": ["#0d0f1a", "#141625", "#1c1f33", "#262a42", "#33384f", "#424762", "#555a78", "#6b708f"]
+      },
+      "star-light": {
+        "role": "neutral",
+        "displayName": "Star Light",
+        "canonical": "oklch(91% 0.008 284)",
+        "tonalRamp": ["#1c1a2e", "#3e3a54", "#5e5a74", "#737083", "#8a889a", "#aaa8b5", "#c8c6d4", "#e8e6f0"]
+      },
+      "star-dim": {
+        "role": "neutral",
+        "displayName": "Star Dim",
+        "canonical": "oklch(76% 0.012 284)",
+        "tonalRamp": ["#1c1a2e", "#3e3a54", "#5e5a74", "#737083", "#8a889a", "#aaa8b5", "#b8b5c8", "#e8e6f0"]
+      },
+      "star-muted": {
+        "role": "neutral",
+        "displayName": "Star Muted",
+        "canonical": "oklch(63% 0.013 284)",
+        "tonalRamp": ["#1c1a2e", "#3e3a54", "#5e5a74", "#737083", "#9490a8", "#aaa8b5", "#b8b5c8", "#e8e6f0"]
+      },
+      "star-faint": {
+        "role": "neutral",
+        "displayName": "Star Faint",
+        "canonical": "oklch(54% 0.013 284)",
+        "tonalRamp": ["#1c1a2e", "#3e3a54", "#5e5a74", "#817d93", "#9490a8", "#aaa8b5", "#b8b5c8", "#e8e6f0"]
+      },
+      "evening-gold": {
+        "role": "primary",
+        "displayName": "Evening Gold",
+        "canonical": "oklch(70% 0.09 75)",
+        "tonalRamp": ["#2a1e0a", "#3d2c10", "#5c4d2a", "#7a6420", "#a88530", "#c8a24e", "#ddb85e", "#f0d898"]
+      },
+      "evening-gold-press": {
+        "role": "primary",
+        "displayName": "Evening Gold (Press)",
+        "canonical": "oklch(63% 0.09 75)",
+        "tonalRamp": ["#2a1e0a", "#3d2c10", "#5c4d2a", "#7a6420", "#a88530", "#b8922e", "#c8a24e", "#ddb85e"]
+      },
+      "evening-gold-dim": {
+        "role": "primary",
+        "displayName": "Evening Gold (Disabled)",
+        "canonical": "oklch(34% 0.04 75)",
+        "tonalRamp": ["#1a1005", "#2a1e0a", "#3d2c10", "#5c4d2a", "#7a6420", "#a88530", "#c8a24e", "#ddb85e"]
+      },
+      "dusk-violet": {
+        "role": "secondary",
+        "displayName": "Dusk Violet",
+        "canonical": "oklch(60% 0.08 284)",
+        "tonalRamp": ["#1a1730", "#2a2548", "#3d3862", "#504a7c", "#6b6498", "#8b7ec8", "#a89ed8", "#c8bee8"]
+      },
+      "dusk-violet-press": {
+        "role": "secondary",
+        "displayName": "Dusk Violet (Press)",
+        "canonical": "oklch(54% 0.08 284)",
+        "tonalRamp": ["#1a1730", "#2a2548", "#3d3862", "#504a7c", "#6b6498", "#7b6eb8", "#8b7ec8", "#a89ed8"]
+      },
+      "signal-error": {
+        "role": "tertiary",
+        "displayName": "Signal Error",
+        "canonical": "oklch(72% 0.15 25)",
+        "tonalRamp": ["#450a0a", "#7f1d1d", "#991b1b", "#b91c1c", "#dc2626", "#f87171", "#fca5a5", "#fee2e2"]
+      },
+      "signal-success": {
+        "role": "tertiary",
+        "displayName": "Signal Success",
+        "canonical": "oklch(75% 0.14 162)",
+        "tonalRamp": ["#022c22", "#064e3b", "#065f46", "#047857", "#059669", "#34d399", "#6ee7b7", "#d1fae5"]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Voice room headers, modal titles at maximum scale. Appears rarely; each instance must earn it."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Auth shell welcome text, settings section titles, large confirmation dialogs."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Panel headers, server names, channel group titles."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Message content, form helper text, descriptive copy. Line length capped at 65-75ch in reading contexts."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Channel category headers, section dividers, badge text, compact form labels. Uppercase annotation layer."
+      }
+    },
+    "shadows": [
+      {
+        "name": "glass-surface",
+        "value": "0 8px 32px rgba(0,0,0,0.3)",
+        "backdropFilter": "blur(16px)",
+        "background": "rgba(28,31,51,0.8)",
+        "purpose": "Auth shell panels, modals. Signals that this surface is above the product plane."
+      },
+      {
+        "name": "modal-drop",
+        "value": "0 14px 36px rgba(8,9,20,0.52)",
+        "purpose": "Dialogs appearing over the main surface. Deeper and tighter than glass."
+      },
+      {
+        "name": "gold-ambient",
+        "value": "0 0 20px rgba(200,162,78,0.3)",
+        "purpose": "Primary button at rest. The one instance of decorative glow; functional because it draws the eye to the primary action."
+      },
+      {
+        "name": "gold-ambient-hover",
+        "value": "0 0 28px rgba(200,162,78,0.45)",
+        "purpose": "Primary button hovered. The bloom grows toward the hand."
+      },
+      {
+        "name": "focus-ring",
+        "value": "0 0 0 2px rgba(200,162,78,0.15)",
+        "purpose": "Keyboard focus on interactive elements. Tight, barely-visible gold outline."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-out-standard",
+        "value": "ease-out",
+        "duration": "0.2s",
+        "purpose": "Default for state transitions: scale-in, color shifts."
+      },
+      {
+        "name": "ease-out-enter",
+        "value": "ease-out",
+        "duration": "0.3s",
+        "purpose": "Fade-in and slide-up for panels entering the viewport."
+      },
+      {
+        "name": "pulse-ring",
+        "value": "cubic-bezier(0.4, 0, 0.6, 1)",
+        "duration": "2s",
+        "purpose": "Infinite pulse for incoming call ring and active notification attention. Dusk Violet only."
+      }
+    ],
+    "breakpoints": [
+      { "name": "mobile", "value": "768px", "note": "Below this, single-column layout with drawer nav." }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The primary call-to-action. Evening Gold background with near-black text and ambient glow.",
+      "html": "<button class=\"ds-btn-primary\">Send Message</button>",
+      "css": ".ds-btn-primary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; background: #c8a24e; color: #0d0f1a; padding: 10px 20px; border-radius: 8px; border: none; font-size: 0.95rem; font-weight: 700; font-family: system-ui, -apple-system, sans-serif; cursor: pointer; box-shadow: 0 0 20px rgba(200,162,78,0.3); transition: background 0.2s ease-out, box-shadow 0.2s ease-out; } .ds-btn-primary:hover { background: #b8922e; box-shadow: 0 0 28px rgba(200,162,78,0.45); } .ds-btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(200,162,78,0.15), 0 0 20px rgba(200,162,78,0.3); } .ds-btn-primary:active { background: #a8821e; transform: translateY(1px); } .ds-btn-primary:disabled { background: #5c4d2a; color: #817d93; box-shadow: none; cursor: not-allowed; }"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Secondary action. Transparent at rest, twilight-secondary fill on hover.",
+      "html": "<button class=\"ds-btn-ghost\">Cancel</button>",
+      "css": ".ds-btn-ghost { display: inline-flex; align-items: center; justify-content: center; gap: 8px; background: transparent; color: #e8e6f0; padding: 8px 16px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08); font-size: 0.95rem; font-weight: 600; font-family: system-ui, -apple-system, sans-serif; cursor: pointer; transition: background 0.2s ease-out, border-color 0.2s ease-out; } .ds-btn-ghost:hover { background: #1c1f33; border-color: rgba(255,255,255,0.12); } .ds-btn-ghost:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(200,162,78,0.15); } .ds-btn-ghost:active { background: #262a42; } .ds-btn-ghost:disabled { color: #817d93; cursor: not-allowed; opacity: 0.5; }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input-default",
+      "description": "Standard text input. Twilight-secondary background, gold focus ring.",
+      "html": "<div class=\"ds-input-wrap\"><input class=\"ds-input\" type=\"text\" placeholder=\"Search or start a conversation\" /></div>",
+      "css": ".ds-input-wrap { position: relative; width: 100%; } .ds-input { width: 100%; background: #1c1f33; color: #e8e6f0; padding: 10px 14px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08); font-size: 0.95rem; font-family: system-ui, -apple-system, sans-serif; outline: none; transition: border-color 0.2s ease-out, box-shadow 0.2s ease-out; box-sizing: border-box; } .ds-input::placeholder { color: #9490a8; } .ds-input:focus { border-color: #c8a24e; box-shadow: 0 0 0 2px rgba(200,162,78,0.15); } .ds-input:disabled { color: #817d93; cursor: not-allowed; opacity: 0.5; }"
+    },
+    {
+      "name": "Channel Row",
+      "kind": "nav",
+      "description": "Sidebar channel list item. Background-shift hover; gold badge for unread.",
+      "html": "<div class=\"ds-channel-row\"><svg class=\"ds-channel-icon\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M4 6h16M4 12h16M4 18h7\"/></svg><span class=\"ds-channel-name\">general</span><span class=\"ds-channel-badge\">3</span></div>",
+      "css": ".ds-channel-row { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px; cursor: pointer; transition: background 0.15s ease-out; } .ds-channel-row:hover { background: #1c1f33; } .ds-channel-row.active { background: #262a42; } .ds-channel-icon { color: #9490a8; flex-shrink: 0; } .ds-channel-row:hover .ds-channel-icon, .ds-channel-row.active .ds-channel-icon { color: #b8b5c8; } .ds-channel-name { font-size: 0.95rem; font-weight: 400; color: #9490a8; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .ds-channel-row:hover .ds-channel-name, .ds-channel-row.active .ds-channel-name { color: #e8e6f0; } .ds-channel-row.unread .ds-channel-name { color: #e8e6f0; font-weight: 600; } .ds-channel-badge { display: inline-flex; align-items: center; justify-content: center; background: #c8a24e; color: #0d0f1a; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.02em; min-width: 18px; height: 18px; border-radius: 999px; padding: 0 5px; flex-shrink: 0; }"
+    },
+    {
+      "name": "Server Rail Button",
+      "kind": "nav",
+      "description": "Icon-only server avatar in the leftmost rail. Squircle morph on hover; gold active pill.",
+      "html": "<div class=\"ds-rail-wrap ds-rail-active\"><div class=\"ds-rail-btn\"><span class=\"ds-rail-initial\">VE</span></div><div class=\"ds-rail-pill\"></div></div>",
+      "css": ".ds-rail-wrap { position: relative; display: flex; align-items: center; } .ds-rail-btn { width: 40px; height: 40px; border-radius: 50%; background: #262a42; color: #e8e6f0; font-size: 0.82rem; font-weight: 700; font-family: system-ui, -apple-system, sans-serif; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: border-radius 0.18s ease-out, background 0.15s ease-out; overflow: hidden; } .ds-rail-btn:hover { border-radius: 30%; background: #c8a24e; color: #0d0f1a; } .ds-rail-wrap.ds-rail-active .ds-rail-btn { border-radius: 30%; } .ds-rail-pill { position: absolute; left: -8px; width: 4px; height: 16px; border-radius: 999px; background: transparent; transition: height 0.18s ease-out, background 0.15s ease-out; } .ds-rail-btn:hover ~ .ds-rail-pill { height: 32px; background: #c8a24e; } .ds-rail-wrap.ds-rail-active .ds-rail-pill { height: 40px; background: #c8a24e; } .ds-rail-initial { pointer-events: none; }"
+    },
+    {
+      "name": "Glass Modal Shell",
+      "kind": "card",
+      "description": "Modal container. Backdrop blur signals elevation above the interface plane.",
+      "html": "<div class=\"ds-modal-backdrop\"><div class=\"ds-modal\"><h2 class=\"ds-modal-title\">Create a Server</h2><p class=\"ds-modal-body\">A server is a place for your community.</p><div class=\"ds-modal-actions\"><button class=\"ds-btn-ghost\">Cancel</button><button class=\"ds-btn-primary\">Create</button></div></div></div>",
+      "css": ".ds-modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 50; } .ds-modal { background: rgba(28,31,51,0.92); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; box-shadow: 0 14px 36px rgba(8,9,20,0.52); padding: 28px 32px; min-width: 420px; max-width: 520px; width: 100%; } .ds-modal-title { font-size: 1.15rem; font-weight: 700; color: #e8e6f0; margin: 0 0 8px; font-family: system-ui, -apple-system, sans-serif; } .ds-modal-body { font-size: 0.95rem; color: #b8b5c8; line-height: 1.6; margin: 0 0 24px; font-family: system-ui, -apple-system, sans-serif; } .ds-modal-actions { display: flex; justify-content: flex-end; gap: 8px; } .ds-btn-ghost { display: inline-flex; align-items: center; justify-content: center; background: transparent; color: #e8e6f0; padding: 8px 16px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08); font-size: 0.95rem; font-weight: 600; font-family: system-ui,-apple-system,sans-serif; cursor: pointer; transition: background 0.2s ease-out; } .ds-btn-ghost:hover { background: #1c1f33; } .ds-btn-primary { display: inline-flex; align-items: center; justify-content: center; background: #c8a24e; color: #0d0f1a; padding: 10px 20px; border-radius: 8px; border: none; font-size: 0.95rem; font-weight: 700; font-family: system-ui,-apple-system,sans-serif; cursor: pointer; box-shadow: 0 0 20px rgba(200,162,78,0.3); transition: background 0.2s ease-out, box-shadow 0.2s ease-out; } .ds-btn-primary:hover { background: #b8922e; box-shadow: 0 0 28px rgba(200,162,78,0.45); }"
+    },
+    {
+      "name": "Unread Badge",
+      "kind": "chip",
+      "refersTo": "chip-unread",
+      "description": "Compact pill badge for unread message counts. Evening Gold; appears in channel list and server rail.",
+      "html": "<span class=\"ds-badge-unread\">12</span>",
+      "css": ".ds-badge-unread { display: inline-flex; align-items: center; justify-content: center; background: #c8a24e; color: #0d0f1a; font-size: 0.72rem; font-weight: 700; font-family: system-ui, -apple-system, sans-serif; letter-spacing: 0.02em; min-width: 18px; height: 18px; border-radius: 999px; padding: 0 5px; line-height: 1; }"
+    },
+    {
+      "name": "Category Label",
+      "kind": "custom",
+      "description": "Section divider for channel groups. Uppercase label register; chevron for collapse.",
+      "html": "<div class=\"ds-category\"><svg class=\"ds-category-chevron\" width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.5\"><polyline points=\"6 9 12 15 18 9\"/></svg><span class=\"ds-category-name\">Text Channels</span></div>",
+      "css": ".ds-category { display: flex; align-items: center; gap: 4px; padding: 16px 8px 4px; cursor: pointer; user-select: none; } .ds-category-chevron { color: #817d93; flex-shrink: 0; transition: transform 0.15s ease-out; } .ds-category.collapsed .ds-category-chevron { transform: rotate(-90deg); } .ds-category-name { font-size: 0.72rem; font-weight: 700; color: #817d93; letter-spacing: 0.06em; text-transform: uppercase; font-family: system-ui, -apple-system, sans-serif; } .ds-category:hover .ds-category-name, .ds-category:hover .ds-category-chevron { color: #9490a8; }"
+    },
+    {
+      "name": "Presence Dot",
+      "kind": "custom",
+      "description": "10px circular presence indicator. Online: signal-success; offline: twilight-tertiary.",
+      "html": "<div class=\"ds-presence-wrap\"><div class=\"ds-avatar\">AK</div><div class=\"ds-presence-dot ds-presence-online\"></div></div>",
+      "css": ".ds-presence-wrap { position: relative; display: inline-flex; } .ds-avatar { width: 32px; height: 32px; border-radius: 50%; background: #3d3862; color: #e8e6f0; font-size: 0.76rem; font-weight: 700; font-family: system-ui, -apple-system, sans-serif; display: flex; align-items: center; justify-content: center; } .ds-presence-dot { position: absolute; bottom: -1px; right: -1px; width: 10px; height: 10px; border-radius: 50%; border: 2px solid #0d0f1a; } .ds-presence-dot.ds-presence-online { background: #34d399; } .ds-presence-dot.ds-presence-offline { background: #262a42; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Evening Star",
+    "overview": "Vesper is named for Venus at dusk: the reliable point of warm light that appears before full dark. The visual system answers to that name. The palette is not dark-for-dark's-sake; it is midnight navy warmed by gold, a sky that happens to be private. Every surface decision should be explicable by that scene: this is where trustworthy conversations happen, after the noise has settled.\n\nThe density is Discord-familiar but notched up. Tighter hierarchy, more deliberate color, cleaner component geometry. A Discord user should feel immediately oriented, then notice after a minute that everything looks a bit more considered. The product never foregrounds encryption or security in its visual layer — that confidence is expressed through calm and precision, not through lock icons and warning copy.\n\nThis system rejects three failure modes by name: the clinical austerity of Signal and Telegram; the noise of Discord itself; and the generic dark-mode SaaS aesthetic of purple gradients and glass-on-glass stacking.",
+    "keyCharacteristics": [
+      "Two-accent palette: Evening Gold (primary) and Dusk Violet (secondary) against deep navy neutrals",
+      "Restrained elevation: flat tonal layering by default; glass and glow reserved for primary moments only",
+      "System UI font stack; hierarchy through weight and scale contrast, not typeface personality",
+      "Precise and restrained interactive feel: state changes signal without performing",
+      "Ghost borders at 8% white opacity as the default surface boundary",
+      "Encryption is infrastructure, not UI; the interface never waves its security credentials"
+    ],
+    "rules": [
+      {
+        "name": "The Evening Star Rule",
+        "body": "Evening Gold appears on no more than 10% of any given screen. Primary buttons, active channel indicators, unread badges, focus rings. That is the complete list. Its rarity is the point.",
+        "section": "colors"
+      },
+      {
+        "name": "The Ghost Border Rule",
+        "body": "Default borders are rgba(255,255,255,0.08). They divide without interrupting. If a boundary needs to be more visible, reach for a background-color shift, not a higher-opacity border.",
+        "section": "colors"
+      },
+      {
+        "name": "The Violet Harmony Rule",
+        "body": "Dusk Violet is a supporting color, not a second primary. It should not appear in interactive states that already use gold. Gold for action and status; violet for mention, ring, and pulse.",
+        "section": "colors"
+      },
+      {
+        "name": "The System Font Rule",
+        "body": "No display or decorative typefaces in the product surface. The landing page uses Bebas Neue and Barlow; that is a different register. The app is system-native by design.",
+        "section": "typography"
+      },
+      {
+        "name": "The Label Register Rule",
+        "body": "Anything that categorizes or divides uses the label register: uppercase, 700 weight, 0.72-0.76rem, 0.04-0.08em letter-spacing. Channel headers, section labels, status chips, badge text.",
+        "section": "typography"
+      },
+      {
+        "name": "The Weight Contrast Rule",
+        "body": "Adjacent typographic levels must differ by at least one full weight step and a minimum 1.25x size ratio. Flat type scales are prohibited.",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat-By-Default Rule",
+        "body": "Surfaces at rest carry no shadow. Depth is tonal. Glass appears only when a surface is genuinely above the interface plane. Glow appears only on the primary action button.",
+        "section": "elevation"
+      },
+      {
+        "name": "The One Glow Rule",
+        "body": "At most one element on any given screen carries the gold ambient glow: the primary action button. If a second glowing element appears, one of them is wrong.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do keep Evening Gold to no more than 10% of any screen surface. Primary buttons, active states, unread badges, focus rings. That is the list.",
+      "Do use tonal layering (midnight-base to twilight-primary to twilight-secondary to twilight-tertiary) as the primary depth signal before reaching for any shadow.",
+      "Do use the label register (uppercase, 700 weight, 0.72rem, 0.06em tracking) for anything that categorizes or divides: channel headers, section titles, status chips, badge text.",
+      "Do reserve glass for overlay surfaces that are genuinely above the interface plane (auth shell, modals, call overlay), and glow for the primary action button only.",
+      "Do use star-light (#e8e6f0) for primary text. Never pure white (#ffffff).",
+      "Do signal hover state with a background fill shift (to twilight-secondary or twilight-tertiary), not a border color change.",
+      "Do keep focus rings tight and gold: box-shadow 0 0 0 2px rgba(200,162,78,0.15).",
+      "Do cap message content line length at 65-75ch in reading contexts.",
+      "Do pair any color-only state change with a secondary signal (text weight, icon, label) for accessibility."
+    ],
+    "donts": [
+      "Don't use gradient text (background-clip: text with a linear gradient). The gold-to-violet gradient is brand register only; prohibited inside the product surface.",
+      "Don't use glassmorphism as a default card or list item style. Glass is for auth shell, modals, and call overlay only.",
+      "Don't add glow to any element that is not the primary action button. No glowing hover cards, no glowing icons, no ambient gold on containers.",
+      "Don't make this look like Signal or Telegram: no institutional grays, no clinical minimalism, no surfaces that feel like a security tool rather than a community space.",
+      "Don't make this look like Discord: no blurple, no purple-dominant palettes, no oversaturated accent everywhere, no cartoonish border-radius, no badge overload.",
+      "Don't use any generic dark-mode SaaS pattern: no purple gradient backgrounds, no hero-metric layouts, no identical icon-heading-text card grids.",
+      "Don't introduce decorative or display typefaces in the product surface. System UI only.",
+      "Don't use border-left or border-right wider than 1px as a colored accent stripe on cards or list items.",
+      "Don't nest rounded cards inside rounded cards.",
+      "Don't foreground encryption, security, or privacy in UI copy or visual chrome."
+    ]
+  }
+}

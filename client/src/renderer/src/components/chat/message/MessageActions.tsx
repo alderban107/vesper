@@ -37,7 +37,7 @@ export default function MessageActions({
             data-testid="react-button"
             type="button"
             onClick={onReact}
-            className="vesper-message-action-button"
+            className="vesper-message-action-button vesper-message-action-inline"
             title="Add reaction"
             aria-label="Add reaction"
           >
@@ -47,7 +47,7 @@ export default function MessageActions({
           <button
             type="button"
             onClick={onReply}
-            className="vesper-message-action-button"
+            className="vesper-message-action-button vesper-message-action-inline"
             title="Reply"
             aria-label="Reply"
           >
@@ -59,7 +59,7 @@ export default function MessageActions({
               data-testid="thread-button"
               type="button"
               onClick={onThread}
-              className="vesper-message-action-button"
+              className="vesper-message-action-button vesper-message-action-inline"
               title={threadLabel ?? 'Open thread'}
               aria-label={threadLabel ?? 'Open thread'}
             >
@@ -72,7 +72,7 @@ export default function MessageActions({
               data-testid="edit-message"
               type="button"
               onClick={onEdit}
-              className="vesper-message-action-button"
+              className="vesper-message-action-button vesper-message-action-inline"
               title="Edit message"
               aria-label="Edit message"
             >

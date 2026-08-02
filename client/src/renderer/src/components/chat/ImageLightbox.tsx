@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Download, Maximize2, Minimize2, RotateCcw, X, ZoomIn, ZoomOut } from 'lucide-react'
+import { useBodyScrollLock } from '../../hooks/useBodyScrollLock'
 
 interface Props {
   src: string
@@ -24,10 +25,9 @@ export default function ImageLightbox({
   const [zoom, setZoom] = useState(1)
   const [zoomMode, setZoomMode] = useState<'fit' | 'actual'>('fit')
 
-  useEffect(() => {
-    const previousOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
+  useBodyScrollLock()
 
+  useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
         onClose()
@@ -56,7 +56,6 @@ export default function ImageLightbox({
     document.addEventListener('keydown', handleKeyDown)
 
     return () => {
-      document.body.style.overflow = previousOverflow
       document.removeEventListener('keydown', handleKeyDown)
     }
   }, [onClose])

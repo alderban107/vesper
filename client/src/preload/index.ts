@@ -1,5 +1,28 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
+import type { AuthRefreshResult } from '../shared/authSession'
+
+interface EncryptedRoomDataKeyStorageRecord {
+  room_id: string
+  topology_generation: number
+  epoch: number
+  ciphertext: string
+  nonce: string
+}
+
+interface ControlIntentStorageRecord {
+  version: 1
+  operation: string
+  idempotency_key: string
+  scope_id: string
+  membership_generation: number
+  payload_json: string
+  attempts: number
+  state: string
+  result_json: string | null
+  created_at: string
+  updated_at: string
+}
 
 const cryptoDbApi = {
   // Identity keys
@@ -26,6 +49,23 @@ const cryptoDbApi = {
     ),
   deleteIdentityKeys: (userId: string) =>
     ipcRenderer.invoke('cryptoDb:deleteIdentityKeys', userId),
+  getWorkspaceSnapshot: (userId: string) =>
+    ipcRenderer.invoke('cryptoDb:getWorkspaceSnapshot', userId),
+  setWorkspaceSnapshot: (
+    userId: string,
+    snapshot: {
+      version: number
+      token: string | null
+      servers_json: string
+      conversations_json: string
+      unread_counts_json: string
+      updated_at: string
+    }
+  ) => ipcRenderer.invoke('cryptoDb:setWorkspaceSnapshot', userId, snapshot),
+  getRecoveryPackageKey: (userId: string) =>
+    ipcRenderer.invoke('cryptoDb:getRecoveryPackageKey', userId),
+  setRecoveryPackageKey: (userId: string, key: Uint8Array) =>
+    ipcRenderer.invoke('cryptoDb:setRecoveryPackageKey', userId, key),
 
   // MLS groups
   getGroupState: (groupId: string) =>
@@ -54,68 +94,11 @@ const cryptoDbApi = {
       repair_failure_count?: number
       repair_last_error?: string | null
       repair_updated_at?: string | null
-      pending_group_info_publish?: {
-        group_info_data: Uint8Array
-        ratchet_tree_data: Uint8Array | null
-        epoch: number
-      } | null
-      pending_external_commit_broadcast?: {
-        commit_data: string
-        commit_id: string
-      } | null
-      pending_sponsored_transition?: {
-        recipient_id: string
-        recipient_client_id: string | null
-        recipient_key_package_ref: string | null
-        commit_data: string
-        commit_id: string
-        remove_commit_data: string | null
-        welcome_data: string | null
-        group_info_data: Uint8Array | null
-        ratchet_tree_data: Uint8Array | null
-        epoch: number | null
-        previous_epoch: number | null
-        base_state: Uint8Array | null
-        base_epoch: number | null
-      } | null
+      room_data_keys?: EncryptedRoomDataKeyStorageRecord[]
+      control_intents?: ControlIntentStorageRecord[]
     }
   ) =>
     ipcRenderer.invoke('cryptoDb:setScopeCheckpoint', groupId, checkpoint),
-  getPendingGroupInfoPublishes: () =>
-    ipcRenderer.invoke('cryptoDb:getPendingGroupInfoPublishes'),
-  setPendingGroupInfoPublish: (
-    groupId: string,
-    groupInfoData: Uint8Array,
-    ratchetTreeData: Uint8Array | null,
-    epoch: number
-  ) =>
-    ipcRenderer.invoke(
-      'cryptoDb:setPendingGroupInfoPublish',
-      groupId,
-      groupInfoData,
-      ratchetTreeData,
-      epoch
-    ),
-  deletePendingGroupInfoPublish: (groupId: string) =>
-    ipcRenderer.invoke('cryptoDb:deletePendingGroupInfoPublish', groupId),
-  getPendingExternalCommitBroadcasts: () =>
-    ipcRenderer.invoke('cryptoDb:getPendingExternalCommitBroadcasts'),
-  getPendingSponsoredTransitions: () =>
-    ipcRenderer.invoke('cryptoDb:getPendingSponsoredTransitions'),
-  setPendingExternalCommitBroadcast: (
-    groupId: string,
-    commitData: string,
-    commitId: string
-  ) =>
-    ipcRenderer.invoke(
-      'cryptoDb:setPendingExternalCommitBroadcast',
-      groupId,
-      commitData,
-      commitId
-    ),
-  deletePendingExternalCommitBroadcast: (groupId: string) =>
-    ipcRenderer.invoke('cryptoDb:deletePendingExternalCommitBroadcast', groupId),
-
   // Key packages
   getLocalKeyPackages: () =>
     ipcRenderer.invoke('cryptoDb:getLocalKeyPackages'),
@@ -163,7 +146,30 @@ const cryptoDbApi = {
   indexDecryptedMessage: (messageId: string, channelId: string, content: string) =>
     ipcRenderer.invoke('cryptoDb:indexDecryptedMessage', messageId, channelId, content),
   removeFromFtsIndex: (messageId: string) =>
-    ipcRenderer.invoke('cryptoDb:removeFromFtsIndex', messageId)
+    ipcRenderer.invoke('cryptoDb:removeFromFtsIndex', messageId),
+
+  // Pending message send outbox
+  getPendingMessageSends: () =>
+    ipcRenderer.invoke('cryptoDb:getPendingMessageSends'),
+  setPendingMessageSend: (entry: {
+    client_nonce: string
+    scope_kind: 'channel' | 'dm'
+    scope_id: string
+    scope_channel_id: string | null
+    payload_json: string
+    inserted_at: string
+  }) => ipcRenderer.invoke('cryptoDb:setPendingMessageSend', entry),
+  deletePendingMessageSend: (clientNonce: string) =>
+    ipcRenderer.invoke('cryptoDb:deletePendingMessageSend', clientNonce)
+}
+
+const authSessionApi = {
+  setRefreshToken: (refreshToken: string, serverUrl: string): boolean =>
+    ipcRenderer.sendSync('authSession:setRefreshToken', refreshToken, serverUrl) === true,
+  clearRefreshToken: (): boolean =>
+    ipcRenderer.sendSync('authSession:clearRefreshToken') === true,
+  refreshAccessToken: (serverUrl: string): Promise<AuthRefreshResult> =>
+    ipcRenderer.invoke('authSession:refreshAccessToken', serverUrl)
 }
 
 const notificationApi = {
@@ -186,5 +192,6 @@ const linkPreviewApi = {
 
 contextBridge.exposeInMainWorld('electron', electronAPI)
 contextBridge.exposeInMainWorld('cryptoDb', cryptoDbApi)
+contextBridge.exposeInMainWorld('authSession', authSessionApi)
 contextBridge.exposeInMainWorld('notifications', notificationApi)
 contextBridge.exposeInMainWorld('linkPreview', linkPreviewApi)

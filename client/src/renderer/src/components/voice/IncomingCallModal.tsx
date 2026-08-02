@@ -3,6 +3,7 @@ import { Phone, PhoneOff } from 'lucide-react'
 import { useVoiceStore } from '../../stores/voiceStore'
 import { useDmStore } from '../../stores/dmStore'
 import { useAuthStore } from '../../stores/authStore'
+import { useFocusTrap } from '../../hooks/useFocusTrap'
 
 export default function IncomingCallModal(): React.JSX.Element | null {
   const incomingCall = useVoiceStore((s) => s.incomingCall)
@@ -10,6 +11,7 @@ export default function IncomingCallModal(): React.JSX.Element | null {
   const rejectCall = useVoiceStore((s) => s.rejectCall)
   const conversations = useDmStore((s) => s.conversations)
   const currentUserId = useAuthStore((s) => s.user?.id)
+  const trapRef = useFocusTrap<HTMLDivElement>(!!incomingCall)
 
   const [countdown, setCountdown] = useState(30)
 
@@ -58,8 +60,14 @@ export default function IncomingCallModal(): React.JSX.Element | null {
   })()
 
   return (
-    <div data-testid="incoming-call" className="vesper-incoming-call-shell">
-      <div className="vesper-incoming-call-card glass-card animate-scale-in">
+    <div
+      data-testid="incoming-call"
+      className="vesper-incoming-call-shell"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Incoming voice call from ${callerName}`}
+    >
+      <div ref={trapRef} className="vesper-incoming-call-card glass-card animate-scale-in">
         <div className="vesper-incoming-call-avatar">
           <div className="vesper-incoming-call-avatar-ring">
             {callerName.slice(0, 2).toUpperCase()}

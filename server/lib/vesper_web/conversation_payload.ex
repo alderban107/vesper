@@ -1,0 +1,78 @@
+defmodule VesperWeb.ConversationPayload do
+  def message_preview(nil), do: nil
+
+  def message_preview(message) do
+    base = %{
+      id: message.id,
+      sender_id: message.sender_id,
+      sender: sender_json(message.sender),
+      inserted_at: message.inserted_at
+    }
+
+    if message.ciphertext do
+      Map.put(base, :ciphertext, "encrypted")
+    else
+      Map.put(base, :content, message.content)
+    end
+  end
+
+  def put_users(payload, users) when map_size(users) == 0, do: payload
+  def put_users(payload, users), do: Map.put(payload, :users, users)
+
+  def compact(conversations) when is_list(conversations) do
+    {conversations, users} =
+      Enum.map_reduce(conversations, %{}, fn conversation, users ->
+        {participants, users} =
+          Enum.map_reduce(conversation.participants, users, fn participant, acc ->
+            {Map.delete(participant, :user), put_user(acc, participant.user)}
+          end)
+
+        {last_message, users} = compact_last_message(conversation.last_message, users)
+
+        compact =
+          conversation
+          |> Map.put(:participants, participants)
+          |> Map.put(:last_message, last_message)
+          |> compact_conversation()
+
+        {compact, users}
+      end)
+
+    {conversations, users}
+  end
+
+  defp compact_conversation(conversation) do
+    Enum.reduce([:name, :channel_id, :disappearing_ttl], conversation, fn field, compact ->
+      if Map.get(compact, field) == nil, do: Map.delete(compact, field), else: compact
+    end)
+  end
+
+  defp compact_last_message(nil, users), do: {nil, users}
+
+  defp compact_last_message(message, users) do
+    {Map.delete(message, :sender), put_user(users, message.sender)}
+  end
+
+  defp put_user(users, nil), do: users
+
+  defp put_user(users, %{id: id} = user) do
+    Map.put_new(users, id, compact_user(user))
+  end
+
+  defp compact_user(user) do
+    Enum.reduce([:display_name, :avatar_url, :banner_url], user, fn field, compact ->
+      if Map.get(compact, field) == nil, do: Map.delete(compact, field), else: compact
+    end)
+  end
+
+  defp sender_json(nil), do: nil
+
+  defp sender_json(sender) do
+    %{
+      id: sender.id,
+      username: sender.username,
+      display_name: sender.display_name,
+      avatar_url: sender.avatar_url
+    }
+  end
+end

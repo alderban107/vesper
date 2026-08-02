@@ -7,9 +7,8 @@
  *
  * Depends on P0 having already signed up alice_e2e and bob_e2e.
  *
- * NOTE: Old P0 messages will show as "syncing" on new device contexts due to
- * MLS forward secrecy. This test only verifies that messages sent DURING the
- * test are decryptable across devices.
+ * Every message created by these scenarios must remain present and decryptable
+ * on every authorized device, including after approval and reconnect.
  */
 
 import { test } from '@playwright/test'
@@ -140,7 +139,7 @@ test.describe('P1: Multi-device encrypted message access', () => {
     await waitForMessage(bob.page, 'Device 2 live channel send — multidev golf', MSG_TIMEOUT)
   })
 
-  test('New device can send and receive messages after approval (R-E2EE-3)', async ({ browser }) => {
+  test('New device can send and receive while existing devices remain online (R-E2EE-3)', async ({ browser }) => {
     const recoveryKey = getRecoveryKey(USERS.alice.username)
 
     // --- Device 1: Establish the DM MLS group between Alice and Bob ---
@@ -154,13 +153,7 @@ test.describe('P1: Multi-device encrypted message access', () => {
     await sendDmMessage(alice1.page, 'Setup msg — send foxtrot')
     await waitForMessage(bob.page, 'Setup msg — send foxtrot', MSG_TIMEOUT)
 
-    // Close device 1 before device 2 joins. For DMs, both Alice1 and Bob
-    // would handle device 2's mls_request_join, creating conflicting MLS
-    // commits that corrupt the group state. With Alice1 closed, only Bob
-    // handles the join and produces a clean epoch transition.
-    await alice1.context.close()
-
-    // --- Device 2: Login, open DM, send and receive ---
+    // --- Device 2: Login, open DM, send and receive while device 1 remains online ---
     alice2 = await createUserContext(browser, 'alice-md-send-dev2', USERS.alice.username, USERS.alice.password)
     await login(alice2, { expectTrustGate: true })
     await approveWithRecoveryKey(alice2.page, recoveryKey)
@@ -178,8 +171,13 @@ test.describe('P1: Multi-device encrypted message access', () => {
     // Bob should receive the message sent from device 2
     await waitForMessage(bob.page, 'From device 2 — send golf', MSG_TIMEOUT)
 
-    // Bob replies — device 2 should receive real-time messages
+    // Bob replies — both trusted Alice devices should receive and decrypt it.
     await sendDmMessage(bob.page, 'Bob reply — send hotel')
+    await waitForMessage(alice1.page, 'Bob reply — send hotel', MSG_TIMEOUT)
     await waitForMessage(alice2.page, 'Bob reply — send hotel', MSG_TIMEOUT)
+
+    await assertNoDecryptionFailures(alice1.page)
+    await assertNoDecryptionFailures(alice2.page)
+    await assertNoDecryptionFailures(bob.page)
   })
 })

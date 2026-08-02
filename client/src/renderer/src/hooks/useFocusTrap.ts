@@ -18,9 +18,9 @@ export function useFocusTrap<T extends HTMLElement>(
     const focusableElements = (): HTMLElement[] =>
       Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
 
-    // Focus the first element
+    // Preserve an element's native autofocus when it is already inside the dialog.
     const elements = focusableElements()
-    if (elements.length > 0) {
+    if (!container.contains(document.activeElement) && elements.length > 0) {
       elements[0].focus()
     }
 

@@ -33,6 +33,18 @@ export async function captureSnapshot(page: Page): Promise<ChatSnapshot> {
     const threadCounts: Record<string, number> = {}
     const reactions: Record<string, Record<string, number>> = {}
 
+    const semanticText = (node: Node): string => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        return node.textContent || ''
+      }
+
+      if (node instanceof HTMLImageElement) {
+        return node.alt || node.getAttribute('aria-label') || ''
+      }
+
+      return Array.from(node.childNodes).map(semanticText).join('')
+    }
+
     const rows = document.querySelectorAll('[data-testid="message-row"]')
     rows.forEach((row) => {
       if (
@@ -42,7 +54,8 @@ export async function captureSnapshot(page: Page): Promise<ChatSnapshot> {
         return
       }
 
-      const content = row.querySelector('[data-testid="message-content"]')?.textContent || ''
+      const contentNode = row.querySelector('[data-testid="message-content"]')
+      const content = contentNode ? semanticText(contentNode) : ''
       const sender = row.querySelector('[data-testid="message-sender"]')?.textContent || ''
       const threadBtn = row.querySelector('[data-testid="thread-count"]')
       const edited = row.querySelector('[data-testid="edited-marker"]') !== null

@@ -1,15 +1,27 @@
 /** Version 1 structured message payload — encrypted as JSON inside MLS ciphertext */
 
+export interface MessageHistoryAuthentication {
+  v: 1
+  scope_id: string
+  binding_type: 'client_nonce' | 'message_id'
+  binding: string
+  revision: number
+  signer_public_key: string
+  signature: string
+}
+
 export interface TextPayload {
   v: 1
   type: 'text'
   text: string
+  history_auth?: MessageHistoryAuthentication
 }
 
 export interface FilePayload {
   v: 1
   type: 'file'
   text: string | null // optional caption
+  history_auth?: MessageHistoryAuthentication
   file: {
     id: string // server-side attachment ID
     name: string

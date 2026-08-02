@@ -103,6 +103,11 @@ export function ensureLocalTestPostgres(options = {}) {
     return
   }
 
+  if (process.env.VESPER_SDK_TEST_DB_AUTO_START === '0') {
+    localTestPostgresReady = true
+    return
+  }
+
   execFileSync('bash', [START_TEST_POSTGRES_SCRIPT], {
     cwd: REPO_ROOT,
     env: process.env,

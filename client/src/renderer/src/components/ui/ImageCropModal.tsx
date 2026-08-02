@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react'
 import Cropper from 'react-easy-crop'
 import type { Area } from 'react-easy-crop'
 import { X, Loader2, ZoomIn, ZoomOut } from 'lucide-react'
+import { useFocusTrap } from '../../hooks/useFocusTrap'
 
 interface ImageCropModalProps {
   file: File
@@ -71,6 +72,7 @@ export default function ImageCropModal({
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [preview, setPreview] = useState<string | null>(null)
+  const trapRef = useFocusTrap<HTMLDivElement>(true)
 
   const onCropComplete = useCallback(
     (_croppedAreaPercent: Area, croppedAreaPixels: Area) => {
@@ -133,18 +135,22 @@ export default function ImageCropModal({
 
   return (
     <div
-      className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[60]"
+      className="fixed inset-0 bg-[#0d0f1a]/80 backdrop-blur-sm flex items-center justify-center z-[60]"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose()
       }}
     >
-      <div className="glass-card rounded-2xl w-[48rem] max-w-[calc(100vw-2rem)] max-h-[calc(100vh-4rem)] animate-scale-in flex flex-col">
+      <div ref={trapRef} className="glass-card rounded-2xl w-[48rem] max-w-[calc(100vw-2rem)] max-h-[calc(100vh-4rem)] animate-scale-in flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-border">
           <h2 className="text-lg font-semibold text-text-primary">{title}</h2>
           <button
             type="button"
             onClick={onClose}
+            aria-label="Close image editor"
             className="text-text-muted hover:text-text-primary transition-colors"
           >
             <X className="w-5 h-5" />
@@ -238,7 +244,7 @@ export default function ImageCropModal({
 
             {/* Error */}
             {error && (
-              <div className="text-sm text-red-400">{error}</div>
+              <div className="text-sm text-error">{error}</div>
             )}
 
             {/* Submit */}

@@ -184,7 +184,7 @@ export default function VideoPlayer({
       <div data-testid="attachment" className="vesper-video-preview">
         <div className="vesper-video-error">
           <div className="vesper-video-error-message">
-            <AlertCircle className="w-4 h-4 text-red-400" />
+            <AlertCircle className="w-4 h-4 text-error" />
             <span>Format not supported</span>
           </div>
           <button

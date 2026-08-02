@@ -235,7 +235,7 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
   if (error) {
     return (
       <div data-testid="attachment" className="flex items-center gap-2 px-3 py-2 bg-bg-tertiary/50 rounded-lg text-xs text-text-faint border border-border mt-1.5">
-        <AlertCircle className="w-4 h-4 text-red-400" />
+        <AlertCircle className="w-4 h-4 text-error" />
         <span>File expired or unavailable</span>
       </div>
     )

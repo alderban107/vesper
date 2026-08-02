@@ -12,6 +12,8 @@ defmodule Vesper.UrgentSyncTest do
   alias Vesper.Runtime
   alias Vesper.Sync
   alias Vesper.SyncCursor
+  alias VesperWeb.ChannelController
+  alias VesperWeb.ConversationController
   alias VesperWeb.MlsEventController
   alias VesperWeb.MessageController
   alias VesperWeb.ScopeSyncController
@@ -64,6 +66,109 @@ defmodule Vesper.UrgentSyncTest do
            ]
 
     assert is_binary(response["token"])
+  end
+
+  test "read changes remain targeted to the account that changed them" do
+    user = insert_user()
+    peer = insert_user()
+    conversation_id = Ecto.UUID.generate()
+
+    Sync.append_user_scope_event(user.id, "read", "dm", conversation_id)
+
+    assert Sync.list_scope_changes_with_cursors(user.id, 0, 0).read_changes == [
+             {:dm, conversation_id}
+           ]
+
+    assert Sync.list_scope_changes_with_cursors(peer.id, 0, 0).read_changes == []
+    assert Sync.list_scope_changes_since(user.id, 0, [conversation_id]).read_changes == []
+  end
+
+  test "urgent sync drains a backlog without advancing past unreturned events", %{conn: conn} do
+    user = insert_user()
+    peer = insert_user()
+
+    Sync.append_user_event(user.id, "cursor_baseline")
+
+    cursor =
+      SyncCursor.encode(%{
+        synced_at: DateTime.utc_now() |> DateTime.truncate(:second),
+        user_sync_event_id: Sync.latest_event_id_for_user(user.id)
+      })
+
+    for index <- 1..125 do
+      Sync.append_urgent_events([
+        %{
+          user_id: user.id,
+          scope_kind: "dm",
+          scope_id: Ecto.UUID.generate(),
+          payload: %{message_id: "message-#{index}", sender_id: peer.id}
+        }
+      ])
+    end
+
+    first =
+      conn
+      |> assign(:current_user, user)
+      |> UrgentSyncController.index(%{"since" => cursor, "limit" => "100"})
+      |> json_response(200)
+
+    assert first["has_more"]
+    assert length(first["events"]) == 100
+
+    first_cursor = SyncCursor.decode(first["token"])
+    assert first_cursor.user_sync_event_id == List.last(first["events"])["id"]
+    assert is_integer(first_cursor.user_sync_high_water)
+
+    Sync.append_urgent_events([
+      %{
+        user_id: user.id,
+        scope_kind: "dm",
+        scope_id: Ecto.UUID.generate(),
+        payload: %{message_id: "after-high-water", sender_id: peer.id}
+      }
+    ])
+
+    second =
+      build_conn()
+      |> put_req_header("accept", "application/json")
+      |> assign(:current_user, user)
+      |> UrgentSyncController.index(%{"since" => first["token"], "limit" => "100"})
+      |> json_response(200)
+
+    refute second["has_more"]
+    assert length(second["events"]) == 25
+
+    assert Enum.map(first["events"] ++ second["events"], & &1["payload"]["message_id"]) ==
+             Enum.map(1..125, &"message-#{&1}")
+
+    third =
+      build_conn()
+      |> put_req_header("accept", "application/json")
+      |> assign(:current_user, user)
+      |> UrgentSyncController.index(%{"since" => second["token"], "limit" => "100"})
+      |> json_response(200)
+
+    assert Enum.map(third["events"], & &1["payload"]["message_id"]) == ["after-high-water"]
+  end
+
+  test "urgent sync marks cursors older than retained events for workspace rebuild", %{conn: conn} do
+    user = insert_user()
+
+    expired_cursor =
+      SyncCursor.encode(%{
+        synced_at: DateTime.add(DateTime.utc_now(), -8 * 86_400, :second),
+        user_sync_event_id: 0
+      })
+
+    response =
+      conn
+      |> assign(:current_user, user)
+      |> UrgentSyncController.index(%{"since" => expired_cursor})
+      |> json_response(200)
+
+    assert response["cursor_expired"]
+    assert response["events"] == []
+    refute response["has_more"]
   end
 
   test "message batch keeps request order and omits inaccessible messages", %{conn: conn} do
@@ -132,7 +237,57 @@ defmodule Vesper.UrgentSyncTest do
     assert Enum.map(events, & &1["id"]) == [mutation_event.id]
   end
 
-  test "full sync includes initial channel activity snapshots", %{conn: conn} do
+  test "scope restore stays bounded and older cursors backfill contiguously" do
+    user = insert_user()
+    {:ok, server} = Vesper.Servers.create_server(user, %{name: "bounded restore"})
+    channel = Enum.find(server.channels, &(&1.type == "text"))
+
+    for index <- 1..120 do
+      message = insert_channel_message(user.id, channel.id, "history #{index}")
+      assert {:ok, _event} = Runtime.project_message(message)
+    end
+
+    fetch_page = fn before ->
+      scope = %{"kind" => "channel", "id" => channel.id}
+      scope = if before, do: Map.put(scope, "before", before), else: scope
+
+      response =
+        build_conn()
+        |> put_req_header("accept", "application/json")
+        |> assign(:current_user, user)
+        |> ScopeSyncController.create(%{"limit" => "20", "scopes" => [scope]})
+        |> json_response(200)
+
+      [page] = response["scopes"]
+      page
+    end
+
+    first = fetch_page.(nil)
+    assert length(first["messages"]) == 20
+    assert first["has_more"] == true
+    assert is_binary(first["older_cursor"])
+    assert first["latest_room_seq"] == 120
+
+    pages =
+      Stream.unfold(first, fn
+        nil ->
+          nil
+
+        page ->
+          next = if page["has_more"], do: fetch_page.(page["older_cursor"]), else: nil
+          {page, next}
+      end)
+      |> Enum.to_list()
+
+    messages = Enum.flat_map(pages, & &1["messages"])
+    assert length(messages) == 120
+    assert Enum.uniq_by(messages, & &1["id"]) |> length() == 120
+    assert messages |> Enum.map(& &1["room_seq"]) |> Enum.sort() == Enum.to_list(1..120)
+    assert List.last(pages)["has_more"] == false
+    assert List.last(pages)["older_cursor"] == nil
+  end
+
+  test "full sync stays compact and server open loads channel activity", %{conn: conn} do
     user = insert_user()
     {:ok, server} = Vesper.Servers.create_server(user, %{name: "alpha"})
     channel = Enum.find(server.channels, &(&1.type == "text"))
@@ -147,12 +302,179 @@ defmodule Vesper.UrgentSyncTest do
       |> json_response(200)
 
     assert is_binary(response["token"])
+    assert response["channel_activity"] == []
 
-    assert Enum.any?(response["channel_activity"], fn activity ->
-             activity["channel_id"] == channel.id &&
-               activity["message_id"] == message.id &&
-               activity["sender_id"] == user.id
+    server_summary = Enum.find(response["servers"], &(&1["id"] == server.id))
+    refute Map.has_key?(server_summary, "channels")
+    refute Map.has_key?(server_summary, "channels_loaded")
+
+    channel_response =
+      build_conn()
+      |> put_req_header("accept", "application/json")
+      |> assign(:current_user, user)
+      |> ChannelController.index(%{"server_id" => server.id})
+      |> json_response(200)
+
+    channel_payload = Enum.find(channel_response["channels"], &(&1["id"] == channel.id))
+    assert channel_payload["last_message_id"] == message.id
+    assert channel_payload["last_message_sender"]["id"] == user.id
+    assert Map.has_key?(channel_response["unread_counts"], channel.id)
+  end
+
+  test "workspace sync replaces a cursor older than event retention with a compact snapshot", %{
+    conn: conn
+  } do
+    user = insert_user()
+    {:ok, server} = Vesper.Servers.create_server(user, %{name: "retained state"})
+
+    expired_cursor =
+      SyncCursor.encode(%{
+        synced_at: DateTime.add(DateTime.utc_now(), -8 * 86_400, :second),
+        user_sync_event_id: 0,
+        scope_sync_event_id: 0
+      })
+
+    response =
+      conn
+      |> assign(:current_user, user)
+      |> SyncController.index(%{"since" => expired_cursor})
+      |> json_response(200)
+
+    assert response["full"]
+    assert Enum.map(response["servers"], & &1["id"]) == [server.id]
+    refute response["has_more"]
+  end
+
+  test "workspace sync and lazy channel loads do not expose hidden channels", %{conn: conn} do
+    owner = insert_user()
+    member = insert_user()
+    {:ok, server} = Vesper.Servers.create_server(owner, %{name: "private"})
+    assert {:ok, _membership} = Vesper.Servers.join_server(member, server.invite_code)
+    channel = Enum.find(server.channels, &(&1.type == "text"))
+
+    assert {:ok, _overrides} =
+             Vesper.Servers.set_channel_permission_overrides(channel, %{
+               users: [%{user_id: member.id, allow: [], deny: ["view_channel"]}]
+             })
+
+    baseline =
+      conn
+      |> assign(:current_user, member)
+      |> SyncController.index(%{})
+      |> json_response(200)
+
+    Sync.append_scope_event("message", "channel", channel.id)
+
+    delta =
+      build_conn()
+      |> put_req_header("accept", "application/json")
+      |> assign(:current_user, member)
+      |> SyncController.index(%{"since" => baseline["token"]})
+      |> json_response(200)
+
+    assert delta["channel_activity"] == []
+    refute Map.has_key?(delta["unread_counts"]["channels"], channel.id)
+
+    channel_response =
+      build_conn()
+      |> put_req_header("accept", "application/json")
+      |> assign(:current_user, member)
+      |> ChannelController.index(%{"server_id" => server.id})
+      |> json_response(200)
+
+    refute Enum.any?(channel_response["channels"], &(&1["id"] == channel.id))
+    refute Map.has_key?(channel_response["unread_counts"], channel.id)
+  end
+
+  test "conversation pages preserve activity order and expose every conversation", %{conn: conn} do
+    user = insert_user()
+
+    conversations =
+      for index <- 1..31 do
+        peer = insert_user()
+        {:ok, conversation} = Chat.create_conversation(user.id, [peer.id], name: "dm-#{index}")
+        conversation
+      end
+
+    oldest = hd(conversations)
+    message = insert_dm_message(user.id, oldest.id, "recent activity")
+    assert {:ok, _projected_message} = Runtime.project_message(message)
+
+    first =
+      conn
+      |> assign(:current_user, user)
+      |> ConversationController.index(%{"limit" => "25"})
+      |> json_response(200)
+
+    assert hd(first["conversations"])["id"] == oldest.id
+    assert first["has_more"]
+    assert is_binary(first["next_cursor"])
+
+    second =
+      build_conn()
+      |> put_req_header("accept", "application/json")
+      |> assign(:current_user, user)
+      |> ConversationController.index(%{
+        "limit" => "25",
+        "before" => first["next_cursor"]
+      })
+      |> json_response(200)
+
+    refute second["has_more"]
+
+    ids = Enum.map(first["conversations"] ++ second["conversations"], & &1["id"])
+    assert length(ids) == 31
+    assert length(Enum.uniq(ids)) == 31
+    assert MapSet.new(ids) == MapSet.new(Enum.map(conversations, & &1.id))
+  end
+
+  test "workspace delta drains bounded authorized pages without skipping", %{conn: conn} do
+    user = insert_user()
+    peer = insert_user()
+    outsider = insert_user()
+    outsider_peer = insert_user()
+
+    {:ok, conversation} = Chat.create_conversation(user.id, [peer.id], name: "visible")
+
+    {:ok, hidden_conversation} =
+      Chat.create_conversation(outsider.id, [outsider_peer.id], name: "hidden")
+
+    baseline =
+      conn
+      |> assign(:current_user, user)
+      |> SyncController.index(%{})
+      |> json_response(200)
+
+    for _ <- 1..125 do
+      Sync.append_scope_event("message", "dm", conversation.id)
+      Sync.append_scope_event("message", "dm", hidden_conversation.id)
+    end
+
+    {pages, final_token} =
+      Enum.reduce_while(1..10, {[], baseline["token"]}, fn _, {pages, token} ->
+        page =
+          build_conn()
+          |> put_req_header("accept", "application/json")
+          |> assign(:current_user, user)
+          |> SyncController.index(%{"since" => token, "limit" => "50"})
+          |> json_response(200)
+
+        next = {pages ++ [page], page["token"]}
+        if page["has_more"], do: {:cont, next}, else: {:halt, next}
+      end)
+
+    assert length(pages) == 3
+    assert Enum.map(pages, & &1["has_more"]) == [true, true, false]
+
+    assert Enum.all?(pages, fn page ->
+             Enum.map(page["conversations"], & &1["id"]) == [conversation.id]
            end)
+
+    refute Enum.any?(pages, fn page ->
+             Enum.any?(page["conversations"], &(&1["id"] == hidden_conversation.id))
+           end)
+
+    assert SyncCursor.decode(final_token).scope_sync_event_id == Sync.latest_scope_event_id()
   end
 
   test "scope summary updates broadcast channel activity over the user topic" do

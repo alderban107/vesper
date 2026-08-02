@@ -3,6 +3,7 @@ defmodule VesperWeb.PendingResyncRequestController do
   alias Vesper.Encryption
   alias Vesper.Chat
   alias Vesper.Servers
+  alias VesperWeb.ControllerHelpers
 
   @doc "GET /api/v1/pending-resync-requests/:channel_id — fetch pending resync requests for the current MLS scope"
   def index(conn, %{"channel_id" => scope_id}) do
@@ -79,13 +80,9 @@ defmodule VesperWeb.PendingResyncRequestController do
   end
 
   defp authorized_scope(user_id, scope_id) do
-    with {:ok, uuid} <- Ecto.UUID.cast(scope_id) do
-      case authorize_channel_scope(user_id, uuid) do
-        {:error, :not_found} -> authorize_conversation_scope(user_id, uuid)
-        result -> result
-      end
-    else
-      :error -> {:error, :invalid_scope}
+    case ControllerHelpers.authorize_mls_scope(user_id, scope_id) do
+      {:ok, %{group_id: group_id}} -> {:ok, group_id}
+      error -> error
     end
   end
 

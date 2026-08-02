@@ -40,6 +40,15 @@ function readStringEnv(name, fallback = null) {
   return raw && raw.length > 0 ? raw : fallback
 }
 
+function readBooleanEnv(name, fallback) {
+  const raw = process.env[name]
+  if (!raw) {
+    return fallback
+  }
+
+  return !['0', 'false', 'no'].includes(raw.toLowerCase())
+}
+
 function percentile(samples, ratio) {
   if (samples.length === 0) {
     return null
@@ -196,7 +205,9 @@ async function waitForKeyPackages(device, minimumCount = 1, timeoutMs = 10_000) 
   await waitFor(
     `key packages for ${device.deviceIdentity.id}`,
     async () => {
-      const count = await device.run(() => getMyKeyPackageCount(device.deviceIdentity.id))
+      const count = await device.run(() =>
+        getMyKeyPackageCount(device.deviceIdentity.id, device.httpClient)
+      )
       return count >= minimumCount ? count : null
     },
     timeoutMs,
@@ -216,6 +227,8 @@ function readConfig() {
     durationSeconds: readIntEnv('CHAOS_DURATION_SECONDS', 60),
     expectedWindow: readIntEnv('CHAOS_EXPECTED_WINDOW', 240),
     historySeedMessages: readIntEnv('CHAOS_HISTORY_SEED_MESSAGES', 180),
+    loginRestoreEnabled: readBooleanEnv('CHAOS_ENABLE_LOGIN_RESTORE', true),
+    multiCohortSize: readNonNegativeIntEnv('CHAOS_MULTI_COHORT_SIZE', 4),
     restorePageSize: readIntEnv('CHAOS_RESTORE_PAGE_SIZE', 80),
     restoreBatchSize: readIntEnv('CHAOS_RESTORE_BATCH_SIZE', 240),
     scopesPerActor: readIntEnv('CHAOS_SCOPES_PER_ACTOR', 2),
@@ -284,11 +297,16 @@ function seedTimeoutMs(seedMessageCount) {
 function createMetrics() {
   return {
     actualOps: 0,
+    applicationFanoutPublishes: 0,
     decryptFailureKeys: new Set(),
     decryptFailureSamples: [],
     decryptFailures: 0,
+    failureSamples: [],
     failures: 0,
     logicalOps: 0,
+    messagesSent: 0,
+    repairEventKeys: new Set(),
+    repairEvents: 0,
     restoreMisses: 0,
     samples: {
       auditSync: [],
@@ -308,7 +326,30 @@ function recordMetric(metrics, key, durationMs, logicalWeight) {
   metrics.samples[key].push(durationMs)
 }
 
-function summarizeMetrics(metrics, config, actorCount, durationMs) {
+function recordFailure(metrics, label, error) {
+  metrics.failures += 1
+  if (metrics.failureSamples.length < 5) {
+    const message = error instanceof Error ? error.message : String(error)
+    const cause = error instanceof Error && error.cause instanceof Error ? error.cause : null
+    const causeCode = cause && 'code' in cause ? String(cause.code) : null
+    const causeDetail = cause ? ` (${causeCode ? `${causeCode}: ` : ''}${cause.message})` : ''
+    metrics.failureSamples.push(`${label}: ${message}${causeDetail}`)
+  }
+}
+
+function buildScaleMetrics(state, metrics) {
+  return {
+    activeScopes: state.scale?.activeScopes ?? 0,
+    applicationFanoutPublishes: metrics.applicationFanoutPublishes,
+    cohortCount: state.scale?.cohortCount ?? 0,
+    envelopeCount: state.scale?.envelopeCount ?? 0,
+    messagesSent: metrics.messagesSent,
+    physicalParticipants: state.scale?.physicalParticipants ?? state.actors.length,
+    scopeQueryCount: state.actors.reduce((total, actor) => total + actor.scopeQueryCount, 0)
+  }
+}
+
+function summarizeMetrics(metrics, config, actorCount, durationMs, scaleMetrics) {
   const summaries = {
     auditSync: summarizeSamples(metrics.samples.auditSync),
     deliveryE2E: summarizeSamples(metrics.samples.deliveryE2E),
@@ -331,8 +372,19 @@ function summarizeMetrics(metrics, config, actorCount, durationMs) {
     `- logical ops/min: ${Math.round((metrics.logicalOps * 60_000) / Math.max(durationMs, 1)).toLocaleString()}`
   )
   console.log(`- failures: ${metrics.failures}`)
+  if (metrics.failureSamples.length > 0) {
+    process.stdout.write(`- failure samples: ${metrics.failureSamples.join(' | ')}\n`)
+  }
   console.log(`- decrypt failures: ${metrics.decryptFailures}`)
   console.log(`- restore misses: ${metrics.restoreMisses}`)
+  process.stdout.write(`- repair/resync events: ${metrics.repairEvents}\n`)
+  process.stdout.write(`- physical participants: ${scaleMetrics.physicalParticipants}\n`)
+  process.stdout.write(`- active multi-cohort scopes: ${scaleMetrics.activeScopes}\n`)
+  process.stdout.write(`- physical cohorts: ${scaleMetrics.cohortCount}\n`)
+  process.stdout.write(`- room-key envelopes: ${scaleMetrics.envelopeCount}\n`)
+  process.stdout.write(`- scope query requests: ${scaleMetrics.scopeQueryCount}\n`)
+  process.stdout.write(`- application fanout publishes: ${scaleMetrics.applicationFanoutPublishes}\n`)
+  process.stdout.write(`- messages sent: ${scaleMetrics.messagesSent}\n`)
   if (metrics.decryptFailureSamples.length > 0) {
     console.log(`- decrypt failure samples: ${metrics.decryptFailureSamples.join(', ')}`)
   }
@@ -372,20 +424,25 @@ function summarizeMetrics(metrics, config, actorCount, durationMs) {
   return summaries
 }
 
-function buildReport(config, actorCount, durationMs, metrics, summaries) {
+function buildReport(config, actorCount, durationMs, metrics, summaries, scaleMetrics) {
   return {
     actorCount,
     config,
     durationMs,
     metrics: {
       actualOps: metrics.actualOps,
+      applicationFanoutPublishes: metrics.applicationFanoutPublishes,
       decryptFailureSamples: [...metrics.decryptFailureSamples],
       decryptFailures: metrics.decryptFailures,
+      failureSamples: [...metrics.failureSamples],
       failures: metrics.failures,
       logicalOps: metrics.logicalOps,
+      messagesSent: metrics.messagesSent,
+      repairEvents: metrics.repairEvents,
       restoreMisses: metrics.restoreMisses,
       samples: cloneSampleSets(metrics.samples)
     },
+    scale: scaleMetrics,
     summaries
   }
 }
@@ -403,96 +460,44 @@ function createActor(device, username, password, scopes, trustedSecondary) {
   return {
     chat: createChatHarness(device),
     connected: true,
+    connectedAt: Date.now(),
     device,
     password,
+    scopeQueryCount: 0,
     scopes,
     trustedSecondary,
     username
   }
 }
 
-async function establishScope(primaryActor, peers, scope) {
-  await primaryActor.chat.createScopeGroup(scope)
-  await waitForKeyPackages(primaryActor.device)
-
-  const establishedActors = [primaryActor]
-
-  for (const peer of peers) {
-    let joined = false
-
-    for (let attempt = 0; attempt < 2 && !joined; attempt += 1) {
-      await peer.device.replenishKeyPackages()
-      await waitForKeyPackages(peer.device)
-
-      const checkpoints = new Map()
-      checkpoints.set(
-        primaryActor,
-        await primaryActor.chat.captureScopeCheckpoint(scope.id)
-      )
-
-      for (const actor of establishedActors.slice(1)) {
-        checkpoints.set(actor, await actor.chat.captureScopeCheckpoint(scope.id))
-      }
-
-      try {
-        const joinPackage = await primaryActor.chat.generateJoinPackage(
-          scope,
-          peer.device.requireSession().user.id,
-          peer.device.deviceIdentity.id
-        )
-
-        if (!joinPackage) {
-          throw new Error(`Missing join package for ${scope.kind}:${scope.id}`)
-        }
-
-        for (const actor of establishedActors.slice(1)) {
-          const committed = await actor.chat.applyCommitPacket(scope, joinPackage.commitBytes)
-          if (!committed) {
-            throw new Error(`Failed commit propagation for ${scope.kind}:${scope.id}`)
-          }
-        }
-
-        const welcomed = await peer.chat.applyWelcomePackage(
-          scope,
-          joinPackage.welcomeBytes,
-          joinPackage.keyPackageRef
-        )
-
-        if (!welcomed) {
-          throw new Error(`Failed welcome application for ${scope.kind}:${scope.id}`)
-        }
-
-        joined = true
-      } catch (error) {
-        for (const actor of establishedActors) {
-          await actor.chat.restoreScopeCheckpoint(scope.id, checkpoints.get(actor) ?? null)
-        }
-
-        if (attempt === 1) {
-          throw error
-        }
-      }
-    }
-
-    establishedActors.push(peer)
-  }
-
-  await primaryActor.chat.ensureScopeReady(scope, false)
-  for (const peer of peers) {
-    await peer.chat.ensureScopeReady(scope, false)
-  }
-}
-
 async function establishScopeViaNetwork(primaryActor, peers, scope, config) {
+  // Stage subscriptions so the creator's join-all event cannot make every
+  // actor race an External Commit at once. The first peer provides creator
+  // coverage; remaining peers join one at a time under the server CAS.
+  await primaryActor.chat.watchScope(scope)
+  if (peers[0]) {
+    await peers[0].chat.watchScope(scope)
+  }
+
+  console.log(`[chaos bootstrap] creating ${scope.kind}:${scope.id} as ${primaryActor.username}`)
   const primaryReady = await primaryActor.chat.ensureScopeReady(scope, true)
   if (!primaryReady) {
     throw new Error(`Primary actor could not create ${scope.kind}:${scope.id}`)
   }
 
-  for (const peer of peers) {
+  console.log(`[chaos bootstrap] created ${scope.kind}:${scope.id}`)
+  const establishedActors = [primaryActor]
+
+  for (const [peerIndex, peer] of peers.entries()) {
+    const deviceRole = peer.trustedSecondary ? 'secondary' : 'primary'
+    const peerLabel = `${peerIndex + 1}/${peers.length} ${peer.username}:${deviceRole}`
+    const previousEpoch = primaryActor.chat.getGroupEpoch(scope.id)
+    console.log(`[chaos bootstrap] replenishing ${peerLabel} for ${scope.id}`)
+    await peer.chat.watchScope(scope)
     await peer.device.replenishKeyPackages()
     await waitForKeyPackages(peer.device)
 
+    console.log(`[chaos bootstrap] joining ${peerLabel} to ${scope.id}`)
     const joined = await waitFor(
       `network bootstrap for ${peer.username}:${scope.id}`,
       async () => {
@@ -506,6 +511,36 @@ async function establishScopeViaNetwork(primaryActor, peers, scope, config) {
     if (!joined) {
       throw new Error(`Peer could not join ${scope.kind}:${scope.id}`)
     }
+
+    console.log(`[chaos bootstrap] joined ${peerLabel} to ${scope.id}`)
+    const expectedEpoch = await waitFor(
+      `sponsor epoch advance for ${peer.username}:${scope.id}`,
+      async () => {
+        await primaryActor.chat.ensureScopeReady(scope, false)
+        const epoch = primaryActor.chat.getGroupEpoch(scope.id)
+        return epoch != null && epoch !== previousEpoch ? epoch : null
+      },
+      bootstrapTimeoutMs(config, peers.length),
+      100
+    )
+
+    console.log(
+      `[chaos bootstrap] sponsor advanced ${scope.id} from ${previousEpoch} to ${expectedEpoch}`
+    )
+    for (const actor of [...establishedActors, peer]) {
+      await waitFor(
+        `epoch ${expectedEpoch} convergence for ${actor.username}:${scope.id}`,
+        async () => {
+          await actor.chat.ensureScopeReady(scope, false)
+          return actor.chat.getGroupEpoch(scope.id) === expectedEpoch ? true : null
+        },
+        bootstrapTimeoutMs(config, peers.length),
+        100
+      )
+    }
+
+    establishedActors.push(peer)
+    console.log(`[chaos bootstrap] converged ${peerLabel} on ${scope.id}@${expectedEpoch}`)
   }
 }
 
@@ -529,6 +564,109 @@ function touchScope(state, scopeId) {
   state.lastTouchedAtByScope.set(scopeId, Date.now())
 }
 
+async function migrateScopeToMultiCohort(scope, participants, config) {
+  if (config.multiCohortSize <= 0) {
+    return { cohortCount: 0, envelopeCount: 0 }
+  }
+
+  for (const participant of participants) {
+    await participant.chat.watchScope(scope)
+  }
+
+  const coordinator = participants[0]
+  const prepareResponse = await coordinator.device.httpClient.apiFetch(
+    `/api/v1/room-crypto-topology/${scope.id}/prepare`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        mode: 'multi_cohort',
+        target_cohort_size: config.multiCohortSize,
+        request_id: `load-migration:${scope.id}`
+      })
+    }
+  )
+  if (!prepareResponse.ok) {
+    throw new Error(`Could not prepare multi-cohort load scope ${scope.id}: ${prepareResponse.status}`)
+  }
+  const { migration } = await prepareResponse.json()
+  const topologies = await Promise.all(
+    participants.map((participant) =>
+      participant.device.client.fetchRoomCryptoTopology(scope.id, migration.id)
+    )
+  )
+  const entries = participants.map((participant, index) => ({
+    participant,
+    topology: topologies[index]
+  }))
+  const cohorts = Map.groupBy(entries, (entry) => entry.topology.groupId)
+
+  for (const members of cohorts.values()) {
+    const [creator, ...peers] = members
+    await waitFor(
+      `load cohort creation ${creator.topology.groupId}`,
+      async () => await creator.participant.chat.prepareCohortTopology(creator.topology, true),
+      bootstrapTimeoutMs(config, members.length),
+      100
+    )
+    for (const peer of peers) {
+      await waitFor(
+        `load cohort join ${peer.topology.groupId}`,
+        async () => await peer.participant.chat.prepareCohortTopology(peer.topology, false),
+        bootstrapTimeoutMs(config, peers.length),
+        100
+      )
+    }
+  }
+
+  const coordinatorTopology = topologies[0]
+  const staged = await coordinator.chat.coordinatePreparedRoomKeyEpoch(
+    scope,
+    coordinatorTopology,
+    `load-room-key:${scope.id}:${migration.generation}`
+  )
+  const cutoverResponse = await coordinator.device.httpClient.apiFetch(
+    `/api/v1/room-crypto-topology/${scope.id}/cutover`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ topology_id: migration.id })
+    }
+  )
+  if (!cutoverResponse.ok) {
+    throw new Error(`Could not cut over multi-cohort load scope ${scope.id}: ${cutoverResponse.status}`)
+  }
+
+  return {
+    cohortCount: cohorts.size,
+    envelopeCount: staged.envelopes.length
+  }
+}
+
+async function confirmCutoverConvergence(
+  scope,
+  participants,
+  expectedByScope,
+  expectedWindow,
+  lastTouchedAtByScope
+) {
+  if (participants.length === 0) {
+    return
+  }
+
+  const probe = `cutover-probe:${scope.id}:${Date.now()}`
+  await participants[0].chat.sendText(scope, probe)
+  pushRing(expectedByScope, scope.id, probe, expectedWindow)
+  lastTouchedAtByScope.set(scope.id, Date.now())
+
+  for (const participant of participants) {
+    const result = await participant.chat.syncScope(scope, { limit: 200 })
+    if (!result.messages.some((message) => message.content === probe)) {
+      throw new Error(
+        `Cutover probe did not converge for ${participant.username}:${scope.id}`
+      )
+    }
+  }
+}
+
 async function provisionScenario(apiUrl, config) {
   const labelSlug = (config.label ?? 'default').replace(/[^a-z0-9]+/gi, '_').toLowerCase()
   const compactLabel = labelSlug.replace(/_/g, '')
@@ -536,7 +674,10 @@ async function provisionScenario(apiUrl, config) {
     compactLabel.length > 6 ? `${compactLabel.slice(0, 4)}${compactLabel.slice(-2)}` : compactLabel || 'chaos'
   const nonce = Date.now().toString(36).slice(-6)
   const admin = createDeviceHarness(apiUrl, 'chaos-admin')
-  await admin.register(`sca_${labelSuffix}_${nonce}`, 'vesper-sdk-chaos-admin-password')
+  const adminUsername = `sca_${labelSuffix}_${nonce}`
+  const adminPassword = 'vesper-sdk-chaos-admin-password'
+  await admin.register(adminUsername, adminPassword)
+  const adminActor = createActor(admin, adminUsername, adminPassword, [], false)
 
   const server = await admin.createServer(`SDK Chaos ${Date.now()}`)
   const channels = [...server.channels]
@@ -601,12 +742,6 @@ async function provisionScenario(apiUrl, config) {
     }
   }
 
-  for (const actor of actors) {
-    for (const scope of actor.scopes) {
-      await actor.chat.watchScope(scope)
-    }
-  }
-
   const actorsByScope = new Map()
   for (const actor of actors) {
     for (const scope of actor.scopes) {
@@ -616,18 +751,25 @@ async function provisionScenario(apiUrl, config) {
     }
   }
 
+  const scale = {
+    activeScopes: activeChannels.length,
+    cohortCount: 0,
+    envelopeCount: 0,
+    physicalParticipants: actors.length + 1
+  }
+
   for (const channel of activeChannels) {
     const scope = { kind: 'channel', id: channel.id }
     const scopedActors = actorsByScope.get(channel.id) ?? []
-    const [primaryActor, ...peers] = scopedActors
 
-    if (!primaryActor) {
+    if (scopedActors.length === 0) {
       continue
     }
 
+    await adminActor.chat.watchScope(scope)
     await withTimeout(
-      establishScopeViaNetwork(primaryActor, peers, scope, config),
-      bootstrapTimeoutMs(config, scopedActors.length),
+      establishScopeViaNetwork(adminActor, scopedActors, scope, config),
+      bootstrapTimeoutMs(config, scopedActors.length + 1),
       `bootstrap scope ${scope.id}`
     )
 
@@ -638,15 +780,37 @@ async function provisionScenario(apiUrl, config) {
       seedTimeoutMs(config.historySeedMessages),
       `seed history for ${scope.id}`
     )
+
+    const migration = await withTimeout(
+      migrateScopeToMultiCohort(scope, [adminActor, ...actors], config),
+      bootstrapTimeoutMs(config, actors.length + 1) * 4,
+      `multi-cohort cutover ${scope.id}`
+    )
+    scale.cohortCount += migration.cohortCount
+    scale.envelopeCount += migration.envelopeCount
+
+    await withTimeout(
+      confirmCutoverConvergence(
+        scope,
+        [adminActor, ...scopedActors],
+        expectedByScope,
+        config.expectedWindow,
+        lastTouchedAtByScope
+      ),
+      bootstrapTimeoutMs(config, scopedActors.length + 1) * 2,
+      `cutover convergence ${scope.id}`
+    )
   }
 
   return {
     admin,
+    adminActor,
     actors,
     actorsByScope,
     fixture: null,
     expectedByScope,
-    lastTouchedAtByScope
+    lastTouchedAtByScope,
+    scale
   }
 }
 
@@ -709,9 +873,12 @@ async function provisionSharedScenario(apiUrl, config) {
       deviceId: seededUser.primary_device_id
     })
     const username = seededUser.username
-    const primarySession = await primary.login(username, password)
+    let primarySession = await primary.login(username, password)
+    if (!primarySession.canUseE2EE && primarySession.currentDevice?.trust_state === 'trusted') {
+      primarySession = await primary.unlockTrustedDevice(password)
+    }
     if (!primarySession.canUseE2EE) {
-      throw new Error(`Preseeded primary device is not trusted for ${username}`)
+      throw new Error(`Preseeded primary device could not unlock E2EE for ${username}`)
     }
     await primary.replenishKeyPackages()
     await waitForKeyPackages(primary)
@@ -736,9 +903,12 @@ async function provisionSharedScenario(apiUrl, config) {
           deviceId: seededUser.secondary_device_id
         }
       )
-      const secondarySession = await secondary.login(username, password)
+      let secondarySession = await secondary.login(username, password)
+      if (!secondarySession.canUseE2EE && secondarySession.currentDevice?.trust_state === 'trusted') {
+        secondarySession = await secondary.unlockTrustedDevice(password)
+      }
       if (!secondarySession.canUseE2EE) {
-        throw new Error(`Preseeded secondary device is not trusted for ${username}`)
+        throw new Error(`Preseeded secondary device could not unlock E2EE for ${username}`)
       }
       await secondary.replenishKeyPackages()
       await waitForKeyPackages(secondary)
@@ -756,13 +926,6 @@ async function provisionSharedScenario(apiUrl, config) {
     }
   }
 
-  for (const [index, actor] of actors.entries()) {
-    for (const scope of actor.scopes) {
-      await actor.chat.watchScope(scope)
-    }
-    logProvisionProgress('watched actor scopes', index + 1, actors.length)
-  }
-
   const actorsByScope = new Map()
   for (const actor of actors) {
     for (const scope of actor.scopes) {
@@ -772,6 +935,12 @@ async function provisionSharedScenario(apiUrl, config) {
     }
   }
 
+  const scale = {
+    activeScopes: 0,
+    cohortCount: 0,
+    envelopeCount: 0,
+    physicalParticipants: actors.length
+  }
   let bootstrappedScopes = 0
   for (const channelId of activeChannelIds) {
     const scope = { kind: 'channel', id: channelId }
@@ -783,7 +952,7 @@ async function provisionSharedScenario(apiUrl, config) {
     }
 
     await withTimeout(
-      establishScope(primaryActor, peers, scope),
+      establishScopeViaNetwork(primaryActor, peers, scope, config),
       bootstrapTimeoutMs(config, scopedActors.length),
       `bootstrap scope ${scope.id}`
     )
@@ -796,6 +965,27 @@ async function provisionSharedScenario(apiUrl, config) {
       `seed history for ${scope.id}`
     )
 
+    const migration = await withTimeout(
+      migrateScopeToMultiCohort(scope, scopedActors, config),
+      bootstrapTimeoutMs(config, scopedActors.length) * 4,
+      `multi-cohort cutover ${scope.id}`
+    )
+    scale.cohortCount += migration.cohortCount
+    scale.envelopeCount += migration.envelopeCount
+    scale.activeScopes += migration.cohortCount > 0 ? 1 : 0
+
+    await withTimeout(
+      confirmCutoverConvergence(
+        scope,
+        scopedActors,
+        expectedByScope,
+        config.expectedWindow,
+        lastTouchedAtByScope
+      ),
+      bootstrapTimeoutMs(config, scopedActors.length) * 2,
+      `cutover convergence ${scope.id}`
+    )
+
     bootstrappedScopes += 1
     logProvisionProgress('bootstrapped active scopes', bootstrappedScopes, activeChannelIds.length)
   }
@@ -806,7 +996,8 @@ async function provisionSharedScenario(apiUrl, config) {
     actorsByScope,
     expectedByScope,
     fixture,
-    lastTouchedAtByScope
+    lastTouchedAtByScope,
+    scale
   }
 }
 
@@ -869,6 +1060,17 @@ function selectScopesForWideRestore(actor, state, count) {
 }
 
 function validateRestore(state, actor, scopeId, result, metrics) {
+  for (const event of result.events) {
+    if (!/(repair|resync)/i.test(event.eventType)) {
+      continue
+    }
+    const key = `${scopeId}:${event.id ?? event.insertedAt}:${event.eventType}`
+    if (!metrics.repairEventKeys.has(key)) {
+      metrics.repairEventKeys.add(key)
+      metrics.repairEvents += 1
+    }
+  }
+
   for (const message of result.messages) {
     if (message.decryptionFailed) {
       const failureKey = `${scopeId}:${message.id}`
@@ -880,7 +1082,16 @@ function validateRestore(state, actor, scopeId, result, metrics) {
       metrics.decryptFailures += 1
       if (metrics.decryptFailureSamples.length < 5) {
         metrics.decryptFailureSamples.push(
-          `${actor.username}:${scopeId}:${message.id}`
+          [
+            actor.username,
+            actor.device.deviceIdentity.id,
+            scopeId,
+            message.id,
+            `scheme=${message.raw.encryption_scheme ?? 'mls'}`,
+            `group=${message.raw.encryption_group_id ?? 'scope'}`,
+            `epoch=${message.raw.mls_epoch ?? 'none'}`,
+            `sender=${message.raw.sender_id ?? 'unknown'}`
+          ].join(':')
         )
       }
     }
@@ -897,22 +1108,53 @@ function validateRestore(state, actor, scopeId, result, metrics) {
   }
 }
 
+async function loginActorWithRetry(actor, attempts = 2) {
+  let lastError = null
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      let session = await actor.device.login(actor.username, actor.password)
+      if (!session.canUseE2EE && session.currentDevice?.trust_state === 'trusted') {
+        session = await actor.device.unlockTrustedDevice(actor.password)
+      }
+      if (!session.canUseE2EE) {
+        throw new Error(`Login restore came back without E2EE for ${actor.username}`)
+      }
+      return session
+    } catch (error) {
+      lastError = error
+      if (attempt < attempts) {
+        await waitInterval(100 * attempt)
+      }
+    }
+  }
+
+  throw lastError ?? new Error(`Could not restore login for ${actor.username}`)
+}
+
 async function reconnectActor(actor) {
+  if (!actor.device.client.getAuthSession()) {
+    await loginActorWithRetry(actor)
+  }
+
   actor.chat = createChatHarness(actor.device)
   for (const scope of actor.scopes) {
     await actor.chat.watchScope(scope)
   }
   actor.connected = true
+  actor.connectedAt = Date.now()
 }
 
 async function restoreScope(actor, scope, config) {
   const pageSize = Math.max(1, Math.min(config.restorePageSize, config.restoreBatchSize))
   const maxPages = Math.max(1, Math.ceil(config.restoreBatchSize / pageSize))
 
-  return await actor.chat.syncScopePaginated(scope, {
+  const result = await actor.chat.syncScopePaginated(scope, {
     maxPages,
     pageSize
   })
+  actor.scopeQueryCount += result.pagesFetched
+  return result
 }
 
 async function performSend(state, config, metrics, logicalWeight, serialRef) {
@@ -936,17 +1178,26 @@ async function performSend(state, config, metrics, logicalWeight, serialRef) {
 
   const startedAt = performance.now()
   await actor.chat.sendText(scope, text)
+  metrics.messagesSent += 1
+  metrics.applicationFanoutPublishes += 1
   const ackDurationMs = performance.now() - startedAt
   recordMetric(metrics, 'sendAck', ackDurationMs, logicalWeight)
 
   if (deliveryRecipient) {
+    const recipientStableMs = Date.now() - deliveryRecipient.connectedAt
     const delivered = await deliveryRecipient.chat.waitForMessage(
       scope.id,
       (message) => message.content === text && message.senderUsername === actor.username,
       config.deliveryTimeoutMs
     )
     if (delivered) {
-      recordMetric(metrics, 'deliveryE2E', performance.now() - startedAt, logicalWeight)
+      const deliveryDurationMs = performance.now() - startedAt
+      recordMetric(metrics, 'deliveryE2E', deliveryDurationMs, logicalWeight)
+      if (deliveryDurationMs > config.targetLatencyMs) {
+        console.warn(
+          `[chaos delivery] ${deliveryDurationMs.toFixed(2)}ms to ${deliveryRecipient.username}; connected for ${recipientStableMs}ms`
+        )
+      }
     }
   }
 
@@ -1033,11 +1284,9 @@ async function performLoginRestore(state, config, metrics, logicalWeight) {
   }
 
   actor.chat.disconnect()
+  actor.connected = false
   await actor.device.logout()
-  const session = await actor.device.login(actor.username, actor.password)
-  if (!session.canUseE2EE) {
-    throw new Error(`Trusted login restore came back without E2EE for ${actor.username}`)
-  }
+  await loginActorWithRetry(actor)
 
   const scopes = selectScopesForWideRestore(actor, state, Math.min(2, config.wideRestoreScopes))
   if (scopes.length === 0) {
@@ -1071,8 +1320,8 @@ async function auditState(state, config, metrics, logicalWeight) {
       )
       recordMetric(metrics, 'auditSync', performance.now() - startedAt, logicalWeight)
       validateRestore(state, actor, scope.id, result, metrics)
-    } catch {
-      metrics.failures += 1
+    } catch (error) {
+      recordFailure(metrics, 'audit sync', error)
     }
   }
 }
@@ -1101,6 +1350,7 @@ async function run() {
     console.log('Chaos load: timed phase starting')
     while (Date.now() < deadline) {
       const roll = Math.random()
+      let operationLabel = 'send'
 
       try {
         if (roll < 0.55) {
@@ -1110,52 +1360,67 @@ async function run() {
             'send'
           )
         } else if (roll < 0.68) {
+          operationLabel = 'disconnect'
           await performDisconnect(state)
         } else if (roll < 0.82) {
+          operationLabel = 'reconnect restore'
           await withTimeout(
             performReconnect(state, config, metrics, logicalWeight),
             4_000,
             'reconnect restore'
           )
         } else if (roll < 0.90) {
+          operationLabel = 'sync restore'
           await withTimeout(
             performSync(state, config, metrics, logicalWeight),
             4_000,
             'sync restore'
           )
         } else if (roll < 0.97) {
+          operationLabel = 'wide restore'
           await withTimeout(
             performWideRestore(state, config, metrics, logicalWeight),
             8_000,
             'wide restore'
           )
-        } else {
+        } else if (config.loginRestoreEnabled) {
+          operationLabel = 'login restore'
           await withTimeout(
             performLoginRestore(state, config, metrics, logicalWeight),
             5_000,
             'login restore'
           )
+        } else {
+          operationLabel = 'sync restore'
+          await withTimeout(
+            performSync(state, config, metrics, logicalWeight),
+            4_000,
+            'sync restore'
+          )
         }
-      } catch {
-        metrics.failures += 1
+      } catch (error) {
+        recordFailure(metrics, operationLabel, error)
       }
     }
 
     console.log('Chaos load: timed phase complete')
     await auditState(state, config, metrics, logicalWeight)
     console.log('Chaos load: audit complete')
+    const scaleMetrics = buildScaleMetrics(state, metrics)
     const summaries = summarizeMetrics(
       metrics,
       config,
       state.actors.length,
-      performance.now() - startedAt
+      performance.now() - startedAt,
+      scaleMetrics
     )
     const report = buildReport(
       config,
       state.actors.length,
       performance.now() - startedAt,
       metrics,
-      summaries
+      summaries,
+      scaleMetrics
     )
     writeJsonReport(config.jsonOutputPath, report)
 
@@ -1175,12 +1440,15 @@ async function run() {
         actor.device.disconnect()
       }
 
-      state.admin.disconnect()
+      state.adminActor?.chat.disconnect()
+      if (!state.adminActor) {
+        state.admin.disconnect()
+      }
       await waitInterval(250)
     }
 
     if (stack) {
-      teardownServerStack(stack)
+      await teardownServerStack(stack)
     }
   }
 }

@@ -40,6 +40,21 @@ defmodule Vesper.SyncCursorTest do
       assert result.user_sync_event_id == 42
     end
 
+    test "preserves a bounded page high-water mark through round-trip" do
+      cursor =
+        SyncCursor.encode(%{
+          synced_at: ~U[2026-07-26 12:00:00Z],
+          user_sync_event_id: 42,
+          scope_sync_event_id: 84,
+          user_sync_high_water: 100,
+          scope_sync_high_water: 200
+        })
+
+      result = SyncCursor.decode(cursor)
+      assert result.user_sync_high_water == 100
+      assert result.scope_sync_high_water == 200
+    end
+
     test "preserves nil user_sync_event_id through round-trip" do
       dt = ~U[2026-01-01 00:00:00Z]
       payload = %{synced_at: dt, user_sync_event_id: nil}
@@ -47,6 +62,22 @@ defmodule Vesper.SyncCursorTest do
 
       result = SyncCursor.decode(cursor)
       assert result.user_sync_event_id == nil
+    end
+  end
+
+  describe "retention" do
+    test "accepts cursors inside the configured event retention window" do
+      now = ~U[2026-07-26 12:00:00Z]
+      cursor = %{synced_at: DateTime.add(now, -6 * 86_400, :second)}
+
+      assert SyncCursor.retained?(cursor, now)
+    end
+
+    test "rejects cursors older than the configured event retention window" do
+      now = ~U[2026-07-26 12:00:00Z]
+      cursor = %{synced_at: DateTime.add(now, -8 * 86_400, :second)}
+
+      refute SyncCursor.retained?(cursor, now)
     end
   end
 

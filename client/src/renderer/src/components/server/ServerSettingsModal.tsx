@@ -60,6 +60,8 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
   const [serverName, setServerName] = useState(server?.name || '')
   const [saving, setSaving] = useState(false)
   const [deleteConfirm, setDeleteConfirm] = useState('')
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const [emojiActionPending, setEmojiActionPending] = useState(false)
   const [emojiFeedback, setEmojiFeedback] = useState<string | null>(null)
   const [emojiError, setEmojiError] = useState<string | null>(null)
@@ -137,12 +139,21 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
   }
 
   const handleDeleteServer = async (): Promise<void> => {
-    if (deleteConfirm !== server.name) {
+    if (deleteConfirm !== server.name || isDeleting) {
       return
     }
 
-    await deleteServer(activeServerId)
-    closeServerSettingsModal()
+    setIsDeleting(true)
+    setDeleteError(null)
+    const deleted = await deleteServer(activeServerId)
+
+    if (deleted) {
+      closeServerSettingsModal()
+      return
+    }
+
+    setDeleteError('Could not delete this server. Please try again.')
+    setIsDeleting(false)
   }
 
   const handleCopy = (value: string): void => {
@@ -504,7 +515,7 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
                             />
                             <button
                               type="submit"
-                              className="text-green-400 hover:text-green-300"
+                              className="text-success hover:text-success-hover"
                               title="Save"
                             >
                               <Check className="w-4 h-4" />
@@ -565,7 +576,7 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
                             </button>
                             <button
                               type="button"
-                              className="p-1.5 rounded text-text-muted hover:text-red-400 hover:bg-red-400/10 transition-colors"
+                              className="p-1.5 rounded text-text-muted hover:text-error hover:bg-error/10 transition-colors"
                               disabled={emojiActionPending}
                               onClick={() => {
                                 void handleEmojiDelete(emoji.id, emoji.name)
@@ -674,20 +685,26 @@ export default function ServerSettingsModal(): React.JSX.Element | null {
               <input
                 type="text"
                 value={deleteConfirm}
-                onChange={(event) => setDeleteConfirm(event.target.value)}
+                onChange={(event) => {
+                  setDeleteConfirm(event.target.value)
+                  setDeleteError(null)
+                }}
                 placeholder={server.name}
+                disabled={isDeleting}
                 className="vesper-settings-input"
               />
             </label>
+            {deleteError && <p className="text-sm text-error">{deleteError}</p>}
             <div className="vesper-settings-card-actions">
               <button
                 type="button"
                 onClick={handleDeleteServer}
-                disabled={deleteConfirm !== server.name}
+                disabled={deleteConfirm !== server.name || isDeleting}
+                title={deleteConfirm !== server.name ? `Type "${server.name}" above to confirm` : undefined}
                 className="vesper-settings-danger-button"
               >
                 <Trash2 className="w-4 h-4" />
-                Delete Server
+                {isDeleting ? 'Deleting…' : 'Delete Server'}
               </button>
             </div>
           </div>

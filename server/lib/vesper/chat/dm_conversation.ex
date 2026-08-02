@@ -24,5 +24,18 @@ defmodule Vesper.Chat.DmConversation do
     |> cast(attrs, [:type, :name, :disappearing_ttl])
     |> validate_required([:type])
     |> validate_inclusion(:type, ~w(direct group))
+    |> validate_length(:name, max: 100)
+    |> validate_change(:name, fn :name, name ->
+      cond do
+        not String.valid?(name) ->
+          [name: "must be valid UTF-8"]
+
+        String.match?(name, ~r/[\x00-\x1F\x7F]/u) ->
+          [name: "must not contain control characters"]
+
+        true ->
+          []
+      end
+    end)
   end
 end

@@ -4,6 +4,7 @@
  * In the web client, falls back to an IndexedDB adapter scoped to the
  * current user (vesper-crypto-{userId}).
  */
+import { base64ToUint8, uint8ToBase64 } from '../api/encoding.js'
 import { createIndexedDbAdapter } from './indexedDbStorage.js'
 
 type AsyncStorageStore = {
@@ -41,6 +42,40 @@ export interface ScopeRepairStateRecord {
   updatedAt: string | null
 }
 
+export type ControlIntentOperation =
+  | 'group_info_publish'
+  | 'external_commit_broadcast'
+  | 'sponsored_transition'
+  | 'mls_remove'
+  | 'mls_welcome'
+  | 'mls_resync_request'
+  | 'mls_history_request'
+  | 'mls_history_bundle'
+
+export type ControlIntentState = 'pending' | 'accepted' | 'rejected' | 'repair'
+
+export interface ControlIntentRecord {
+  version: 1
+  operation: ControlIntentOperation
+  idempotencyKey: string
+  scopeId: string
+  membershipGeneration: number
+  payloadJson: string
+  attempts: number
+  state: ControlIntentState
+  resultJson: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface EncryptedRoomDataKeyRecord {
+  roomId: string
+  topologyGeneration: number
+  epoch: number
+  ciphertext: Uint8Array
+  nonce: Uint8Array
+}
+
 export interface ScopeCheckpointRecord {
   groupId: string
   groupState: {
@@ -51,30 +86,17 @@ export interface ScopeCheckpointRecord {
   recentCommitFingerprints: string[]
   recentHistoryBundleFingerprints: string[]
   repairState: ScopeRepairStateRecord | null
-  pendingGroupInfoPublish: {
-    groupInfoData: Uint8Array
-    ratchetTreeData: Uint8Array | null
-    epoch: number
-  } | null
-  pendingExternalCommitBroadcast: {
-    commitData: string
-    commitId: string
-  } | null
-  pendingSponsoredTransition: {
-    recipientId: string
-    recipientClientId: string | null
-    recipientKeyPackageRef: string | null
-    commitData: string
-    commitId: string
-    removeCommitData: string | null
-    welcomeData: string | null
-    groupInfoData: Uint8Array | null
-    ratchetTreeData: Uint8Array | null
-    epoch: number | null
-    previousEpoch: number | null
-    baseState: Uint8Array | null
-    baseEpoch: number | null
-  } | null
+  roomDataKeys: EncryptedRoomDataKeyRecord[]
+  controlIntents: ControlIntentRecord[]
+}
+
+export interface WorkspaceSnapshotRecord {
+  version: 1
+  token: string | null
+  serversJson: string
+  conversationsJson: string
+  unreadCountsJson: string
+  updatedAt: string
 }
 
 export interface CryptoStorageRuntime {
@@ -100,63 +122,19 @@ export interface CryptoStorageRuntime {
     signaturePrivateKey: Uint8Array | null
   } | null>
   deleteIdentity(userId: string): Promise<void>
+  loadWorkspaceSnapshot(userId: string): Promise<WorkspaceSnapshotRecord | null>
+  saveWorkspaceSnapshot(userId: string, snapshot: WorkspaceSnapshotRecord): Promise<void>
+  saveRecoveryPackageKey(userId: string, key: Uint8Array): Promise<void>
+  loadRecoveryPackageKey(userId: string): Promise<Uint8Array | null>
   saveGroupState(groupId: string, state: Uint8Array, epoch: number): Promise<void>
   loadGroupState(groupId: string): Promise<{
     state: Uint8Array
     epoch: number
   } | null>
   deleteGroupState(groupId: string): Promise<void>
-  loadGroupSyncCursor(groupId: string): Promise<number>
-  saveGroupSyncCursor(groupId: string, lastEventSeq: number): Promise<void>
   loadScopeCheckpoint(groupId: string): Promise<ScopeCheckpointRecord>
   loadKnownScopeIds(): Promise<string[]>
   saveScopeCheckpoint(groupId: string, checkpoint: ScopeCheckpointRecord): Promise<void>
-  loadPendingGroupInfoPublishes(): Promise<
-    Array<{
-      groupId: string
-      groupInfoData: Uint8Array
-      ratchetTreeData: Uint8Array | null
-      epoch: number
-    }>
-  >
-  savePendingGroupInfoPublish(
-    groupId: string,
-    groupInfoData: Uint8Array,
-    ratchetTreeData: Uint8Array | null,
-    epoch: number
-  ): Promise<void>
-  deletePendingGroupInfoPublish(groupId: string): Promise<void>
-  loadPendingExternalCommitBroadcasts(): Promise<
-    Array<{
-      groupId: string
-      commitData: string
-      commitId: string
-    }>
-  >
-  loadPendingSponsoredTransitions(): Promise<
-    Array<{
-      groupId: string
-      recipientId: string
-      recipientClientId: string | null
-      recipientKeyPackageRef: string | null
-      commitData: string
-      commitId: string
-      removeCommitData: string | null
-      welcomeData: string | null
-      groupInfoData: Uint8Array | null
-      ratchetTreeData: Uint8Array | null
-      epoch: number | null
-      previousEpoch: number | null
-      baseState: Uint8Array | null
-      baseEpoch: number | null
-    }>
-  >
-  savePendingExternalCommitBroadcast(
-    groupId: string,
-    commitData: string,
-    commitId: string
-  ): Promise<void>
-  deletePendingExternalCommitBroadcast(groupId: string): Promise<void>
   saveKeyPackages(
     packages: Array<{ publicData: Uint8Array; privateData: Uint8Array }>
   ): Promise<void>
@@ -235,6 +213,62 @@ export interface CryptoStorageRuntime {
       preview: string
     }>
   >
+  loadPendingMessageSends(): Promise<
+    Array<{
+      clientNonce: string
+      scopeKind: 'channel' | 'dm'
+      scopeId: string
+      scopeChannelId: string | null
+      payloadJson: string
+      insertedAt: string
+    }>
+  >
+  savePendingMessageSend(entry: {
+    clientNonce: string
+    scopeKind: 'channel' | 'dm'
+    scopeId: string
+    scopeChannelId: string | null
+    payloadJson: string
+    insertedAt: string
+  }): Promise<void>
+  deletePendingMessageSend(clientNonce: string): Promise<void>
+}
+
+function decodeRoomDataKeyRecords(
+  records: EncryptedRoomDataKeyStorageRecord[]
+): EncryptedRoomDataKeyRecord[] {
+  return records.flatMap((record) => {
+    if (
+      typeof record.room_id !== 'string' ||
+      record.room_id.length === 0 ||
+      !Number.isSafeInteger(record.topology_generation) ||
+      record.topology_generation < 0 ||
+      !Number.isSafeInteger(record.epoch) ||
+      record.epoch < 0 ||
+      typeof record.ciphertext !== 'string' ||
+      typeof record.nonce !== 'string'
+    ) {
+      return []
+    }
+
+    try {
+      const ciphertext = base64ToUint8(record.ciphertext)
+      const nonce = base64ToUint8(record.nonce)
+      if (ciphertext.byteLength !== 48 || nonce.byteLength !== 12) {
+        return []
+      }
+
+      return [{
+        roomId: record.room_id,
+        topologyGeneration: record.topology_generation,
+        epoch: record.epoch,
+        ciphertext,
+        nonce
+      }]
+    } catch {
+      return []
+    }
+  })
 }
 
 export class DefaultCryptoStorageRuntime implements CryptoStorageRuntime {
@@ -367,6 +401,42 @@ export class DefaultCryptoStorageRuntime implements CryptoStorageRuntime {
     await this.db().deleteIdentityKeys(userId)
   }
 
+  async loadWorkspaceSnapshot(userId: string): Promise<WorkspaceSnapshotRecord | null> {
+    const result = await this.db().getWorkspaceSnapshot(userId)
+    if (!result || result.version !== 1) {
+      return null
+    }
+
+    return {
+      version: 1,
+      token: result.token,
+      serversJson: result.servers_json,
+      conversationsJson: result.conversations_json,
+      unreadCountsJson: result.unread_counts_json,
+      updatedAt: result.updated_at
+    }
+  }
+
+  async saveWorkspaceSnapshot(userId: string, snapshot: WorkspaceSnapshotRecord): Promise<void> {
+    await this.db().setWorkspaceSnapshot(userId, {
+      version: snapshot.version,
+      token: snapshot.token,
+      servers_json: snapshot.serversJson,
+      conversations_json: snapshot.conversationsJson,
+      unread_counts_json: snapshot.unreadCountsJson,
+      updated_at: snapshot.updatedAt
+    })
+  }
+
+  async saveRecoveryPackageKey(userId: string, key: Uint8Array): Promise<void> {
+    await this.db().setRecoveryPackageKey(userId, key)
+  }
+
+  async loadRecoveryPackageKey(userId: string): Promise<Uint8Array | null> {
+    const result = await this.db().getRecoveryPackageKey(userId)
+    return result ? new Uint8Array(result) : null
+  }
+
   async saveGroupState(groupId: string, state: Uint8Array, epoch: number): Promise<void> {
     await this.db().setGroupState(groupId, state, epoch)
   }
@@ -388,14 +458,6 @@ export class DefaultCryptoStorageRuntime implements CryptoStorageRuntime {
 
   async deleteGroupState(groupId: string): Promise<void> {
     await this.db().deleteGroupState(groupId)
-  }
-
-  async loadGroupSyncCursor(groupId: string): Promise<number> {
-    return await this.db().getGroupSyncCursor(groupId)
-  }
-
-  async saveGroupSyncCursor(groupId: string, lastEventSeq: number): Promise<void> {
-    await this.db().setGroupSyncCursor(groupId, lastEventSeq)
   }
 
   async loadScopeCheckpoint(groupId: string): Promise<ScopeCheckpointRecord> {
@@ -420,45 +482,20 @@ export class DefaultCryptoStorageRuntime implements CryptoStorageRuntime {
             updatedAt: result.repair_updated_at
           }
         : null,
-      pendingGroupInfoPublish: result.pending_group_info_publish
-        ? {
-            groupInfoData: new Uint8Array(result.pending_group_info_publish.group_info_data),
-            ratchetTreeData: result.pending_group_info_publish.ratchet_tree_data
-              ? new Uint8Array(result.pending_group_info_publish.ratchet_tree_data)
-              : null,
-            epoch: result.pending_group_info_publish.epoch
-          }
-        : null,
-      pendingExternalCommitBroadcast: result.pending_external_commit_broadcast
-        ? {
-            commitData: result.pending_external_commit_broadcast.commit_data,
-            commitId: result.pending_external_commit_broadcast.commit_id
-          }
-        : null,
-      pendingSponsoredTransition: result.pending_sponsored_transition
-        ? {
-            recipientId: result.pending_sponsored_transition.recipient_id,
-            recipientClientId: result.pending_sponsored_transition.recipient_client_id,
-            recipientKeyPackageRef:
-              result.pending_sponsored_transition.recipient_key_package_ref,
-            commitData: result.pending_sponsored_transition.commit_data,
-            commitId: result.pending_sponsored_transition.commit_id,
-            removeCommitData: result.pending_sponsored_transition.remove_commit_data,
-            welcomeData: result.pending_sponsored_transition.welcome_data,
-            groupInfoData: result.pending_sponsored_transition.group_info_data
-              ? new Uint8Array(result.pending_sponsored_transition.group_info_data)
-              : null,
-            ratchetTreeData: result.pending_sponsored_transition.ratchet_tree_data
-              ? new Uint8Array(result.pending_sponsored_transition.ratchet_tree_data)
-              : null,
-            epoch: result.pending_sponsored_transition.epoch ?? null,
-            previousEpoch: result.pending_sponsored_transition.previous_epoch ?? null,
-            baseState: result.pending_sponsored_transition.base_state
-              ? new Uint8Array(result.pending_sponsored_transition.base_state)
-              : null,
-            baseEpoch: result.pending_sponsored_transition.base_epoch ?? null
-      }
-        : null
+      roomDataKeys: decodeRoomDataKeyRecords(result.room_data_keys ?? []),
+      controlIntents: (result.control_intents ?? []).map((intent) => ({
+        version: 1,
+        operation: intent.operation as ControlIntentOperation,
+        idempotencyKey: intent.idempotency_key,
+        scopeId: intent.scope_id,
+        membershipGeneration: intent.membership_generation,
+        payloadJson: intent.payload_json,
+        attempts: intent.attempts,
+        state: intent.state as ControlIntentState,
+        resultJson: intent.result_json,
+        createdAt: intent.created_at,
+        updatedAt: intent.updated_at
+      }))
     }
   }
 
@@ -477,136 +514,27 @@ export class DefaultCryptoStorageRuntime implements CryptoStorageRuntime {
       repair_failure_count: checkpoint.repairState?.failureCount ?? 0,
       repair_last_error: checkpoint.repairState?.lastError ?? null,
       repair_updated_at: checkpoint.repairState?.updatedAt ?? null,
-      pending_group_info_publish: checkpoint.pendingGroupInfoPublish
-        ? {
-            group_info_data: checkpoint.pendingGroupInfoPublish.groupInfoData,
-            ratchet_tree_data: checkpoint.pendingGroupInfoPublish.ratchetTreeData,
-            epoch: checkpoint.pendingGroupInfoPublish.epoch
-          }
-        : null,
-      pending_external_commit_broadcast: checkpoint.pendingExternalCommitBroadcast
-        ? {
-            commit_data: checkpoint.pendingExternalCommitBroadcast.commitData,
-            commit_id: checkpoint.pendingExternalCommitBroadcast.commitId
-          }
-        : null,
-      pending_sponsored_transition: checkpoint.pendingSponsoredTransition
-        ? {
-            recipient_id: checkpoint.pendingSponsoredTransition.recipientId,
-            recipient_client_id: checkpoint.pendingSponsoredTransition.recipientClientId,
-            recipient_key_package_ref:
-              checkpoint.pendingSponsoredTransition.recipientKeyPackageRef,
-            commit_data: checkpoint.pendingSponsoredTransition.commitData,
-            commit_id: checkpoint.pendingSponsoredTransition.commitId,
-            remove_commit_data: checkpoint.pendingSponsoredTransition.removeCommitData,
-            welcome_data: checkpoint.pendingSponsoredTransition.welcomeData,
-            group_info_data: checkpoint.pendingSponsoredTransition.groupInfoData,
-            ratchet_tree_data: checkpoint.pendingSponsoredTransition.ratchetTreeData,
-            epoch: checkpoint.pendingSponsoredTransition.epoch,
-            previous_epoch: checkpoint.pendingSponsoredTransition.previousEpoch,
-            base_state: checkpoint.pendingSponsoredTransition.baseState,
-            base_epoch: checkpoint.pendingSponsoredTransition.baseEpoch
-          }
-        : null
+      room_data_keys: (checkpoint.roomDataKeys ?? []).map((record) => ({
+        room_id: record.roomId,
+        topology_generation: record.topologyGeneration,
+        epoch: record.epoch,
+        ciphertext: uint8ToBase64(record.ciphertext),
+        nonce: uint8ToBase64(record.nonce)
+      })),
+      control_intents: checkpoint.controlIntents.map((intent) => ({
+        version: 1,
+        operation: intent.operation,
+        idempotency_key: intent.idempotencyKey,
+        scope_id: intent.scopeId,
+        membership_generation: intent.membershipGeneration,
+        payload_json: intent.payloadJson,
+        attempts: intent.attempts,
+        state: intent.state,
+        result_json: intent.resultJson,
+        created_at: intent.createdAt,
+        updated_at: intent.updatedAt
+      }))
     })
-  }
-
-  async loadPendingGroupInfoPublishes(): Promise<
-    Array<{
-      groupId: string
-      groupInfoData: Uint8Array
-      ratchetTreeData: Uint8Array | null
-      epoch: number
-    }>
-  > {
-    const results = await this.db().getPendingGroupInfoPublishes()
-    return results.map((result) => ({
-      groupId: result.group_id,
-      groupInfoData: new Uint8Array(result.group_info_data),
-      ratchetTreeData: result.ratchet_tree_data
-        ? new Uint8Array(result.ratchet_tree_data)
-        : null,
-      epoch: result.epoch
-    }))
-  }
-
-  async savePendingGroupInfoPublish(
-    groupId: string,
-    groupInfoData: Uint8Array,
-    ratchetTreeData: Uint8Array | null,
-    epoch: number
-  ): Promise<void> {
-    await this.db().setPendingGroupInfoPublish(groupId, groupInfoData, ratchetTreeData, epoch)
-  }
-
-  async deletePendingGroupInfoPublish(groupId: string): Promise<void> {
-    await this.db().deletePendingGroupInfoPublish(groupId)
-  }
-
-  async loadPendingExternalCommitBroadcasts(): Promise<
-    Array<{
-      groupId: string
-      commitData: string
-      commitId: string
-    }>
-  > {
-    const results = await this.db().getPendingExternalCommitBroadcasts()
-    return results.map((result) => ({
-      groupId: result.group_id,
-      commitData: result.commit_data,
-      commitId: result.commit_id
-    }))
-  }
-
-  async savePendingExternalCommitBroadcast(
-    groupId: string,
-    commitData: string,
-    commitId: string
-  ): Promise<void> {
-    await this.db().setPendingExternalCommitBroadcast(groupId, commitData, commitId)
-  }
-
-  async deletePendingExternalCommitBroadcast(groupId: string): Promise<void> {
-    await this.db().deletePendingExternalCommitBroadcast(groupId)
-  }
-
-  async loadPendingSponsoredTransitions(): Promise<
-    Array<{
-      groupId: string
-      recipientId: string
-      recipientClientId: string | null
-      recipientKeyPackageRef: string | null
-      commitData: string
-      commitId: string
-      removeCommitData: string | null
-      welcomeData: string | null
-      groupInfoData: Uint8Array | null
-      ratchetTreeData: Uint8Array | null
-      epoch: number | null
-      previousEpoch: number | null
-      baseState: Uint8Array | null
-      baseEpoch: number | null
-    }>
-  > {
-    const results = await this.db().getPendingSponsoredTransitions()
-    return results.map((result) => ({
-      groupId: result.group_id,
-      recipientId: result.recipient_id,
-      recipientClientId: result.recipient_client_id ?? null,
-      recipientKeyPackageRef: result.recipient_key_package_ref ?? null,
-      commitData: result.commit_data,
-      commitId: result.commit_id,
-      removeCommitData: result.remove_commit_data ?? null,
-      welcomeData: result.welcome_data ?? null,
-      groupInfoData: result.group_info_data ? new Uint8Array(result.group_info_data) : null,
-      ratchetTreeData: result.ratchet_tree_data
-        ? new Uint8Array(result.ratchet_tree_data)
-        : null,
-      epoch: result.epoch ?? null,
-      previousEpoch: result.previous_epoch ?? null,
-      baseState: result.base_state ? new Uint8Array(result.base_state) : null,
-      baseEpoch: result.base_epoch ?? null
-    }))
   }
 
   async saveKeyPackages(
@@ -796,6 +724,49 @@ export class DefaultCryptoStorageRuntime implements CryptoStorageRuntime {
       insertedAt: result.inserted_at,
       preview: result.preview
     }))
+  }
+
+  async loadPendingMessageSends(): Promise<
+    Array<{
+      clientNonce: string
+      scopeKind: 'channel' | 'dm'
+      scopeId: string
+      scopeChannelId: string | null
+      payloadJson: string
+      insertedAt: string
+    }>
+  > {
+    const results = await this.db().getPendingMessageSends()
+    return results.map((result) => ({
+      clientNonce: result.client_nonce,
+      scopeKind: result.scope_kind,
+      scopeId: result.scope_id,
+      scopeChannelId: result.scope_channel_id,
+      payloadJson: result.payload_json,
+      insertedAt: result.inserted_at
+    }))
+  }
+
+  async savePendingMessageSend(entry: {
+    clientNonce: string
+    scopeKind: 'channel' | 'dm'
+    scopeId: string
+    scopeChannelId: string | null
+    payloadJson: string
+    insertedAt: string
+  }): Promise<void> {
+    await this.db().setPendingMessageSend({
+      client_nonce: entry.clientNonce,
+      scope_kind: entry.scopeKind,
+      scope_id: entry.scopeId,
+      scope_channel_id: entry.scopeChannelId,
+      payload_json: entry.payloadJson,
+      inserted_at: entry.insertedAt
+    })
+  }
+
+  async deletePendingMessageSend(clientNonce: string): Promise<void> {
+    await this.db().deletePendingMessageSend(clientNonce)
   }
 
   private db(): CryptoDbApi {

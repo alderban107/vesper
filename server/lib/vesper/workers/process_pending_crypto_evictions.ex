@@ -27,22 +27,36 @@ defmodule Vesper.Workers.ProcessPendingCryptoEvictions do
   end
 
   def request_scope(scope_kind, scope_id) do
-    case Encryption.request_next_pending_crypto_eviction(scope_kind, scope_id) do
-      nil ->
+    case Encryption.request_pending_crypto_eviction_batch(scope_kind, scope_id) do
+      [] ->
         :ok
 
-      eviction ->
-        Endpoint.broadcast(scope_topic(scope_kind, scope_id), "mls_eviction_request", %{
-          id: eviction.id,
-          scope_kind: scope_kind,
-          scope_id: scope_id,
-          group_id: eviction.group_id,
-          target_user_id: eviction.target_user_id,
-          target_device_id: eviction.target_device_id,
-          reason: eviction.reason,
-          attempt_count: eviction.attempt_count,
-          requested_at: eviction.requested_at
-        })
+      evictions ->
+        payloads =
+          Enum.map(evictions, fn eviction ->
+            %{
+              id: eviction.id,
+              target_user_id: eviction.target_user_id,
+              target_device_id: eviction.target_device_id,
+              reason: eviction.reason,
+              attempt_count: eviction.attempt_count,
+              membership_generation: eviction.membership_generation,
+              fencing_token: eviction.fencing_token,
+              requested_at: eviction.requested_at
+            }
+          end)
+
+        first = hd(payloads)
+
+        Endpoint.broadcast(
+          scope_topic(scope_kind, scope_id),
+          "mls_eviction_request",
+          first
+          |> Map.put(:scope_kind, scope_kind)
+          |> Map.put(:scope_id, scope_id)
+          |> Map.put(:group_id, hd(evictions).group_id)
+          |> Map.put(:evictions, payloads)
+        )
 
         if Encryption.has_active_crypto_evictions?(scope_kind, scope_id) do
           :ok =
@@ -51,12 +65,10 @@ defmodule Vesper.Workers.ProcessPendingCryptoEvictions do
             )
         end
 
-        Logger.debug("Requested MLS eviction for #{scope_kind}:#{scope_id}",
+        Logger.debug("Requested MLS eviction batch for #{scope_kind}:#{scope_id}",
           scope_kind: scope_kind,
           scope_id: scope_id,
-          eviction_id: eviction.id,
-          target_user_id: eviction.target_user_id,
-          target_device_id: eviction.target_device_id
+          eviction_count: length(evictions)
         )
 
         :ok

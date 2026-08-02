@@ -10,6 +10,8 @@ on:
   push:
     branches-ignore: [main]
     tags-ignore: ["v*"]
+  pull_request:
+    branches: [main]
 
 concurrency:
   group: test-sdk-${{ github.ref }}
@@ -21,7 +23,7 @@ jobs:
     outputs:
       changed: ${{ steps.check.outputs.changed }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
@@ -54,23 +56,24 @@ jobs:
       TEST_DB_PORT: "55432"
       TEST_DB_USER: vesper_sdk
       TEST_DB_PASS: vesper_sdk
+      VESPER_SDK_TEST_DB_IMAGE: postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: erlef/setup-beam@v1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
         with:
           elixir-version: "1.18"
           otp-version: "27"
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
           cache-dependency-path: package-lock.json
 
       - name: Cache Elixir deps
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: |
             server/deps
@@ -93,14 +96,28 @@ jobs:
         working-directory: client
         run: node ./scripts/ensure-rollup-native.mjs
 
-      - name: Pre-pull Postgres image
-        run: docker pull postgres:16-alpine
+      - name: Pre-pull pinned PostgreSQL image
+        run: docker pull "$VESPER_SDK_TEST_DB_IMAGE"
 
-      - name: Run SDK integration tests
+      - name: Run P1 multi-cohort integration gate
         working-directory: client
         env:
           VESPER_PERF_MULTIPLIER: "5"
         run: npm run test:sdk:e2e
+
+      - name: Run P2 multi-cohort chaos gate
+        working-directory: sdk
+        env:
+          CHAOS_ACTUAL_USERS: "6"
+          CHAOS_ACTIVE_CHANNEL_COUNT: "2"
+          CHAOS_CHANNEL_COUNT: "2"
+          CHAOS_DURATION_SECONDS: "15"
+          CHAOS_HISTORY_SEED_MESSAGES: "20"
+          CHAOS_MULTI_COHORT_SIZE: "3"
+          CHAOS_SIMULATED_USERS: "50000"
+          CHAOS_TARGET_LATENCY_MS: "500"
+          VESPER_PERF_MULTIPLIER: "5"
+        run: npm run chaos:load
 
   # Gate job — branch protection should require this check.
   sdk-checks:

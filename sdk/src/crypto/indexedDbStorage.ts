@@ -10,10 +10,12 @@
  */
 
 const DB_NAME_PREFIX = 'vesper-crypto'
-const DB_VERSION = 8
+const DB_VERSION = 11
 
 const STORES = {
   identityKeys: 'identity_keys',
+  recoveryPackageKeys: 'recovery_package_keys',
+  workspaceSnapshots: 'workspace_snapshots',
   mlsGroups: 'mls_groups',
   mlsGroupSyncState: 'mls_group_sync_state',
   mlsScopeMetadata: 'mls_scope_metadata',
@@ -22,7 +24,8 @@ const STORES = {
   mlsPendingSponsoredTransitions: 'mls_pending_sponsored_transitions',
   localKeyPackages: 'local_key_packages',
   messageCache: 'message_cache',
-  sentMessageCache: 'sent_message_cache'
+  sentMessageCache: 'sent_message_cache',
+  pendingMessageSends: 'pending_message_sends'
 } as const
 
 interface LocalKeyPackageRecord {
@@ -103,6 +106,14 @@ function openDb(userId: string): Promise<IDBDatabase> {
         db.createObjectStore(STORES.identityKeys, { keyPath: 'user_id' })
       }
 
+      if (!db.objectStoreNames.contains(STORES.recoveryPackageKeys)) {
+        db.createObjectStore(STORES.recoveryPackageKeys, { keyPath: 'user_id' })
+      }
+
+      if (!db.objectStoreNames.contains(STORES.workspaceSnapshots)) {
+        db.createObjectStore(STORES.workspaceSnapshots, { keyPath: 'user_id' })
+      }
+
       if (!db.objectStoreNames.contains(STORES.mlsGroups)) {
         db.createObjectStore(STORES.mlsGroups, { keyPath: 'group_id' })
       }
@@ -167,6 +178,10 @@ function openDb(userId: string): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(STORES.sentMessageCache)) {
         db.createObjectStore(STORES.sentMessageCache, { keyPath: 'ciphertext_b64' })
       }
+
+      if (!db.objectStoreNames.contains(STORES.pendingMessageSends)) {
+        db.createObjectStore(STORES.pendingMessageSends, { keyPath: 'client_nonce' })
+      }
     }
 
     req.onsuccess = () => resolve(req.result)
@@ -204,6 +219,153 @@ function getAllByIndex<T>(
   return req(store.index(indexName).getAll(IDBKeyRange.only(value)))
 }
 
+async function migrateLegacyControlStores(db: IDBDatabase): Promise<IDBDatabase> {
+  const transaction = db.transaction(
+    [
+      STORES.mlsScopeMetadata,
+      STORES.mlsPendingGroupInfoPublishes,
+      STORES.mlsPendingExternalCommitBroadcasts,
+      STORES.mlsPendingSponsoredTransitions
+    ],
+    'readwrite'
+  )
+  const metadataStore = transaction.objectStore(STORES.mlsScopeMetadata)
+  const groupInfoStore = transaction.objectStore(STORES.mlsPendingGroupInfoPublishes)
+  const externalCommitStore = transaction.objectStore(
+    STORES.mlsPendingExternalCommitBroadcasts
+  )
+  const sponsoredStore = transaction.objectStore(STORES.mlsPendingSponsoredTransitions)
+  const [groupInfos, externalCommits, sponsoredTransitions] = await Promise.all([
+    req<any[]>(groupInfoStore.getAll()),
+    req<any[]>(externalCommitStore.getAll()),
+    req<any[]>(sponsoredStore.getAll())
+  ])
+
+  if (
+    groupInfos.length === 0 &&
+    externalCommits.length === 0 &&
+    sponsoredTransitions.length === 0
+  ) {
+    await txComplete(transaction)
+    return db
+  }
+
+  const now = new Date().toISOString()
+  const intentsByScope = new Map<string, ControlIntentStorageRecord[]>()
+  const append = (scopeId: string, intent: ControlIntentStorageRecord): void => {
+    intentsByScope.set(scopeId, [...(intentsByScope.get(scopeId) ?? []), intent])
+  }
+  const createIntent = (
+    operation: string,
+    scopeId: string,
+    idempotencyKey: string,
+    membershipGeneration: number,
+    payload: unknown
+  ): ControlIntentStorageRecord => ({
+    version: 1,
+    operation,
+    idempotency_key: idempotencyKey,
+    scope_id: scopeId,
+    membership_generation: membershipGeneration,
+    payload_json: JSON.stringify(payload),
+    attempts: 0,
+    state: 'pending',
+    result_json: null,
+    created_at: now,
+    updated_at: now
+  })
+
+  for (const pending of groupInfos) {
+    append(
+      pending.group_id,
+      createIntent(
+        'group_info_publish',
+        pending.group_id,
+        `group-info:${pending.epoch}`,
+        pending.epoch,
+        {
+          groupInfoData: bytesToBase64(new Uint8Array(pending.group_info_data)),
+          ratchetTreeData: pending.ratchet_tree_data
+            ? bytesToBase64(new Uint8Array(pending.ratchet_tree_data))
+            : null,
+          epoch: pending.epoch
+        }
+      )
+    )
+  }
+
+  for (const pending of externalCommits) {
+    append(
+      pending.group_id,
+      createIntent(
+        'external_commit_broadcast',
+        pending.group_id,
+        pending.commit_id,
+        0,
+        { commitData: pending.commit_data, commitId: pending.commit_id }
+      )
+    )
+  }
+
+  for (const pending of sponsoredTransitions) {
+    append(
+      pending.group_id,
+      createIntent(
+        'sponsored_transition',
+        pending.group_id,
+        pending.commit_id,
+        pending.epoch ?? 0,
+        {
+          recipientId: pending.recipient_id,
+          recipientClientId: pending.recipient_client_id ?? null,
+          recipientKeyPackageRef: pending.recipient_key_package_ref ?? null,
+          commitData: pending.commit_data,
+          commitId: pending.commit_id,
+          removeCommitData: pending.remove_commit_data ?? null,
+          welcomeData: pending.welcome_data ?? null,
+          groupInfoData: pending.group_info_data
+            ? bytesToBase64(new Uint8Array(pending.group_info_data))
+            : null,
+          ratchetTreeData: pending.ratchet_tree_data
+            ? bytesToBase64(new Uint8Array(pending.ratchet_tree_data))
+            : null,
+          epoch: pending.epoch ?? null,
+          previousEpoch: pending.previous_epoch ?? null,
+          baseState: pending.base_state
+            ? bytesToBase64(new Uint8Array(pending.base_state))
+            : null,
+          baseEpoch: pending.base_epoch ?? null
+        }
+      )
+    )
+  }
+
+  for (const [scopeId, intents] of intentsByScope) {
+    const existing = await req<any>(metadataStore.get(scopeId))
+    await req(
+      metadataStore.put({
+        group_id: scopeId,
+        recent_commit_fingerprints: existing?.recent_commit_fingerprints ?? [],
+        recent_history_bundle_fingerprints:
+          existing?.recent_history_bundle_fingerprints ?? [],
+        repair_status: existing?.repair_status ?? null,
+        repair_failure_count: existing?.repair_failure_count ?? 0,
+        repair_last_error: existing?.repair_last_error ?? null,
+        repair_updated_at: existing?.repair_updated_at ?? null,
+        control_intents: [...(existing?.control_intents ?? []), ...intents]
+      })
+    )
+  }
+
+  await Promise.all([
+    req(groupInfoStore.clear()),
+    req(externalCommitStore.clear()),
+    req(sponsoredStore.clear())
+  ])
+  await txComplete(transaction)
+  return db
+}
+
 export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
   searchMessages: (query: string) => Promise<
     Array<{
@@ -224,7 +386,7 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
 
   function getDb(): Promise<IDBDatabase> {
     if (!dbPromise) {
-      dbPromise = openDb(userId)
+      dbPromise = openDb(userId).then(migrateLegacyControlStores)
     }
     return dbPromise
   }
@@ -271,7 +433,68 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
 
     async deleteIdentityKeys(userId: string) {
       const db = await getDb()
-      await req(tx(db, STORES.identityKeys, 'readwrite').delete(userId))
+      const transaction = db.transaction(
+        [STORES.identityKeys, STORES.recoveryPackageKeys, STORES.workspaceSnapshots],
+        'readwrite'
+      )
+      transaction.objectStore(STORES.identityKeys).delete(userId)
+      transaction.objectStore(STORES.recoveryPackageKeys).delete(userId)
+      transaction.objectStore(STORES.workspaceSnapshots).delete(userId)
+      await new Promise<void>((resolve, reject) => {
+        transaction.oncomplete = () => resolve()
+        transaction.onerror = () => reject(transaction.error)
+        transaction.onabort = () => reject(transaction.error)
+      })
+    },
+
+    async getWorkspaceSnapshot(userId: string) {
+      const db = await getDb()
+      const result = await req(tx(db, STORES.workspaceSnapshots, 'readonly').get(userId))
+      if (!result) return null
+      return {
+        version: result.version,
+        token: result.token ?? null,
+        servers_json: result.servers_json,
+        conversations_json: result.conversations_json,
+        unread_counts_json: result.unread_counts_json,
+        updated_at: result.updated_at
+      }
+    },
+
+    async setWorkspaceSnapshot(
+      userId: string,
+      snapshot: {
+        version: number
+        token: string | null
+        servers_json: string
+        conversations_json: string
+        unread_counts_json: string
+        updated_at: string
+      }
+    ) {
+      const db = await getDb()
+      await req(
+        tx(db, STORES.workspaceSnapshots, 'readwrite').put({
+          user_id: userId,
+          ...snapshot
+        })
+      )
+    },
+
+    async getRecoveryPackageKey(userId: string) {
+      const db = await getDb()
+      const result = await req(tx(db, STORES.recoveryPackageKeys, 'readonly').get(userId))
+      return result?.key ?? null
+    },
+
+    async setRecoveryPackageKey(userId: string, key: Uint8Array) {
+      const db = await getDb()
+      await req(
+        tx(db, STORES.recoveryPackageKeys, 'readwrite').put({
+          user_id: userId,
+          key: new Uint8Array(key)
+        })
+      )
     },
 
     // --- MLS Groups ---
@@ -331,41 +554,18 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
     async getScopeCheckpoint(groupId: string) {
       const db = await getDb()
       const transaction = db.transaction(
-        [
-          STORES.mlsGroups,
-          STORES.mlsGroupSyncState,
-          STORES.mlsScopeMetadata,
-          STORES.mlsPendingGroupInfoPublishes,
-          STORES.mlsPendingExternalCommitBroadcasts,
-          STORES.mlsPendingSponsoredTransitions
-        ],
+        [STORES.mlsGroups, STORES.mlsGroupSyncState, STORES.mlsScopeMetadata],
         'readonly'
       )
       const groupStateStore = transaction.objectStore(STORES.mlsGroups)
       const syncStateStore = transaction.objectStore(STORES.mlsGroupSyncState)
       const metadataStore = transaction.objectStore(STORES.mlsScopeMetadata)
-      const groupInfoStore = transaction.objectStore(STORES.mlsPendingGroupInfoPublishes)
-      const externalCommitStore = transaction.objectStore(STORES.mlsPendingExternalCommitBroadcasts)
-      const sponsoredTransitionStore = transaction.objectStore(
-        STORES.mlsPendingSponsoredTransitions
-      )
 
-      const [
-        groupState,
-        syncState,
-        metadata,
-        pendingGroupInfo,
-        pendingExternalCommit,
-        pendingSponsoredTransition
-      ] =
-        await Promise.all([
-          req(groupStateStore.get(groupId)),
-          req(syncStateStore.get(groupId)),
-          req(metadataStore.get(groupId)),
-          req(groupInfoStore.get(groupId)),
-          req(externalCommitStore.get(groupId)),
-          req(sponsoredTransitionStore.get(groupId))
-        ])
+      const [groupState, syncState, metadata] = await Promise.all([
+        req(groupStateStore.get(groupId)),
+        req(syncStateStore.get(groupId)),
+        req(metadataStore.get(groupId))
+      ])
       await txComplete(transaction)
 
       return {
@@ -393,60 +593,25 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
           typeof metadata?.repair_last_error === 'string' ? metadata.repair_last_error : null,
         repair_updated_at:
           typeof metadata?.repair_updated_at === 'string' ? metadata.repair_updated_at : null,
-        pending_group_info_publish: pendingGroupInfo
-          ? {
-              group_info_data: pendingGroupInfo.group_info_data,
-              ratchet_tree_data: pendingGroupInfo.ratchet_tree_data ?? null,
-              epoch: pendingGroupInfo.epoch
-            }
-          : null,
-        pending_external_commit_broadcast: pendingExternalCommit
-          ? {
-              commit_data: pendingExternalCommit.commit_data,
-              commit_id: pendingExternalCommit.commit_id
-            }
-          : null,
-        pending_sponsored_transition: pendingSponsoredTransition
-          ? {
-              recipient_id: pendingSponsoredTransition.recipient_id,
-              recipient_client_id: pendingSponsoredTransition.recipient_client_id ?? null,
-              recipient_key_package_ref:
-                pendingSponsoredTransition.recipient_key_package_ref ?? null,
-              commit_data: pendingSponsoredTransition.commit_data,
-              commit_id: pendingSponsoredTransition.commit_id,
-              remove_commit_data: pendingSponsoredTransition.remove_commit_data ?? null,
-              welcome_data: pendingSponsoredTransition.welcome_data ?? null,
-              group_info_data: pendingSponsoredTransition.group_info_data ?? null,
-              ratchet_tree_data: pendingSponsoredTransition.ratchet_tree_data ?? null,
-              epoch: pendingSponsoredTransition.epoch ?? null,
-              previous_epoch: pendingSponsoredTransition.previous_epoch ?? null,
-              base_state: pendingSponsoredTransition.base_state ?? null,
-              base_epoch: pendingSponsoredTransition.base_epoch ?? null
-            }
-          : null
+        room_data_keys: Array.isArray(metadata?.room_data_keys)
+          ? metadata.room_data_keys
+          : [],
+        control_intents: Array.isArray(metadata?.control_intents)
+          ? metadata.control_intents
+          : []
       }
     },
 
     async getKnownScopeIds() {
       const db = await getDb()
       const transaction = db.transaction(
-        [
-          STORES.mlsGroups,
-          STORES.mlsGroupSyncState,
-          STORES.mlsScopeMetadata,
-          STORES.mlsPendingGroupInfoPublishes,
-          STORES.mlsPendingExternalCommitBroadcasts,
-          STORES.mlsPendingSponsoredTransitions
-        ],
+        [STORES.mlsGroups, STORES.mlsGroupSyncState, STORES.mlsScopeMetadata],
         'readonly'
       )
       const stores = [
         transaction.objectStore(STORES.mlsGroups),
         transaction.objectStore(STORES.mlsGroupSyncState),
-        transaction.objectStore(STORES.mlsScopeMetadata),
-        transaction.objectStore(STORES.mlsPendingGroupInfoPublishes),
-        transaction.objectStore(STORES.mlsPendingExternalCommitBroadcasts),
-        transaction.objectStore(STORES.mlsPendingSponsoredTransitions)
+        transaction.objectStore(STORES.mlsScopeMetadata)
       ]
 
       const keys = await Promise.all(stores.map((store) => req(store.getAllKeys())))
@@ -458,24 +623,12 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
     async setScopeCheckpoint(groupId: string, checkpoint) {
       const db = await getDb()
       const transaction = db.transaction(
-        [
-          STORES.mlsGroups,
-          STORES.mlsGroupSyncState,
-          STORES.mlsScopeMetadata,
-          STORES.mlsPendingGroupInfoPublishes,
-          STORES.mlsPendingExternalCommitBroadcasts,
-          STORES.mlsPendingSponsoredTransitions
-        ],
+        [STORES.mlsGroups, STORES.mlsGroupSyncState, STORES.mlsScopeMetadata],
         'readwrite'
       )
       const groupStateStore = transaction.objectStore(STORES.mlsGroups)
       const syncStateStore = transaction.objectStore(STORES.mlsGroupSyncState)
       const metadataStore = transaction.objectStore(STORES.mlsScopeMetadata)
-      const groupInfoStore = transaction.objectStore(STORES.mlsPendingGroupInfoPublishes)
-      const externalCommitStore = transaction.objectStore(STORES.mlsPendingExternalCommitBroadcasts)
-      const sponsoredTransitionStore = transaction.objectStore(
-        STORES.mlsPendingSponsoredTransitions
-      )
 
       const existingSyncState = await req(syncStateStore.get(groupId))
       const nextSeq = Math.max(existingSyncState?.last_event_seq ?? 0, checkpoint.last_event_seq)
@@ -508,121 +661,13 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
           repair_status: checkpoint.repair_status ?? null,
           repair_failure_count: checkpoint.repair_failure_count ?? 0,
           repair_last_error: checkpoint.repair_last_error ?? null,
-          repair_updated_at: checkpoint.repair_updated_at ?? null
+          repair_updated_at: checkpoint.repair_updated_at ?? null,
+          room_data_keys: checkpoint.room_data_keys ?? [],
+          control_intents: checkpoint.control_intents ?? []
         })
       )
-
-      if (Object.prototype.hasOwnProperty.call(checkpoint, 'pending_group_info_publish')) {
-        if (checkpoint.pending_group_info_publish) {
-          await req(
-            groupInfoStore.put({
-              group_id: groupId,
-              group_info_data: checkpoint.pending_group_info_publish.group_info_data,
-              ratchet_tree_data: checkpoint.pending_group_info_publish.ratchet_tree_data,
-              epoch: checkpoint.pending_group_info_publish.epoch
-            })
-          )
-        } else {
-          await req(groupInfoStore.delete(groupId))
-        }
-      }
-
-      if (
-        Object.prototype.hasOwnProperty.call(checkpoint, 'pending_external_commit_broadcast')
-      ) {
-        if (checkpoint.pending_external_commit_broadcast) {
-          await req(
-            externalCommitStore.put({
-              group_id: groupId,
-              commit_data: checkpoint.pending_external_commit_broadcast.commit_data,
-              commit_id: checkpoint.pending_external_commit_broadcast.commit_id
-            })
-          )
-        } else {
-          await req(externalCommitStore.delete(groupId))
-        }
-      }
-
-      if (Object.prototype.hasOwnProperty.call(checkpoint, 'pending_sponsored_transition')) {
-        if (checkpoint.pending_sponsored_transition) {
-          await req(
-            sponsoredTransitionStore.put({
-              group_id: groupId,
-              recipient_id: checkpoint.pending_sponsored_transition.recipient_id,
-              recipient_client_id: checkpoint.pending_sponsored_transition.recipient_client_id,
-              recipient_key_package_ref:
-                checkpoint.pending_sponsored_transition.recipient_key_package_ref,
-              commit_data: checkpoint.pending_sponsored_transition.commit_data,
-              commit_id: checkpoint.pending_sponsored_transition.commit_id,
-              remove_commit_data: checkpoint.pending_sponsored_transition.remove_commit_data,
-              welcome_data: checkpoint.pending_sponsored_transition.welcome_data,
-              group_info_data: checkpoint.pending_sponsored_transition.group_info_data,
-              ratchet_tree_data: checkpoint.pending_sponsored_transition.ratchet_tree_data,
-              epoch: checkpoint.pending_sponsored_transition.epoch,
-              previous_epoch: checkpoint.pending_sponsored_transition.previous_epoch,
-              base_state: checkpoint.pending_sponsored_transition.base_state,
-              base_epoch: checkpoint.pending_sponsored_transition.base_epoch
-            })
-          )
-        } else {
-          await req(sponsoredTransitionStore.delete(groupId))
-        }
-      }
 
       await txComplete(transaction)
-    },
-
-    async getPendingGroupInfoPublishes() {
-      const db = await getDb()
-      return await req(tx(db, STORES.mlsPendingGroupInfoPublishes, 'readonly').getAll())
-    },
-
-    async setPendingGroupInfoPublish(
-      groupId: string,
-      groupInfoData: Uint8Array,
-      ratchetTreeData: Uint8Array | null,
-      epoch: number
-    ) {
-      const db = await getDb()
-      await req(
-        tx(db, STORES.mlsPendingGroupInfoPublishes, 'readwrite').put({
-          group_id: groupId,
-          group_info_data: groupInfoData,
-          ratchet_tree_data: ratchetTreeData,
-          epoch: epoch
-        })
-      )
-    },
-
-    async deletePendingGroupInfoPublish(groupId: string) {
-      const db = await getDb()
-      await req(tx(db, STORES.mlsPendingGroupInfoPublishes, 'readwrite').delete(groupId))
-    },
-
-    async getPendingExternalCommitBroadcasts() {
-      const db = await getDb()
-      return await req(tx(db, STORES.mlsPendingExternalCommitBroadcasts, 'readonly').getAll())
-    },
-
-    async getPendingSponsoredTransitions() {
-      const db = await getDb()
-      return await req(tx(db, STORES.mlsPendingSponsoredTransitions, 'readonly').getAll())
-    },
-
-    async setPendingExternalCommitBroadcast(groupId: string, commitData: string, commitId: string) {
-      const db = await getDb()
-      await req(
-        tx(db, STORES.mlsPendingExternalCommitBroadcasts, 'readwrite').put({
-          group_id: groupId,
-          commit_data: commitData,
-          commit_id: commitId
-        })
-      )
-    },
-
-    async deletePendingExternalCommitBroadcast(groupId: string) {
-      const db = await getDb()
-      await req(tx(db, STORES.mlsPendingExternalCommitBroadcasts, 'readwrite').delete(groupId))
     },
 
     // --- Key Packages ---
@@ -702,6 +747,8 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
       sender_id: string | null
       sender_username: string | null
       parent_message_id: string | null
+      thread_root_message_id: string | null
+      reply_to_message_id: string | null
       is_reply: boolean
       ciphertext: Uint8Array | null
       decrypted_content: string | null
@@ -832,6 +879,35 @@ export function createIndexedDbAdapter(userId: string): CryptoDbApi & {
 
     async removeFromFtsIndex(_messageId: string) {
       // no-op in web fallback
+    },
+
+    // --- Pending message send outbox ---
+
+    async getPendingMessageSends() {
+      const db = await getDb()
+      const results = await req(
+        tx(db, STORES.pendingMessageSends, 'readonly').getAll()
+      )
+      return [...results].sort((left, right) =>
+        left.inserted_at.localeCompare(right.inserted_at)
+      )
+    },
+
+    async setPendingMessageSend(entry: {
+      client_nonce: string
+      scope_kind: 'channel' | 'dm'
+      scope_id: string
+      scope_channel_id: string | null
+      payload_json: string
+      inserted_at: string
+    }) {
+      const db = await getDb()
+      await req(tx(db, STORES.pendingMessageSends, 'readwrite').put(entry))
+    },
+
+    async deletePendingMessageSend(clientNonce: string) {
+      const db = await getDb()
+      await req(tx(db, STORES.pendingMessageSends, 'readwrite').delete(clientNonce))
     }
   }
 }

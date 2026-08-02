@@ -14,6 +14,7 @@ defmodule VesperWeb.Plugs.RateLimit do
     register: {10, 60_000},
     recover: {5, 600_000},
     refresh: {60, 60_000},
+    upload: {20, 3_600_000},
     default: {120, 60_000}
   }
 
@@ -64,25 +65,47 @@ defmodule VesperWeb.Plugs.RateLimit do
     "login:#{ip}:#{username}"
   end
 
+  defp rate_limit_key(conn, :upload) do
+    case conn.assigns[:current_user] do
+      %{id: user_id} when is_binary(user_id) -> "upload:user:#{user_id}"
+      _ -> "upload:ip:#{client_ip(conn)}"
+    end
+  end
+
   defp rate_limit_key(conn, action) do
     "#{action}:#{client_ip(conn)}"
   end
 
   defp client_ip(conn) do
-    forwarded_for =
-      conn
-      |> get_req_header("x-forwarded-for")
-      |> List.first()
+    remote_ip = conn.remote_ip |> :inet.ntoa() |> to_string()
 
-    case forwarded_for do
-      nil ->
-        conn.remote_ip |> :inet.ntoa() |> to_string()
+    if Application.get_env(:vesper, :trust_proxy_headers, false) do
+      trusted_forwarded_ip(conn) || remote_ip
+    else
+      remote_ip
+    end
+  end
 
-      header ->
-        header
-        |> String.split(",")
-        |> List.first()
-        |> String.trim()
+  # A trusted edge must overwrite X-Forwarded-For with exactly one address.
+  # Reject chains rather than guessing which hop is authoritative; the bundled
+  # nginx proxy follows this contract. Direct deployments default to ignoring
+  # forwarding headers entirely.
+  defp trusted_forwarded_ip(conn) do
+    case get_req_header(conn, "x-forwarded-for") do
+      [header] ->
+        value = String.trim(header)
+
+        if String.contains?(value, ",") do
+          nil
+        else
+          case :inet.parse_address(String.to_charlist(value)) do
+            {:ok, address} -> address |> :inet.ntoa() |> to_string()
+            {:error, _reason} -> nil
+          end
+        end
+
+      _ ->
+        nil
     end
   end
 end

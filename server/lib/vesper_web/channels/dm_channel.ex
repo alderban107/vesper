@@ -10,7 +10,13 @@ defmodule VesperWeb.DmChannel do
   import VesperWeb.ChannelHelpers
 
   defp mls_scope(socket),
-    do: %{kind: "dm", id: socket.assigns.conversation_id, id_key: :conversation_id}
+    do: %{
+      kind: "dm",
+      group_id: socket.assigns.conversation_id,
+      resource_id: socket.assigns.conversation_id,
+      id_key: :conversation_id,
+      topic: "dm:#{socket.assigns.conversation_id}"
+    }
 
   @impl true
   def join("dm:" <> conversation_id, _payload, socket) do
@@ -57,6 +63,7 @@ defmodule VesperWeb.DmChannel do
       end
 
     with {:ok, decoded} <- safe_decode64(ciphertext),
+         {:ok, history_signing_public_key} <- decode_history_signing_key(params),
          {:ok, relations} <-
            resolve_message_relations(params, :conversation_id, socket.assigns.conversation_id) do
       attrs =
@@ -64,6 +71,10 @@ defmodule VesperWeb.DmChannel do
           ciphertext: decoded,
           client_nonce: client_nonce,
           mls_epoch: epoch,
+          encryption_scheme: Map.get(params, "encryption_scheme", "mls"),
+          encryption_group_id: Map.get(params, "encryption_group_id"),
+          history_signing_public_key: history_signing_public_key,
+          history_revision: 0,
           conversation_id: socket.assigns.conversation_id,
           sender_id: socket.assigns.user_id,
           parent_message_id: relations.parent_message_id,
@@ -72,24 +83,31 @@ defmodule VesperWeb.DmChannel do
           is_reply: relations.is_reply
         }
 
-      case Chat.create_message(attrs) do
-        {:ok, message} ->
-          message = maybe_link_attachments(message, params)
-
-          # Use cached participant_ids (kept in sync via PubSub invalidation
-          # from :participants_changed handler). Saves 1 DB query per message.
-          participant_ids = socket.assigns.participant_ids
-          append_dm_urgent_events(message, socket.assigns.user_id, participant_ids)
-
-          broadcast!(
-            socket,
-            "new_message",
+      dispatch = fn message, event ->
+        %{
+          durable_key: "room_event:#{event.id}",
+          scope_key: "dm:#{socket.assigns.conversation_id}",
+          scope_topic: "dm:#{socket.assigns.conversation_id}",
+          ordering_key: event.room_seq,
+          event: "new_message",
+          payload:
             encrypted_message_payload(
               message,
               :conversation_id,
               if(client_nonce, do: %{client_nonce: client_nonce}, else: %{})
             )
-          )
+        }
+      end
+
+      case Chat.create_message(attrs,
+             attachment_ids: Map.get(params, "attachment_ids", []),
+             dispatch: dispatch
+           ) do
+        {:ok, message} ->
+          # Use cached participant_ids (kept in sync via PubSub invalidation
+          # from :participants_changed handler). Saves 1 DB query per message.
+          participant_ids = socket.assigns.participant_ids
+          append_dm_urgent_events(message, socket.assigns.user_id, participant_ids)
 
           notify_scope_mutation(
             participant_ids,
@@ -154,7 +172,12 @@ defmodule VesperWeb.DmChannel do
            socket.assigns.user_id,
            :conversation_id,
            socket.assigns.conversation_id,
-           %{ciphertext: ciphertext, mls_epoch: mls_epoch}
+           %{
+             ciphertext: ciphertext,
+             mls_epoch: mls_epoch,
+             encryption_scheme: Map.get(payload, "encryption_scheme", "mls"),
+             encryption_group_id: Map.get(payload, "encryption_group_id")
+           }
          ) do
       :ok ->
         payload = %{
@@ -162,6 +185,7 @@ defmodule VesperWeb.DmChannel do
           message_id: message_id,
           ciphertext: ciphertext,
           mls_epoch: mls_epoch,
+          encryption_scheme: Map.get(payload, "encryption_scheme", "mls"),
           sender_id: socket.assigns.user_id
         }
 
@@ -254,7 +278,12 @@ defmodule VesperWeb.DmChannel do
            socket.assigns.user_id,
            :conversation_id,
            socket.assigns.conversation_id,
-           %{ciphertext: ciphertext, mls_epoch: mls_epoch}
+           %{
+             ciphertext: ciphertext,
+             mls_epoch: mls_epoch,
+             encryption_scheme: Map.get(payload, "encryption_scheme", "mls"),
+             encryption_group_id: Map.get(payload, "encryption_group_id")
+           }
          ) do
       :ok ->
         payload = %{
@@ -262,6 +291,7 @@ defmodule VesperWeb.DmChannel do
           message_id: message_id,
           ciphertext: ciphertext,
           mls_epoch: mls_epoch,
+          encryption_scheme: Map.get(payload, "encryption_scheme", "mls"),
           sender_id: socket.assigns.user_id
         }
 
@@ -341,10 +371,19 @@ defmodule VesperWeb.DmChannel do
 
   def handle_in(
         "edit_message",
-        %{"message_id" => id, "ciphertext" => ciphertext, "mls_epoch" => epoch},
+        %{"message_id" => id, "ciphertext" => ciphertext, "mls_epoch" => epoch} = params,
         socket
       ) do
-    case handle_edit_message(id, ciphertext, epoch, socket) do
+    case handle_edit_message(
+           id,
+           ciphertext,
+           epoch,
+           Map.get(params, "encryption_scheme", "mls"),
+           Map.get(params, "encryption_group_id"),
+           Map.get(params, "history_signing_public_key"),
+           Map.get(params, "history_revision"),
+           socket
+         ) do
       {:ok, payload} ->
         room_seq =
           Runtime.append_scope_event(

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { createVesperClient } from '../dist/index.js'
+import { verifyHistoryBundlePlaintext } from '../dist/client/messageAuthenticity.js'
 import { MemoryStorage } from '../dist/storage/index.js'
 import { createMemorySessionStore, VesperSocketClient } from '../dist/transport/index.js'
 import { bootServerStack, teardownServerStack } from '../dist/testing/index.js'
@@ -17,6 +18,7 @@ function createClientHarness(apiUrl, label, options = {}) {
 
   const client = createVesperClient({
     baseUrl: apiUrl,
+    fetchImpl: options.fetchImpl,
     sessionStore,
     storage,
     auth: {
@@ -29,6 +31,11 @@ function createClientHarness(apiUrl, label, options = {}) {
 
 function uniqueUsername(prefix) {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`
+}
+
+async function loadControlIntents(storage, scopeId, operation) {
+  const checkpoint = await storage.getScopeCheckpoint(scopeId)
+  return checkpoint.control_intents.filter((intent) => intent.operation === operation)
 }
 
 async function waitFor(description, predicate, timeoutMs = 8_000, intervalMs = 50) {
@@ -75,6 +82,103 @@ async function approveAndUnlockSecondary(primaryClient, secondaryClient, seconda
   const unlocked = await secondaryClient.unlockTrustedDevice(password)
   assert.equal(unlocked.canUseE2EE, true)
 }
+
+test('sdk hydrates the durable workspace before a reconnect sync response arrives', { concurrency: false }, async (t) => {
+  const stack = await bootServerStack()
+  t.after(async () => {
+    await teardownServerStack(stack)
+  })
+
+  const first = createClientHarness(stack.apiUrl, 'workspace-cache')
+  const username = uniqueUsername('sdkcache')
+  const password = 'vesper-sdk-cache-password'
+  await first.client.register(username, password)
+  const server = await first.client.createServer('Cached workspace')
+  await first.client.syncNow(true)
+  first.client.stop()
+
+  let releaseSync
+  const syncGate = new Promise((resolve) => {
+    releaseSync = resolve
+  })
+  let observeSync
+  const syncObserved = new Promise((resolve) => {
+    observeSync = resolve
+  })
+
+  const second = createClientHarness(stack.apiUrl, 'workspace-cache-restart', {
+    device: first.device,
+    sessionStore: first.sessionStore,
+    storage: first.storage,
+    fetchImpl: async (input, init) => {
+      const url = typeof input === 'string' ? input : input.url
+      if (url.includes('/api/v1/sync')) {
+        observeSync()
+        await syncGate
+      }
+      return await fetch(input, init)
+    }
+  })
+
+  assert.ok(await second.client.restoreSession())
+  const startPromise = second.client.start(false)
+  await syncObserved
+
+  const hydrated = second.client.getState()
+  assert.equal(hydrated.servers.some((entry) => entry.id === server.id), true)
+  assert.ok(hydrated.syncToken)
+
+  releaseSync()
+  await startPromise
+  second.client.stop()
+})
+
+test('sdk replaces stale local workspace when the server forces a compact snapshot', { concurrency: false }, async (t) => {
+  const stack = await bootServerStack()
+  t.after(async () => {
+    await teardownServerStack(stack)
+  })
+
+  const first = createClientHarness(stack.apiUrl, 'workspace-expiry')
+  const username = uniqueUsername('sdkexpiry')
+  const password = 'vesper-sdk-expiry-password'
+  await first.client.register(username, password)
+  const staleServer = await first.client.createServer('Stale local server')
+  await first.client.syncNow(true)
+  first.client.stop()
+
+  const second = createClientHarness(stack.apiUrl, 'workspace-expiry-restart', {
+    device: first.device,
+    sessionStore: first.sessionStore,
+    storage: first.storage,
+    fetchImpl: async (input, init) => {
+      const url = typeof input === 'string' ? input : input.url
+      if (url.includes('/api/v1/sync')) {
+        return new Response(
+          JSON.stringify({
+            token: 'fresh-snapshot-token',
+            full: true,
+            has_more: false,
+            servers: [],
+            conversations: [],
+            conversations_has_more: false,
+            conversations_next_cursor: null,
+            conversation_resets: [],
+            channel_activity: [],
+            unread_counts: { channels: {}, conversations: {} }
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+      }
+      return await fetch(input, init)
+    }
+  })
+
+  assert.ok(await second.client.restoreSession())
+  await second.client.start(false)
+  assert.equal(second.client.getState().servers.some((entry) => entry.id === staleServer.id), false)
+  second.client.stop()
+})
 
 test('sdk client keeps a single encrypted runtime and fan-outs scope watchers', { concurrency: false }, async (t) => {
   const stack = await bootServerStack()
@@ -129,6 +233,117 @@ test('sdk client keeps a single encrypted runtime and fan-outs scope watchers', 
     disposeSecond()
   } finally {
     senderSocket.disconnect()
+    client.stop()
+  }
+})
+
+test('sdk scope watcher recovery preserves registered listeners after a failed push acknowledgement', { concurrency: false }, async (t) => {
+  const stack = await bootServerStack()
+  t.after(async () => {
+    await teardownServerStack(stack)
+  })
+
+  const { client, sessionStore } = createClientHarness(stack.apiUrl, 'watcher-recovery')
+  const username = uniqueUsername('sdkwatcher')
+  const password = 'vesper-sdk-watcher-recovery-password'
+  const senderSocket = new VesperSocketClient({
+    getAccessToken: () => sessionStore.getAccessToken(),
+    getServerUrl: () => sessionStore.getServerUrl(),
+    logger: {
+      error: () => {},
+      log: () => {}
+    }
+  })
+
+  try {
+    await client.register(username, password)
+    await client.start(false)
+
+    const channel = await createGeneralChannel(client, `SDK Watcher Recovery ${Date.now()}`)
+    let hits = 0
+    const dispose = await client.watchScope('channel', channel.id, ({ event }) => {
+      if (event === 'typing_start') {
+        hits += 1
+      }
+    })
+
+    const originalPushWithAck = client.socketClient.pushToChannelWithAck.bind(client.socketClient)
+    let pushAttempts = 0
+    client.socketClient.pushToChannelWithAck = async () => {
+      pushAttempts += 1
+      return pushAttempts > 1
+    }
+
+    try {
+      assert.equal(
+        await client.pushScopeEvent('channel', channel.id, 'pin_message', { message_id: 'unused' }),
+        true
+      )
+    } finally {
+      client.socketClient.pushToChannelWithAck = originalPushWithAck
+    }
+
+    assert.equal(pushAttempts, 2)
+
+    senderSocket.connect()
+    await senderSocket.joinChannelWithAck(`chat:channel:${channel.id}`, () => {})
+    senderSocket.pushToChannel(`chat:channel:${channel.id}`, 'typing_start', {})
+
+    await waitFor('recovered scope watcher listener to receive a later event', async () => hits === 1)
+    dispose()
+  } finally {
+    senderSocket.disconnect()
+    client.stop()
+  }
+})
+
+test('sdk retries an ambiguous message acknowledgement with the same logical send', { concurrency: false }, async (t) => {
+  const stack = await bootServerStack()
+  t.after(async () => {
+    await teardownServerStack(stack)
+  })
+
+  const { client } = createClientHarness(stack.apiUrl, 'message-ack-retry')
+  const username = uniqueUsername('sdkackretry')
+  const password = 'vesper-sdk-message-ack-retry-password'
+
+  try {
+    await client.register(username, password)
+    await client.start(false)
+
+    const chat = client.createEncryptedChat()
+    const channel = await createGeneralChannel(client, `SDK Ack Retry ${Date.now()}`)
+    const scope = { kind: 'channel', id: channel.id }
+    const text = `retry-once-${Date.now()}`
+
+    await chat.watchScope(scope)
+    assert.equal(await chat.ensureScopeReady(scope, true), true)
+
+    const originalPushWithAck = client.socketClient.pushToChannelWithAck.bind(client.socketClient)
+    let pushAttempts = 0
+    client.socketClient.pushToChannelWithAck = async (...args) => {
+      pushAttempts += 1
+      if (pushAttempts <= 2) {
+        return false
+      }
+      return await originalPushWithAck(...args)
+    }
+
+    try {
+      await chat.sendText(scope, text)
+    } finally {
+      client.socketClient.pushToChannelWithAck = originalPushWithAck
+    }
+
+    assert.equal(pushAttempts, 3)
+
+    const messages = await waitFor('single idempotent message after ack retry', async () => {
+      const synced = await chat.syncScope(scope, { limit: 20 })
+      const matching = synced.messages.filter((message) => message.content === text)
+      return matching.length === 1 ? matching : null
+    })
+    assert.equal(messages.length, 1)
+  } finally {
     client.stop()
   }
 })
@@ -333,9 +548,13 @@ test('sdk flushes a persisted GroupInfo publish after restart', { concurrency: f
       assert.equal(created, false)
       assert.equal(chat.hasGroup(channel.id), true)
 
-      const pendingPublishes = await shared.storage.getPendingGroupInfoPublishes()
+      const pendingPublishes = await loadControlIntents(
+        shared.storage,
+        channel.id,
+        'group_info_publish'
+      )
       assert.equal(pendingPublishes.length, 1)
-      assert.equal(pendingPublishes[0]?.group_id, channel.id)
+      assert.equal(pendingPublishes[0]?.scope_id, channel.id)
     } finally {
       httpClient.apiFetch = originalApiFetch
     }
@@ -353,7 +572,11 @@ test('sdk flushes a persisted GroupInfo publish after restart', { concurrency: f
       await restarted.client.start(false)
 
       await waitFor('pending GroupInfo publish to flush after restart', async () => {
-        const pendingPublishes = await shared.storage.getPendingGroupInfoPublishes()
+        const pendingPublishes = await loadControlIntents(
+          shared.storage,
+          channel.id,
+          'group_info_publish'
+        )
         if (pendingPublishes.length !== 0) {
           return false
         }
@@ -363,6 +586,93 @@ test('sdk flushes a persisted GroupInfo publish after restart', { concurrency: f
       })
 
       assert.equal(restartedChat.hasGroup(channel.id), false)
+    } finally {
+      restarted.client.stop()
+    }
+  } finally {
+    shared.client.stop()
+  }
+})
+
+test('sdk flushes a persisted message send after a crash between local send and server ack', { concurrency: false }, async (t) => {
+  const stack = await bootServerStack()
+  t.after(async () => {
+    await teardownServerStack(stack)
+  })
+
+  const shared = createClientHarness(stack.apiUrl, 'send-outbox-restart')
+  const username = uniqueUsername('sdksendoutbox')
+  const password = 'vesper-sdk-send-outbox-password'
+
+  try {
+    await shared.client.register(username, password)
+    await shared.client.start(false)
+
+    const chat = shared.client.createEncryptedChat()
+    const channel = await createGeneralChannel(shared.client, `SDK Send Outbox ${Date.now()}`)
+    const scope = { kind: 'channel', id: channel.id }
+
+    await chat.watchScope(scope)
+    const ready = await chat.ensureScopeReady(scope, true)
+    assert.equal(ready, true)
+
+    // Simulate a real crash: the network write never resolves (hangs, as a
+    // dropped connection or a killed process would look from the caller's
+    // perspective), so sendPayload's own catch/finally never gets a chance
+    // to run and clear the outbox entry. We never await this call — a crash
+    // wouldn't wait for it either.
+    const originalPushScopeEvent = shared.client.pushScopeEvent.bind(shared.client)
+    shared.client.pushScopeEvent = async (kind, scopeId, event, payload) => {
+      if (kind === scope.kind && scopeId === scope.id && event === 'new_message') {
+        return await new Promise(() => {}) // never resolves
+      }
+
+      return await originalPushScopeEvent(kind, scopeId, event, payload)
+    }
+
+    void chat.sendText(scope, 'crash-before-ack').catch(() => {})
+
+    const pendingSends = await waitFor('pending send to be persisted before the crash', async () => {
+      const entries = await shared.storage.getPendingMessageSends()
+      return entries.length > 0 ? entries : null
+    })
+    assert.equal(pendingSends.length, 1)
+    assert.equal(pendingSends[0]?.scope_id, channel.id)
+
+    shared.client.pushScopeEvent = originalPushScopeEvent
+    shared.client.stop()
+
+    const restarted = createClientHarness(stack.apiUrl, 'send-outbox-restart-second', {
+      device: shared.device,
+      sessionStore: shared.sessionStore,
+      storage: shared.storage
+    })
+    const restartedChat = restarted.client.createEncryptedChat()
+
+    try {
+      await restarted.client.start(false)
+      await restartedChat.watchScope(scope)
+
+      const delivered = await waitFor('pending message send to flush after restart', async () => {
+        const remaining = await shared.storage.getPendingMessageSends()
+        if (remaining.length !== 0) {
+          return null
+        }
+
+        const synced = await restartedChat.syncScope(scope, { limit: 10 })
+        return synced.messages.find((message) => message.content === 'crash-before-ack') ?? null
+      })
+
+      assert.equal(delivered.decryptionFailed, false)
+
+      // Confirm the retry never produced a duplicate — the server's
+      // (scope, sender, client_nonce) unique index plus the outbox's stable
+      // nonce is what makes the crash-recovery retry safe.
+      const finalSync = await restartedChat.syncScope(scope, { limit: 10 })
+      const matches = finalSync.messages.filter(
+        (message) => message.content === 'crash-before-ack'
+      )
+      assert.equal(matches.length, 1)
     } finally {
       restarted.client.stop()
     }
@@ -436,9 +746,13 @@ test('sdk flushes a persisted sponsored transition after restart', { concurrency
 
       assert.equal(sponsored, false)
 
-      const pending = await primaryShared.storage.getPendingSponsoredTransitions()
+      const pending = await loadControlIntents(
+        primaryShared.storage,
+        channel.id,
+        'sponsored_transition'
+      )
       assert.equal(pending.length, 1)
-      assert.equal(pending[0]?.group_id, channel.id)
+      assert.equal(pending[0]?.scope_id, channel.id)
 
       assert.equal(primaryChat.getGroupEpoch(channel.id), 1)
       assert.equal(secondaryChat.hasGroup(channel.id), false)
@@ -460,7 +774,11 @@ test('sdk flushes a persisted sponsored transition after restart', { concurrency
       await restartedPrimaryChat.watchScope(scope)
 
       await waitFor('pending sponsored transition to flush after restart', async () => {
-        const pending = await primaryShared.storage.getPendingSponsoredTransitions()
+        const pending = await loadControlIntents(
+          primaryShared.storage,
+          channel.id,
+          'sponsored_transition'
+        )
         return pending.length === 0
       })
 
@@ -469,7 +787,11 @@ test('sdk flushes a persisted sponsored transition after restart', { concurrency
       })
 
       await waitFor('post-transition GroupInfo publish to flush', async () => {
-        const pending = await primaryShared.storage.getPendingGroupInfoPublishes()
+        const pending = await loadControlIntents(
+          primaryShared.storage,
+          channel.id,
+          'group_info_publish'
+        )
         return pending.length === 0
       })
 
@@ -592,8 +914,14 @@ test('sdk rolls a losing sponsor back onto the winning epoch', { concurrency: fa
         return await secondaryOwnerChat.ensureMembership(scope)
       })
 
-      assert.equal((await owner.storage.getPendingSponsoredTransitions()).length, 0)
-      assert.equal((await friend.storage.getPendingSponsoredTransitions()).length, 0)
+      assert.equal(
+        (await loadControlIntents(owner.storage, channel.id, 'sponsored_transition')).length,
+        0
+      )
+      assert.equal(
+        (await loadControlIntents(friend.storage, channel.id, 'sponsored_transition')).length,
+        0
+      )
       assert.equal(ownerChat.hasGroup(channel.id), true)
       assert.equal(friendChat.hasGroup(channel.id), true)
     } finally {
@@ -656,7 +984,11 @@ test('sdk external commit is durably stored and broadcast without a client-side 
         return ownerChat.getGroupEpoch(channel.id) === 1
       })
 
-      const pendingBroadcasts = await joinerShared.storage.getPendingExternalCommitBroadcasts()
+      const pendingBroadcasts = await loadControlIntents(
+        joinerShared.storage,
+        channel.id,
+        'external_commit_broadcast'
+      )
       assert.equal(pendingBroadcasts.length, 0)
       assert.equal(joinerChat.getGroupEpoch(channel.id), 1)
     } finally {
@@ -668,7 +1000,102 @@ test('sdk external commit is durably stored and broadcast without a client-side 
   }
 })
 
-test('sdk advances durable replay after restart when a live commit was already applied', { concurrency: false }, async (t) => {
+test('sdk coalesces concurrent durable replay and preserves ordered multi-commit state', { concurrency: false }, async (t) => {
+  const stack = await bootServerStack()
+  t.after(async () => {
+    await teardownServerStack(stack)
+  })
+
+  const owner = createClientHarness(stack.apiUrl, 'replay-owner')
+  const firstJoiner = createClientHarness(stack.apiUrl, 'replay-first-joiner')
+  const secondJoiner = createClientHarness(stack.apiUrl, 'replay-second-joiner')
+  const password = 'vesper-sdk-concurrent-replay-password'
+
+  try {
+    await owner.client.register(uniqueUsername('sdkreplayowner'), password)
+    await firstJoiner.client.register(uniqueUsername('sdkreplayfirst'), password)
+    await secondJoiner.client.register(uniqueUsername('sdkreplaysecond'), password)
+    await owner.client.start(false)
+    await firstJoiner.client.start(false)
+    await secondJoiner.client.start(false)
+
+    const ownerChat = owner.client.createEncryptedChat()
+    const firstJoinerChat = firstJoiner.client.createEncryptedChat()
+    const secondJoinerChat = secondJoiner.client.createEncryptedChat()
+    const server = await owner.client.createServer(`SDK Concurrent Replay ${Date.now()}`)
+    const channel = server.channels.find((entry) => entry.name === 'general') ?? null
+    assert.ok(channel, 'expected the default general channel')
+    const invite = await owner.client.createServerInvite(server.id, {})
+    await firstJoiner.client.joinServerByInvite(invite.code)
+    await secondJoiner.client.joinServerByInvite(invite.code)
+    const scope = { kind: 'channel', id: channel.id }
+
+    assert.equal(await ownerChat.createScopeGroup(scope), true)
+    assert.equal(ownerChat.getGroupEpoch(channel.id), 0)
+    assert.equal(await firstJoinerChat.ensureMembership(scope), true)
+    assert.equal(firstJoinerChat.getGroupEpoch(channel.id), 1)
+    assert.equal(await secondJoinerChat.ensureMembership(scope), true)
+    assert.equal(secondJoinerChat.getGroupEpoch(channel.id), 2)
+    assert.equal(ownerChat.getGroupEpoch(channel.id), 0)
+
+    const ownerHttp = owner.client.getHttpClient()
+    const originalApiFetch = ownerHttp.apiFetch.bind(ownerHttp)
+    let replayFetches = 0
+    let signalReplayStarted = () => {}
+    const replayStarted = new Promise((resolve) => {
+      signalReplayStarted = resolve
+    })
+    let releaseReplay = () => {}
+    const replayGate = new Promise((resolve) => {
+      releaseReplay = resolve
+    })
+
+    ownerHttp.apiFetch = async (...args) => {
+      if (String(args[0]).includes(`/api/v1/mls-events/${channel.id}`)) {
+        replayFetches += 1
+        signalReplayStarted()
+        await replayGate
+      }
+      return await originalApiFetch(...args)
+    }
+
+    let lockedMutationRan = false
+    try {
+      const replay = async () => await owner.client.runWithStorageContext(async () => {
+        await ownerChat.replayDurableEvents(channel.id)
+      })
+      const replays = Promise.all([replay(), replay(), replay(), replay()])
+      await replayStarted
+
+      const lockedMutation = ownerChat.withLockedScopeOperation(channel.id, async () => {
+        lockedMutationRan = true
+      })
+      await new Promise((resolve) => setTimeout(resolve, 25))
+      assert.equal(lockedMutationRan, false, 'replay must retain the group lock while fetching')
+
+      releaseReplay()
+      await Promise.all([replays, lockedMutation])
+    } finally {
+      releaseReplay()
+      ownerHttp.apiFetch = originalApiFetch
+    }
+
+    assert.equal(replayFetches, 1)
+    assert.equal(lockedMutationRan, true)
+    assert.equal(ownerChat.getGroupEpoch(channel.id), 2)
+    assert.equal(ownerChat.getMemberCount(channel.id), 3)
+
+    const checkpoint = await owner.storage.getScopeCheckpoint(channel.id)
+    assert.equal(checkpoint.epoch, 2)
+    assert.ok(checkpoint.last_event_seq > 0)
+  } finally {
+    owner.client.stop()
+    firstJoiner.client.stop()
+    secondJoiner.client.stop()
+  }
+})
+
+test('sdk applies live commits through the durable cursor and preserves them across restart', { concurrency: false }, async (t) => {
   const stack = await bootServerStack()
   t.after(async () => {
     await teardownServerStack(stack)
@@ -704,13 +1131,17 @@ test('sdk advances durable replay after restart when a live commit was already a
       return ownerChat.getGroupEpoch(channel.id) === 1
     })
 
-    assert.equal(await ownerShared.storage.getGroupSyncCursor(channel.id), 0)
+    assert.ok(await ownerShared.storage.getGroupSyncCursor(channel.id) >= 1)
 
     const checkpointBeforeRestart = await ownerShared.storage.getScopeCheckpoint(channel.id)
     assert.ok(
       checkpointBeforeRestart.recent_commit_fingerprints.length > 0,
       'expected a persisted recent commit fingerprint before restart'
     )
+
+    ownerShared.storage.setGroupSyncCursor = async () => {
+      throw new Error('durable replay must advance through the atomic scope checkpoint')
+    }
 
     ownerShared.client.stop()
 
@@ -728,7 +1159,7 @@ test('sdk advances durable replay after restart when a live commit was already a
 
       await restartedChat.replayScopeEvents(channel.id)
 
-      await waitFor('replay cursor to advance after restart', async () => {
+      await waitFor('durable replay cursor to remain advanced after restart', async () => {
         return (await ownerShared.storage.getGroupSyncCursor(channel.id)) >= 1
       })
 
@@ -912,26 +1343,575 @@ test('sdk preserves first DM messages for a peer that opens after the sender', {
     await leaderChat.watchScope(scope)
     assert.equal(await leaderChat.ensureScopeReady(scope, true), true)
 
-    // Follower joins the group via External Commit before any messages
+    // The application already authorizes the follower as a DM participant, but
+    // the follower has not watched the scope or joined its MLS group yet. Send
+    // more rows than the follower's first sync window so bundle consumption is
+    // proven against an authoritative backfill rather than one visible row.
+    const beforeOpenContents = Array.from({ length: 12 }, (_value, index) => `dm-before-follower-open-${index}`)
+    for (const content of beforeOpenContents) {
+      await leaderChat.sendText(scope, content)
+    }
+
+    const sentBeforeJoin = await waitFor('leader to retain the epoch-zero DM messages', async () => {
+      const synced = await leaderChat.syncScope(scope, { limit: 20 })
+      const firstMessage = synced.messages.find((message) => message.content === beforeOpenContents[0])
+      return firstMessage && synced.messages.filter((message) => beforeOpenContents.includes(message.content)).length === beforeOpenContents.length ? firstMessage : null
+    })
+    assert.equal(sentBeforeJoin.raw.mls_epoch, 0)
+    const originalPlaintext = await leader.storage.getSentMessagePlaintext(
+      sentBeforeJoin.raw.ciphertext
+    )
+    assert.equal(
+      verifyHistoryBundlePlaintext(
+        originalPlaintext,
+        scope.channelId || scope.id,
+        sentBeforeJoin.raw
+      ),
+      true
+    )
+
     await followerChat.watchScope(scope)
-    await waitFor('follower to join the DM group', async () => {
+    await waitFor('follower to join the DM group after the message', async () => {
       return await followerChat.ensureMembership(scope)
     })
+    assert.ok(followerChat.getGroupEpoch(scope.channelId || scope.id) > sentBeforeJoin.raw.mls_epoch)
 
-    // Now send the message — both are in the group, follower can decrypt
-    await leaderChat.sendText(scope, 'dm-before-follower-open')
-
-    const recovered = await waitFor('follower to decrypt the DM message', async () => {
+    const recovered = await waitFor('follower to recover the bounded pre-device-join DM window', async () => {
       const synced = await followerChat.syncScope(scope, { limit: 10 })
-      return synced.messages.find(
-        (message) => message.content === 'dm-before-follower-open' && !message.decryptionFailed
-      ) ?? null
+      const visible = synced.messages.filter(
+        (message) => beforeOpenContents.includes(message.content) && !message.decryptionFailed
+      )
+      const firstCached = await follower.storage.getCachedMessageDecryption(sentBeforeJoin.id)
+      const firstCachedPayload = firstCached ? JSON.parse(firstCached) : null
+      return visible.length === 10 && firstCachedPayload?.text === beforeOpenContents[0]
+        ? { visible, firstCached: firstCachedPayload.text }
+        : null
     })
 
-    assert.equal(recovered.decryptionFailed, false)
+    assert.equal(recovered.visible.length, 10)
+    assert.equal(recovered.firstCached, beforeOpenContents[0])
   } finally {
     first.client.stop()
     second.client.stop()
+  }
+})
+
+test('sdk isolates MLS control state by assigned room cohort', { concurrency: false }, async (t) => {
+  const stack = await bootServerStack()
+  t.after(async () => await teardownServerStack(stack))
+
+  const owner = createClientHarness(stack.apiUrl, 'cohort-owner')
+  const peer = createClientHarness(stack.apiUrl, 'cohort-peer')
+  const rotator = createClientHarness(stack.apiUrl, 'cohort-rotator')
+  const other = createClientHarness(stack.apiUrl, 'cohort-other')
+  const password = 'vesper-sdk-cohort-password'
+
+  try {
+    await owner.client.register(uniqueUsername('sdkcohortowner'), password)
+    await peer.client.register(uniqueUsername('sdkcohortpeer'), password)
+    await rotator.client.register(uniqueUsername('sdkcohortrotator'), password)
+    await other.client.register(uniqueUsername('sdkcohortother'), password)
+    await owner.client.start(false)
+    await peer.client.start(false)
+    await rotator.client.start(false)
+    await other.client.start(false)
+
+    const server = await owner.client.createServer(`SDK Cohort ${Date.now()}`)
+    const channel = server.channels.find((entry) => entry.name === 'general')
+    assert.ok(channel)
+    const invite = await owner.client.createServerInvite(server.id, {})
+    await peer.client.joinServerByInvite(invite.code)
+    await rotator.client.joinServerByInvite(invite.code)
+    await other.client.joinServerByInvite(invite.code)
+
+    const cutover = await owner.client.getHttpClient().apiFetch(
+      `/api/v1/room-crypto-topology/${channel.id}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ mode: 'multi_cohort', target_cohort_size: 3 })
+      }
+    )
+    assert.equal(cutover.status, 200)
+
+    const ownerTopology = await owner.client.fetchRoomCryptoTopology(channel.id)
+    const peerTopology = await peer.client.fetchRoomCryptoTopology(channel.id)
+    const rotatorTopology = await rotator.client.fetchRoomCryptoTopology(channel.id)
+    const otherTopology = await other.client.fetchRoomCryptoTopology(channel.id)
+    assert.equal(ownerTopology.groupId, peerTopology.groupId)
+    assert.equal(ownerTopology.groupId, rotatorTopology.groupId)
+    assert.notEqual(ownerTopology.groupId, otherTopology.groupId)
+
+    const scope = { kind: 'channel', id: channel.id }
+    const ownerChat = owner.client.createEncryptedChat()
+    const peerChat = peer.client.createEncryptedChat()
+    const rotatorChat = rotator.client.createEncryptedChat()
+    const otherChat = other.client.createEncryptedChat()
+    await ownerChat.watchScope(scope)
+    await peerChat.watchScope(scope)
+    await otherChat.watchScope(scope)
+
+    assert.equal(await ownerChat.ensureScopeReady(scope, true), true)
+    assert.equal(await peerChat.ensureMembership(scope), true)
+    assert.equal(ownerChat.hasGroup(ownerTopology.groupId), true)
+    assert.equal(peerChat.hasGroup(peerTopology.groupId), true)
+    assert.equal(otherChat.hasGroup(ownerTopology.groupId), false)
+
+    assert.equal(await otherChat.ensureScopeReady(scope, true), true)
+    assert.equal(otherChat.hasGroup(otherTopology.groupId), true)
+    assert.equal(ownerChat.hasGroup(otherTopology.groupId), false)
+
+    const ownerWrapping = await ownerChat.deriveScopeCohortWrappingKey(scope)
+    const peerWrapping = await peerChat.deriveScopeCohortWrappingKey(scope)
+    const otherWrapping = await otherChat.deriveScopeCohortWrappingKey(scope)
+    assert.ok(ownerWrapping)
+    assert.ok(peerWrapping)
+    assert.ok(otherWrapping)
+    assert.deepEqual(ownerWrapping.publication.publicKey, peerWrapping.publication.publicKey)
+    assert.notDeepEqual(ownerWrapping.publication.publicKey, otherWrapping.publication.publicKey)
+    assert.equal(
+      await peerChat.verifyScopeCohortWrappingPublication(scope, ownerWrapping.publication),
+      true
+    )
+
+    const tamperedKey = {
+      ...ownerWrapping.publication,
+      publicKey: new Uint8Array(ownerWrapping.publication.publicKey)
+    }
+    tamperedKey.publicKey[0] ^= 1
+    assert.equal(await peerChat.verifyScopeCohortWrappingPublication(scope, tamperedKey), false)
+
+    const tamperedContext = {
+      ...ownerWrapping.publication,
+      topologyGeneration: ownerWrapping.publication.topologyGeneration + 1
+    }
+    assert.equal(await peerChat.verifyScopeCohortWrappingPublication(scope, tamperedContext), false)
+
+    const tamperedSignature = {
+      ...ownerWrapping.publication,
+      signature: new Uint8Array(ownerWrapping.publication.signature)
+    }
+    tamperedSignature.signature[0] ^= 1
+    assert.equal(
+      await peerChat.verifyScopeCohortWrappingPublication(scope, tamperedSignature),
+      false
+    )
+
+    assert.equal(await ownerChat.publishScopeCohortWrappingKey(scope), true)
+    assert.equal(await otherChat.publishScopeCohortWrappingKey(scope), true)
+    const storedWrapping = await peerChat.fetchVerifiedScopeCohortWrappingKey(scope)
+    assert.ok(storedWrapping)
+    assert.deepEqual(storedWrapping.publicKey, ownerWrapping.publication.publicKey)
+
+    const crossCohortWrapping = await ownerChat.fetchVerifiedCohortWrappingKey({
+      roomId: otherTopology.roomId,
+      cohortId: otherTopology.cohortId,
+      groupId: otherTopology.groupId,
+      topologyGeneration: otherTopology.generation
+    })
+    assert.ok(crossCohortWrapping)
+    assert.deepEqual(crossCohortWrapping.publicKey, otherWrapping.publication.publicKey)
+
+    const roomKeyRequestId = `room-key-${Date.now()}`
+    const firstRoomKeyEpoch = await ownerChat.coordinateRoomKeyEpoch(
+      scope,
+      'initial',
+      roomKeyRequestId
+    )
+    assert.equal(firstRoomKeyEpoch.state, 'active')
+    assert.equal(firstRoomKeyEpoch.envelopes.length, 2)
+    const ownerRoomKey = await ownerChat.loadActiveRoomDataKey(scope)
+    const otherRoomKey = await otherChat.loadActiveRoomDataKey(scope)
+    assert.ok(ownerRoomKey)
+    assert.deepEqual(otherRoomKey, ownerRoomKey)
+
+    const ownerMlsEpochBeforeApplication = ownerChat.getGroupEpoch(ownerTopology.groupId)
+    const otherMlsEpochBeforeApplication = otherChat.getGroupEpoch(otherTopology.groupId)
+    await Promise.race([
+      ownerChat.sendText(scope, 'cross-cohort room-key message'),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('cross-cohort send exceeded 5s')), 5_000))
+    ])
+    const crossCohortMessage = await waitFor('cross-cohort room-key message', async () => {
+      const synced = await otherChat.syncScope(scope, { limit: 20 })
+      return synced.messages.find(
+        (message) => message.content === 'cross-cohort room-key message' && !message.decryptionFailed
+      ) ?? null
+    })
+
+    await ownerChat.editText(scope, crossCohortMessage.id, 'cross-cohort edited message')
+    await waitFor('cross-cohort room-key edit', async () => {
+      const synced = await otherChat.syncScope(scope, { limit: 20 })
+      return synced.messages.some((message) => message.content === 'cross-cohort edited message')
+    })
+
+    await ownerChat.addReaction(scope, crossCohortMessage.id, 'room-key-reaction')
+    await waitFor('cross-cohort room-key reaction', async () => {
+      const synced = await otherChat.syncScope(scope, { limit: 20 })
+      const message = synced.messages.find((entry) => entry.id === crossCohortMessage.id)
+      return message?.raw.reactions?.some((reaction) => reaction.emoji === 'room-key-reaction')
+    })
+    assert.equal(ownerChat.getGroupEpoch(ownerTopology.groupId), ownerMlsEpochBeforeApplication)
+    assert.equal(otherChat.getGroupEpoch(otherTopology.groupId), otherMlsEpochBeforeApplication)
+
+    const resumedAfterAckLoss = await ownerChat.coordinateRoomKeyEpoch(
+      scope,
+      'initial',
+      roomKeyRequestId
+    )
+    assert.equal(resumedAfterAckLoss.id, firstRoomKeyEpoch.id)
+    assert.deepEqual(await ownerChat.loadActiveRoomDataKey(scope), ownerRoomKey)
+
+    const substitutedKey = new Uint8Array(ownerWrapping.publication.publicKey)
+    substitutedKey[0] ^= 1
+    const substitution = await owner.client.getHttpClient().apiFetch(
+      `/api/v1/cohort-wrapping-keys/${ownerTopology.groupId}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({
+          mls_epoch: ownerWrapping.publication.mlsEpoch,
+          public_key: Buffer.from(substitutedKey).toString('base64'),
+          signature: Buffer.from(ownerWrapping.publication.signature).toString('base64'),
+          signer_identity: ownerWrapping.publication.signerIdentity,
+          signer_public_key: Buffer.from(ownerWrapping.publication.signerPublicKey).toString('base64'),
+          group_info_digest: Buffer.from(ownerWrapping.publication.groupInfoDigest).toString('base64')
+        })
+      }
+    )
+    assert.equal(substitution.status, 409)
+
+    const otherCohortEpochBeforeRotation = otherChat.getGroupEpoch(otherTopology.groupId)
+    await rotatorChat.watchScope(scope)
+    assert.equal(await rotatorChat.ensureMembership(scope), true)
+    await waitFor('cohort wrapping epoch rotation', async () => {
+      return ownerChat.getGroupEpoch(ownerTopology.groupId) > ownerWrapping.publication.mlsEpoch
+    })
+
+    const rotatedWrapping = await ownerChat.deriveScopeCohortWrappingKey(scope)
+    assert.ok(rotatedWrapping)
+    assert.ok(rotatedWrapping.publication.mlsEpoch > ownerWrapping.publication.mlsEpoch)
+    assert.notDeepEqual(rotatedWrapping.publication.publicKey, ownerWrapping.publication.publicKey)
+    assert.equal(
+      await ownerChat.verifyScopeCohortWrappingPublication(scope, ownerWrapping.publication),
+      false
+    )
+    assert.equal(await ownerChat.publishScopeCohortWrappingKey(scope), true)
+
+    await ownerChat.sendText(scope, 'automatic room-key rotation')
+    await waitFor('automatic room-key rotation delivery', async () => {
+      const synced = await otherChat.syncScope(scope, { limit: 20 })
+      return synced.messages.some(
+        (message) => message.content === 'automatic room-key rotation' && !message.decryptionFailed
+      )
+    })
+
+    const rotatedEpochResponse = await owner.client.getHttpClient().apiFetch(
+      `/api/v1/room-key-epochs/${channel.id}/active`
+    )
+    assert.equal(rotatedEpochResponse.status, 200)
+    const { room_key_epoch: rotatedRoomKeyEpoch } = await rotatedEpochResponse.json()
+    assert.equal(rotatedRoomKeyEpoch.state, 'active')
+    assert.equal(rotatedRoomKeyEpoch.epoch, firstRoomKeyEpoch.epoch + 1)
+    assert.equal(otherChat.getGroupEpoch(otherTopology.groupId), otherCohortEpochBeforeRotation)
+    const rotatedOwnerRoomKey = await ownerChat.loadActiveRoomDataKey(scope)
+    const rotatedOtherRoomKey = await otherChat.loadActiveRoomDataKey(scope)
+    assert.ok(rotatedOwnerRoomKey)
+    assert.deepEqual(rotatedOtherRoomKey, rotatedOwnerRoomKey)
+  } finally {
+    owner.client.stop()
+    peer.client.stop()
+    rotator.client.stop()
+    other.client.stop()
+  }
+})
+
+test('sdk migrates a populated room through one durable cutover without losing mixed history', { concurrency: false }, async (t) => {
+  const stack = await bootServerStack()
+  t.after(async () => await teardownServerStack(stack))
+
+  const harnesses = [
+    createClientHarness(stack.apiUrl, 'migration-owner'),
+    createClientHarness(stack.apiUrl, 'migration-peer'),
+    createClientHarness(stack.apiUrl, 'migration-other')
+  ]
+  const password = 'vesper-sdk-migration-password'
+
+  try {
+    for (const [index, harness] of harnesses.entries()) {
+      await harness.client.register(uniqueUsername(`sdkmigration${index}`), password)
+      await harness.client.start(false)
+    }
+
+    const [owner, peer, other] = harnesses
+    const server = await owner.client.createServer(`SDK Migration ${Date.now()}`)
+    const channel = server.channels.find((entry) => entry.name === 'general')
+    assert.ok(channel)
+    const invite = await owner.client.createServerInvite(server.id, {})
+    await peer.client.joinServerByInvite(invite.code)
+    await other.client.joinServerByInvite(invite.code)
+
+    const scope = { kind: 'channel', id: channel.id }
+    const chats = harnesses.map((harness) => harness.client.createEncryptedChat())
+    for (const chat of chats) {
+      await chat.watchScope(scope)
+    }
+    await waitFor('legacy owner group readiness', async () =>
+      await chats[0].ensureScopeReady(scope, true)
+    )
+
+    for (let index = 1; index < chats.length; index += 1) {
+      await waitFor(`legacy member ${index} join`, async () => await chats[index].ensureMembership(scope))
+    }
+
+    await chats[0].sendText(scope, 'legacy-before-topology-cutover')
+    for (let index = 1; index < chats.length; index += 1) {
+      await waitFor(`legacy visibility ${index}`, async () => {
+        const synced = await chats[index].syncScope(scope, { limit: 20 })
+        return synced.messages.some(
+          (message) => message.content === 'legacy-before-topology-cutover' && !message.decryptionFailed
+        )
+      })
+    }
+
+    const prepareResponse = await owner.client.getHttpClient().apiFetch(
+      `/api/v1/room-crypto-topology/${channel.id}/prepare`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          mode: 'multi_cohort',
+          target_cohort_size: 2,
+          request_id: `migration-${Date.now()}`
+        })
+      }
+    )
+    assert.equal(prepareResponse.status, 200)
+    const { migration } = await prepareResponse.json()
+    assert.equal(migration.state, 'cohorts_ready')
+
+    const preparedTopologies = await Promise.all(
+      harnesses.map((harness) => harness.client.fetchRoomCryptoTopology(channel.id, migration.id))
+    )
+    assert.equal(new Set(preparedTopologies.map((topology) => topology.groupId)).size, 2)
+
+    const entries = harnesses.map((harness, index) => ({
+      harness,
+      chat: chats[index],
+      topology: preparedTopologies[index]
+    }))
+    const cohorts = Map.groupBy(entries, (entry) => entry.topology.groupId)
+
+    for (const members of cohorts.values()) {
+      assert.equal(await members[0].chat.prepareCohortTopology(members[0].topology, true), true)
+      for (const member of members.slice(1)) {
+        await waitFor(`prepared cohort join ${member.topology.groupId}`, async () =>
+          await member.chat.prepareCohortTopology(member.topology, false)
+        )
+      }
+    }
+
+    const staged = await chats[0].coordinatePreparedRoomKeyEpoch(
+      scope,
+      preparedTopologies[0],
+      `migration-key-${Date.now()}`
+    )
+    assert.equal(staged.state, 'staged')
+
+    const cutoverResponse = await owner.client.getHttpClient().apiFetch(
+      `/api/v1/room-crypto-topology/${channel.id}/cutover`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ topology_id: migration.id })
+      }
+    )
+    assert.equal(cutoverResponse.status, 200)
+    const { topology: activeTopology } = await cutoverResponse.json()
+    assert.equal(activeTopology.generation, migration.generation)
+    assert.equal(activeTopology.state, 'active')
+
+    const senderIndex = 0
+    const receiverIndex = preparedTopologies.findIndex(
+      (topology) => topology.groupId !== preparedTopologies[senderIndex].groupId
+    )
+    assert.ok(receiverIndex > 0)
+
+    await chats[senderIndex].sendText(scope, 'room-key-after-topology-cutover')
+
+    const mixed = await waitFor('mixed migration history', async () => {
+      const synced = await chats[receiverIndex].syncScope(scope, { limit: 20 })
+      const legacy = synced.messages.find(
+        (message) => message.content === 'legacy-before-topology-cutover'
+      )
+      const current = synced.messages.find(
+        (message) => message.content === 'room-key-after-topology-cutover'
+      )
+      return legacy && current && !legacy.decryptionFailed && !current.decryptionFailed
+        ? { legacy, current }
+        : null
+    })
+
+    assert.equal(mixed.legacy.raw.encryption_scheme, 'mls')
+    assert.ok(mixed.legacy.raw.encryption_group_id)
+    assert.equal(mixed.current.raw.encryption_scheme, 'vesper-room-v1')
+    assert.equal(mixed.current.raw.encryption_group_id, null)
+    assert.ok(mixed.legacy.raw.room_seq < activeTopology.cutover_room_seq)
+    assert.ok(mixed.current.raw.room_seq > activeTopology.cutover_room_seq)
+
+    const receiver = harnesses[receiverIndex]
+    const receiverGroupId = preparedTopologies[receiverIndex].groupId
+    const logicalRoomId = scope.channelId || scope.id
+    const [groupCheckpointBeforeRestart, roomCheckpointBeforeRestart] = await Promise.all([receiver.storage.getScopeCheckpoint(receiverGroupId), receiver.storage.getScopeCheckpoint(logicalRoomId)])
+    assert.equal(groupCheckpointBeforeRestart.room_data_keys.length, 0)
+    assert.equal(roomCheckpointBeforeRestart.room_data_keys.length, 1)
+
+    receiver.client.stop()
+    const restartedReceiver = createClientHarness(stack.apiUrl, 'migration-restarted-receiver', {
+      device: receiver.device,
+      sessionStore: receiver.sessionStore,
+      storage: receiver.storage
+    })
+    const restartedChat = restartedReceiver.client.createEncryptedChat()
+
+    try {
+      await restartedReceiver.client.start(false)
+      await restartedChat.watchScope(scope)
+
+      const afterRestart = await waitFor('room-key history after restart', async () => {
+        const synced = await restartedChat.syncScope(scope, { limit: 20 })
+        const current = synced.messages.find((message) => message.content === 'room-key-after-topology-cutover')
+        return current && !current.decryptionFailed ? current : null
+      })
+
+      assert.equal(afterRestart.raw.encryption_scheme, 'vesper-room-v1')
+    } finally {
+      restartedReceiver.client.stop()
+    }
+  } finally {
+    for (const harness of harnesses) {
+      harness.client.stop()
+    }
+  }
+})
+
+test('sdk restores bounded DM history from an account-owned package after every prior device disconnects', { concurrency: false }, async (t) => {
+  const stack = await bootServerStack()
+  t.after(async () => {
+    await teardownServerStack(stack)
+  })
+
+  const alicePrimary = createClientHarness(stack.apiUrl, 'package-alice-primary')
+  const aliceRecovery = createClientHarness(stack.apiUrl, 'package-alice-recovery')
+  const bob = createClientHarness(stack.apiUrl, 'package-bob')
+  const aliceUsername = uniqueUsername('sdkpackagealice')
+  const bobUsername = uniqueUsername('sdkpackagebob')
+  const password = 'vesper-sdk-package-password'
+
+  try {
+    const registeredAlice = await alicePrimary.client.register(aliceUsername, password)
+    assert.ok(registeredAlice.recoveryMnemonic, 'expected an account recovery mnemonic')
+    await bob.client.register(bobUsername, password)
+    await alicePrimary.client.start(false)
+    await bob.client.start(false)
+
+    const bobSession = bob.client.getAuthSession()
+    assert.ok(bobSession, 'expected the bob session to exist')
+    const conversation = await alicePrimary.client.createConversation([bobSession.user.id])
+
+    await waitFor('bob package DM visibility', async () => {
+      const conversations = await bob.client.listConversations()
+      return conversations.find((entry) => entry.id === conversation.id) ?? null
+    })
+
+    const scope = { kind: 'dm', id: conversation.id, channelId: conversation.channel_id }
+    const aliceChat = alicePrimary.client.createEncryptedChat()
+    const bobChat = bob.client.createEncryptedChat()
+    await aliceChat.watchScope(scope)
+    await bobChat.watchScope(scope)
+    assert.equal(await aliceChat.ensureScopeReady(scope, true), true)
+    await waitFor('bob to join package DM', async () => await bobChat.ensureMembership(scope))
+
+    const expected = ['package-history-one', 'package-history-two', 'package-history-three']
+    for (const text of expected) {
+      await aliceChat.sendText(scope, text)
+      await waitFor(`bob to decrypt ${text}`, async () => {
+        const synced = await bobChat.syncScope(scope, { limit: 20 })
+        return synced.messages.some((message) => message.content === text && !message.decryptionFailed)
+      })
+    }
+
+    const primaryWindow = await aliceChat.syncScope(scope, { limit: 20 })
+    assert.ok(
+      expected.every((text) =>
+        primaryWindow.messages.some(
+          (message) => message.content === text && !message.decryptionFailed
+        )
+      ),
+      'primary device must persist the complete decryptable hot window before disconnect'
+    )
+    assert.ok(
+      await alicePrimary.storage.getRecoveryPackageKey(registeredAlice.user.id),
+      'registration must persist an account recovery package key'
+    )
+    const primaryCachedRecords = await alicePrimary.storage.getCachedMessages(
+      conversation.channel_id
+    )
+    assert.equal(primaryCachedRecords.length, expected.length)
+
+    await waitFor('opaque recovery package persistence', async () => {
+      const response = await alicePrimary.client
+        .getHttpClient()
+        .apiFetch(`/api/v1/scope-recovery-packages/${conversation.channel_id}`)
+      return response.ok
+    })
+
+    alicePrimary.client.stop()
+    bob.client.stop()
+
+    const pending = await aliceRecovery.client.login(aliceUsername, password)
+    assert.equal(pending.currentDevice?.trust_state, 'pending')
+    const approved = await aliceRecovery.client.approveCurrentDeviceWithRecovery(
+      registeredAlice.recoveryMnemonic
+    )
+    assert.equal(approved.canUseE2EE, true)
+    await aliceRecovery.client.start(false)
+
+    const placeholder = primaryCachedRecords[0]
+    await aliceRecovery.storage.cacheMessage({
+      ...placeholder,
+      decrypted_content: null
+    })
+
+    const recoveryChat = aliceRecovery.client.createEncryptedChat()
+    await recoveryChat.watchScope(scope)
+    assert.equal(await recoveryChat.ensureMembership(scope), true)
+
+    const restored = await recoveryChat.syncScope(scope, { limit: 20 })
+    for (const text of expected) {
+      assert.ok(
+        restored.messages.some(
+          (message) => message.content === text && message.decryptionFailed === false
+        ),
+        `expected account package restore to include ${text}`
+      )
+    }
+
+    const primaryIdentity = await alicePrimary.storage.getIdentityKeys(
+      alicePrimary.client.getAuthSession().user.id
+    )
+    const recoveryIdentity = await aliceRecovery.storage.getIdentityKeys(
+      aliceRecovery.client.getAuthSession().user.id
+    )
+    assert.notDeepEqual(
+      new Uint8Array(primaryIdentity.signature_private_key),
+      new Uint8Array(recoveryIdentity.signature_private_key),
+      'device MLS identities must remain distinct'
+    )
+    assert.deepEqual(
+      new Uint8Array(await alicePrimary.storage.getRecoveryPackageKey(registeredAlice.user.id)),
+      new Uint8Array(await aliceRecovery.storage.getRecoveryPackageKey(registeredAlice.user.id)),
+      'trusted devices must derive the same account recovery package key'
+    )
+  } finally {
+    alicePrimary.client.stop()
+    aliceRecovery.client.stop()
+    bob.client.stop()
   }
 })
 
@@ -983,6 +1963,13 @@ test('sdk handles same-user history repair without renderer protocol help', { co
     })
 
     assert.equal(recovered.decryptionFailed, false)
+    await waitFor('journaled history controls to complete', async () => {
+      const [requests, bundles] = await Promise.all([
+        loadControlIntents(secondary.storage, channel.id, 'mls_history_request'),
+        loadControlIntents(primary.storage, channel.id, 'mls_history_bundle')
+      ])
+      return requests.length === 0 && bundles.length === 0
+    })
   } finally {
     primary.client.stop()
     secondary.client.stop()

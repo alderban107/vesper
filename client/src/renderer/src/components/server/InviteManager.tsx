@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Copy, Trash2, Plus, Clock, Users } from 'lucide-react'
+import { Copy, Trash2, Plus, Clock, Users, Loader2 } from 'lucide-react'
 import { useServerStore } from '../../stores/serverStore'
 import { getRendererClient } from '../../sdk/client'
 import type { VesperServerInvite, VesperServerRole } from '@vesper/sdk/api'
@@ -131,12 +131,12 @@ export default function InviteManager(): React.JSX.Element {
   return (
     <div className="space-y-4">
       {error && (
-        <div className="text-red-400 text-sm bg-red-600/10 px-3 py-2 rounded-lg">{error}</div>
+        <div className="text-error text-sm bg-error/10 px-3 py-2 rounded-lg">{error}</div>
       )}
 
       {/* Permanent invite code */}
       {permanentCode && (
-        <div className="glass-card rounded-lg p-4">
+        <div className="bg-bg-secondary border border-border rounded-lg p-4">
           <h3 className="text-text-primary text-sm font-semibold mb-1">Server Invite Code</h3>
           <p className="text-text-faintest text-[10px] mb-2">Rotates every 24 hours</p>
           <div className="flex items-center gap-2">
@@ -151,14 +151,14 @@ export default function InviteManager(): React.JSX.Element {
               <Copy className="w-4 h-4" />
             </button>
             {copied === permanentCode && (
-              <span className="text-emerald-400 text-[10px]">Copied!</span>
+              <span className="text-success text-[10px]">Copied!</span>
             )}
           </div>
         </div>
       )}
 
       {/* Create invite */}
-      <div className="glass-card rounded-lg p-4">
+      <div className="bg-bg-secondary border border-border rounded-lg p-4">
         <h3 className="text-text-primary text-sm font-semibold mb-3">Create Invite Link</h3>
         <div className="flex flex-wrap gap-3 mb-3">
           <div>
@@ -230,7 +230,10 @@ export default function InviteManager(): React.JSX.Element {
           Active Invites ({invites.length})
         </h3>
         {loading ? (
-          <div className="text-text-faintest text-xs py-4 text-center">Loading...</div>
+          <div className="flex items-center justify-center gap-2 text-text-faintest text-xs py-4">
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            Loading...
+          </div>
         ) : invites.length === 0 ? (
           <div className="text-text-faintest text-xs py-4 text-center">No active invite links</div>
         ) : (
@@ -252,7 +255,7 @@ export default function InviteManager(): React.JSX.Element {
                       <Copy className="w-3.5 h-3.5" />
                     </button>
                     {copied === invite.code && (
-                      <span className="text-emerald-400 text-[10px]">Copied!</span>
+                      <span className="text-success text-[10px]">Copied!</span>
                     )}
                   </div>
                   <div className="flex items-center gap-3 text-text-faintest text-[10px] mt-0.5">
@@ -273,7 +276,7 @@ export default function InviteManager(): React.JSX.Element {
                 <button
                   data-testid="invite-revoke"
                   onClick={() => revokeInvite(invite.id)}
-                  className="opacity-0 group-hover:opacity-100 text-text-faint hover:text-red-400 transition-all p-1 rounded hover:bg-bg-tertiary/50"
+                  className="opacity-0 group-hover:opacity-100 text-text-faint hover:text-error transition-all p-1 rounded hover:bg-bg-tertiary/50"
                   title="Revoke"
                 >
                   <Trash2 className="w-3.5 h-3.5" />

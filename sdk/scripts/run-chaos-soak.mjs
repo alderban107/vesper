@@ -27,6 +27,15 @@ function readStringEnv(name, fallback = null) {
   return raw && raw.length > 0 ? raw : fallback
 }
 
+function readBooleanEnv(name, fallback) {
+  const raw = process.env[name]
+  if (!raw) {
+    return fallback
+  }
+
+  return !['0', 'false', 'no'].includes(raw.toLowerCase())
+}
+
 function percentile(samples, ratio) {
   if (samples.length === 0) {
     return null
@@ -64,6 +73,7 @@ function createConfig() {
     dbPoolSize: readIntEnv('CHAOS_DB_POOL_SIZE', 64),
     expectedWindow: readIntEnv('CHAOS_EXPECTED_WINDOW', 320),
     historySeedMessages: readIntEnv('CHAOS_HISTORY_SEED_MESSAGES', 120),
+    loginRestoreEnabled: readBooleanEnv('CHAOS_ENABLE_LOGIN_RESTORE', true),
     profileIntervalMs: readIntEnv('CHAOS_PROFILE_INTERVAL_MS', 5_000),
     restoreBatchSize: readIntEnv('CHAOS_RESTORE_BATCH_SIZE', 240),
     restorePageSize: readIntEnv('CHAOS_RESTORE_PAGE_SIZE', 80),
@@ -78,7 +88,7 @@ function createConfig() {
       (readStringEnv('CHAOS_USE_SHARED_FIXTURE', '1') ?? '1').toLowerCase() !== '0',
     artifactRoot:
       readStringEnv('CHAOS_ARTIFACT_DIR') ??
-      path.join(process.cwd(), 'packages', 'sdk', 'artifacts', `soak-${Date.now()}`)
+      path.join(process.cwd(), 'sdk', 'artifacts', `soak-${Date.now()}`)
   }
 }
 
@@ -476,7 +486,7 @@ async function main() {
       const reportPath = path.join(config.artifactRoot, `${workerLabel}.json`)
       const child = spawn(
         process.execPath,
-        [path.join(process.cwd(), 'packages', 'sdk', 'scripts', 'run-chaos-load.mjs')],
+        [path.join(process.cwd(), 'sdk', 'scripts', 'run-chaos-load.mjs')],
         {
           cwd: process.cwd(),
           env: {
@@ -494,6 +504,7 @@ async function main() {
             CHAOS_DURATION_SECONDS: String(config.durationSeconds),
             CHAOS_EXPECTED_WINDOW: String(config.expectedWindow),
             CHAOS_HISTORY_SEED_MESSAGES: String(config.historySeedMessages),
+            CHAOS_ENABLE_LOGIN_RESTORE: config.loginRestoreEnabled ? '1' : '0',
             CHAOS_JSON_OUTPUT_PATH: reportPath,
             CHAOS_LABEL: workerLabel,
             CHAOS_RESTORE_BATCH_SIZE: String(config.restoreBatchSize),
@@ -577,7 +588,7 @@ async function main() {
     }
 
     eventLoopHistogram.disable()
-    teardownServerStack(stack)
+    await teardownServerStack(stack)
   }
 }
 

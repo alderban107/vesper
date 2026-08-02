@@ -82,59 +82,37 @@ async function createGeneralChannel(primary, serverName) {
 
 async function establishScope(primaryChat, peers, scope) {
   await primaryChat.watchScope(scope)
-  for (const peer of peers) {
-    await peer.watchScope(scope)
-  }
+  await Promise.all(peers.map((peer) => peer.watchScope(scope)))
 
-  await primaryChat.createScopeGroup(scope)
-
-  const establishedMembers = [primaryChat]
-
-  for (const peer of peers) {
-    await peer.device.replenishKeyPackages()
-
-    const joinPackage = await primaryChat.generateJoinPackage(
-      scope,
-      peer.device.requireSession().user.id,
-      peer.device.deviceIdentity.id
-    )
-
-    assert.ok(joinPackage, `expected a join package for ${peer.device.deviceIdentity.id}`)
-
-    for (const member of establishedMembers.slice(1)) {
-      const committed = await member.applyCommitPacket(scope, joinPackage.commitBytes)
-      assert.equal(committed, true)
-    }
-
-    const welcomed = await peer.applyWelcomePackage(
-      scope,
-      joinPackage.welcomeBytes,
-      joinPackage.keyPackageRef
-    )
-    assert.equal(welcomed, true)
-
-    establishedMembers.push(peer)
-  }
-
-  const created = await primaryChat.ensureScopeReady(scope, false)
+  const created = await primaryChat.createScopeGroup(scope)
   assert.equal(created, true)
 
-  for (const peer of peers) {
-    const ready = await peer.ensureScopeReady(scope, false)
-    assert.equal(ready, true)
-  }
+  await Promise.all(
+    peers.map(async (peer) => {
+      await peer.device.replenishKeyPackages()
+      // Use prepareScopeForRead, the same production entry point the client
+      // app calls when a user opens a channel — it owns the resync/repair
+      // ladder (poll, request resync, drain repair artifacts, poll again).
+      // ensureScopeReady is a lower-level primitive with a single External
+      // Commit attempt and no fallback; using it here would let this harness
+      // silently diverge from real client join behavior.
+      const ready = await peer.prepareScopeForRead(scope)
+      assert.equal(ready, true, `expected ${peer.device.deviceIdentity.id} to join ${scope.id}`)
+    })
+  )
+
+  assert.equal(await primaryChat.ensureScopeReady(scope, false), true)
 }
 
 function assertNoDecryptFailures(messages, label) {
   const failed = messages.filter((message) => message.decryptionFailed)
-  if (failed.length > 0) {
-    // During the OpenMLS migration, some messages from previous epochs may be
-    // unavailable due to forward secrecy or state serialization differences.
-    // Log but don't fail — this will be tightened once the migration stabilizes.
-    console.warn(
-      `[OpenMLS migration] ${label}: ${failed.length}/${messages.length} messages unavailable`
-    )
-  }
+  assert.equal(
+    failed.length,
+    0,
+    `${label}: expected every message to decrypt, failures=${JSON.stringify(
+      failed.map((message) => ({ id: message.id, content: message.content }))
+    )}`
+  )
 }
 
 function assertMessageDecrypts(messages, expectedText, label) {
@@ -149,21 +127,6 @@ function assertMessageTexts(messages, expectedTexts) {
     assert.ok(
       actualTexts.includes(expectedText),
       `expected synced messages to include "${expectedText}", got ${JSON.stringify(actualTexts)}`
-    )
-  }
-}
-
-/**
- * Assert that specific messages are decryptable, allowing others to be unavailable.
- * Used after External Commit rejoin where pre-rejoin messages are expected to be
- * [Encrypted message unavailable] due to forward secrecy.
- */
-function assertMessagesDecryptable(messages, requiredTexts, label) {
-  const actualTexts = messages.map((m) => m.content)
-  for (const text of requiredTexts) {
-    assert.ok(
-      actualTexts.includes(text),
-      `${label}: expected "${text}" to be decryptable, got ${JSON.stringify(actualTexts)}`
     )
   }
 }
@@ -186,8 +149,6 @@ async function syncUntilMessages(chat, scope, expectedTexts, options = {}) {
 async function syncUntilHealthy(chat, scope, expectedTexts, options = {}) {
   const limit = options.limit ?? 50
 
-  // During OpenMLS migration: accept results once we have SOME messages,
-  // even if not all expected messages are decryptable (forward secrecy).
   return await waitFor(
     `healthy decrypted messages ${expectedTexts.join(', ')} in ${scope.kind}:${scope.id}`,
     async () => {
@@ -195,10 +156,7 @@ async function syncUntilHealthy(chat, scope, expectedTexts, options = {}) {
       const contents = result.messages.map((message) => message.content)
       const allPresent = expectedTexts.every((text) => contents.includes(text))
       const healthy = !result.messages.some((message) => message.decryptionFailed)
-      if (allPresent && healthy) return result
-      // Fallback: accept if we have any messages (migration leniency)
-      if (result.messages.length > 0) return result
-      return null
+      return allPresent && healthy ? result : null
     },
     options.timeoutMs ?? SYNC_TIMEOUT_MS,
     options.intervalMs ?? SYNC_POLL_INTERVAL_MS
@@ -237,9 +195,14 @@ async function waitForServerMembership(device, serverId, expectedPresent) {
 }
 
 async function assertNoLiveMessage(chat, scopeId, expectedText, timeoutMs = ABSENCE_TIMEOUT_MS) {
+  // A removed device proves it never received the message either by timing
+  // out (no such message ever arrives) or by the server rejecting the sync
+  // outright once membership is revoked (403) — both are valid proof the
+  // device has no access to post-removal traffic. A successful sync that
+  // contains the message would be the actual failure.
   await assert.rejects(
     chat.waitForMessage(scopeId, (message) => message.content === expectedText, timeoutMs),
-    /Timed out waiting for a message/
+    /Timed out waiting for a message|403|Could not load/
   )
 }
 
@@ -323,13 +286,13 @@ test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable'
       assert.equal(relogged.canUseE2EE, true)
 
       const resumedSecondaryChat = createChatHarness(secondary)
-      const fullSync = await resumedSecondaryChat.syncScope(scope, { limit: 20 })
-      // After logout + relogin, the device rejoins via External Commit at the current epoch.
-      // Pre-rejoin messages may be [Encrypted message unavailable] — that's correct forward secrecy.
-      // Post-rejoin messages (after-logout, after-tertiary) should be decryptable once the
-      // device has caught up via durable event replay.
-      // For now, just verify the device can sync without crashing and has some messages.
-      assert.ok(fullSync.messages.length > 0, 'should have synced messages after relogin')
+      const fullSync = await syncUntilHealthy(
+        resumedSecondaryChat,
+        scope,
+        ['device-one', 'device-two', 'device-three', 'after-logout', 'after-tertiary'],
+        { limit: 20, timeoutMs: EXTENDED_TIMEOUT_MS }
+      )
+      assertNoDecryptFailures(fullSync.messages, 'trusted device relogin restore')
 
       resumedSecondaryChat.disconnect()
     } finally {
@@ -381,12 +344,13 @@ test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable'
       await ownerPrimaryChat.sendText(scope, 'owner replies')
       await guestPrimaryChat.sendText(scope, 'guest follow-up')
 
-      const backlogSync = await ownerSecondaryChat.syncScope(scope, { limit: 10 })
-      // The secondary was a group member before going offline, so it should be able
-      // to decrypt messages from its membership epoch. However, if the group state
-      // round-trip through serialization loses any epoch keys, some messages may show
-      // as unavailable. Accept partial decryption during the OpenMLS migration.
-      assert.ok(backlogSync.messages.length > 0, 'should have synced messages after offline catch-up')
+      const backlogSync = await syncUntilHealthy(
+        ownerSecondaryChat,
+        scope,
+        ['guest says hi', 'owner replies', 'guest follow-up'],
+        { limit: 10, timeoutMs: EXTENDED_TIMEOUT_MS }
+      )
+      assertNoDecryptFailures(backlogSync.messages, 'cross-user offline catch-up')
     } finally {
       ownerPrimaryChat.disconnect()
       ownerSecondaryChat.disconnect()
@@ -819,12 +783,6 @@ test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable'
         { limit: 120, timeoutMs: EXTENDED_TIMEOUT_MS }
       )
       assertNoDecryptFailures(finalArchiveRestore.messages, 'cold archive restore')
-      // During OpenMLS migration: some alternating-sender messages may be unavailable
-      // due to sender ratchet key serialization. Accept partial results.
-      assert.ok(
-        finalArchiveRestore.messages.length > 0,
-        'should have some archive messages after cold restore'
-      )
 
       const finalGeneralRestore = await syncUntilHealthy(
         finalOwnerSecondaryChat,
@@ -902,18 +860,7 @@ test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable'
       await waitForServerMembership(guestPrimary, server.id, true)
       await waitForServerMembership(guestSecondary, server.id, true)
 
-      // Re-establishing the scope may fail with "Duplicate signature key" because
-      // OpenMLS retains removed members' signing keys in the ratchet tree.
-      // When the same user rejoins with the same signing identity, it conflicts.
-      // This is a known limitation during the OpenMLS migration that requires
-      // per-key-package signing keys to resolve.
-      try {
-        await establishScope(ownerPrimaryChat, [guestPrimaryChat, guestSecondaryChat], scope)
-      } catch (e) {
-        console.warn('[OpenMLS migration] Re-establish scope after rejoin failed:', e.message)
-        // Skip the rest of the test if we can't re-establish
-        return
-      }
+      await establishScope(ownerPrimaryChat, [guestPrimaryChat, guestSecondaryChat], scope)
 
       await ownerPrimaryChat.sendText(scope, 'after-rejoin')
 
@@ -927,6 +874,11 @@ test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable'
         guestPrimaryAfterRejoin.messages,
         'after-rejoin',
         'guest primary rejoin restore'
+      )
+      assert.equal(
+        guestPrimaryAfterRejoin.messages.some((message) => message.content === 'while-away'),
+        false,
+        'guest primary must not decrypt messages sent outside its membership generation'
       )
 
       const resumedGuestSecondaryChat = createChatHarness(guestSecondary)
@@ -945,6 +897,11 @@ test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable'
         guestSecondaryAfterRejoin.messages,
         'after-rejoin',
         'guest secondary rejoin restore'
+      )
+      assert.equal(
+        guestSecondaryAfterRejoin.messages.some((message) => message.content === 'while-away'),
+        false,
+        'guest secondary must not decrypt messages sent outside its membership generation'
       )
 
       resumedGuestSecondaryChat.disconnect()
@@ -1023,7 +980,7 @@ test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable'
     }
   })
 
-  await t.test('trusted device eviction sponsorship removes only the targeted leaf and carries the eviction id', async () => {
+  await t.test('revoking one trusted device removes only that device from future traffic', async () => {
     const base = Date.now()
     const username = `sdk_eviction_${base}`
     const password = 'vesper-sdk-eviction-password'
@@ -1031,35 +988,6 @@ test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable'
     const secondary = createDeviceHarness(stack.apiUrl, 'eviction-secondary')
     const primaryChat = createChatHarness(primary)
     const secondaryChat = createChatHarness(secondary)
-    const capturedRemovals = []
-    const scope = { kind: 'channel', id: null }
-
-    const originalPush = primary.pushToTopicWithAck.bind(primary)
-    primary.pushToTopicWithAck = async (topic, event, payload) => {
-      if (event === 'mls_eviction_claim') {
-        return true
-      }
-
-      if (event === 'mls_eviction_skip') {
-        return true
-      }
-
-      if (event === 'mls_remove') {
-        capturedRemovals.push({ topic, payload })
-        await secondaryChat.handleScopeEvent(scope, 'mls_remove', {
-          seq: Date.now(),
-          removed_user_id: payload.removed_user_id,
-          removed_device_id: payload.removed_device_id,
-          commit_data: payload.commit_data,
-          eviction_id: payload.eviction_id,
-          sender_id: primary.requireSession().user.id,
-          sender_device_id: primary.deviceIdentity.id
-        })
-        return true
-      }
-
-      return await originalPush(topic, event, payload)
-    }
 
     try {
       await primary.register(username, password)
@@ -1069,38 +997,38 @@ test('sdk multi-device chaos coverage keeps encrypted sync fast and recoverable'
         primary,
         `Chaos Eviction ${Date.now()}`
       )
-      scope.id = channel.id
+      const scope = { kind: 'channel', id: channel.id }
       await establishScope(primaryChat, [secondaryChat], scope)
 
-      const evictionId = `eviction-${base}`
-      await primaryChat.handleEvictionRequestEvent(scope, {
-        eviction_id: evictionId,
-        target_user_id: primary.requireSession().user.id,
-        target_device_id: secondary.deviceIdentity.id
-      })
+      await primaryChat.sendText(scope, 'before-device-revoke')
+      const beforeRevoke = await syncUntilHealthy(
+        secondaryChat,
+        scope,
+        ['before-device-revoke'],
+        { limit: 20 }
+      )
+      assertNoDecryptFailures(beforeRevoke.messages, 'pre-revoke device sync')
 
-      const removal = await waitFor(
-        'mls_remove payload to be emitted for the eviction',
-        async () =>
-          capturedRemovals.find(
-            (entry) =>
-              entry.payload.eviction_id === evictionId &&
-              entry.payload.commit_data &&
-              entry.payload.removed_device_id === secondary.deviceIdentity.id
-          ) ?? null,
-        SYNC_TIMEOUT_MS,
-        POLL_INTERVAL_MS
+      const deviceState = await primary.fetchDevices()
+      const secondaryDevice = deviceState.devices.find(
+        (device) => device.client_id === secondary.deviceIdentity.id
+      )
+      assert.ok(secondaryDevice, 'expected the secondary device to be registered')
+
+      await primary.revokeDevice(secondaryDevice.id)
+
+      // The auth plug re-checks trust_state from the DB on every request, so
+      // the secondary's existing access token must be rejected on its very
+      // next authenticated call — no propagation delay to wait out.
+      await assert.rejects(
+        secondary.getCurrentUser(),
+        /401|unauthorized/i
       )
 
-      assert.equal(removal.payload.removed_user_id, primary.requireSession().user.id)
-      assert.equal(removal.payload.removed_device_id, secondary.deviceIdentity.id)
-      assert.equal(removal.payload.eviction_id, evictionId)
-
-      await waitFor(
-        'secondary device to lose MLS group state after eviction',
-        async () => (secondaryChat.hasGroup(scope.id) ? null : true),
-        SYNC_TIMEOUT_MS,
-        POLL_INTERVAL_MS
+      await primaryChat.sendText(scope, 'after-device-revoke')
+      await assert.rejects(
+        secondaryChat.syncScope(scope, { limit: 20 }),
+        /401|unauthorized/i
       )
       assert.equal(primaryChat.hasGroup(scope.id), true)
     } finally {

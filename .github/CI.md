@@ -1,118 +1,38 @@
-# CI / CD Pipelines
+# CI / CD pipelines
 
-This document describes all GitHub Actions workflows in the repository, what triggers
-them, and what they produce.
+This document describes every GitHub Actions workflow in the repository, what triggers it, and what it is allowed to publish.
 
-## Change Detection
+## Change detection
 
-All test workflows use the same change detection strategy: on every push, the workflow
-diffs the branch HEAD against its merge-base with `main`. This means the check evaluates
-the **full set of changes the branch introduces** relative to main — not just the files
-touched in the latest commit.
+All branch test workflows diff the branch HEAD against its merge-base with `main`. The check therefore covers the full branch, not only the latest push. If no merge-base can be found, the workflow runs as a fail-safe.
 
-This prevents a common gotcha where pushing a docs-only commit to a branch that has
-server changes would cause server tests to be skipped, because the per-commit diff
-didn't include server files.
+Every test workflow ends in a stable gate job. Branch protection should require the gate jobs rather than conditional worker jobs.
 
-When no merge-base can be found (orphan branches, shallow clones), tests run
-unconditionally as a safety fallback.
+## Branch protection gates
 
-## Workflows
+These workflows run on pushes to non-`main`, non-tag branches:
 
-### Test Workflows (branch protection gates)
+### `test-server.yml` — `server-checks`
 
-These run on pushes to non-main, non-tag branches. Each has a gate job that branch
-protection should require.
+Runs for non-Markdown changes under `server/`. It uses pinned PostgreSQL 17, audits Hex dependencies, compiles with `--warnings-as-errors`, verifies the history-authorization migration upgrade path, and runs the complete server test suite.
 
-#### `test-server.yml` — Server Tests
+### `test-client.yml` — `client-checks`
 
-Runs when `server/` has non-markdown changes relative to main. Spins up PostgreSQL 17,
-compiles with `--warnings-as-errors`, and runs `mix test`.
+Runs for non-Markdown changes under `client/` or `sdk/`. It audits the client dependency tree, runs Vitest, performs strict TypeScript checks, and builds the web client.
 
-**Gate job:** `server-checks`
+### `test-sdk.yml` — `sdk-checks`
 
-#### `test-client.yml` — Client Checks
+Runs for relevant server, client, SDK, script, or workflow changes. The SDK harness starts a pinned PostgreSQL image and isolated Phoenix instances. It runs the live SDK integration suite and the multi-cohort chaos gate with CI-adjusted performance thresholds.
 
-Runs when `client/` or `sdk/` has non-markdown changes relative to main. Executes
-`npm run check:web` (TypeScript typecheck + Vite web build).
+### `test-e2e.yml` — `e2e-checks`
 
-**Gate job:** `client-checks`
+Runs the retained Playwright projects in one shared harness invocation. Playwright executes `p0-smoke` first as the dependency for `p1-extended` and `p2-reliability`, preserving the users, recovery keys, database, and browser state those projects intentionally share. Failure traces, screenshots, video, and logs are uploaded.
 
-#### `test-sdk.yml` — SDK Integration Tests
+### `test-docker.yml` — `docker-checks`
 
-Runs when `server/`, `client/`, `sdk/`, or `scripts/` has non-markdown changes relative
-to main. The test harness boots its own PostgreSQL container (Docker) and spawns isolated
-Phoenix instances per test suite — no `services:` container needed.
+Builds the server and web Dockerfiles without pushing whenever code or container infrastructure changes.
 
-**Gate job:** `sdk-checks`
-
-#### `test-e2e.yml` — E2E Browser Tests
-
-Runs when `server/`, `client/`, `sdk/`, or `scripts/` has non-markdown changes relative
-to main. The Playwright harness boots PostgreSQL (Docker), Phoenix, and Vite automatically
-via `globalSetup`. Runs the full suite: p0-smoke → p1-extended → p2-reliability.
-
-On failure, test artifacts (traces, screenshots, video, logs) are uploaded for debugging.
-
-**Gate job:** `e2e-checks`
-
-#### `test-docker.yml` — Docker Build Smoke Test
-
-Runs when code files or Docker infrastructure (`Dockerfile*`, `.dockerignore`,
-`docker-compose.yml`) change relative to main. Builds both the server and web client
-Docker images without pushing — catches build-context and Dockerfile issues that local
-builds wouldn't surface.
-
-**Gate job:** `docker-checks`
-
-### Deploy Workflows
-
-#### `docker-server.yml` — Server Docker Image
-
-Triggers on push to `main` or `v*` tags when `server/` changes. Builds multi-arch
-(amd64 + arm64) images using native runners (no QEMU), then stitches a manifest list.
-
-- **Registry:** `ghcr.io/<owner>/vesper-app`
-- **Tags:** `main`, semver patterns, `sha-<short>`
-
-#### `docker-web.yml` — Web Client Docker Image
-
-Same structure as the server workflow but for `client/` and `sdk/` changes.
-
-- **Registry:** `ghcr.io/<owner>/vesper-web`
-- **Tags:** `main`, semver patterns, `sha-<short>`
-
-#### `release.yml` — Tagged Release (Desktop)
-
-Triggers when a GitHub release is created, or via manual `workflow_dispatch` with a tag
-input. Builds Electron desktop apps on Linux, macOS, and Windows runners, then attaches
-the binaries to the GitHub release.
-
-**Outputs:** `.AppImage`, `.deb`, `.dmg`, `.exe`
-
-#### `nightly.yml` — Nightly Release
-
-Runs daily at 06:00 UTC via cron, or manually via `workflow_dispatch`.
-
-**Change detection:** Compares `HEAD` of `main` against the existing `nightly` git tag.
-If they match, the entire pipeline is skipped. Manual dispatch always builds.
-
-**What it builds (in parallel):**
-- Server Docker image (multi-arch amd64 + arm64) → `ghcr.io/<owner>/vesper-app:nightly`
-- Web client Docker image (multi-arch amd64 + arm64) → `ghcr.io/<owner>/vesper-web:nightly`
-- Desktop Linux (`.AppImage`, `.deb`)
-- Desktop macOS (`.dmg`, `.zip`)
-- Desktop Windows (`.exe` installer + portable)
-
-**Release strategy:** A single rolling GitHub release tagged `nightly` (marked as
-prerelease). Each successful run deletes the previous nightly release and creates a new
-one at the current `main` HEAD with all desktop artifacts attached. There are no
-date-stamped nightly tags — the `nightly` tag always points to the latest build, and the
-commit SHA is recorded in the release body for traceability.
-
-## Branch Protection
-
-Configure branch protection on `main` to require these status checks:
+Require all five gate jobs on `main`:
 
 - `server-checks`
 - `client-checks`
@@ -120,53 +40,54 @@ Configure branch protection on `main` to require these status checks:
 - `e2e-checks`
 - `docker-checks`
 
-All five use the gate job pattern: the gate succeeds when tests pass OR when tests were
-skipped (no relevant changes). It fails only when tests actually fail. This means a
-server-only change won't block on client checks, but a broken server will always block.
+A gate succeeds when its worker passed or was correctly skipped because no relevant files changed. A failed or cancelled worker fails the gate. The same least-privilege workflows run for pull requests targeting `main`, including forked contributions; they do not receive publication or signing secrets.
 
-## Performance Thresholds
+## Publication workflows
 
-Some SDK integration tests include hard performance assertions — for example, the
-hot-path sync test gates on decryption completing within 20ms. These targets are
-intentionally aggressive: they're tuned for local hardware and exist to catch real
-regressions early.
+Publication authority is deliberately split between snapshots and releases.
 
-GitHub Actions runners are significantly slower than local development machines (shared
-vCPUs, Docker-in-Docker PostgreSQL, virtualized I/O). A test that completes in 15ms
-locally might take 25ms on a GHA runner. To prevent CI from failing on hardware
-variance rather than actual regressions, the SDK test suite supports a
-`VESPER_PERF_MULTIPLIER` environment variable.
+### `docker-server.yml` and `docker-web.yml` — attested snapshots
 
-- **Locally (default):** multiplier is `1`. Thresholds are at their original aggressive
-  values (e.g. 20ms for hot-path sync).
-- **CI:** the `test-sdk.yml` workflow sets `VESPER_PERF_MULTIPLIER=5`, scaling thresholds
-  proportionally (e.g. 100ms). This is high enough to absorb runner variance while still
-  catching order-of-magnitude regressions.
+A push to `main` builds native `linux/amd64` and `linux/arm64` images and publishes multi-architecture `main` and `sha-*` snapshot manifests:
 
-The multiplier is not documented in `.env.example` or developer-facing setup guides.
-Developers running tests locally should always hit the unscaled targets — if a test fails
-locally, that's a real signal worth investigating.
+- `ghcr.io/<owner>/vesper-app`
+- `ghcr.io/<owner>/vesper-web`
 
-## Operational Notes
+These workflows emit SBOMs and build provenance, but they do not publish versioned production tags. Operators must not deploy mutable `main` tags as releases.
 
-### Docker tag namespaces
+### `release.yml` — stable release gate
 
-The main-push workflows (`docker-server.yml`, `docker-web.yml`) and the nightly workflow
-operate on separate tag namespaces. Pushing to `main` produces `:main` tags for immediate
-deployment; the nightly produces `:nightly` tags as a stable daily snapshot bundled with
-desktop builds. Both coexist without conflict.
+This workflow is manually dispatched from an existing `v<version>` tag, with the same tag supplied as its input. It fails unless the selected ref, checked-out commit, GitHub workflow identity, and `client/package.json` version agree.
 
-### Auto-updater and prereleases
+The release gate performs, in order:
 
-The Electron auto-updater (`electron-updater`) is configured with `allowPrerelease: true`
-so that desktop installations receive nightly builds via the rolling prerelease. **This
-should be revisited before public release** — end users should probably only receive
-stable updates from tagged releases, not nightly prereleases.
+1. server and SDK audits, warnings-as-errors compilation, migration verification, server tests, and live SDK protocol tests;
+2. the retained browser/Electron invariant suite against the exact tag, with failure evidence retained for 14 days;
+3. native desktop builds for Linux, macOS x64/arm64, and Windows;
+4. mandatory macOS signing/notarization and Windows Authenticode verification;
+5. native amd64/arm64 candidate builds for both container images, each with SBOM and provenance;
+6. release-set validation, checksums, GitHub build-provenance attestation, and a complete draft GitHub release;
+7. publication of versioned multi-architecture container manifests;
+8. conversion of the verified draft into a public release.
 
-### Code signing
+If required signing credentials or any platform artifact are absent, no public GitHub release is created. GitHub Releases and GHCR are separate publication systems and cannot commit atomically: all candidates and the draft are validated first, but a failure while creating the two final OCI manifests can leave one version tag visible while the GitHub release remains draft. Treat that as a failed release, remove the partial OCI tag, and rerun only after reconciling both registries. Follow `docs/RELEASE-RUNBOOK.md` for credentials, canarying, migration, verification, and rollback.
 
-Desktop builds are currently **unsigned**. macOS will show an "unidentified developer"
-dialog and Windows will show SmartScreen warnings. This is acceptable for internal testing
-but must be resolved before distributing to external users. Signing requires:
-- **macOS:** Apple Developer account, notarization via `electron-builder`'s `afterSign` hook
-- **Windows:** EV code signing certificate or Azure Trusted Signing
+### `nightly.yml` — distributed recovery validation only
+
+Nightly runs at 06:00 UTC or by manual dispatch. It executes the four-worker recovery soak against a pinned PostgreSQL fixture and retains JSON evidence for 14 days.
+
+Nightly has read-only repository permissions. It does not create tags, releases, desktop binaries, or container images. This prevents unsigned rolling artifacts from bypassing the stable release gate.
+
+## Performance thresholds
+
+Some SDK tests contain hard latency assertions. GitHub-hosted runners are slower and noisier than local hardware, so CI sets `VESPER_PERF_MULTIPLIER=5`. Local runs default to `1` and should continue to meet the stricter thresholds.
+
+The multiplier absorbs runner variance; it is not permission to ignore order-of-magnitude regressions. Nightly and release evidence must report the actual observed latencies alongside the configured threshold.
+
+## Supply-chain rules
+
+- GitHub Actions are pinned by full commit SHA.
+- CI service images and Docker base images are pinned by digest.
+- Stable desktop and versioned OCI artifacts come only from `release.yml`.
+- Production Compose deployments require explicit release images through `VESPER_APP_IMAGE` and `VESPER_WEB_IMAGE`; mutable `main`, `latest`, and former nightly tags are not release inputs.
+- The Electron updater follows stable signed releases (`allowPrerelease=false`).

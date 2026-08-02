@@ -20,6 +20,7 @@ import { useAuthStore } from './authStore'
 import { useVoiceStore } from './voiceStore'
 import { useServerStore } from './serverStore'
 import { useDmStore } from './dmStore'
+import { useToastStore } from './toastStore'
 import { queueScopeMutationHint, usePresenceStore } from './presenceStore'
 import {
   getRendererClient,
@@ -28,6 +29,7 @@ import {
 } from '../sdk/client'
 import { replaceEmojiShortcodes } from '../utils/emoji'
 import { fireAndForget } from '../utils/async'
+import { playNotificationSound } from '../utils/notificationSound'
 
 function pushToChannel(topic: string, event: string, payload: object): void {
   getRendererClient().pushTopicEvent(topic, event, payload)
@@ -81,7 +83,7 @@ export function registerDmChannelMapping(conversationId: string, channelId: stri
 }
 
 // Resolve the backing channel_id for a DM conversation.
-function resolveDmChannelId(conversationId: string): string | null {
+export function resolveDmChannelId(conversationId: string): string | null {
   const cached = getDmChannelMappings().get(conversationId)
   if (cached) return cached
 
@@ -343,12 +345,15 @@ function encodeMessageCursor(message: { id: string; inserted_at: string }): stri
 
 interface CachedMessageRecord {
   id: string
+  roomSeq: number | null
   channelId: string | null
   conversationId: string | null
   serverId: string | null
   senderId: string | null
   senderUsername: string | null
   parentMessageId: string | null
+  threadRootMessageId: string | null
+  replyToMessageId: string | null
   isReply: boolean
   ciphertext: Uint8Array | null
   decryptedContent: string | null
@@ -369,7 +374,7 @@ function buildMessageFromCache(record: CachedMessageRecord): Message {
 
   return {
     id: record.id,
-    room_seq: null,
+    room_seq: record.roomSeq,
     content,
     channel_id: record.channelId,
     conversation_id: record.conversationId,
@@ -386,6 +391,8 @@ function buildMessageFromCache(record: CachedMessageRecord): Message {
     inserted_at: record.insertedAt,
     expires_at: null,
     parent_message_id: record.parentMessageId,
+    thread_root_message_id: record.threadRootMessageId,
+    reply_to_message_id: record.replyToMessageId,
     is_reply: record.isReply,
     attachments: [],
     reactions: [],
@@ -492,17 +499,16 @@ async function loadScopeMessagesViaSdk(scope: {
 }
 
 async function loadScopeMessagesFromCache(scopeId: string): Promise<Message[]> {
-  const cachedMessages = await getStorageRuntime().loadCachedMessages(scopeId).catch(() => [])
+  const cachedMessages = await getRendererClient()
+    .runWithStorageContext(async () => await getStorageRuntime().loadCachedMessages(scopeId))
+    .catch(() => [])
   if (cachedMessages.length === 0) {
     return []
   }
 
   return cachedMessages
     .map(buildMessageFromCache)
-    .sort(
-      (left, right) =>
-        new Date(left.inserted_at).getTime() - new Date(right.inserted_at).getTime()
-    )
+    .sort(compareMessages)
 }
 
 function applySdkMessageUpdate(
@@ -855,11 +861,7 @@ function getMessageNotificationBody(message: Message): string {
   return parsed.text || `Sent ${parsed.file.name || 'an attachment'}`
 }
 
-function shouldShowDesktopNotification(message: Message): boolean {
-  if (typeof document === 'undefined') {
-    return false
-  }
-
+function canNotifyForMessage(message: Message): boolean {
   const myId = useAuthStore.getState().user?.id
   const myStatus = usePresenceStore.getState().myStatus
   const notificationsEnabled = getStoredValue('notifications') !== 'disabled'
@@ -868,9 +870,28 @@ function shouldShowDesktopNotification(message: Message): boolean {
     notificationsEnabled &&
       myStatus !== 'dnd' &&
       message.sender_id &&
-      message.sender_id !== myId &&
-      (document.hidden || !document.hasFocus())
+      message.sender_id !== myId
   )
+}
+
+function isMessageInActiveScope(message: Message): boolean {
+  if (message.conversation_id) {
+    return useDmStore.getState().selectedConversationId === message.conversation_id
+  }
+
+  if (message.channel_id) {
+    return useServerStore.getState().activeChannelId === message.channel_id
+  }
+
+  return false
+}
+
+function shouldShowDesktopNotification(message: Message): boolean {
+  if (typeof document === 'undefined') {
+    return false
+  }
+
+  return canNotifyForMessage(message) && (document.hidden || !document.hasFocus())
 }
 
 function shouldNotifyForMessage(messageId: string): boolean {
@@ -892,7 +913,22 @@ function shouldNotifyForMessage(messageId: string): boolean {
 }
 
 function maybeShowDesktopNotification(message: Message): void {
-  if (!shouldShowDesktopNotification(message) || !shouldNotifyForMessage(message.id)) {
+  if (!canNotifyForMessage(message) || !shouldNotifyForMessage(message.id)) {
+    return
+  }
+
+  const title = message.sender?.display_name || message.sender?.username || 'New message'
+  const body = getMessageNotificationBody(message)
+
+  if (!isMessageInActiveScope(message)) {
+    useToastStore.getState().addToast(`${title}: ${body}`, 'info', 5000)
+    if (!document.hidden && document.hasFocus()) {
+      playNotificationSound()
+      return
+    }
+  }
+
+  if (!shouldShowDesktopNotification(message)) {
     return
   }
 
@@ -906,8 +942,8 @@ function maybeShowDesktopNotification(message: Message): void {
   } | undefined
 
   notifApi?.showMessageNotification({
-    title: message.sender?.display_name || message.sender?.username || 'New message',
-    body: getMessageNotificationBody(message),
+    title,
+    body,
     channelId: message.channel_id || undefined,
     conversationId: message.conversation_id || undefined
   })
@@ -950,6 +986,30 @@ function preferReconciledMessage(current: Message, candidate: Message): Message 
   return candidate.inserted_at >= current.inserted_at ? candidate : current
 }
 
+export function compareMessages(left: Message, right: Message): number {
+  if (left.room_seq != null && right.room_seq != null && left.room_seq !== right.room_seq) {
+    return left.room_seq - right.room_seq
+  }
+
+  const leftTime = Date.parse(left.inserted_at)
+  const rightTime = Date.parse(right.inserted_at)
+  if (leftTime !== rightTime) {
+    return leftTime - rightTime
+  }
+
+  return left.id.localeCompare(right.id)
+}
+
+function sortMessagesIfNeeded(messages: Message[]): Message[] {
+  for (let index = 1; index < messages.length; index += 1) {
+    if (compareMessages(messages[index - 1], messages[index]) > 0) {
+      return [...messages].sort(compareMessages)
+    }
+  }
+
+  return messages
+}
+
 function dedupeMessages(messages: Message[]): Message[] {
   const dedupedById: Message[] = []
 
@@ -988,7 +1048,7 @@ function dedupeMessages(messages: Message[]): Message[] {
     )
   }
 
-  return dedupedByClientNonce
+  return sortMessagesIfNeeded(dedupedByClientNonce)
 }
 
 function applyMessageWindow(
@@ -4326,6 +4386,7 @@ function syncDmConversationActivity(message: Message): void {
   useDmStore.getState().applyConversationActivity({
     conversationId: message.conversation_id,
     messageId: message.id,
+    content: message.decryptionFailed ? null : message.content,
     senderId: message.sender_id,
     sender: message.sender
       ? {

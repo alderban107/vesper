@@ -3,7 +3,7 @@ defmodule VesperWeb.ChannelHelpers do
   Shared helpers for ChatChannel and DmChannel to avoid code duplication.
   """
 
-  alias Vesper.Chat
+  alias Vesper.{Chat, Encryption, Runtime}
 
   @doc """
   Safely decode a base64 string, returning {:ok, binary} or {:error, reason}.
@@ -18,6 +18,22 @@ defmodule VesperWeb.ChannelHelpers do
   end
 
   def safe_decode64(_), do: {:error, :invalid_type}
+
+  def decode_history_signing_key(params) do
+    case Map.get(params, "history_signing_public_key") do
+      nil ->
+        {:ok, nil}
+
+      value when is_binary(value) ->
+        case Base.decode64(value) do
+          {:ok, decoded} when byte_size(decoded) == 32 -> {:ok, decoded}
+          _ -> {:error, :invalid_history_signing_key}
+        end
+
+      _ ->
+        {:error, :invalid_history_signing_key}
+    end
+  end
 
   def sender_json(nil), do: nil
 
@@ -57,6 +73,8 @@ defmodule VesperWeb.ChannelHelpers do
         emoji: r.emoji,
         ciphertext: r.ciphertext,
         mls_epoch: r.mls_epoch,
+        encryption_scheme: r.encryption_scheme,
+        encryption_group_id: r.encryption_group_id,
         sender_id: r.sender_id,
         inserted_at: r.inserted_at
       }
@@ -88,11 +106,17 @@ defmodule VesperWeb.ChannelHelpers do
   def resolve_message_relations(params, scope_field, scope_id, opts \\ []) do
     validate_scope? = Keyword.get(opts, :validate_scope?, true)
 
-    with {:ok, explicit_thread_root_id} <- parse_optional_message_id(params, "thread_root_message_id"),
+    with {:ok, explicit_thread_root_id} <-
+           parse_optional_message_id(params, "thread_root_message_id"),
          {:ok, explicit_reply_to_id} <- parse_optional_message_id(params, "reply_to_message_id"),
          {:ok, legacy_parent_id} <- parse_optional_message_id(params, "parent_message_id"),
          {:ok, explicit_thread_root} <-
-           resolve_optional_message(explicit_thread_root_id, scope_field, scope_id, validate_scope?),
+           resolve_optional_message(
+             explicit_thread_root_id,
+             scope_field,
+             scope_id,
+             validate_scope?
+           ),
          {:ok, explicit_reply_to} <-
            resolve_optional_message(explicit_reply_to_id, scope_field, scope_id, validate_scope?),
          {:ok, legacy_parent} <-
@@ -138,7 +162,15 @@ defmodule VesperWeb.ChannelHelpers do
       room_seq: message.room_seq,
       ciphertext: Base.encode64(message.ciphertext),
       mls_epoch: message.mls_epoch,
+      encryption_scheme: message.encryption_scheme,
+      encryption_group_id: message.encryption_group_id,
       client_nonce: message.client_nonce,
+      history_signing_public_key:
+        if(is_binary(message.history_signing_public_key),
+          do: Base.encode64(message.history_signing_public_key),
+          else: nil
+        ),
+      history_revision: message.history_revision,
       sender_id: message.sender_id,
       sender: sender_json(message.sender),
       expires_at: message.expires_at,
@@ -175,15 +207,45 @@ defmodule VesperWeb.ChannelHelpers do
     end
   end
 
-  def handle_edit_message(id, ciphertext_b64, epoch, socket) do
+  def handle_edit_message(
+        id,
+        ciphertext_b64,
+        epoch,
+        encryption_scheme,
+        encryption_group_id,
+        history_signing_public_key_b64,
+        history_revision,
+        socket
+      ) do
     with {:ok, ciphertext} <- safe_decode64(ciphertext_b64),
          %{} = message <- Chat.get_message(id),
-         true <- message.sender_id == socket.assigns.user_id do
+         true <- message.sender_id == socket.assigns.user_id,
+         {:ok, history_signing_public_key} <-
+           decode_history_signing_key(%{
+             "history_signing_public_key" => history_signing_public_key_b64
+           }),
+         {:ok, history_signing_public_key, history_revision} <-
+           resolve_edit_history_auth(
+             message,
+             history_signing_public_key,
+             history_revision
+           ),
+         %{} = room <- room_for_message(message),
+         :ok <-
+           Encryption.validate_application_scheme(
+             room.id,
+             encryption_scheme,
+             epoch,
+             encryption_group_id
+           ) do
       now = DateTime.utc_now() |> DateTime.truncate(:second)
 
-      case Chat.update_message(message, %{
+      case Chat.update_message_revision(id, socket.assigns.user_id, history_revision, %{
              ciphertext: ciphertext,
              mls_epoch: epoch,
+             encryption_scheme: encryption_scheme,
+             encryption_group_id: encryption_group_id,
+             history_signing_public_key: history_signing_public_key,
              edited_at: now
            }) do
         {:ok, _updated} ->
@@ -192,6 +254,14 @@ defmodule VesperWeb.ChannelHelpers do
               message_id: id,
               ciphertext: ciphertext_b64,
               mls_epoch: epoch,
+              encryption_scheme: encryption_scheme,
+              encryption_group_id: encryption_group_id,
+              history_signing_public_key:
+                if(is_binary(history_signing_public_key),
+                  do: Base.encode64(history_signing_public_key),
+                  else: nil
+                ),
+              history_revision: history_revision,
               edited_at: now
             }
             |> maybe_put(:channel_id, Map.get(socket.assigns, :channel_id))
@@ -199,15 +269,39 @@ defmodule VesperWeb.ChannelHelpers do
 
           {:ok, payload}
 
+        {:error, :stale_history_revision} ->
+          {:error, "stale message revision"}
+
         {:error, _} ->
           {:error, "could not edit message"}
       end
     else
+      {:error, :stale_history_revision} -> {:error, "stale message revision"}
+      {:error, :invalid_history_revision} -> {:error, "invalid message revision"}
       {:error, _} -> {:error, "invalid encoding"}
       nil -> {:error, "message not found"}
       false -> {:error, "not the message author"}
     end
   end
+
+  defp resolve_edit_history_auth(
+         %{history_signing_public_key: nil} = message,
+         nil,
+         nil
+       ),
+       do: {:ok, nil, message.history_revision + 1}
+
+  defp resolve_edit_history_auth(message, key, revision)
+       when is_binary(key) and is_integer(revision) do
+    if revision == message.history_revision + 1 do
+      {:ok, key, revision}
+    else
+      {:error, :stale_history_revision}
+    end
+  end
+
+  defp resolve_edit_history_auth(_message, _key, _revision),
+    do: {:error, :invalid_history_revision}
 
   def handle_delete_message(id, user_id) do
     case Chat.get_message(id) do
@@ -270,6 +364,8 @@ defmodule VesperWeb.ChannelHelpers do
                 %{message_id: message_id, sender_id: sender_id, emoji: emoji}
                 |> maybe_put(:ciphertext, Map.get(crypto_meta, :ciphertext))
                 |> maybe_put(:mls_epoch, Map.get(crypto_meta, :mls_epoch))
+                |> maybe_put(:encryption_scheme, Map.get(crypto_meta, :encryption_scheme))
+                |> maybe_put(:encryption_group_id, Map.get(crypto_meta, :encryption_group_id))
 
               case Chat.add_reaction(attrs) do
                 {:ok, _} -> :ok
@@ -293,6 +389,14 @@ defmodule VesperWeb.ChannelHelpers do
         end
     end
   end
+
+  defp room_for_message(%{channel_id: channel_id}) when is_binary(channel_id),
+    do: Runtime.get_room_for_channel(channel_id)
+
+  defp room_for_message(%{conversation_id: conversation_id}) when is_binary(conversation_id),
+    do: Runtime.get_room_for_conversation(conversation_id)
+
+  defp room_for_message(_message), do: nil
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
@@ -319,14 +423,16 @@ defmodule VesperWeb.ChannelHelpers do
 
   defp resolve_optional_message(nil, _scope_field, _scope_id, _validate_scope?), do: {:ok, nil}
 
-  defp resolve_optional_message(message_id, _scope_field, _scope_id, false) when is_binary(message_id) do
+  defp resolve_optional_message(message_id, _scope_field, _scope_id, false)
+       when is_binary(message_id) do
     case Chat.get_message(message_id) do
       nil -> {:error, "message not found"}
       message -> {:ok, message}
     end
   end
 
-  defp resolve_optional_message(message_id, scope_field, scope_id, true) when is_binary(message_id) do
+  defp resolve_optional_message(message_id, scope_field, scope_id, true)
+       when is_binary(message_id) do
     case Chat.get_message(message_id) do
       nil ->
         {:error, "message not found"}
@@ -368,8 +474,11 @@ defmodule VesperWeb.ChannelHelpers do
 
   defp validate_thread_reply_compatibility(nil, reply_to) do
     case effective_thread_root_id(reply_to) do
-      nil -> :ok
-      root_id -> {:error, "reply target belongs to a thread; set thread_root_message_id to #{root_id}"}
+      nil ->
+        :ok
+
+      root_id ->
+        {:error, "reply target belongs to a thread; set thread_root_message_id to #{root_id}"}
     end
   end
 
@@ -390,8 +499,6 @@ defmodule VesperWeb.ChannelHelpers do
     end
   end
 
-  defp effective_thread_root_message(nil), do: nil
-
   defp effective_thread_root_message(message) do
     cond do
       is_binary(message.thread_root_message_id) ->
@@ -404,8 +511,6 @@ defmodule VesperWeb.ChannelHelpers do
         nil
     end
   end
-
-  defp effective_thread_root_id(nil), do: nil
 
   defp effective_thread_root_id(message) do
     case effective_thread_root_message(message) do

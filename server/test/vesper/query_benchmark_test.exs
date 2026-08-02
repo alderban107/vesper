@@ -7,7 +7,11 @@ defmodule Vesper.QueryBenchmarkTest do
   """
   use Vesper.DataCase, async: false
 
-  alias Vesper.{Chat, Servers, Sync, Runtime}
+  import Ecto.Query
+
+  alias Vesper.{Chat, Repo, Runtime, Servers, Sync}
+  alias Vesper.Chat.Message
+  alias Vesper.Runtime.{Room, RoomEvent}
 
   @tag :benchmark
   test "counts total queries in sync + hot message path" do
@@ -124,5 +128,97 @@ defmodule Vesper.QueryBenchmarkTest do
 
     assert sync_queries > 0
     assert msg_queries > 0
+  end
+
+  @tag :benchmark
+  test "latest restore window keeps constant query count across 100x history growth" do
+    user = insert_user(%{username: "restore_benchmark"})
+    {:ok, server} = Servers.create_server(user, %{"name" => "Restore Benchmark"})
+    channel = Enum.find(server.channels, &(&1.type == "text"))
+    room = Runtime.get_room_for_channel(channel.id)
+
+    seed_message_history(channel.id, room.id, user.id, 1..10)
+
+    {small_queries, small_us, small_rows} =
+      measure_queries(fn ->
+        Chat.list_channel_messages(channel.id, limit: 20, lean: true)
+      end)
+
+    seed_message_history(channel.id, room.id, user.id, 11..1_010)
+
+    Repo.update_all(from(entry in Room, where: entry.id == ^room.id),
+      set: [current_seq: 1_010, last_message_seq: 1_010]
+    )
+
+    {large_queries, large_us, large_rows} =
+      measure_queries(fn ->
+        Chat.list_channel_messages(channel.id, limit: 20, lean: true)
+      end)
+
+    IO.puts("RESTORE_ROWS:10->1010")
+    IO.puts("RESTORE_QUERIES:#{small_queries}->#{large_queries}")
+    IO.puts("RESTORE_LATENCY_US:#{small_us}->#{large_us}")
+
+    assert small_rows == 10
+    assert large_rows == 20
+    assert large_queries == small_queries
+    assert large_queries <= 3
+    assert large_us < 500_000
+  end
+
+  defp seed_message_history(channel_id, room_id, sender_id, range) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    messages =
+      Enum.map(range, fn sequence ->
+        %{
+          id: Ecto.UUID.generate(),
+          channel_id: channel_id,
+          sender_id: sender_id,
+          ciphertext: :crypto.strong_rand_bytes(32),
+          mls_epoch: 1,
+          is_reply: false,
+          client_nonce: "restore-seed-#{sequence}",
+          inserted_at: now,
+          updated_at: now
+        }
+      end)
+
+    Repo.insert_all(Message, messages)
+
+    events =
+      Enum.zip(messages, range)
+      |> Enum.map(fn {message, sequence} ->
+        %{
+          id: Ecto.UUID.generate(),
+          room_id: room_id,
+          message_id: message.id,
+          sender_id: sender_id,
+          event_type: "message",
+          room_seq: sequence,
+          inserted_at: now,
+          updated_at: now
+        }
+      end)
+
+    Repo.insert_all(RoomEvent, events)
+  end
+
+  defp measure_queries(operation) do
+    counter = :counters.new(1, [:atomics])
+    handler = "restore-query-counter-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach(
+      handler,
+      [:vesper, :repo, :query],
+      fn _, _, _, _ -> :counters.add(counter, 1, 1) end,
+      nil
+    )
+
+    started = System.monotonic_time(:microsecond)
+    rows = operation.()
+    elapsed = System.monotonic_time(:microsecond) - started
+    :telemetry.detach(handler)
+    {:counters.get(counter, 1), elapsed, length(rows)}
   end
 end

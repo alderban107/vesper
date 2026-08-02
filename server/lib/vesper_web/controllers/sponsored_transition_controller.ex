@@ -8,13 +8,15 @@ defmodule VesperWeb.SponsoredTransitionController do
   alias Vesper.Chat
   alias Vesper.Encryption
   alias Vesper.Servers
+  alias VesperWeb.ControllerHelpers
 
   @doc "POST /api/v1/mls-sponsored-transition/:scope_id"
   def create(conn, %{"scope_id" => scope_id} = params) do
     user = conn.assigns.current_user
     device = conn.assigns.current_device
 
-    with {:ok, authorized_group_id} <- authorized_scope(user.id, scope_id),
+    with {:ok, authorization} <- ControllerHelpers.authorize_mls_scope(user.id, scope_id),
+         authorized_group_id = authorization.group_id,
          {:ok, group_info_data} <- decode_required_base64(params, "group_info_data"),
          {:ok, ratchet_tree_data} <- decode_optional_base64(params, "ratchet_tree_data"),
          epoch when is_integer(epoch) <- parse_epoch(params),
@@ -27,7 +29,8 @@ defmodule VesperWeb.SponsoredTransitionController do
            require_non_empty_string(params, "commit_id", :invalid_idempotency_key),
          {:ok, remove_commit_data} <- optional_non_empty_string(params, "remove_commit_data"),
          {:ok, welcome_data} <- decode_optional_base64(params, "welcome_data") do
-      {channel_id, conversation_id} = scope_ids(scope_id)
+      channel_id = authorization.channel_id
+      conversation_id = authorization.conversation_id
 
       attrs = %{
         group_id: authorized_group_id,
@@ -331,59 +334,6 @@ defmodule VesperWeb.SponsoredTransitionController do
 
           :error ->
             {nil, nil}
-        end
-    end
-  end
-
-  defp authorized_scope(user_id, "voice:channel:" <> channel_id) do
-    case authorize_channel_scope(user_id, channel_id) do
-      {:ok, _channel_id} -> {:ok, "voice:channel:#{channel_id}"}
-      error -> error
-    end
-  end
-
-  defp authorized_scope(user_id, "voice:dm:" <> conversation_id) do
-    case authorize_conversation_scope(user_id, conversation_id) do
-      {:ok, _conversation_id} -> {:ok, "voice:dm:#{conversation_id}"}
-      error -> error
-    end
-  end
-
-  defp authorized_scope(user_id, scope_id) do
-    with {:ok, uuid} <- Ecto.UUID.cast(scope_id) do
-      case authorize_channel_scope(user_id, uuid) do
-        {:error, :not_found} -> authorize_conversation_scope(user_id, uuid)
-        result -> result
-      end
-    else
-      :error -> {:error, :invalid_scope}
-    end
-  end
-
-  defp authorize_channel_scope(user_id, channel_id) do
-    case Servers.get_channel(channel_id) do
-      nil ->
-        {:error, :not_found}
-
-      channel ->
-        if Servers.user_can_view_channel?(user_id, channel) do
-          {:ok, channel_id}
-        else
-          {:error, :forbidden}
-        end
-    end
-  end
-
-  defp authorize_conversation_scope(user_id, conversation_id) do
-    case Chat.get_conversation(conversation_id) do
-      nil ->
-        {:error, :not_found}
-
-      _conversation ->
-        if Chat.user_is_participant?(user_id, conversation_id) do
-          {:ok, conversation_id}
-        else
-          {:error, :forbidden}
         end
     end
   end

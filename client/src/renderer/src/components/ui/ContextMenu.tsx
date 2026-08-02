@@ -87,7 +87,7 @@ export default function ContextMenu({
                 item.disabled
                   ? 'text-text-disabled cursor-not-allowed'
                   : item.danger
-                    ? 'text-red-400 hover:bg-bg-tertiary/50'
+                    ? 'text-error hover:bg-bg-tertiary/50'
                     : 'text-text-secondary hover:bg-bg-tertiary/50 hover:text-text-primary'
               }`}
             >

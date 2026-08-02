@@ -65,7 +65,7 @@ export default function LinkPreview({ url }: Props): React.JSX.Element | null {
   if (error || !preview || (!preview.title && !preview.description)) return null
 
   return (
-    <div className="glass-card rounded-lg p-3 mt-1.5 max-w-md border-l-2 border-accent/50">
+    <div className="bg-bg-secondary border border-border rounded-lg p-3 mt-1.5 max-w-md">
       {preview.site_name && (
         <div className="text-text-faintest text-[10px] uppercase tracking-wider mb-0.5">
           {preview.site_name}

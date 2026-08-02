@@ -1,22 +1,23 @@
-import { Suspense, useEffect, useRef, useState, useCallback } from 'react'
-import { SendHorizonal, Star, X } from 'lucide-react'
+import { Suspense, useEffect, useMemo, useRef, useState, useCallback } from 'react'
+import { SendHorizonal, MessageSquare, X } from 'lucide-react'
 import Sidebar from '../components/layout/Sidebar'
 import Header from '../components/layout/Header'
 import MessageList from '../components/chat/MessageList'
 import MessageInput from '../components/chat/MessageInput'
 import MessageItem from '../components/chat/MessageItem'
 import MessageFeed from '../components/chat/message/MessageFeed'
-import VesperEditor from '../components/chat/slate/VesperEditor'
+import VesperEditor, { type VesperEditorHandle } from '../components/chat/slate/VesperEditor'
 import { useServerStore } from '../stores/serverStore'
 import { useDmStore } from '../stores/dmStore'
 import { useUIStore } from '../stores/uiStore'
 import { useVoiceStore } from '../stores/voiceStore'
 import { useAuthStore } from '../stores/authStore'
 import { usePresenceStore } from '../stores/presenceStore'
-import { parseMessageContent, useMessageStore, type Message } from '../stores/messageStore'
-import { useSyncStore } from '../stores/syncStore'
+import { compareMessages, parseMessageContent, useMessageStore, type Message } from '../stores/messageStore'
+import { persistSyncTokens, useSyncStore } from '../stores/syncStore'
 import { getRendererClient } from '../sdk/client'
 import lazyWithRetry from '../utils/lazyWithRetry'
+import { useMediaQuery } from '../hooks/useMediaQuery'
 
 const CreateServerModal = lazyWithRetry(() => import('../components/server/CreateServerModal'))
 const JoinServerModal = lazyWithRetry(() => import('../components/server/JoinServerModal'))
@@ -48,9 +49,7 @@ function mergeThreadReplies(primary: Message[], secondary: Message[]): Message[]
     merged.set(message.id, message)
   }
 
-  return [...merged.values()].sort(
-    (a, b) => new Date(a.inserted_at).getTime() - new Date(b.inserted_at).getTime()
-  )
+  return [...merged.values()].sort(compareMessages)
 }
 
 function getReplyPreview(message: Message): string {
@@ -61,24 +60,6 @@ function getReplyPreview(message: Message): string {
   }
 
   return parsed.text || 'View message'
-}
-
-function useIsMobileLayout(): boolean {
-  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= 768)
-
-  useEffect(() => {
-    const mediaQuery = window.matchMedia('(max-width: 768px)')
-    const handleChange = (event: MediaQueryListEvent): void => setIsMobile(event.matches)
-
-    setIsMobile(mediaQuery.matches)
-    mediaQuery.addEventListener('change', handleChange)
-
-    return () => {
-      mediaQuery.removeEventListener('change', handleChange)
-    }
-  }, [])
-
-  return isMobile
 }
 
 function DeferredChrome({
@@ -104,8 +85,8 @@ function WorkspaceStatusStrip({
     return null
   }
 
-  const tone = connected ? 'border-sky-400/20 bg-sky-500/10 text-sky-100' : 'border-amber-400/20 bg-amber-500/10 text-amber-100'
-  const dotTone = connected ? 'bg-sky-300' : 'bg-amber-300'
+  const tone = connected ? 'border-success/20 bg-success/10' : 'border-accent/30 bg-accent/10'
+  const dotTone = connected ? 'bg-success' : 'bg-accent'
   const title = connected ? 'Syncing latest activity' : 'Reconnecting to server'
   const description = connected
     ? 'Refreshing servers, DMs, unread state, and recent scope changes.'
@@ -117,7 +98,7 @@ function WorkspaceStatusStrip({
         <div className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${dotTone}`} />
         <div className="min-w-0 flex-1">
           <div className="text-sm font-semibold text-text-primary">{title}</div>
-          <div className="mt-1 text-xs leading-5 text-current">{description}</div>
+          <div className="mt-1 text-xs leading-5 text-text-muted">{description}</div>
         </div>
       </div>
     </div>
@@ -125,7 +106,7 @@ function WorkspaceStatusStrip({
 }
 
 export default function MainPage(): React.JSX.Element {
-  const isMobile = useIsMobileLayout()
+  const isMobile = useMediaQuery('(max-width: 768px)')
   const activeChannelId = useServerStore((s) => s.activeChannelId)
   const activeChannel = useServerStore((s) => {
     const server = s.servers.find((entry) => entry.id === s.activeServerId)
@@ -154,8 +135,6 @@ export default function MainPage(): React.JSX.Element {
   const screenShareEnabled = useVoiceStore((s) => s.screenShareEnabled)
   const servers = useServerStore((s) => s.servers)
   const currentUser = useAuthStore((s) => s.user)
-  const currentDevice = useAuthStore((s) => s.currentDevice)
-  const canUseE2EE = useAuthStore((s) => s.canUseE2EE)
   const joinPresence = usePresenceStore((s) => s.joinPresence)
   const joinAllServerPresence = usePresenceStore((s) => s.joinAllServerPresence)
   const syncNow = useSyncStore((s) => s.syncNow)
@@ -183,6 +162,7 @@ export default function MainPage(): React.JSX.Element {
     return EMPTY_MESSAGES
   })
   const sawInitialSocketOpenRef = useRef(false)
+  const threadEditorRef = useRef<VesperEditorHandle>(null)
   const [connectionState, setConnectionState] = useState(() => {
     const clientState = getRendererClient().getState()
 
@@ -191,10 +171,6 @@ export default function MainPage(): React.JSX.Element {
       lastError: null as string | null
     }
   })
-  const needsEncryptedUnlock =
-    currentDevice?.trust_state === 'trusted' &&
-    !canUseE2EE
-
   useEffect(() => {
     const client = getRendererClient()
     const clientState = client.getState()
@@ -204,10 +180,22 @@ export default function MainPage(): React.JSX.Element {
       lastError: null
     })
 
-    const hasHydratedWorkspace =
-      useServerStore.getState().servers.length > 0 ||
-      useDmStore.getState().conversations.length > 0
-    void syncNow(useSyncStore.getState().token === null || !hasHydratedWorkspace)
+    const cachedWorkspace = client.getState()
+    if (cachedWorkspace.servers.length > 0) {
+      useServerStore.getState().mergeServers(cachedWorkspace.servers)
+    }
+    if (cachedWorkspace.conversations.length > 0) {
+      useDmStore.getState().mergeConversations(cachedWorkspace.conversations)
+    }
+    useDmStore.getState().setConversationPageState(cachedWorkspace.conversationsHasMore)
+    if (cachedWorkspace.syncToken) {
+      persistSyncTokens(
+        cachedWorkspace.syncToken,
+        useSyncStore.getState().urgentToken ?? cachedWorkspace.syncToken
+      )
+    }
+
+    void syncNow(false)
 
     const unsubscribeConnected = client.on('connected', () => {
       setConnectionState({
@@ -272,30 +260,34 @@ export default function MainPage(): React.JSX.Element {
   const isCurrentDmCallView =
     isDmView &&
     voiceRoomType === 'dm' &&
-    voiceRoomId === selectedConversationId &&
-    (voiceState === 'connected' || voiceState === 'in_call')
+    voiceRoomId === selectedConversationId
   const shouldShowCallOverlay =
     voiceState !== 'idle' &&
     !isCurrentDmCallView &&
     (voiceRoomType === 'dm' || (isMobile && !isCurrentVoiceRoomView))
   const showThreadPanel = Boolean(activeThreadParentId && (isChannelView || isDmView))
-  const inlineThreadReplies = activeThreadParentId
+  const inlineThreadReplies = useMemo(() => activeThreadParentId
     ? activeTargetMessages.filter((message) => {
       const threadRootId =
         message.thread_root_message_id ??
         (!message.is_reply ? message.parent_message_id : null)
       return threadRootId === activeThreadParentId
     })
-    : EMPTY_MESSAGES
-  const threadReplies = mergeThreadReplies(threadRepliesFromApi, inlineThreadReplies)
-  const resolvedThreadParent = activeThreadParent ?? (
+    : EMPTY_MESSAGES,
+  [activeTargetMessages, activeThreadParentId])
+  const threadReplies = useMemo(
+    () => mergeThreadReplies(threadRepliesFromApi, inlineThreadReplies),
+    [inlineThreadReplies, threadRepliesFromApi]
+  )
+  const resolvedThreadParent = useMemo(() => activeThreadParent ?? (
     activeThreadParentId
       ? activeTargetMessages.find((message) => message.id === activeThreadParentId) ?? null
       : null
-  )
-  const threadMessageLookup = resolvedThreadParent
+  ), [activeTargetMessages, activeThreadParent, activeThreadParentId])
+  const threadMessageLookup = useMemo(() => resolvedThreadParent
     ? [resolvedThreadParent, ...threadReplies]
-    : threadReplies
+    : threadReplies,
+  [resolvedThreadParent, threadReplies])
 
   useEffect(() => {
     if (!isMobile) {
@@ -421,6 +413,7 @@ export default function MainPage(): React.JSX.Element {
             </div>
           )}
           <VesperEditor
+            ref={threadEditorRef}
             mode="compose"
             onSubmit={(markdown) => {
               const trimmed = markdown.trim()
@@ -430,7 +423,8 @@ export default function MainPage(): React.JSX.Element {
             autoFocus
           />
           <button
-            type="submit"
+            type="button"
+            onClick={() => threadEditorRef.current?.submit()}
             disabled={!activeThreadParentId}
             className="vesper-thread-composer-send"
           >
@@ -453,11 +447,10 @@ export default function MainPage(): React.JSX.Element {
             <Header mobile />
             <WorkspaceStatusStrip
               connected={connectionState.connected}
-              syncing={syncing && !needsEncryptedUnlock}
+              syncing={syncing}
               lastError={connectionState.lastError}
               mobile
             />
-
             <div className="vesper-mobile-chat-body">
               {isChannelView ? (
                 <>
@@ -484,7 +477,7 @@ export default function MainPage(): React.JSX.Element {
                 </>
               ) : (
                 <div className="vesper-mobile-empty-state">
-                  <Star className="w-10 h-10 text-text-faintest" />
+                  <MessageSquare className="w-10 h-10 text-text-faintest" />
                   <p>Select a channel or conversation to start chatting</p>
                 </div>
               )}
@@ -522,10 +515,9 @@ export default function MainPage(): React.JSX.Element {
         <Header />
         <WorkspaceStatusStrip
           connected={connectionState.connected}
-          syncing={syncing && !needsEncryptedUnlock}
+          syncing={syncing}
           lastError={connectionState.lastError}
         />
-
         <div id="vesper-main-content" className="vesper-desktop-body flex-1 flex min-h-0" role="main" tabIndex={-1}>
           <div className="vesper-main-chat-column flex-1 flex flex-col min-w-0">
             {isChannelView ? (
@@ -553,7 +545,7 @@ export default function MainPage(): React.JSX.Element {
               </>
             ) : (
               <div className="flex-1 flex flex-col items-center justify-center text-text-faint gap-3">
-                <Star className="w-10 h-10 text-text-faintest" />
+                <MessageSquare className="w-10 h-10 text-text-faintest" />
                 <p>Select a channel or conversation to start chatting</p>
               </div>
             )}

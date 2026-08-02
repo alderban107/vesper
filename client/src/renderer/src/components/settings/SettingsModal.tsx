@@ -4,7 +4,7 @@ import { getLocalDeviceIdentity } from '@vesper/sdk/auth'
 import { usePresenceStore } from '../../stores/presenceStore'
 import { useUIStore } from '../../stores/uiStore'
 import { useSettingsStore } from '../../stores/settingsStore'
-import { useSettingsStore } from '../../stores/settingsStore'
+import { useToastStore } from '../../stores/toastStore'
 import { useVoiceStore } from '../../stores/voiceStore'
 import { useAuthStore } from '../../stores/authStore'
 import { isPushEnabled, subscribeToPush, unsubscribeFromPush } from '../../utils/pushSubscription'
@@ -194,6 +194,7 @@ export default function SettingsModal(): React.JSX.Element {
   )
   const [pushEnabled, setPushEnabled] = useState(() => isPushEnabled())
   const [pushBusy, setPushBusy] = useState(false)
+  const addToast = useToastStore((s) => s.addToast)
   const pushAvailable = typeof window !== 'undefined' && !window.cryptoDb && 'PushManager' in window
 
   const { inputs, outputs } = useAudioDevices()
@@ -263,6 +264,9 @@ export default function SettingsModal(): React.JSX.Element {
       } else {
         const ok = await subscribeToPush()
         setPushEnabled(ok)
+        if (!ok) {
+          addToast('Push notifications are not available on this server yet.', 'error')
+        }
       }
     } finally {
       setPushBusy(false)

@@ -49,6 +49,7 @@ defmodule VesperWeb.ScopeSyncController do
             kind: kind,
             id: id,
             after: parse_after(scope["after"]),
+            before: parse_after(scope["before"]),
             after_seq: parse_after_seq(scope["after_seq"])
           }
         ]
@@ -116,7 +117,13 @@ defmodule VesperWeb.ScopeSyncController do
   end
 
   defp sync_scope(
-         %{kind: "channel", id: channel_id, after: after_cursor, after_seq: after_seq},
+         %{
+           kind: "channel",
+           id: channel_id,
+           after: after_cursor,
+           before: before_cursor,
+           after_seq: after_seq
+         },
          limit,
          since,
          channels_by_id,
@@ -158,8 +165,14 @@ defmodule VesperWeb.ScopeSyncController do
               )
 
             true ->
-              messages =
-                Chat.list_channel_messages(channel_id, limit: limit, after: after_cursor)
+              {messages, has_more} =
+                bounded_message_window(limit, fn query_limit ->
+                  Chat.list_channel_messages(channel_id,
+                    limit: query_limit,
+                    before: before_cursor,
+                    after: after_cursor
+                  )
+                end)
 
               events =
                 if since && room do
@@ -168,7 +181,7 @@ defmodule VesperWeb.ScopeSyncController do
                   []
                 end
 
-              {messages, events, length(messages) == limit}
+              {messages, events, has_more}
           end
 
         [
@@ -176,6 +189,8 @@ defmodule VesperWeb.ScopeSyncController do
             scope_id: channel_id,
             kind: "channel",
             has_more: has_more,
+            older_cursor: if(is_nil(after_seq), do: older_history_cursor(messages, has_more)),
+            latest_room_seq: if(room, do: room.current_seq || 0, else: 0),
             messages: Enum.map(messages, &message_json/1),
             events: Enum.map(events, &sync_event_json/1)
           }
@@ -184,7 +199,13 @@ defmodule VesperWeb.ScopeSyncController do
   end
 
   defp sync_scope(
-         %{kind: "dm", id: conversation_id, after: after_cursor, after_seq: after_seq},
+         %{
+           kind: "dm",
+           id: conversation_id,
+           after: after_cursor,
+           before: before_cursor,
+           after_seq: after_seq
+         },
          limit,
          since,
          _channels_by_id,
@@ -226,8 +247,14 @@ defmodule VesperWeb.ScopeSyncController do
             )
 
           true ->
-            messages =
-              Chat.list_conversation_messages(conversation_id, limit: limit, after: after_cursor)
+            {messages, has_more} =
+              bounded_message_window(limit, fn query_limit ->
+                Chat.list_conversation_messages(conversation_id,
+                  limit: query_limit,
+                  before: before_cursor,
+                  after: after_cursor
+                )
+              end)
 
             events =
               if since && room do
@@ -236,7 +263,7 @@ defmodule VesperWeb.ScopeSyncController do
                 []
               end
 
-            {messages, events, length(messages) == limit}
+            {messages, events, has_more}
         end
 
       [
@@ -244,6 +271,8 @@ defmodule VesperWeb.ScopeSyncController do
           scope_id: conversation_id,
           kind: "dm",
           has_more: has_more,
+          older_cursor: if(is_nil(after_seq), do: older_history_cursor(messages, has_more)),
+          latest_room_seq: if(room, do: room.current_seq || 0, else: 0),
           messages: Enum.map(messages, &message_json/1),
           events: Enum.map(events, &sync_event_json/1)
         }
@@ -297,6 +326,19 @@ defmodule VesperWeb.ScopeSyncController do
     end
   end
 
+  defp bounded_message_window(limit, query) do
+    rows = query.(limit + 1)
+    {Enum.take(rows, limit), length(rows) > limit}
+  end
+
+  defp older_history_cursor(_messages, false), do: nil
+  defp older_history_cursor([], _has_more), do: nil
+
+  defp older_history_cursor(messages, true) do
+    oldest = List.last(messages)
+    "#{DateTime.to_iso8601(oldest.inserted_at)}|#{oldest.id}"
+  end
+
   defp message_json(message) do
     base = %{
       id: message.id,
@@ -304,6 +346,12 @@ defmodule VesperWeb.ScopeSyncController do
       channel_id: message.channel_id,
       conversation_id: message.conversation_id,
       client_nonce: message.client_nonce,
+      history_signing_public_key:
+        if(is_binary(message.history_signing_public_key),
+          do: Base.encode64(message.history_signing_public_key),
+          else: nil
+        ),
+      history_revision: message.history_revision,
       sender_id: message.sender_id,
       sender: sender_json(message.sender),
       expires_at: message.expires_at,
@@ -319,7 +367,9 @@ defmodule VesperWeb.ScopeSyncController do
     if message.ciphertext do
       Map.merge(base, %{
         ciphertext: Base.encode64(message.ciphertext),
-        mls_epoch: message.mls_epoch
+        mls_epoch: message.mls_epoch,
+        encryption_scheme: message.encryption_scheme,
+        encryption_group_id: message.encryption_group_id
       })
     else
       Map.put(base, :content, message.content)
@@ -347,6 +397,8 @@ defmodule VesperWeb.ScopeSyncController do
         emoji: reaction.emoji,
         ciphertext: reaction.ciphertext,
         mls_epoch: reaction.mls_epoch,
+        encryption_scheme: reaction.encryption_scheme,
+        encryption_group_id: reaction.encryption_group_id,
         sender_id: reaction.sender_id,
         inserted_at: reaction.inserted_at
       }

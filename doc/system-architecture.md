@@ -167,7 +167,7 @@ graph LR
     subgraph Write Path
         MSG[Message Send] -->|1 row| SSE[scope_sync_events<br/>shared log]
         MUT[Mutation] -->|1 row| SSE
-        DM_NOTIF[DM Notification] -->|per-user| USE[user_sync_events<br/>urgent only]
+        TARGETED[Urgent notification or read position] -->|per-user| USE[user_sync_events<br/>targeted log]
     end
 
     subgraph Read Path
@@ -180,9 +180,9 @@ graph LR
 
 **Design:**
 - `scope_sync_events`: append-only log, 1 row per scope event (not per user)
-- `user_sync_events`: per-user urgent events (DM messages, mentions only)
-- Clients poll with opaque cursor (synced_at + event_id, 1-second lookback)
-- Scope changes resolved at read time by joining against user's memberships
+- `user_sync_events`: per-user urgent events and account-local scope changes such as read positions
+- Clients poll with one opaque cursor containing independent bounded user and scope positions plus fixed page high-water marks
+- Scope changes resolve at read time through indexed membership joins; cursors older than the retention window force a compact snapshot
 
 ## Voice Room Architecture
 

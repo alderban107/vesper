@@ -29,9 +29,14 @@ defmodule VesperWeb.Router do
     plug(VesperWeb.Plugs.RateLimit, action: :refresh)
   end
 
-  # Health check — no auth, no pipeline
+  pipeline :rate_limit_upload do
+    plug(VesperWeb.Plugs.RateLimit, action: :upload)
+  end
+
+  # Health is public for orchestrators; metrics require a dedicated bearer token.
   scope "/", VesperWeb do
     get("/health", HealthController, :check)
+    get("/metrics", MetricsController, :show)
   end
 
   # Public auth routes (rate-limited)
@@ -155,7 +160,6 @@ defmodule VesperWeb.Router do
     post("/sync/scopes", ScopeSyncController, :create)
 
     # Attachments
-    post("/attachments", AttachmentController, :create)
     get("/attachments/:id", AttachmentController, :show)
 
     # User search
@@ -163,6 +167,11 @@ defmodule VesperWeb.Router do
 
     # Voice/WebRTC runtime config
     get("/voice/config", VoiceController, :config)
+  end
+
+  scope "/api/v1", VesperWeb do
+    pipe_through([:api, :authenticated, :rate_limit_upload])
+    post("/attachments", AttachmentController, :create)
   end
 
   scope "/api/v1", VesperWeb do
@@ -198,6 +207,39 @@ defmodule VesperWeb.Router do
     get("/group-info/:scope_id", GroupInfoController, :show)
     put("/group-info/:scope_id", GroupInfoController, :upsert)
     post("/mls-sponsored-transition/:scope_id", SponsoredTransitionController, :create)
+
+    # Current-user room encryption topology (never enumerates other cohorts)
+    get("/room-crypto-topology/:scope_id", RoomCryptoTopologyController, :show)
+    put("/room-crypto-topology/:scope_id", RoomCryptoTopologyController, :update)
+    post("/room-crypto-topology/:scope_id/prepare", RoomCryptoTopologyController, :prepare)
+    post("/room-crypto-topology/:scope_id/cutover", RoomCryptoTopologyController, :cutover)
+    post("/room-crypto-topology/:scope_id/rollback", RoomCryptoTopologyController, :rollback)
+
+    # Signed public cohort wrapping keys
+    get("/cohort-wrapping-keys/:group_id", CohortWrappingKeyController, :show)
+    put("/cohort-wrapping-keys/:group_id", CohortWrappingKeyController, :upsert)
+
+    # Fenced room data-key coordination
+    get("/room-key-epochs/:scope_id/material", RoomKeyEpochController, :material)
+    get("/room-key-epochs/:scope_id/active", RoomKeyEpochController, :active)
+    get("/room-key-epochs/:scope_id/:epoch", RoomKeyEpochController, :show)
+    post("/room-key-epochs/:scope_id/prepare", RoomKeyEpochController, :prepare)
+    post("/room-key-epoch/:epoch_id/claim", RoomKeyEpochController, :claim)
+    post("/room-key-epoch/:epoch_id/renew", RoomKeyEpochController, :renew)
+
+    put(
+      "/room-key-epoch/:epoch_id/envelopes/:cohort_id",
+      RoomKeyEpochController,
+      :put_envelope
+    )
+
+    post("/room-key-epoch/:epoch_id/activate", RoomKeyEpochController, :activate)
+    post("/room-key-epoch/:epoch_id/stage", RoomKeyEpochController, :stage)
+    post("/room-key-epoch/:epoch_id/repair", RoomKeyEpochController, :repair)
+
+    # Bounded opaque same-user recovery packages
+    get("/scope-recovery-packages/:scope_id", ScopeRecoveryPackageController, :show)
+    put("/scope-recovery-packages/:scope_id", ScopeRecoveryPackageController, :upsert)
 
     # Pending same-user MLS history recovery
     get("/pending-history-requests/:channel_id", PendingHistoryRequestController, :index)

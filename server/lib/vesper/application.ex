@@ -7,30 +7,40 @@ defmodule Vesper.Application do
 
   @impl true
   def start(_type, _args) do
-    # Initialize ETS caches before supervision tree
-    Vesper.Runtime.init_room_cache()
-
-    children = [
-      VesperWeb.Telemetry,
-      Vesper.Repo,
-      Vesper.Migrator,
-      {DNSCluster, query: Application.get_env(:vesper, :dns_cluster_query) || :ignore},
-      {Phoenix.PubSub, name: Vesper.PubSub, pool_size: System.schedulers_online()},
-      {Oban, Application.fetch_env!(:vesper, Oban)},
-      {Task.Supervisor, name: Vesper.NotificationSupervisor, max_children: 500},
-      {Task.Supervisor, name: Vesper.Voice.CleanupSupervisor, max_children: 100},
-      Vesper.Servers.MemberCache,
-      Vesper.Servers.PermissionsCache,
-      {Registry, keys: :unique, name: Vesper.Voice.Registry},
-      {Vesper.Voice.RoomSupervisor, []},
-      VesperWeb.Presence,
-      VesperWeb.Endpoint
-    ]
+    children =
+      [Vesper.Repo] ++
+        migration_children() ++
+        [
+          VesperWeb.Telemetry,
+          Vesper.Runtime.RoomCache,
+          {DNSCluster, query: Application.get_env(:vesper, :dns_cluster_query) || :ignore},
+          {Phoenix.PubSub, name: Vesper.PubSub, pool_size: System.schedulers_online()},
+          {Oban, Application.fetch_env!(:vesper, Oban)},
+          {Task.Supervisor, name: Vesper.NotificationSupervisor, max_children: 500},
+          {Task.Supervisor, name: Vesper.Voice.CleanupSupervisor, max_children: 100},
+          Vesper.Servers.MemberCache,
+          Vesper.Servers.PermissionsCache,
+          {Registry, keys: :unique, name: Vesper.Voice.Registry},
+          {Vesper.Voice.RoomSupervisor, []},
+          VesperWeb.Presence,
+          VesperWeb.Endpoint
+        ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options
     opts = [strategy: :one_for_one, name: Vesper.Supervisor]
     Supervisor.start_link(children, opts)
+  end
+
+  defp migration_children do
+    if Application.get_env(:vesper, :run_migrations_on_start, true) do
+      [Vesper.Migrator]
+    else
+      # A separate migration job is not evidence that this database is current.
+      # Health performs a read-only pending-version check in this mode.
+      Application.put_env(:vesper, :migration_status, :unchecked)
+      []
+    end
   end
 
   # Tell Phoenix to update the endpoint configuration

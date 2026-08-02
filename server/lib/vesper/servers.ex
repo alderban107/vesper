@@ -1,7 +1,6 @@
 defmodule Vesper.Servers do
   import Bitwise
   import Ecto.Query
-  require Logger
   alias Vesper.Repo
   alias Vesper.Accounts
 
@@ -20,6 +19,7 @@ defmodule Vesper.Servers do
     AuditLog
   }
 
+  alias Vesper.Chat.AttachmentBlobLock
   alias Vesper.Encryption
   alias Vesper.Runtime
   alias Vesper.Runtime.Room
@@ -74,6 +74,15 @@ defmodule Vesper.Servers do
         }
         |> Repo.insert!()
 
+      case Encryption.grant_server_room_history_authorizations(
+             server.id,
+             user.id,
+             membership.id
+           ) do
+        {:ok, :ok} -> :ok
+        {:error, reason} -> Repo.rollback(reason)
+      end
+
       # Auto-create "Admin" role with administrator permission
       admin_role =
         %Role{server_id: server.id}
@@ -95,14 +104,7 @@ defmodule Vesper.Servers do
   end
 
   def list_user_servers(user, opts \\ []) do
-    include_emojis = Keyword.get(opts, :include_emojis, true)
-
-    preloads =
-      if include_emojis do
-        [:channels, [emojis: :creator]]
-      else
-        [:channels]
-      end
+    preloads = server_list_preloads(opts)
 
     from(s in Server,
       join: m in Membership,
@@ -117,14 +119,7 @@ defmodule Vesper.Servers do
     if server_ids == [] do
       []
     else
-      include_emojis = Keyword.get(opts, :include_emojis, true)
-
-      preloads =
-        if include_emojis do
-          [:channels, [emojis: :creator]]
-        else
-          [:channels]
-        end
+      preloads = server_list_preloads(opts)
 
       from(s in Server,
         join: m in Membership,
@@ -134,6 +129,17 @@ defmodule Vesper.Servers do
       )
       |> Repo.all()
     end
+  end
+
+  defp server_list_preloads(opts) do
+    include_channels = Keyword.get(opts, :include_channels, true)
+    include_emojis = Keyword.get(opts, :include_emojis, true)
+
+    []
+    |> then(fn preloads -> if include_channels, do: [:channels | preloads], else: preloads end)
+    |> then(fn preloads ->
+      if include_emojis, do: [[emojis: :creator] | preloads], else: preloads
+    end)
   end
 
   def list_user_channel_ids(user_id) do
@@ -407,7 +413,35 @@ defmodule Vesper.Servers do
   end
 
   def delete_server(%Server{} = server) do
-    Repo.delete(server)
+    Repo.transaction(fn ->
+      locked_server =
+        from(server_row in Server,
+          where: server_row.id == ^server.id,
+          lock: "FOR UPDATE"
+        )
+        |> Repo.one!()
+
+      channel_ids =
+        from(channel in Channel,
+          where: channel.server_id == ^server.id,
+          order_by: channel.id,
+          lock: "FOR UPDATE",
+          select: channel.id
+        )
+        |> Repo.all()
+
+      storage_keys = AttachmentBlobLock.storage_keys_for_channels(channel_ids)
+      deleted = Repo.delete!(locked_server)
+      {deleted, storage_keys}
+    end)
+    |> case do
+      {:ok, {deleted, storage_keys}} ->
+        AttachmentBlobLock.cleanup(storage_keys)
+        {:ok, deleted}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   # 24 hours
@@ -419,34 +453,62 @@ defmodule Vesper.Servers do
         {:error, :not_found}
 
       server ->
-        # Reject if the permanent code has expired (>24h old)
-        if invite_code_stale?(server) do
-          # Rotate the stale code so it can't be reused
-          rotate_invite_code(server)
-          {:error, :not_found}
-        else
-          if banned?(server.id, user.id) do
+        cond do
+          invite_code_stale?(server) ->
+            # Rotate the stale code so it can't be reused.
+            rotate_invite_code(server)
+            {:error, :not_found}
+
+          banned?(server.id, user.id) ->
             {:error, :banned}
-          else
-            result =
-              %Membership{
-                user_id: user.id,
-                server_id: server.id,
-                role: "member",
-                joined_at: DateTime.utc_now() |> DateTime.truncate(:second)
-              }
-              |> Repo.insert(on_conflict: :nothing, conflict_target: [:user_id, :server_id])
 
-            case result do
-              {:ok, %Membership{id: id}} when not is_nil(id) ->
-                broadcast_membership_change(server.id, user.id, :member_joined)
+          true ->
+            now = DateTime.utc_now() |> DateTime.truncate(:second)
+            membership_id = Ecto.UUID.generate()
 
-              _ ->
-                :ok
+            transaction_result =
+              Repo.transaction(fn ->
+                {inserted_count, _rows} =
+                  Repo.insert_all(
+                    Membership,
+                    [
+                      %{
+                        id: membership_id,
+                        user_id: user.id,
+                        server_id: server.id,
+                        role: "member",
+                        joined_at: now
+                      }
+                    ],
+                    on_conflict: :nothing,
+                    conflict_target: [:user_id, :server_id]
+                  )
+
+                if inserted_count == 1 do
+                  case Encryption.grant_server_room_history_authorizations(
+                         server.id,
+                         user.id,
+                         membership_id
+                       ) do
+                    {:ok, :ok} -> :ok
+                    {:error, reason} -> Repo.rollback(reason)
+                  end
+
+                  :ok = Encryption.cancel_rejoined_server_member_evictions(server.id, user.id)
+                  true
+                else
+                  false
+                end
+              end)
+
+            case transaction_result do
+              {:ok, inserted?} ->
+                if inserted?, do: broadcast_membership_change(server.id, user.id, :member_joined)
+                {:ok, server |> Repo.preload([:channels, [emojis: :creator]])}
+
+              {:error, reason} ->
+                {:error, reason}
             end
-
-            {:ok, server |> Repo.preload([:channels, [emojis: :creator]])}
-          end
         end
     end
   end
@@ -528,6 +590,14 @@ defmodule Vesper.Servers do
 
   def get_membership(user_id, server_id) do
     Repo.get_by(Membership, user_id: user_id, server_id: server_id)
+  end
+
+  def get_channel_membership(user_id, %Channel{server_id: nil, id: channel_id}) do
+    Repo.get_by(Membership, user_id: user_id, channel_id: channel_id)
+  end
+
+  def get_channel_membership(user_id, %Channel{server_id: server_id}) do
+    get_membership(user_id, server_id)
   end
 
   def leave_server(user_id, server_id) do
@@ -722,8 +792,14 @@ defmodule Vesper.Servers do
           |> Repo.insert!()
 
         case Runtime.ensure_room_for_channel(channel) do
-          {:ok, _room} -> channel
-          {:error, changeset} -> Repo.rollback(changeset)
+          {:ok, room} ->
+            case Encryption.grant_current_server_members_room_history(room.id, server_id) do
+              {:ok, :ok} -> channel
+              {:error, reason} -> Repo.rollback(reason)
+            end
+
+          {:error, changeset} ->
+            Repo.rollback(changeset)
         end
       else
         {:error, changeset} ->
@@ -850,22 +926,44 @@ defmodule Vesper.Servers do
 
   def delete_channel(%Channel{} = channel) do
     Repo.transaction(fn ->
-      if channel.type == "category" do
+      locked_channel =
+        from(channel_row in Channel,
+          where: channel_row.id == ^channel.id,
+          lock: "FOR UPDATE"
+        )
+        |> Repo.one!()
+
+      storage_keys = AttachmentBlobLock.storage_keys_for_channels([locked_channel.id])
+
+      if locked_channel.type == "category" do
         from(c in Channel,
-          where: c.server_id == ^channel.server_id and c.category_id == ^channel.id
+          where:
+            c.server_id == ^locked_channel.server_id and
+              c.category_id == ^locked_channel.id
         )
         |> Repo.update_all(set: [category_id: nil])
       end
 
-      deleted = Repo.delete!(channel)
-      normalize_scope_positions(channel.server_id, sibling_scope(channel))
+      deleted = Repo.delete!(locked_channel)
+      normalize_scope_positions(locked_channel.server_id, sibling_scope(locked_channel))
 
-      if channel.type == "category" do
-        normalize_scope_positions(channel.server_id, %{kind: :channels, category_id: nil})
+      if locked_channel.type == "category" do
+        normalize_scope_positions(locked_channel.server_id, %{
+          kind: :channels,
+          category_id: nil
+        })
       end
 
-      deleted
+      {deleted, storage_keys}
     end)
+    |> case do
+      {:ok, {deleted, storage_keys}} ->
+        AttachmentBlobLock.cleanup(storage_keys)
+        {:ok, deleted}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   def user_can_view_channel?(user_id, channel_id) when is_binary(channel_id) do
@@ -900,13 +998,21 @@ defmodule Vesper.Servers do
   end
 
   def list_channel_permission_overrides(channel_id) when is_binary(channel_id) do
+    channel_id
+    |> then(&list_channel_permission_overrides([&1]))
+    |> Map.fetch!(channel_id)
+  end
+
+  def list_channel_permission_overrides(channel_ids) when is_list(channel_ids) do
+    channel_ids = Enum.uniq(channel_ids)
+
     role_overrides =
       from(override in ChannelRolePermission,
-        where: override.channel_id == ^channel_id,
+        where: override.channel_id in ^channel_ids,
         order_by: [asc: override.inserted_at]
       )
       |> Repo.all()
-      |> Enum.map(fn override ->
+      |> Enum.group_by(& &1.channel_id, fn override ->
         %{
           role_id: override.role_id,
           allow: permission_names_from_bits(override.allow),
@@ -918,11 +1024,11 @@ defmodule Vesper.Servers do
 
     user_overrides =
       from(override in ChannelUserPermission,
-        where: override.channel_id == ^channel_id,
+        where: override.channel_id in ^channel_ids,
         order_by: [asc: override.inserted_at]
       )
       |> Repo.all()
-      |> Enum.map(fn override ->
+      |> Enum.group_by(& &1.channel_id, fn override ->
         %{
           user_id: override.user_id,
           allow: permission_names_from_bits(override.allow),
@@ -932,10 +1038,13 @@ defmodule Vesper.Servers do
         }
       end)
 
-    %{
-      roles: role_overrides,
-      users: user_overrides
-    }
+    Map.new(channel_ids, fn channel_id ->
+      {channel_id,
+       %{
+         roles: Map.get(role_overrides, channel_id, []),
+         users: Map.get(user_overrides, channel_id, [])
+       }}
+    end)
   end
 
   def validate_channel_permission_overrides(%Channel{} = channel, overrides)
@@ -1150,7 +1259,7 @@ defmodule Vesper.Servers do
          {:ok, allow} <-
            normalize_override_mask(Map.get(entry, "allow") || Map.get(entry, :allow)),
          {:ok, deny} <- normalize_override_mask(Map.get(entry, "deny") || Map.get(entry, :deny)),
-         false <- (allow &&& deny) != 0 || {:error, "allow and deny cannot overlap"} do
+         true <- (allow &&& deny) == 0 || {:error, "allow and deny cannot overlap"} do
       if allow == 0 and deny == 0 do
         {:ok, nil}
       else
@@ -1159,7 +1268,6 @@ defmodule Vesper.Servers do
     else
       {:error, reason} -> {:error, reason}
       false -> {:error, "#{id_key} is required"}
-      true -> {:error, "allow and deny cannot overlap"}
     end
   end
 
@@ -1755,58 +1863,89 @@ defmodule Vesper.Servers do
   def use_invite(invite_code, user) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
-    case Repo.get_by(Invite, code: invite_code) do
-      nil ->
-        {:error, :not_found}
+    transaction_result =
+      Repo.transaction(fn ->
+        invite =
+          Repo.one(
+            from(i in Invite,
+              where: i.code == ^invite_code,
+              lock: "FOR UPDATE"
+            )
+          )
 
-      invite ->
         cond do
+          is_nil(invite) ->
+            Repo.rollback(:not_found)
+
           invite.expires_at && DateTime.compare(now, invite.expires_at) == :gt ->
-            {:error, :expired}
+            Repo.rollback(:expired)
 
           invite.max_uses && invite.uses >= invite.max_uses ->
-            {:error, :max_uses_reached}
+            Repo.rollback(:max_uses_reached)
 
           true ->
             server = get_server(invite.server_id)
 
-            if is_nil(server) do
-              {:error, :not_found}
-            else
-              if banned?(server.id, user.id) do
-                {:error, :banned}
-              else
-                result =
-                  %Membership{
-                    user_id: user.id,
-                    server_id: server.id,
-                    role: "member",
-                    joined_at: now
-                  }
-                  |> Repo.insert(on_conflict: :nothing, conflict_target: [:user_id, :server_id])
+            cond do
+              is_nil(server) ->
+                Repo.rollback(:not_found)
 
-                # Only increment uses and broadcast when a new membership was actually inserted
-                case result do
-                  {:ok, %Membership{id: id}} when not is_nil(id) ->
-                    maybe_assign_invite_role(id, invite.role_id)
+              banned?(server.id, user.id) ->
+                Repo.rollback(:banned)
 
-                    # Atomic increment with max_uses guard to prevent race condition
-                    from(i in Invite,
-                      where: i.id == ^invite.id,
-                      where: is_nil(i.max_uses) or i.uses < i.max_uses
-                    )
+              true ->
+                membership_id = Ecto.UUID.generate()
+
+                {inserted_count, _rows} =
+                  Repo.insert_all(
+                    Membership,
+                    [
+                      %{
+                        id: membership_id,
+                        user_id: user.id,
+                        server_id: server.id,
+                        role: "member",
+                        joined_at: now
+                      }
+                    ],
+                    on_conflict: :nothing,
+                    conflict_target: [:user_id, :server_id]
+                  )
+
+                if inserted_count == 1 do
+                  case Encryption.grant_server_room_history_authorizations(
+                         server.id,
+                         user.id,
+                         membership_id
+                       ) do
+                    {:ok, :ok} -> :ok
+                    {:error, reason} -> Repo.rollback(reason)
+                  end
+
+                  maybe_assign_invite_role(membership_id, invite.role_id)
+
+                  {1, _rows} =
+                    from(i in Invite, where: i.id == ^invite.id)
                     |> Repo.update_all(inc: [uses: 1])
 
-                    broadcast_membership_change(server.id, user.id, :member_joined)
-
-                  _ ->
-                    :ok
+                  {server, true}
+                else
+                  {server, false}
                 end
-
-                {:ok, server |> Repo.preload([:channels, [emojis: :creator]])}
-              end
             end
         end
+      end)
+
+    case transaction_result do
+      {:ok, {server, true}} ->
+        broadcast_membership_change(server.id, user.id, :member_joined)
+        {:ok, server}
+
+      {:ok, {server, false}} ->
+        {:ok, server}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -1949,21 +2088,7 @@ defmodule Vesper.Servers do
         }
       end
 
-    case Encryption.queue_scope_crypto_evictions(evictions) do
-      :ok ->
-        :ok
-
-      other ->
-        Logger.warning("Could not queue MLS evictions for membership revoke",
-          extra: %{
-            server_id: server_id,
-            target_user_id: user_id,
-            reason: inspect(other)
-          }
-        )
-
-        :ok
-    end
+    Encryption.queue_scope_crypto_evictions(evictions)
   end
 
   defp broadcast_permissions_changed(server_id) do

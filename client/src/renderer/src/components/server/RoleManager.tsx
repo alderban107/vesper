@@ -4,6 +4,7 @@ import { useServerStore } from '../../stores/serverStore'
 import { useUIStore } from '../../stores/uiStore'
 import { getRendererClient } from '../../sdk/client'
 import type { VesperServerRole } from '@vesper/sdk/api'
+import { useFocusTrap } from '../../hooks/useFocusTrap'
 
 const PERMISSION_FLAGS = [
   { name: 'Send Messages', value: 1 },
@@ -22,6 +23,7 @@ const PERMISSION_FLAGS = [
 export default function RoleManager({ embedded }: { embedded?: boolean } = {}): React.JSX.Element | null {
   const closeRoleManager = useUIStore((s) => s.closeRoleManager)
   const activeServerId = useServerStore((s) => s.activeServerId)
+  const trapRef = useFocusTrap<HTMLDivElement>(true)
 
   const [roles, setRoles] = useState<VesperServerRole[]>([])
   const [selectedRole, setSelectedRole] = useState<VesperServerRole | null>(null)
@@ -122,7 +124,7 @@ export default function RoleManager({ embedded }: { embedded?: boolean } = {}): 
       )}
 
       {error && (
-        <div className="text-red-400 text-sm bg-red-600/10 px-3 py-2 rounded-lg mb-3">{error}</div>
+        <div className="text-error text-sm bg-error/10 px-3 py-2 rounded-lg mb-3">{error}</div>
       )}
 
       {/* Create role */}
@@ -221,7 +223,7 @@ export default function RoleManager({ embedded }: { embedded?: boolean } = {}): 
               </button>
               <button
                 onClick={() => deleteRole(selectedRole.id)}
-                className="px-3 py-1.5 bg-red-600/20 text-red-400 hover:bg-red-600/30 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5"
+                className="px-3 py-1.5 bg-error/20 text-error hover:bg-error/30 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5"
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 Delete
@@ -247,8 +249,13 @@ export default function RoleManager({ embedded }: { embedded?: boolean } = {}): 
   if (embedded) return content
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
-      <div className="glass-card rounded-2xl p-6 w-[560px] max-w-[calc(100vw-2rem)] max-h-[80vh] overflow-y-auto animate-scale-in">
+    <div
+      className="fixed inset-0 bg-[#0d0f1a]/80 backdrop-blur-sm flex items-center justify-center z-50"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Role manager"
+    >
+      <div ref={trapRef} className="glass-card rounded-2xl p-6 w-[560px] max-w-[calc(100vw-2rem)] max-h-[80vh] overflow-y-auto animate-scale-in">
         {content}
       </div>
     </div>

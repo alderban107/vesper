@@ -77,6 +77,14 @@ export function getRendererEncryptedChat(): VesperEncryptedChat {
       resolveActiveChannelScopeId: async () => await resolveActiveChannelScopeId(client),
       hasGroup: (scopeId: string) => rendererEncryptedChat?.hasGroup(scopeId) ?? false,
       getScopeDiagnostics: (scopeId: string) => rendererEncryptedChat?.getDiagnostics().forScope(scopeId) ?? null,
+      async getCachedMessageTexts(scopeId: string): Promise<string[]> {
+        const messages = await client.runWithStorageContext(async () =>
+          await client.getStorageRuntime().loadCachedMessages(scopeId)
+        )
+        return messages
+          .map((message) => message.decryptedContent)
+          .filter((content): content is string => typeof content === 'string')
+      },
       async prepareScopeForRead(
         scope: TestScope,
         options: {

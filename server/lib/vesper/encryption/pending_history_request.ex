@@ -9,6 +9,9 @@ defmodule Vesper.Encryption.PendingHistoryRequest do
     field :group_id, :string
     field :requester_client_id, :string
     field :requester_username, :string
+    field :membership_generation, :integer
+    field :authorization_generation, Ecto.UUID
+    field :authorized_after_room_seq, :integer
 
     belongs_to :requester, Vesper.Accounts.User
     belongs_to :channel, Vesper.Servers.Channel
@@ -24,10 +27,22 @@ defmodule Vesper.Encryption.PendingHistoryRequest do
       :requester_id,
       :requester_client_id,
       :requester_username,
+      :membership_generation,
+      :authorization_generation,
+      :authorized_after_room_seq,
       :channel_id,
       :conversation_id
     ])
-    |> validate_required([:group_id, :requester_id, :requester_client_id])
+    |> validate_required([
+      :group_id,
+      :requester_id,
+      :requester_client_id,
+      :membership_generation,
+      :authorization_generation,
+      :authorized_after_room_seq
+    ])
+    |> validate_number(:membership_generation, greater_than_or_equal_to: 0)
+    |> validate_number(:authorized_after_room_seq, greater_than_or_equal_to: 0)
     |> unique_constraint([:group_id, :requester_id, :requester_client_id],
       name: :mls_pending_history_requests_group_id_requester_id_requester_client_id_index
     )

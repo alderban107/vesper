@@ -1,11 +1,13 @@
 defmodule Vesper.Chat do
-  require Logger
   import Ecto.Query
+  alias Vesper.Dispatch
+  alias Vesper.Encryption
   alias Vesper.Repo
 
   alias Vesper.Chat.{
     Message,
     Attachment,
+    AttachmentBlobLock,
     DmConversation,
     DmParticipant,
     Reaction,
@@ -26,27 +28,45 @@ defmodule Vesper.Chat do
   Create a DM conversation between participants.
   For direct (1:1) DMs, returns existing conversation if one already exists.
   """
-  def create_conversation(creator_id, participant_ids, opts \\ []) do
+  @max_dm_participants 100
+
+  def create_conversation(creator_id, participant_ids, opts \\ [])
+
+  def create_conversation(creator_id, participant_ids, opts)
+      when is_list(participant_ids) do
     all_user_ids = Enum.uniq([creator_id | participant_ids])
-    type = if length(all_user_ids) == 2, do: "direct", else: "group"
-    name = Keyword.get(opts, :name)
 
-    # For direct DMs, check if conversation already exists between these two users
-    if type == "direct" do
-      case find_direct_conversation(
-             creator_id,
-             List.first(participant_ids -- [creator_id]) || creator_id
-           ) do
-        %DmConversation{} = existing ->
-          {:ok, Repo.preload(existing, participants: :user)}
+    cond do
+      length(all_user_ids) < 2 ->
+        {:error, :participant_required}
 
-        nil ->
+      length(all_user_ids) > @max_dm_participants ->
+        {:error, :too_many_participants}
+
+      true ->
+        type = if length(all_user_ids) == 2, do: "direct", else: "group"
+        name = Keyword.get(opts, :name)
+
+        # For direct DMs, check if conversation already exists between these two users.
+        if type == "direct" do
+          case find_direct_conversation(
+                 creator_id,
+                 List.first(participant_ids -- [creator_id])
+               ) do
+            %DmConversation{} = existing ->
+              {:ok, Repo.preload(existing, participants: :user)}
+
+            nil ->
+              do_create_conversation(type, name, all_user_ids)
+          end
+        else
           do_create_conversation(type, name, all_user_ids)
-      end
-    else
-      do_create_conversation(type, name, all_user_ids)
+        end
     end
   end
+
+  def create_conversation(_creator_id, _participant_ids, _opts),
+    do: {:error, :invalid_participants}
 
   defp do_create_conversation(type, name, user_ids) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
@@ -55,19 +75,33 @@ defmodule Vesper.Chat do
       conversation =
         %DmConversation{}
         |> DmConversation.changeset(%{type: type, name: name})
+        |> Ecto.Changeset.put_change(:inserted_at, now)
         |> Repo.insert!()
 
-      case Runtime.ensure_room_for_conversation(conversation) do
-        {:ok, _room} -> :ok
-        {:error, changeset} -> Repo.rollback(changeset)
-      end
+      room =
+        case Runtime.ensure_room_for_conversation(conversation) do
+          {:ok, room} -> room
+          {:error, changeset} -> Repo.rollback(changeset)
+        end
 
-      for user_id <- user_ids do
-        %DmParticipant{}
-        |> DmParticipant.changeset(%{conversation_id: conversation.id, user_id: user_id})
-        |> Ecto.Changeset.put_change(:joined_at, now)
-        |> Repo.insert!()
-      end
+      participants =
+        for user_id <- user_ids do
+          %DmParticipant{}
+          |> DmParticipant.changeset(%{conversation_id: conversation.id, user_id: user_id})
+          |> Ecto.Changeset.put_change(:joined_at, now)
+          |> Repo.insert!()
+        end
+
+      Enum.each(participants, fn participant ->
+        case Encryption.grant_room_history_authorization(
+               room.id,
+               participant.user_id,
+               participant.id
+             ) do
+          {:ok, _authorization} -> :ok
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
 
       # Create backing DM channel for unified MLS path
       channel = create_backing_dm_channel!(conversation, type, user_ids, now)
@@ -103,31 +137,119 @@ defmodule Vesper.Chat do
   end
 
   @doc """
-  List all conversations a user participates in, with participants and last message.
+  List the first activity-ordered conversation page without pagination metadata.
   """
   def list_conversations(user_id, opts \\ []) do
-    limit = Keyword.get(opts, :limit, 100)
+    list_conversations_page(user_id, opts).items
+  end
 
-    # Custom preload: join participants + users in a single query
-    participants_with_users =
+  @doc """
+  List one stable, activity-ordered conversation page. The cursor is based on
+  the actual ordering expression, so an inactive account can be traversed
+  without offset scans while new activity is delivered through sync events.
+  """
+  def list_conversations_page(user_id, opts \\ []) do
+    limit = Keyword.get(opts, :limit, 100)
+    before_cursor = decode_conversation_cursor(Keyword.get(opts, :before))
+
+    membership_query =
       from(p in DmParticipant,
-        join: u in assoc(p, :user),
-        preload: [user: u]
+        where: p.user_id == ^user_id,
+        select: %{conversation_id: p.conversation_id}
       )
+
+    query =
+      from(room in Room,
+        join: membership in "user_conversations",
+        on: field(membership, :conversation_id) == room.conversation_id,
+        where: room.kind == :dm,
+        order_by: [desc: room.activity_at, desc: room.conversation_id],
+        select: {room.conversation_id, room.activity_at},
+        limit: ^(limit + 1)
+      )
+      |> with_cte("user_conversations", as: ^membership_query, materialized: true)
+
+    query =
+      case before_cursor do
+        {before_at, before_id} ->
+          from([room, _membership] in query,
+            where:
+              room.activity_at < ^before_at or
+                (room.activity_at == ^before_at and room.conversation_id < ^before_id)
+          )
+
+        nil ->
+          query
+      end
+
+    rows = Repo.all(query)
+    has_more = length(rows) > limit
+    page_rows = Enum.take(rows, limit)
+    conversation_ids = Enum.map(page_rows, &elem(&1, 0))
+
+    conversations_by_id =
+      if conversation_ids == [] do
+        %{}
+      else
+        participants_with_users =
+          from(p in DmParticipant,
+            join: u in assoc(p, :user),
+            preload: [user: u]
+          )
+
+        from(c in DmConversation,
+          where: c.id in ^conversation_ids,
+          preload: [participants: ^participants_with_users]
+        )
+        |> Repo.all()
+        |> Map.new(&{&1.id, &1})
+      end
 
     conversations =
-      from(c in DmConversation,
-        join: p in DmParticipant,
-        on: p.conversation_id == c.id,
-        where: p.user_id == ^user_id,
-        preload: [participants: ^participants_with_users],
-        order_by: [desc: c.inserted_at],
-        limit: ^limit
-      )
-      |> Repo.all()
+      page_rows
+      |> Enum.map(fn {conversation_id, _activity_at} ->
+        Map.fetch!(conversations_by_id, conversation_id)
+      end)
+      |> conversations_with_last_message()
 
-    conversations_with_last_message(conversations)
+    next_cursor =
+      if has_more do
+        {conversation_id, activity_at} = List.last(page_rows)
+        encode_conversation_cursor(activity_at, conversation_id)
+      else
+        nil
+      end
+
+    %{items: conversations, has_more: has_more, next_cursor: next_cursor}
   end
+
+  defp encode_conversation_cursor(activity_at, conversation_id) do
+    activity_at =
+      case activity_at do
+        %DateTime{} = datetime -> DateTime.to_naive(datetime)
+        %NaiveDateTime{} = datetime -> datetime
+      end
+
+    %{activity_at: NaiveDateTime.to_iso8601(activity_at), conversation_id: conversation_id}
+    |> Jason.encode!()
+    |> Base.url_encode64(padding: false)
+  end
+
+  defp decode_conversation_cursor(nil), do: nil
+
+  defp decode_conversation_cursor(cursor) when is_binary(cursor) do
+    with {:ok, decoded} <- Base.url_decode64(cursor, padding: false),
+         {:ok, %{"activity_at" => activity_at, "conversation_id" => conversation_id}} <-
+           Jason.decode(decoded),
+         {:ok, parsed_at} <- NaiveDateTime.from_iso8601(activity_at),
+         true <- is_binary(conversation_id) do
+      {parsed_at, conversation_id}
+    else
+      _ -> nil
+    end
+  end
+
+  defp decode_conversation_cursor(_), do: nil
 
   def list_user_conversation_ids(user_id) do
     from(p in DmParticipant,
@@ -262,6 +384,10 @@ defmodule Vesper.Chat do
     |> Repo.exists?()
   end
 
+  def get_participant(user_id, conversation_id) do
+    Repo.get_by(DmParticipant, user_id: user_id, conversation_id: conversation_id)
+  end
+
   @doc """
   Look up the backing channel_id for a DM conversation.
   Returns {:ok, channel_id} or :error.
@@ -313,6 +439,39 @@ defmodule Vesper.Chat do
 
     :ok
   end
+
+  defp claim_message_attachments([], _message_id, _uploader_id), do: :ok
+
+  defp claim_message_attachments(attachment_ids, message_id, uploader_id) do
+    {claimed, _rows} =
+      from(a in Attachment,
+        where:
+          a.id in ^attachment_ids and is_nil(a.message_id) and
+            a.uploader_id == ^uploader_id
+      )
+      |> Repo.update_all(set: [message_id: message_id])
+
+    if claimed == length(attachment_ids),
+      do: :ok,
+      else: Repo.rollback(:invalid_attachment_ids)
+  end
+
+  defp normalize_attachment_ids(ids) when is_list(ids) do
+    unique_ids = Enum.uniq(ids)
+
+    cond do
+      length(unique_ids) > 10 ->
+        {:error, :too_many_attachments}
+
+      Enum.any?(unique_ids, &(not match?({:ok, _uuid}, Ecto.UUID.cast(&1)))) ->
+        {:error, :invalid_attachment_ids}
+
+      true ->
+        {:ok, unique_ids}
+    end
+  end
+
+  defp normalize_attachment_ids(_ids), do: {:error, :invalid_attachment_ids}
 
   # --- Messages ---
 
@@ -375,6 +534,39 @@ defmodule Vesper.Chat do
     |> Repo.update()
   end
 
+  def update_message_revision(message_id, sender_id, revision, attrs)
+      when is_integer(revision) and revision > 0 do
+    Repo.transaction(fn ->
+      message =
+        Repo.one(
+          from(candidate in Message,
+            where: candidate.id == ^message_id,
+            lock: "FOR UPDATE"
+          )
+        )
+
+      cond do
+        is_nil(message) ->
+          Repo.rollback(:not_found)
+
+        message.sender_id != sender_id ->
+          Repo.rollback(:forbidden)
+
+        revision != message.history_revision + 1 ->
+          Repo.rollback(:stale_history_revision)
+
+        true ->
+          message
+          |> Message.encrypted_changeset(Map.put(attrs, :history_revision, revision))
+          |> Repo.update!()
+      end
+    end)
+    |> case do
+      {:ok, message} -> {:ok, message}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   def delete_message(%Message{} = message) do
     # Collect attachment storage keys before deletion — the cascade will
     # destroy attachment rows, so we need the keys up front.
@@ -406,13 +598,7 @@ defmodule Vesper.Chat do
         # Storage keys are content-addressed (SHA256), so the same blob
         # may be referenced by attachments on other messages.
         for key <- Enum.uniq(storage_keys) do
-          remaining =
-            from(a in Attachment, where: a.storage_key == ^key)
-            |> Repo.aggregate(:count, :id)
-
-          if remaining == 0 do
-            Vesper.Chat.FileStorage.delete(key)
-          end
+          AttachmentBlobLock.delete_if_unreferenced(key)
         end
 
         result
@@ -432,29 +618,42 @@ defmodule Vesper.Chat do
 
   Options:
   - `:preload` — associations to preload (default: `[:sender, :attachments]`, use `[]` to skip)
+  - `:attachment_ids` — unclaimed attachments to link inside the message transaction
+  - `:dispatch` — `(message, room_event -> dispatch_attrs)` callback persisted in the same transaction
   """
   def create_message(attrs, opts \\ []) do
     attrs = maybe_set_expires_at(attrs)
     preload = Keyword.get(opts, :preload, [:sender, :attachments])
-    changeset = Message.encrypted_changeset(%Message{}, attrs)
+    attachment_ids = Keyword.get(opts, :attachment_ids, [])
 
-    Repo.transaction(fn ->
-      case insert_or_fetch_existing(changeset, attrs) do
-        {:new, message} ->
-          case Runtime.project_message(message) do
-            {:ok, event} ->
-              message = %{message | room_seq: event.room_seq}
-              maybe_preload_message(message, preload)
+    with {:ok, attachment_ids} <- normalize_attachment_ids(attachment_ids) do
+      dispatch = Keyword.get(opts, :dispatch)
+      changeset = Message.encrypted_changeset(%Message{}, attrs)
 
-            {:error, reason} ->
-              Repo.rollback({:projection_failed, reason})
-          end
+      Repo.transaction(fn ->
+        case insert_or_fetch_existing(changeset, attrs) do
+          {:new, message} ->
+            case Runtime.project_message(message) do
+              {:ok, event} ->
+                message = %{message | room_seq: event.room_seq}
+                :ok = claim_message_attachments(attachment_ids, message.id, message.sender_id)
+                message = maybe_preload_message(message, preload, attachment_ids != [])
 
-        {:existing, message} ->
-          # Idempotent retry — message already created and projected
-          maybe_preload_message(message, preload)
-      end
-    end)
+                case enqueue_message_dispatch(dispatch, message, event) do
+                  :ok -> message
+                  {:error, reason} -> Repo.rollback({:dispatch_enqueue_failed, reason})
+                end
+
+              {:error, reason} ->
+                Repo.rollback({:projection_failed, reason})
+            end
+
+          {:existing, message} ->
+            # Idempotent retry — message already created and projected
+            maybe_preload_message(message, preload)
+        end
+      end)
+    end
   end
 
   defp insert_or_fetch_existing(changeset, attrs) do
@@ -570,13 +769,7 @@ defmodule Vesper.Chat do
 
     # Clean orphaned blobs (no other attachment references the same storage_key)
     for key <- Enum.uniq(storage_keys) do
-      remaining =
-        from(a in Attachment, where: a.storage_key == ^key)
-        |> Repo.aggregate(:count, :id)
-
-      if remaining == 0 do
-        Vesper.Chat.FileStorage.delete(key)
-      end
+      AttachmentBlobLock.delete_if_unreferenced(key)
     end
 
     {count, nil}
@@ -748,7 +941,8 @@ defmodule Vesper.Chat do
       on: event.message_id == m.id,
       where:
         m.thread_root_message_id == ^parent_message_id or
-          (is_nil(m.thread_root_message_id) and m.parent_message_id == ^parent_message_id and m.is_reply == false),
+          (is_nil(m.thread_root_message_id) and m.parent_message_id == ^parent_message_id and
+             m.is_reply == false),
       order_by: [asc: m.inserted_at, asc: m.id],
       limit: ^limit,
       select_merge: %{room_seq: event.room_seq},
@@ -837,9 +1031,21 @@ defmodule Vesper.Chat do
     Enum.reject(preload, &(&1 == :sender))
   end
 
-  defp maybe_preload_message(nil, _preload), do: nil
-  defp maybe_preload_message(message, []), do: message
-  defp maybe_preload_message(message, preload), do: Repo.preload(message, preload)
+  defp maybe_preload_message(message, preload), do: maybe_preload_message(message, preload, false)
+  defp maybe_preload_message(nil, _preload, _force), do: nil
+  defp maybe_preload_message(message, [], _force), do: message
+
+  defp maybe_preload_message(message, preload, force),
+    do: Repo.preload(message, preload, force: force)
+
+  defp enqueue_message_dispatch(nil, _message, _event), do: :ok
+
+  defp enqueue_message_dispatch(dispatch, message, event) when is_function(dispatch, 2) do
+    case Dispatch.enqueue(dispatch.(message, event)) do
+      {:ok, _dispatch} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp preload_messages_with_room_seq(message_pairs, preload) do
     message_pairs
@@ -909,7 +1115,8 @@ defmodule Vesper.Chat do
     from(m in Message,
       where:
         m.thread_root_message_id == ^message_id or
-          (is_nil(m.thread_root_message_id) and m.parent_message_id == ^message_id and m.is_reply == false)
+          (is_nil(m.thread_root_message_id) and m.parent_message_id == ^message_id and
+             m.is_reply == false)
     )
     |> Repo.aggregate(:count, :id)
   end
@@ -917,10 +1124,41 @@ defmodule Vesper.Chat do
   # --- Reactions ---
 
   def add_reaction(attrs) do
-    %Reaction{}
-    |> Reaction.changeset(attrs)
-    |> Repo.insert()
+    with :ok <- validate_reaction_scheme(attrs) do
+      %Reaction{}
+      |> Reaction.changeset(attrs)
+      |> Repo.insert()
+    end
   end
+
+  defp validate_reaction_scheme(attrs) do
+    ciphertext = attrs[:ciphertext] || attrs["ciphertext"]
+
+    if is_binary(ciphertext) do
+      message_id = attrs[:message_id] || attrs["message_id"]
+      scheme = attrs[:encryption_scheme] || attrs["encryption_scheme"] || "mls"
+      epoch = attrs[:mls_epoch] || attrs["mls_epoch"]
+      group_id = attrs[:encryption_group_id] || attrs["encryption_group_id"]
+
+      with %Message{} = message <- Repo.get(Message, message_id),
+           %Room{} = room <- room_for_message_record(message) do
+        Encryption.validate_application_scheme(room.id, scheme, epoch, group_id)
+      else
+        _ -> {:error, :message_not_found}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp room_for_message_record(%Message{channel_id: channel_id}) when is_binary(channel_id),
+    do: Runtime.get_room_for_channel(channel_id)
+
+  defp room_for_message_record(%Message{conversation_id: conversation_id})
+       when is_binary(conversation_id),
+       do: Runtime.get_room_for_conversation(conversation_id)
+
+  defp room_for_message_record(_message), do: nil
 
   def remove_reaction(message_id, sender_id, emoji) do
     case Repo.get_by(Reaction, message_id: message_id, sender_id: sender_id, emoji: emoji) do
@@ -1003,7 +1241,7 @@ defmodule Vesper.Chat do
       )
 
     if match?({:ok, _}, result) do
-      Sync.append_scope_events([user_id], "read", "channel", channel_id)
+      Sync.append_user_scope_event(user_id, "read", "channel", channel_id)
     end
 
     result
@@ -1034,7 +1272,7 @@ defmodule Vesper.Chat do
       )
 
     if match?({:ok, _}, result) do
-      Sync.append_scope_events([user_id], "read", "dm", conversation_id)
+      Sync.append_user_scope_event(user_id, "read", "dm", conversation_id)
     end
 
     result

@@ -8,6 +8,7 @@ defmodule Vesper.Runtime.Room do
   schema "rooms" do
     field :kind, Ecto.Enum, values: [:channel, :dm]
     field :current_seq, :integer, default: 0
+    field :activity_at, :utc_datetime_usec
     field :last_message_at, :utc_datetime
     field :last_message_seq, :integer
     field :last_mutation_at, :utc_datetime
@@ -29,6 +30,7 @@ defmodule Vesper.Runtime.Room do
       :channel_id,
       :conversation_id,
       :current_seq,
+      :activity_at,
       :last_message_id,
       :last_message_at,
       :last_message_seq,

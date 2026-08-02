@@ -10,8 +10,6 @@ defmodule Vesper.Voice.Room.Router do
 
   use GenServer
 
-  require Logger
-
   alias ExWebRTC.{PeerConnection, ICECandidate}
 
   defstruct [

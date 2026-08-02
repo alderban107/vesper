@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { Slate } from 'slate-react'
-import { Editor, Transforms, Node } from 'slate'
+import { Editor, Transforms } from 'slate'
 import { useServerStore } from '../../stores/serverStore'
 import { useDmStore } from '../../stores/dmStore'
 import { useMessageStore } from '../../stores/messageStore'
@@ -23,6 +23,7 @@ import { createVesperEditor } from './slate/createVesperEditor'
 import { serializeToMarkdown } from './slate/serialize'
 import { emptyDocument } from './slate/types'
 import { detectSlateTrigger, insertAutocompleteResult } from './slate/autocomplete'
+import { resetSlateEditor } from './slate/resetSlateEditor'
 import VesperEditable from './slate/VesperEditable'
 
 let stagedIdCounter = 0
@@ -210,18 +211,7 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
 
   // --- Editor helpers ---
   const clearEditor = (): void => {
-    Transforms.delete(editor, {
-      at: { anchor: Editor.start(editor, []), focus: Editor.end(editor, []) }
-    })
-    while (editor.children.length > 1) {
-      Transforms.removeNodes(editor, { at: [editor.children.length - 1] })
-    }
-    const remaining = editor.children[0]
-    if (remaining && 'children' in remaining && Node.string(remaining) !== '') {
-      Transforms.delete(editor, { at: [0] })
-      Transforms.insertNodes(editor, { type: 'line', children: [{ text: '' }] }, { at: [0] })
-    }
-    Transforms.select(editor, Editor.start(editor, []))
+    resetSlateEditor(editor)
     setContent('')
   }
 

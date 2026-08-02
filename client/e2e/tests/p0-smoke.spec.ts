@@ -30,7 +30,7 @@
  *   R-ASSERT-5   First run gates pre-merge CI
  */
 
-import { test, expect } from '@playwright/test'
+import { test, expect, type Page } from '@playwright/test'
 import { saveRecoveryKey } from '../harness/state'
 import { ConsoleMonitor } from '../harness/console-monitor'
 import { signup, createUserContext, type UserContext } from '../helpers/auth'
@@ -72,6 +72,29 @@ let bob: UserContext
 let charlie: UserContext
 let monitors: ConsoleMonitor[]
 let inviteCode: string
+
+async function getCachedDmTexts(page: Page): Promise<string[]> {
+  const cachedPlaintexts = await page.evaluate(async () => {
+    const mappings = (window as unknown as {
+      __vesperDmChannelMappings?: Map<string, string>
+    }).__vesperDmChannelMappings
+    const channelId = mappings?.values().next().value
+    if (!channelId) {
+      return []
+    }
+
+    return await window.__vesperE2eeTest?.getCachedMessageTexts(channelId) ?? []
+  })
+
+  return cachedPlaintexts.map((plaintext) => {
+    try {
+      const payload = JSON.parse(plaintext) as { text?: unknown }
+      return typeof payload.text === 'string' ? payload.text : plaintext
+    } catch {
+      return plaintext
+    }
+  })
+}
 
 test.describe('P0 Smoke — full continuous run', () => {
   test.beforeAll(async ({ browser }) => {
@@ -322,6 +345,15 @@ test.describe('P0 Smoke — full continuous run', () => {
       `.vesper-thread-feed :text("${DM_MESSAGES.threadReply2}")`,
       { timeout: 15_000 }
     )
+
+    for (const user of [alice, bob]) {
+      await expect
+        .poll(async () => await getCachedDmTexts(user.page))
+        .toEqual(expect.arrayContaining([
+          DM_MESSAGES.aliceToBob1,
+          DM_MESSAGES.bobToAlice1
+        ]))
+    }
   })
 
   // --- Step 9: Refresh alice, verify DM state (R-DM-2, R-SYNC-1) ---
@@ -342,6 +374,12 @@ test.describe('P0 Smoke — full continuous run', () => {
     await hardRefresh(bob.page)
 
     await selectDm(bob.page, USERS.alice.username)
+    await expect
+      .poll(async () => await getCachedDmTexts(bob.page))
+      .toEqual(expect.arrayContaining([
+        DM_MESSAGES.aliceToBob1,
+        DM_MESSAGES.bobToAlice1
+      ]))
     await waitForMessage(bob.page, DM_MESSAGES.aliceToBob1)
     await waitForMessage(bob.page, DM_MESSAGES.bobToAlice1)
 

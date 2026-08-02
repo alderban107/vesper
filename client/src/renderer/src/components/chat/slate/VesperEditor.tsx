@@ -1,10 +1,15 @@
-import { useCallback, useMemo, useRef } from 'react'
-import { Slate, type ReactEditor } from 'slate-react'
-import { Editor, Transforms, Node } from 'slate'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef } from 'react'
+import { Slate, ReactEditor } from 'slate-react'
+import { Editor, Transforms } from 'slate'
 import { createVesperEditor } from './createVesperEditor'
 import { serializeToMarkdown } from './serialize'
 import { emptyDocument } from './types'
+import { resetSlateEditor } from './resetSlateEditor'
 import VesperEditable from './VesperEditable'
+
+export interface VesperEditorHandle {
+  submit: () => void
+}
 
 interface Props {
   onSubmit: (markdown: string) => void
@@ -18,7 +23,7 @@ interface Props {
   autoFocus?: boolean
 }
 
-export default function VesperEditor({
+const VesperEditor = forwardRef<VesperEditorHandle, Props>(function VesperEditor({
   onSubmit,
   onCancel,
   onChange,
@@ -28,7 +33,7 @@ export default function VesperEditor({
   initialValue,
   mode = 'compose',
   autoFocus = false,
-}: Props): React.JSX.Element {
+}: Props, ref): React.JSX.Element {
   const submitRef = useRef(onSubmit)
   submitRef.current = onSubmit
   const onChangeRef = useRef(onChange)
@@ -42,23 +47,13 @@ export default function VesperEditor({
     const ed = editorRef.current
     if (!ed) return
     const markdown = serializeToMarkdown(ed.children)
-    if (!markdown.trim()) return
+    if (mode === 'compose' && !markdown.trim()) return
     submitRef.current(markdown)
-    // Reset editor
-    Transforms.delete(ed, {
-      at: {
-        anchor: Editor.start(ed, []),
-        focus: Editor.end(ed, []),
-      },
-    })
-    Transforms.removeNodes(ed, { at: [0], mode: 'highest' })
-    Transforms.insertNodes(ed, emptyDocument()[0], { at: [0] })
-    // Remove any extra nodes that might have been left
-    while (ed.children.length > 1) {
-      Transforms.removeNodes(ed, { at: [ed.children.length - 1] })
+
+    if (mode === 'compose') {
+      resetSlateEditor(ed)
     }
-    Transforms.select(ed, Editor.start(ed, []))
-  }, [])
+  }, [mode])
 
   const editor = useMemo(
     () => createVesperEditor({ onSubmit: handleSubmit }),
@@ -67,12 +62,32 @@ export default function VesperEditor({
   const editorRef = useRef<typeof editor>(editor)
   editorRef.current = editor
 
+  useImperativeHandle(ref, () => ({
+    submit: handleSubmit
+  }), [handleSubmit])
+
   const initialSlateValue = useMemo(() => {
     if (initialValue) {
       return [{ type: 'line' as const, children: [{ text: initialValue }] }]
     }
     return emptyDocument()
   }, [initialValue])
+
+  useEffect(() => {
+    if (mode !== 'edit' || !autoFocus) return
+
+    const frame = window.requestAnimationFrame(() => {
+      const ed = editorRef.current
+      if (!ed) return
+      ReactEditor.focus(ed)
+      Transforms.select(ed, {
+        anchor: Editor.start(ed, []),
+        focus: Editor.end(ed, []),
+      })
+    })
+
+    return () => window.cancelAnimationFrame(frame)
+  }, [autoFocus, mode, initialValue])
 
   const handleChange = useCallback(() => {
     const ed = editorRef.current
@@ -89,6 +104,18 @@ export default function VesperEditor({
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'a') {
+        const ed = editorRef.current
+        if (ed) {
+          event.preventDefault()
+          Transforms.select(ed, {
+            anchor: Editor.start(ed, []),
+            focus: Editor.end(ed, []),
+          })
+        }
+        return
+      }
+
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault()
         handleSubmit()
@@ -113,4 +140,6 @@ export default function VesperEditor({
       />
     </Slate>
   )
-}
+})
+
+export default VesperEditor

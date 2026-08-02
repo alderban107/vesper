@@ -17,6 +17,7 @@ import initWasm, {
   Group,
   KeyPackage as WasmKeyPackage,
   RatchetTree,
+  verify_public_group_snapshot,
   type ExternalCommitResult,
   type CommitBundle,
   type ProcessResult,
@@ -74,7 +75,7 @@ export async function initCipherSuite(wasmSource?: string | URL | BufferSource):
   if (wasmInitialized) return
 
   if (wasmSource) {
-    await initWasm(wasmSource)
+    await initWasm({ module_or_path: wasmSource })
   } else if (typeof process !== 'undefined' && process.versions?.node) {
     // Node.js: load from disk
     const { readFile } = await import('fs/promises')
@@ -86,7 +87,7 @@ export async function initCipherSuite(wasmSource?: string | URL | BufferSource):
     const wasmPath = join(pkgDir, 'vesper_openmls_wasm_bg.wasm')
     const wasmBytes = await readFile(wasmPath)
 
-    await initWasm(wasmBytes)
+    await initWasm({ module_or_path: wasmBytes })
   } else {
     // Browser/Electron: try well-known URL first, fall back to default loader
     try {
@@ -94,7 +95,7 @@ export async function initCipherSuite(wasmSource?: string | URL | BufferSource):
       const wasmUrl = new URL('/assets/vesper_openmls_wasm_bg.wasm', window.location.origin)
       const response = await fetch(wasmUrl)
       if (response.ok) {
-        await initWasm(await response.arrayBuffer())
+        await initWasm({ module_or_path: await response.arrayBuffer() })
       } else {
         // Fall back to default import.meta.url-based loader
         await initWasm()
@@ -150,6 +151,21 @@ export async function createSigningIdentity(identityName: string): Promise<{
  * Generate a batch of key packages using a previously created signing identity.
  * Each key package gets its own Provider copy (for independent key lifecycle).
  */
+export function signWithSerializedIdentity(
+  identityName: string,
+  signaturePublicKey: Uint8Array,
+  privateKeyBundle: Uint8Array,
+  message: Uint8Array
+): Uint8Array {
+  const provider = new Provider()
+  provider.deserialize_storage(privateKeyBundle)
+  const identity = Identity.deserialize(
+    provider,
+    buildIdentityData(identityName, signaturePublicKey)
+  )
+  return new Uint8Array(identity.sign(message))
+}
+
 export async function createKeyPackageBatch(
   identityData: Uint8Array,
   privateKeyBundle: Uint8Array,
@@ -311,7 +327,27 @@ export async function removeMemberFromGroup(
   newState: GroupState
   commitBytes: Uint8Array
 }> {
-  const bundle = state._group.remove_member(state._provider, state._identity, leafIndex)
+  return await removeMembersFromGroup(state, [leafIndex])
+}
+
+/** Remove several member leaves with one MLS commit and one epoch advance. */
+export async function removeMembersFromGroup(
+  state: GroupState,
+  leafIndices: number[]
+): Promise<{
+  newState: GroupState
+  commitBytes: Uint8Array
+}> {
+  const uniqueLeafIndices = [...new Set(leafIndices)]
+  if (uniqueLeafIndices.length === 0) {
+    throw new Error('At least one MLS leaf index is required')
+  }
+
+  const bundle = state._group.remove_members(
+    state._provider,
+    state._identity,
+    Uint32Array.from(uniqueLeafIndices)
+  )
   state._group.merge_pending_commit(state._provider)
 
   return {
@@ -386,9 +422,10 @@ export async function decryptMessage(
     }
 
     return null
-  } catch (err) {
-    // Decryption failed — message from before we joined, or corrupted
-    console.error('[MLS] decryptMessage failed:', err instanceof Error ? err.message : String(err))
+  } catch {
+    // Old generations, deleted secrets, and corrupt ciphertext all fail closed.
+    // The caller owns recovery and diagnostics; expected forward-secrecy misses
+    // must not look like application errors in the client console.
     return null
   }
 }
@@ -492,6 +529,41 @@ export function exportGroupInfo(state: GroupState): Uint8Array {
  */
 export function exportRatchetTree(state: GroupState): Uint8Array {
   return state._group.export_ratchet_tree().to_bytes()
+}
+
+export interface VerifiedPublicGroupSnapshot {
+  groupId: string
+  epoch: number
+  members: Array<{
+    name: string
+    signaturePublicKey: Uint8Array
+  }>
+}
+
+/**
+ * Verify an arbitrary cohort's published GroupInfo and ratchet tree without
+ * joining it or importing private state.
+ */
+export function verifyPublicGroupSnapshot(
+  groupInfoData: Uint8Array,
+  ratchetTreeData: Uint8Array
+): VerifiedPublicGroupSnapshot {
+  const decoded = JSON.parse(
+    verify_public_group_snapshot(groupInfoData, ratchetTreeData)
+  ) as {
+    group_id: string
+    epoch: number
+    members: Array<{ name: string; signature_public_key: number[] }>
+  }
+
+  return {
+    groupId: decoded.group_id,
+    epoch: decoded.epoch,
+    members: decoded.members.map((member) => ({
+      name: member.name,
+      signaturePublicKey: new Uint8Array(member.signature_public_key)
+    }))
+  }
 }
 
 // ============================================================
