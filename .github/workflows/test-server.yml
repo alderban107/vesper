@@ -25,7 +25,7 @@ jobs:
     outputs:
       server: ${{ steps.check.outputs.server }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
@@ -56,7 +56,7 @@ jobs:
 
     services:
       postgres:
-        image: postgres:17
+        image: postgres:17@sha256:a426e44bac0b759c95894d68e1a0ac03ecc20b619f498a91aae373bf06d8508d
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -75,15 +75,15 @@ jobs:
       TEST_DB_PASS: postgres
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: erlef/setup-beam@v1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
         with:
           elixir-version: "1.18"
           otp-version: "27"
 
       - name: Cache deps
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: |
             server/deps
@@ -95,6 +95,12 @@ jobs:
         working-directory: server
         run: mix deps.get
 
+      - name: Audit retired packages and security advisories
+        working-directory: server
+        run: |
+          mix hex.audit
+          mix deps.audit
+
       - name: Compile (warnings as errors)
         working-directory: server
         run: mix compile --warnings-as-errors
@@ -104,6 +110,10 @@ jobs:
         run: |
           mix ecto.create --quiet
           mix ecto.migrate --quiet
+
+      - name: Verify history migration upgrade path
+        working-directory: server
+        run: ./scripts/verify-history-upgrade.sh
 
       - name: Run tests
         working-directory: server
