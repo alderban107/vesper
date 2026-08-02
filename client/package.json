@@ -2,6 +2,7 @@
   "name": "vesper",
   "version": "0.1.0",
   "description": "Vesper — encrypted messaging",
+  "desktopName": "vesper.desktop",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",

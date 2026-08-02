@@ -12,17 +12,34 @@ files:
   - node_modules/prebuild-install/**/*
 asar: true
 linux:
+  icon: build/icon.png
+  executableName: vesper
+  synopsis: End-to-end encrypted messaging
   target:
     - AppImage
     - deb
   category: Network
   maintainer: vesper
+  syncDesktopName: true
+appImage:
+  # electron-builder otherwise adds --no-sandbox to the desktop entry for
+  # legacy AppImage toolsets. Let AppRun fall back only on hosts where user
+  # namespaces are genuinely unavailable instead of disabling Chromium's
+  # sandbox unconditionally.
+  executableArgs: []
 mac:
+  icon: build/icon.icns
+  hardenedRuntime: true
+  notarize: true
+  extendInfo:
+    NSMicrophoneUsageDescription: Vesper uses the microphone for encrypted voice calls.
+    NSCameraUsageDescription: Vesper uses the camera when you choose to share video.
   target:
     - dmg
     - zip
   category: public.app-category.social-networking
 win:
+  icon: build/icon.ico
   target:
     - nsis
     - portable

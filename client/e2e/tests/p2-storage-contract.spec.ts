@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { readRunState } from '../harness/state'
 
+const REPO_ROOT = path.resolve(__dirname, '../../..')
+
 const intent = {
   version: 1 as const,
   operation: 'mls_history_bundle',
@@ -35,7 +37,7 @@ test('IndexedDB adapter preserves the checkpoint control journal', async ({ page
   const { clientUrl } = readRunState()
   await page.goto(clientUrl)
 
-  const sdkModulePath = path.resolve(process.cwd(), 'sdk/src/crypto/indexedDbStorage.ts')
+  const sdkModulePath = path.resolve(REPO_ROOT, 'sdk/src/crypto/indexedDbStorage.ts')
   const moduleUrl = `/@fs${sdkModulePath}`
   const result = await page.evaluate(
     async ({ moduleUrl, checkpoint }) => {
@@ -58,9 +60,9 @@ test('IndexedDB adapter preserves the checkpoint control journal', async ({ page
 
 test('Electron SQLite adapter preserves the checkpoint control journal', async () => {
   const userDataDir = await mkdtemp(path.join(tmpdir(), 'vesper-electron-storage-'))
-  const executable = path.resolve(process.cwd(), 'client/out/main/index.js')
+  const executable = path.resolve(REPO_ROOT, 'client/out/main/index.js')
   const electronExecutablePath = path.resolve(
-    process.cwd(),
+    REPO_ROOT,
     process.platform === 'darwin'
       ? 'client/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'
       : process.platform === 'win32'

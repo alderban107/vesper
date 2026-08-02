@@ -438,7 +438,9 @@ function registerIpcHandlers(): void {
 function setupAutoUpdater(): void {
   autoUpdater.autoDownload = true
   autoUpdater.autoInstallOnAppQuit = true
-  autoUpdater.allowPrerelease = true // Include nightly prerelease builds
+  // Public builds follow the signed stable channel. Nightly validation no
+  // longer publishes binaries, and prereleases must never bypass that gate.
+  autoUpdater.allowPrerelease = false
 
   autoUpdater.on('update-available', (info) => {
     const notification = new Notification({
