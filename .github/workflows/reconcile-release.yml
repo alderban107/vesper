@@ -195,9 +195,10 @@ jobs:
             gh api -H 'Accept: application/octet-stream' \
               "repos/$GITHUB_REPOSITORY/releases/assets/$disclosure_id" \
               > /tmp/UNSIGNED-NATIVE-BUILDS.txt
-            grep -Fq 'not signed with Apple Developer ID or Windows Authenticode certificates' \
+            grep -Fq 'signed with Apple Developer ID or Windows Authenticode certificates,' \
               /tmp/UNSIGNED-NATIVE-BUILDS.txt
-            grep -Fq 'do not replace native platform trust' /tmp/UNSIGNED-NATIVE-BUILDS.txt
+            grep -Fq 'native platform trust or remove Gatekeeper/SmartScreen warnings.' \
+              /tmp/UNSIGNED-NATIVE-BUILDS.txt
           fi
           gh api -H 'Accept: application/octet-stream' \
             "repos/$GITHUB_REPOSITORY/releases/assets/$latest_windows_id" \
