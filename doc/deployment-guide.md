@@ -148,6 +148,8 @@ Do not use `mix ecto.rollback` as production rollback. Once new writers have emi
 
 For multiple application replicas, remove the per-container migration command and run `bin/vesper eval 'Vesper.Release.migrate()'` once as a deployment job while old writers are stopped. Keep `RUN_MIGRATIONS_ON_START=false` on replicas; health remains red if their release sees a pending migration.
 
+Set `DNS_CLUSTER_QUERY` to a DNS A/AAAA name that returns every application replica; it is not an SRV record. Vesper normalizes the query to an absolute name so resolver search domains cannot change its meaning. All replicas must share `RELEASE_COOKIE` and the same `RELEASE_NODE` basename, while each node name uses its own discoverable IP (for example `vesper@10.0.0.12`). Verify `Node.list()` from every replica before relying on cross-node Phoenix PubSub.
+
 The four-worker soak proves multi-process clients against one application/database deployment. It is not multi-region or database-failover evidence. Validate node loss, load-balancer behavior, PostgreSQL failover, and upload-storage consistency in your own canary before calling that topology supported.
 
 ## Monitoring and backups

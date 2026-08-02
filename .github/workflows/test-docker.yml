@@ -43,7 +43,8 @@ jobs:
               'server/' 'client/' 'sdk/' \
               'Dockerfile*' '**/Dockerfile*' \
               '.dockerignore' '**/dockerignore' \
-              'docker-compose.yml' \
+              'docker-compose.yml' 'turnserver.conf' \
+              'scripts/test-turn-policy.sh' 'scripts/test-dns-cluster.sh' \
               '.github/workflows/test-docker.yml' \
             | grep -qvE '\.md$'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -64,16 +65,52 @@ jobs:
       - name: Build web client image
         run: docker build -f client/Dockerfile.web -t vesper-web-test .
 
+      - name: Test absolute DNS A/AAAA clustering
+        env:
+          APP_IMAGE: vesper-app-test
+          ARTIFACT_DIR: ${{ runner.temp }}/dns-cluster
+        run: ./scripts/test-dns-cluster.sh
+
+      - name: Upload DNS cluster evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dns-cluster-evidence
+          path: ${{ runner.temp }}/dns-cluster
+          retention-days: 7
+
+  turn-policy:
+    needs: docker-changes
+    if: needs.docker-changes.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Test TURN relay peer policy
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/turn-policy
+        run: ./scripts/test-turn-policy.sh
+
+      - name: Upload TURN policy evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: turn-policy-evidence
+          path: ${{ runner.temp }}/turn-policy
+          retention-days: 7
+
   # Gate job — branch protection should require this check.
   docker-checks:
     if: always()
-    needs: [docker-changes, docker-build]
+    needs: [docker-changes, docker-build, turn-policy]
     runs-on: ubuntu-latest
     steps:
       - name: Evaluate result
         run: |
-          if [ "${{ needs.docker-build.result }}" = "failure" ] || [ "${{ needs.docker-build.result }}" = "cancelled" ]; then
-            echo "Docker build failed or was cancelled"
-            exit 1
-          fi
-          echo "Docker build passed or was skipped (no relevant changes)"
+          for result in "${{ needs.docker-changes.result }}" "${{ needs.docker-build.result }}" "${{ needs.turn-policy.result }}"; do
+            if [ "$result" = "failure" ] || [ "$result" = "cancelled" ]; then
+              echo "Docker or TURN policy validation failed or was cancelled"
+              exit 1
+            fi
+          done
+          echo "Docker and TURN policy validation passed or was skipped (no relevant changes)"

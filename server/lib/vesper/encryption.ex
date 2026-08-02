@@ -2079,6 +2079,17 @@ defmodule Vesper.Encryption do
   """
   def upsert_scope_recovery_package(attrs) do
     Repo.transaction(fn ->
+      # FOR UPDATE cannot serialize the initial insert because there is no row
+      # to lock yet. Serialize the owner/scope key itself so two application
+      # nodes cannot both observe nil and race the unique constraint.
+      recovery_package_lock_key =
+        "scope_recovery_package:#{attrs.owner_id}:#{attrs.scope_id}"
+
+      Repo.query!(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        [recovery_package_lock_key]
+      )
+
       existing =
         from(package in ScopeRecoveryPackage,
           where: package.owner_id == ^attrs.owner_id and package.scope_id == ^attrs.scope_id,

@@ -5,6 +5,16 @@ defmodule Vesper.RuntimeConfigTest do
 
   @fallback String.duplicate("fallback-secret-", 3)
 
+  test "DNS cluster queries are normalized to absolute A/AAAA names" do
+    assert RuntimeConfig.normalize_dns_cluster_query(nil) == nil
+    assert RuntimeConfig.normalize_dns_cluster_query("") == nil
+    assert RuntimeConfig.normalize_dns_cluster_query("   ") == nil
+    assert RuntimeConfig.normalize_dns_cluster_query("vesper-apps") == "vesper-apps."
+
+    assert RuntimeConfig.normalize_dns_cluster_query(" vesper-apps.internal. ") ==
+             "vesper-apps.internal."
+  end
+
   test "blank optional secrets use the strong fallback" do
     assert RuntimeConfig.secret_or_fallback!("JWT_SECRET", nil, @fallback, 32) == @fallback
     assert RuntimeConfig.secret_or_fallback!("JWT_SECRET", "", @fallback, 32) == @fallback

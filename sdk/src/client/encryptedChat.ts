@@ -108,6 +108,8 @@ const HISTORY_BUNDLE_POLL_MS = 200
 const MAX_MESSAGES_PER_SCOPE = 200
 const MAX_HISTORY_AUTHORIZATION_ROWS = 10_000
 const MAX_SCOPE_RECOVERY_PACKAGE_BYTES = 262_144
+const SCOPE_RECOVERY_PACKAGE_PUBLISH_QUIET_MS = 2_000
+const SCOPE_RECOVERY_PACKAGE_PUBLISH_MAX_DELAY_MS = 30_000
 const MAX_PERSISTED_ROOM_KEY_EPOCHS = 8
 const SCOPE_RECOVERY_PACKAGE_VERSION = 1
 const DECRYPTION_PLACEHOLDER = '[Encrypted message unavailable]'
@@ -765,6 +767,8 @@ export class VesperEncryptedChat {
   private readonly pendingRepairFetches = new Map<string, Promise<void>>()
   private readonly lastRepairFetchAt = new Map<string, number>()
   private readonly recoveryPackagePublishes = new Map<string, Promise<void>>()
+  private readonly recoveryPackageRepublishRequested = new Set<string>()
+  private readonly recoveryPackageLastRequestedAt = new Map<string, number>()
   private readonly importedRecoveryPackageCursors = new Map<string, number>()
   private readonly importedRecoveryPackageFingerprints = new Map<string, string>()
   private readonly roomCrypto = new RoomCryptoState()
@@ -2802,6 +2806,96 @@ export class VesperEncryptedChat {
     }
   }
 
+  private async processLiveMessageInRoomOrder(
+    scope: EncryptedScope,
+    rawMessage: VesperMessage
+  ): Promise<ProcessedScopeMessage> {
+    const logicalScopeId = this.resolveRoomId(scope)
+    const existing =
+      this.scopeMessages.get(scope.id) ??
+      this.scopeMessages.get(logicalScopeId) ??
+      await this.loadProcessedCachedMessages(logicalScopeId)
+    const roomSeq = typeof rawMessage.room_seq === 'number' ? rawMessage.room_seq : null
+    const highestAppliedSeq = highestRoomSeq(existing)
+    const alreadyApplied = existing.find((message) => message.id === rawMessage.id) ?? null
+
+    if (alreadyApplied && roomSeq != null && roomSeq <= (highestAppliedSeq ?? 0)) {
+      return alreadyApplied
+    }
+
+    // Distributed PubSub preserves delivery but does not guarantee that
+    // broadcasts emitted by different application nodes arrive in room order.
+    // MLS sender ratchets are one-shot, so processing room_seq N before a
+    // missing earlier ciphertext can make that earlier message permanently
+    // undecryptable. A gap turns the live event into a wake-up signal: replay
+    // the committed room delta, which is sorted by room_seq, before exposing it.
+    if (roomSeq != null && roomSeq > (highestAppliedSeq ?? 0) + 1) {
+      let replayedMessages = existing
+      let replayAfterSeq = highestAppliedSeq ?? 0
+      let initialWindow = highestAppliedSeq == null
+
+      while (replayAfterSeq < roomSeq) {
+        const delta = initialWindow
+          ? await this.fetchInitialScopeWindow(scope, MAX_MESSAGES_PER_SCOPE)
+          : await this.fetchIncrementalScopeDelta(
+              scope,
+              MAX_MESSAGES_PER_SCOPE,
+              replayAfterSeq
+            )
+        initialWindow = false
+
+        const applied = await this.applyScopeSyncDelta(
+          scope,
+          replayedMessages,
+          delta.messages,
+          delta.events
+        )
+        replayedMessages = await this.retryFailedRoomApplicationMessages(
+          scope,
+          applied.messages
+        )
+        this.scopeMessages.set(scope.id, replayedMessages)
+
+        const replayed = replayedMessages.find((message) => message.id === rawMessage.id)
+        if (replayed) {
+          if (replayed.decryptionFailed) {
+            throw new Error(
+              `Ordered replay could not decrypt room ${logicalScopeId} sequence ${roomSeq}`
+            )
+          }
+          return replayed
+        }
+
+        const replayedRoomSeqs = [
+          ...delta.messages.map((message) => message.room_seq),
+          ...delta.events.map((event) => event.roomSeq)
+        ].filter((seq): seq is number => typeof seq === 'number')
+        const nextReplayAfterSeq = Math.max(replayAfterSeq, ...replayedRoomSeqs)
+        if (nextReplayAfterSeq === replayAfterSeq) {
+          break
+        }
+        replayAfterSeq = nextReplayAfterSeq
+        if (!delta.hasMore) {
+          break
+        }
+      }
+
+      // Never consume a one-shot MLS ratchet when durable replay could not
+      // establish that every prior room activity has been applied. A later
+      // sync/reconnect can retry from committed state; speculative processing
+      // here would make the missing ciphertext permanently undecryptable.
+      if (replayAfterSeq !== roomSeq - 1) {
+        throw new Error(
+          `Could not replay room ${logicalScopeId} through sequence ${roomSeq - 1}`
+        )
+      }
+    }
+
+    const message = await this.processIncomingMessage(scope, rawMessage)
+    this.upsertScopeMessage(scope.id, message)
+    return message
+  }
+
   private async handleScopeEvent(
     scope: EncryptedScope,
     event: string,
@@ -2834,8 +2928,10 @@ export class VesperEncryptedChat {
     }
 
     if (event === 'new_message') {
-      const message = await this.processIncomingMessage(scope, payload as unknown as VesperMessage)
-      this.upsertScopeMessage(scope.id, message)
+      const message = await this.processLiveMessageInRoomOrder(
+        scope,
+        payload as unknown as VesperMessage
+      )
       return {
         scope,
         event,
@@ -4190,102 +4286,170 @@ export class VesperEncryptedChat {
   }
 
   private async publishScopeRecoveryPackage(scope: EncryptedScope): Promise<void> {
-    const logicalScopeId = this.resolveRoomId(scope)
-    const mlsGroupId = this.resolveMlsGroupId(scope)
-    const ownerId = this.client.getAuthSession()?.user.id ?? this.client.getState().user?.id
-    if (!ownerId || !this.hasGroup(mlsGroupId)) {
+    await this.withStorageContext(async () => {
+      const logicalScopeId = this.resolveRoomId(scope)
+      const mlsGroupId = this.resolveMlsGroupId(scope)
+      const ownerId = this.client.getAuthSession()?.user.id ?? this.client.getState().user?.id
+      if (!ownerId || !this.hasGroup(mlsGroupId)) {
+        return
+      }
+
+      this.recoveryPackageLastRequestedAt.set(logicalScopeId, Date.now())
+      const activePublish = this.recoveryPackagePublishes.get(logicalScopeId)
+      if (activePublish) {
+        this.recoveryPackageRepublishRequested.add(logicalScopeId)
+        return
+      }
+
+      const publish = (async () => {
+        let burstStartedAt = Date.now()
+
+        while (true) {
+          const now = Date.now()
+          const lastRequestedAt =
+            this.recoveryPackageLastRequestedAt.get(logicalScopeId) ?? burstStartedAt
+          const quietAt = lastRequestedAt + SCOPE_RECOVERY_PACKAGE_PUBLISH_QUIET_MS
+          const forcedAt = burstStartedAt + SCOPE_RECOVERY_PACKAGE_PUBLISH_MAX_DELAY_MS
+          const waitMs = Math.max(0, Math.min(quietAt, forcedAt) - now)
+          if (waitMs > 0) {
+            await new Promise((resolve) => setTimeout(resolve, waitMs))
+          }
+
+          const afterWait = Date.now()
+          const latestRequestAt =
+            this.recoveryPackageLastRequestedAt.get(logicalScopeId) ?? burstStartedAt
+          if (
+            afterWait < latestRequestAt + SCOPE_RECOVERY_PACKAGE_PUBLISH_QUIET_MS &&
+            afterWait < forcedAt
+          ) {
+            continue
+          }
+
+          // The fresh snapshot includes every request received before this
+          // point. A request arriving while encryption/upload is in flight
+          // starts one trailing burst; continuous traffic is force-flushed at
+          // the maximum delay rather than rewriting a large TOAST value every
+          // debounce interval.
+          this.recoveryPackageRepublishRequested.delete(logicalScopeId)
+          await this.writeScopeRecoveryPackage(logicalScopeId, mlsGroupId, ownerId)
+          if (!this.recoveryPackageRepublishRequested.has(logicalScopeId)) {
+            break
+          }
+          burstStartedAt = Date.now()
+        }
+      })()
+      this.recoveryPackagePublishes.set(logicalScopeId, publish)
+
+      try {
+        await publish
+      } finally {
+        if (this.recoveryPackagePublishes.get(logicalScopeId) === publish) {
+          this.recoveryPackagePublishes.delete(logicalScopeId)
+          this.recoveryPackageLastRequestedAt.delete(logicalScopeId)
+          this.recoveryPackageRepublishRequested.delete(logicalScopeId)
+        }
+      }
+    })
+  }
+
+  private async writeScopeRecoveryPackage(
+    logicalScopeId: string,
+    mlsGroupId: string,
+    ownerId: string
+  ): Promise<void> {
+    const key = await this.recoveryPackageKey(logicalScopeId, ownerId)
+    if (!key) {
       return
     }
 
-    const prior = this.recoveryPackagePublishes.get(logicalScopeId) ?? Promise.resolve()
-    const publish = prior.catch(() => {}).then(async () => {
-      const key = await this.recoveryPackageKey(logicalScopeId, ownerId)
-      if (!key) {
-        return
-      }
+    const [checkpoint, roomKeyCheckpoint, cached] = await Promise.all([
+      this.storage.loadScopeCheckpoint(mlsGroupId),
+      this.storage.loadScopeCheckpoint(logicalScopeId),
+      this.storage.loadCachedMessages(logicalScopeId)
+    ])
+    const messages = cached
+      .map((message) => ({
+        id: message.id,
+        roomSeq: message.roomSeq,
+        channelId: message.channelId,
+        conversationId: message.conversationId,
+        serverId: message.serverId ?? null,
+        senderId: message.senderId,
+        senderUsername: message.senderUsername,
+        parentMessageId: message.parentMessageId,
+        threadRootMessageId: message.threadRootMessageId,
+        replyToMessageId: message.replyToMessageId,
+        isReply: message.isReply,
+        ciphertext: message.ciphertext ? uint8ToBase64(message.ciphertext) : null,
+        plaintext: message.decryptedContent ?? '',
+        mlsEpoch: message.mlsEpoch,
+        insertedAt: message.insertedAt
+      }))
+      .filter((message) => message.plaintext.length > 0)
+      .slice(-MAX_MESSAGES_PER_SCOPE)
 
-      const [checkpoint, roomKeyCheckpoint, cached] = await Promise.all([
-        this.storage.loadScopeCheckpoint(mlsGroupId),
-          this.storage.loadScopeCheckpoint(logicalScopeId),
-        this.storage.loadCachedMessages(logicalScopeId)
-      ])
-      const messages = cached
-        .map((message) => ({
-          id: message.id,
-          roomSeq: message.roomSeq,
-          channelId: message.channelId,
-          conversationId: message.conversationId,
-          serverId: message.serverId ?? null,
-          senderId: message.senderId,
-          senderUsername: message.senderUsername,
-          parentMessageId: message.parentMessageId,
-          threadRootMessageId: message.threadRootMessageId,
-          replyToMessageId: message.replyToMessageId,
-          isReply: message.isReply,
-          ciphertext: message.ciphertext ? uint8ToBase64(message.ciphertext) : null,
-          plaintext: message.decryptedContent ?? '',
-          mlsEpoch: message.mlsEpoch,
-          insertedAt: message.insertedAt
-        }))
-        .filter((message) => message.plaintext.length > 0)
-        .slice(-MAX_MESSAGES_PER_SCOPE)
+    const roomDataKeys = (
+      await Promise.all(
+        roomKeyCheckpoint.roomDataKeys
+          .filter((record) => record.roomId === logicalScopeId)
+          .map(async (record): Promise<ScopeRecoveryPackageRoomDataKey | null> => {
+            try {
+              const plaintext = new Uint8Array(
+                await crypto.subtle.decrypt(
+                  {
+                    name: 'AES-GCM',
+                    iv: record.nonce as unknown as BufferSource,
+                    additionalData: this.roomDataKeyAad(
+                      ownerId,
+                      record.roomId,
+                      record.topologyGeneration,
+                      record.epoch
+                    ) as unknown as BufferSource
+                  },
+                  key,
+                  record.ciphertext as unknown as BufferSource
+                )
+              )
+              if (plaintext.byteLength !== 32) {
+                return null
+              }
 
-        const roomDataKeys = (
-          await Promise.all(
-            roomKeyCheckpoint.roomDataKeys
-              .filter((record) => record.roomId === logicalScopeId)
-              .map(async (record): Promise<ScopeRecoveryPackageRoomDataKey | null> => {
-                try {
-                  const plaintext = new Uint8Array(
-                    await crypto.subtle.decrypt(
-                      {
-                        name: 'AES-GCM',
-                        iv: record.nonce as unknown as BufferSource,
-                        additionalData: this.roomDataKeyAad(ownerId, record.roomId, record.topologyGeneration, record.epoch) as unknown as BufferSource
-                      },
-                      key,
-                      record.ciphertext as unknown as BufferSource
-                    )
-                  )
-                  if (plaintext.byteLength !== 32) {
-                    return null
-                  }
+              return {
+                roomId: record.roomId,
+                topologyGeneration: record.topologyGeneration,
+                epoch: record.epoch,
+                key: uint8ToBase64(plaintext)
+              }
+            } catch {
+              return null
+            }
+          })
+      )
+    ).filter((record): record is ScopeRecoveryPackageRoomDataKey => record != null)
 
-                  return {
-                    roomId: record.roomId,
-                    topologyGeneration: record.topologyGeneration,
-                    epoch: record.epoch,
-                    key: uint8ToBase64(plaintext)
-                  }
-                } catch {
-                  return null
-                }
-              })
-          )
-        ).filter((record): record is ScopeRecoveryPackageRoomDataKey => record != null)
+    if (messages.length === 0 && roomDataKeys.length === 0) {
+      return
+    }
 
-        if (messages.length === 0 && roomDataKeys.length === 0) {
-        return
-      }
+    const payload: ScopeRecoveryPackagePayload = {
+      version: SCOPE_RECOVERY_PACKAGE_VERSION,
+      logicalScopeId,
+      mlsGroupId,
+      ownerId,
+      membershipGeneration: checkpoint.groupState?.epoch ?? 0,
+      lastEventSeq: checkpoint.lastEventSeq,
+      generatedAt: new Date().toISOString(),
+      messages,
+      roomDataKeys
+    }
+    const encoded = new TextEncoder().encode(JSON.stringify(payload))
+    if (encoded.byteLength > MAX_SCOPE_RECOVERY_PACKAGE_BYTES - 28) {
+      return
+    }
 
-      const payload: ScopeRecoveryPackagePayload = {
-        version: SCOPE_RECOVERY_PACKAGE_VERSION,
-        logicalScopeId,
-        mlsGroupId,
-        ownerId,
-        membershipGeneration: checkpoint.groupState?.epoch ?? 0,
-        lastEventSeq: checkpoint.lastEventSeq,
-        generatedAt: new Date().toISOString(),
-        messages,
-          roomDataKeys
-        }
-      const encoded = new TextEncoder().encode(JSON.stringify(payload))
-      if (encoded.byteLength > MAX_SCOPE_RECOVERY_PACKAGE_BYTES - 28) {
-        return
-      }
-
-      const nonce = crypto.getRandomValues(new Uint8Array(12))
-      const ciphertext = new Uint8Array(await crypto.subtle.encrypt(
+    const nonce = crypto.getRandomValues(new Uint8Array(12))
+    const ciphertext = new Uint8Array(
+      await crypto.subtle.encrypt(
         {
           name: 'AES-GCM',
           iv: nonce,
@@ -4293,12 +4457,15 @@ export class VesperEncryptedChat {
         },
         key,
         encoded
-      ))
-      if (ciphertext.byteLength + nonce.byteLength > MAX_SCOPE_RECOVERY_PACKAGE_BYTES) {
-        return
-      }
+      )
+    )
+    if (ciphertext.byteLength + nonce.byteLength > MAX_SCOPE_RECOVERY_PACKAGE_BYTES) {
+      return
+    }
 
-      await this.client.getHttpClient().apiFetch(`/api/v1/scope-recovery-packages/${logicalScopeId}`, {
+    const response = await this.client
+      .getHttpClient()
+      .apiFetch(`/api/v1/scope-recovery-packages/${logicalScopeId}`, {
         method: 'PUT',
         body: JSON.stringify({
           ciphertext: uint8ToBase64(ciphertext),
@@ -4308,15 +4475,8 @@ export class VesperEncryptedChat {
           schema_version: payload.version
         })
       })
-    })
-    this.recoveryPackagePublishes.set(logicalScopeId, publish)
-
-    try {
-      await publish
-    } finally {
-      if (this.recoveryPackagePublishes.get(logicalScopeId) === publish) {
-        this.recoveryPackagePublishes.delete(logicalScopeId)
-      }
+    if (!response.ok) {
+      throw new Error(`Could not publish scope recovery package: status ${response.status}`)
     }
   }
 

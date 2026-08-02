@@ -243,7 +243,7 @@ All variables are set in `.env` (loaded by Docker Compose) or exported in the sh
 | `APP_PORT` | `4000` | No | External port the API server listens on |
 | `PHX_SERVER` | — | No | Set to `true` to start the HTTP server (set automatically in Docker) |
 | `JWT_SECRET` | same as `SECRET_KEY_BASE` | No | Separate secret for JWT signing, if desired |
-| `DNS_CLUSTER_QUERY` | — | No | DNS query for clustering in multi-node deployments |
+| `DNS_CLUSTER_QUERY` | — | No | DNS A/AAAA query for replica discovery (not SRV); Vesper normalizes it to an absolute name |
 | `METRICS_TOKEN` | — | **Yes** (prod) | Bearer token for `/metrics`; must contain at least 32 bytes. |
 | `REGISTRATION_MODE` | `closed` | No | `closed`, `open`, or `invite_only`. Production defaults closed. |
 | `REGISTRATION_INVITE_SECRET` | — | **Yes** for `invite_only` | Shared registration secret compared in constant time. |
