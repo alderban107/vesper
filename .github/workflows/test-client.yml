@@ -64,7 +64,9 @@ jobs:
 
       - name: Install dependencies
         working-directory: client
-        run: npm ci --workspaces=false
+        run: |
+          npm ci --workspaces=false
+          node ./scripts/link-sdk-node-modules.mjs
 
       - name: Ensure Rollup native package
         working-directory: client
