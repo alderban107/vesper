@@ -8571,7 +8571,9 @@ export class VesperEncryptedChat {
         continue
       }
 
-      const result = await this.withLockedScopeOperation(scope.channelId ?? scope.id, async () => {
+      await this.ensureScopeTopology(scope)
+      const groupId = this.resolveMlsGroupId(scope)
+      const result = await this.withLockedScopeOperation(groupId, async () => {
         if (!(await this.ensureScopeReadyLocked(scope))) {
           return SCOPE_NOT_READY
         }
