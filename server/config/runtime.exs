@@ -104,7 +104,9 @@ if config_env() == :prod do
 
   host = System.get_env("PHX_HOST") || "example.com"
 
-  config :vesper, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
+  config :vesper,
+         :dns_cluster_query,
+         Vesper.RuntimeConfig.normalize_dns_cluster_query(System.get_env("DNS_CLUSTER_QUERY"))
 
   run_migrations_on_start =
     case System.get_env("RUN_MIGRATIONS_ON_START", "true") |> String.downcase() do

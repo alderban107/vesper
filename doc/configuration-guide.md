@@ -65,7 +65,7 @@ Set to `true` or `1` to enable IPv6 socket options for database connections.
 
 ### DNS_CLUSTER_QUERY
 
-Optional DNS SRV record for Erlang clustering in multi-node deployments. Most deployments can ignore this.
+Optional DNS **A/AAAA** query used to discover Erlang nodes in a multi-replica deployment. This is not an SRV lookup. Vesper trims the value and appends a trailing dot when needed, making the query absolute and avoiding resolver search-domain ambiguity. Every returned address must run the same release node basename and cookie, with `RELEASE_NODE` named at its discoverable IP (for example `vesper@10.0.0.12`). Most single-replica deployments should leave this unset.
 
 ### POOL_SIZE
 
@@ -85,12 +85,12 @@ Controls which origins can make cross-origin requests.
 
 | Value | Behavior |
 |-------|----------|
-| (unset) | Allows all origins (`*`). Logs a warning. |
-| `*` | Allows all origins. No warning. |
+| (unset or empty) | Production startup fails closed. |
+| `*` | Production startup fails closed. |
 | `https://chat.example.com` | Single allowed origin |
-| `https://a.example.com,https://b.example.com` | Comma-separated list |
+| `https://a.example.com,https://b.example.com` | Comma-separated explicit origins |
 
-The WebSocket `check_origin` setting follows the same logic: when `CORS_ORIGIN` is unset or `*`, origin checking is disabled.
+The WebSocket `check_origin` setting uses the same explicit origin set. Packaged desktop clients may require their concrete `file://` origin or `null`, depending on the target platform; add only the value observed for the release artifact.
 
 Allowed methods: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`.
 Allowed headers: `authorization`, `content-type`.
@@ -104,11 +104,11 @@ Allowed headers: `authorization`, `content-type`.
 TURN server URL. When set, the voice config endpoint includes it in the ICE server list alongside the default Google STUN server.
 
 ```
-TURN_SERVER_URL=turn:coturn:3478
+TURN_SERVER_URL=turn:turn.example.com:3478
 TURN_SERVER_URL=turns:turn.example.com:443?transport=tcp
 ```
 
-When unset, only the public Google STUN server is advertised. Voice calls will fail for clients behind symmetric NATs without a TURN server.
+The value is delivered to remote clients, so a Compose-only hostname such as `turn:coturn:3478` is invalid. A `turns:` URL also requires a separately configured certificate and TLS listener. When unset, only the public Google STUN server is advertised. Voice calls will fail for clients behind symmetric NATs without a TURN server.
 
 ### TURN_USERNAME
 
