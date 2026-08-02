@@ -40,6 +40,15 @@ function readStringEnv(name, fallback = null) {
   return raw && raw.length > 0 ? raw : fallback
 }
 
+function readBooleanEnv(name, fallback) {
+  const raw = process.env[name]
+  if (!raw) {
+    return fallback
+  }
+
+  return !['0', 'false', 'no'].includes(raw.toLowerCase())
+}
+
 function percentile(samples, ratio) {
   if (samples.length === 0) {
     return null
@@ -218,6 +227,7 @@ function readConfig() {
     durationSeconds: readIntEnv('CHAOS_DURATION_SECONDS', 60),
     expectedWindow: readIntEnv('CHAOS_EXPECTED_WINDOW', 240),
     historySeedMessages: readIntEnv('CHAOS_HISTORY_SEED_MESSAGES', 180),
+    loginRestoreEnabled: readBooleanEnv('CHAOS_ENABLE_LOGIN_RESTORE', true),
     multiCohortSize: readNonNegativeIntEnv('CHAOS_MULTI_COHORT_SIZE', 4),
     restorePageSize: readIntEnv('CHAOS_RESTORE_PAGE_SIZE', 80),
     restoreBatchSize: readIntEnv('CHAOS_RESTORE_BATCH_SIZE', 240),
@@ -456,85 +466,16 @@ function createActor(device, username, password, scopes, trustedSecondary) {
   }
 }
 
-async function establishScope(primaryActor, peers, scope) {
-  await primaryActor.chat.createScopeGroup(scope)
-  await waitForKeyPackages(primaryActor.device)
-
-  const establishedActors = [primaryActor]
-
-  for (const peer of peers) {
-    let joined = false
-
-    for (let attempt = 0; attempt < 2 && !joined; attempt += 1) {
-      await peer.device.replenishKeyPackages()
-      await waitForKeyPackages(peer.device)
-
-      const checkpoints = new Map()
-      checkpoints.set(
-        primaryActor,
-        await primaryActor.chat.captureScopeCheckpoint(scope.id)
-      )
-
-      for (const actor of establishedActors.slice(1)) {
-        checkpoints.set(actor, await actor.chat.captureScopeCheckpoint(scope.id))
-      }
-
-      try {
-        const joinPackage = await primaryActor.chat.generateJoinPackage(
-          scope,
-          peer.device.requireSession().user.id,
-          peer.device.deviceIdentity.id
-        )
-
-        if (!joinPackage) {
-          throw new Error(`Missing join package for ${scope.kind}:${scope.id}`)
-        }
-
-        for (const actor of establishedActors.slice(1)) {
-          const committed = await actor.chat.applyCommitPacket(scope, joinPackage.commitBytes)
-          if (!committed) {
-            throw new Error(`Failed commit propagation for ${scope.kind}:${scope.id}`)
-          }
-        }
-
-        const welcomed = await peer.chat.applyWelcomePackage(
-          scope,
-          joinPackage.welcomeBytes,
-          joinPackage.keyPackageRef
-        )
-
-        if (!welcomed) {
-          throw new Error(`Failed welcome application for ${scope.kind}:${scope.id}`)
-        }
-
-        joined = true
-      } catch (error) {
-        for (const actor of establishedActors) {
-          await actor.chat.restoreScopeCheckpoint(scope.id, checkpoints.get(actor) ?? null)
-        }
-
-        if (attempt === 1) {
-          throw error
-        }
-      }
-    }
-
-    establishedActors.push(peer)
-  }
-
-  await primaryActor.chat.ensureScopeReady(scope, false)
-  for (const peer of peers) {
-    await peer.chat.ensureScopeReady(scope, false)
-  }
-}
-
 async function establishScopeViaNetwork(primaryActor, peers, scope, config) {
   const primaryReady = await primaryActor.chat.ensureScopeReady(scope, true)
   if (!primaryReady) {
     throw new Error(`Primary actor could not create ${scope.kind}:${scope.id}`)
   }
 
+  const establishedActors = [primaryActor]
+
   for (const peer of peers) {
+    const previousEpoch = primaryActor.chat.getGroupEpoch(scope.id)
     await peer.device.replenishKeyPackages()
     await waitForKeyPackages(peer.device)
 
@@ -551,6 +492,31 @@ async function establishScopeViaNetwork(primaryActor, peers, scope, config) {
     if (!joined) {
       throw new Error(`Peer could not join ${scope.kind}:${scope.id}`)
     }
+
+    const expectedEpoch = await waitFor(
+      `sponsor epoch advance for ${peer.username}:${scope.id}`,
+      async () => {
+        await primaryActor.chat.ensureScopeReady(scope, false)
+        const epoch = primaryActor.chat.getGroupEpoch(scope.id)
+        return epoch != null && epoch !== previousEpoch ? epoch : null
+      },
+      bootstrapTimeoutMs(config, peers.length),
+      100
+    )
+
+    for (const actor of [...establishedActors, peer]) {
+      await waitFor(
+        `epoch ${expectedEpoch} convergence for ${actor.username}:${scope.id}`,
+        async () => {
+          await actor.chat.ensureScopeReady(scope, false)
+          return actor.chat.getGroupEpoch(scope.id) === expectedEpoch ? true : null
+        },
+        bootstrapTimeoutMs(config, peers.length),
+        100
+      )
+    }
+
+    establishedActors.push(peer)
   }
 }
 
@@ -851,9 +817,12 @@ async function provisionSharedScenario(apiUrl, config) {
       deviceId: seededUser.primary_device_id
     })
     const username = seededUser.username
-    const primarySession = await primary.login(username, password)
+    let primarySession = await primary.login(username, password)
+    if (!primarySession.canUseE2EE && primarySession.currentDevice?.trust_state === 'trusted') {
+      primarySession = await primary.unlockTrustedDevice(password)
+    }
     if (!primarySession.canUseE2EE) {
-      throw new Error(`Preseeded primary device is not trusted for ${username}`)
+      throw new Error(`Preseeded primary device could not unlock E2EE for ${username}`)
     }
     await primary.replenishKeyPackages()
     await waitForKeyPackages(primary)
@@ -878,9 +847,12 @@ async function provisionSharedScenario(apiUrl, config) {
           deviceId: seededUser.secondary_device_id
         }
       )
-      const secondarySession = await secondary.login(username, password)
+      let secondarySession = await secondary.login(username, password)
+      if (!secondarySession.canUseE2EE && secondarySession.currentDevice?.trust_state === 'trusted') {
+        secondarySession = await secondary.unlockTrustedDevice(password)
+      }
       if (!secondarySession.canUseE2EE) {
-        throw new Error(`Preseeded secondary device is not trusted for ${username}`)
+        throw new Error(`Preseeded secondary device could not unlock E2EE for ${username}`)
       }
       await secondary.replenishKeyPackages()
       await waitForKeyPackages(secondary)
@@ -914,6 +886,12 @@ async function provisionSharedScenario(apiUrl, config) {
     }
   }
 
+  const scale = {
+    activeScopes: 0,
+    cohortCount: 0,
+    envelopeCount: 0,
+    physicalParticipants: actors.length
+  }
   let bootstrappedScopes = 0
   for (const channelId of activeChannelIds) {
     const scope = { kind: 'channel', id: channelId }
@@ -925,7 +903,7 @@ async function provisionSharedScenario(apiUrl, config) {
     }
 
     await withTimeout(
-      establishScope(primaryActor, peers, scope),
+      establishScopeViaNetwork(primaryActor, peers, scope, config),
       bootstrapTimeoutMs(config, scopedActors.length),
       `bootstrap scope ${scope.id}`
     )
@@ -938,6 +916,15 @@ async function provisionSharedScenario(apiUrl, config) {
       `seed history for ${scope.id}`
     )
 
+    const migration = await withTimeout(
+      migrateScopeToMultiCohort(scope, scopedActors, config),
+      bootstrapTimeoutMs(config, scopedActors.length) * 4,
+      `multi-cohort cutover ${scope.id}`
+    )
+    scale.cohortCount += migration.cohortCount
+    scale.envelopeCount += migration.envelopeCount
+    scale.activeScopes += migration.cohortCount > 0 ? 1 : 0
+
     bootstrappedScopes += 1
     logProvisionProgress('bootstrapped active scopes', bootstrappedScopes, activeChannelIds.length)
   }
@@ -948,7 +935,8 @@ async function provisionSharedScenario(apiUrl, config) {
     actorsByScope,
     expectedByScope,
     fixture,
-    lastTouchedAtByScope
+    lastTouchedAtByScope,
+    scale
   }
 }
 
@@ -1033,7 +1021,16 @@ function validateRestore(state, actor, scopeId, result, metrics) {
       metrics.decryptFailures += 1
       if (metrics.decryptFailureSamples.length < 5) {
         metrics.decryptFailureSamples.push(
-          `${actor.username}:${scopeId}:${message.id}`
+          [
+            actor.username,
+            actor.device.deviceIdentity.id,
+            scopeId,
+            message.id,
+            `scheme=${message.raw.encryption_scheme ?? 'mls'}`,
+            `group=${message.raw.encryption_group_id ?? 'scope'}`,
+            `epoch=${message.raw.mls_epoch ?? 'none'}`,
+            `sender=${message.raw.sender_id ?? 'unknown'}`
+          ].join(':')
         )
       }
     }
@@ -1286,11 +1283,17 @@ async function run() {
             8_000,
             'wide restore'
           )
-        } else {
+        } else if (config.loginRestoreEnabled) {
           await withTimeout(
             performLoginRestore(state, config, metrics, logicalWeight),
             5_000,
             'login restore'
+          )
+        } else {
+          await withTimeout(
+            performSync(state, config, metrics, logicalWeight),
+            4_000,
+            'sync restore'
           )
         }
       } catch (error) {
