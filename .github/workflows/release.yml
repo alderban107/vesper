@@ -613,11 +613,17 @@ jobs:
               printf '%s\n\n' '> This public beta contains unsigned Windows and unnotarized macOS builds. See `UNSIGNED-NATIVE-BUILDS.txt` before installing.'
               cat /tmp/generated-notes.md
             } > /tmp/release-notes.md
-            jq -Rs '{body: .}' /tmp/release-notes.md > /tmp/release-notes.json
+            jq -Rs --arg tag "$RELEASE_TAG" --arg sha "$GITHUB_SHA" \
+              '{body: ., tag_name: $tag, target_commitish: $sha}' \
+              /tmp/release-notes.md > /tmp/release-notes.json
             gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
               --input /tmp/release-notes.json >/dev/null
           fi
 
+          release_state="$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id")"
+          jq -e --arg tag "$RELEASE_TAG" --arg sha "$GITHUB_SHA" \
+            '.tag_name == $tag and .target_commitish == $sha and .draft == true' \
+            <<< "$release_state" >/dev/null
           local_count="$(find release-assets -maxdepth 1 -type f | wc -l)"
           remote_count="$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" --jq '.assets | length')"
           test "$local_count" = "$remote_count"
@@ -654,6 +660,8 @@ jobs:
           test "$(jq 'length' <<< "$release_json")" = 1
           release_id="$(jq -r '.[0].id' <<< "$release_json")"
           test "$(jq -r '.[0].draft' <<< "$release_json")" = true
-          printf '{"draft":false}' > /tmp/publish-release.json
+          jq -n --arg tag "$RELEASE_TAG" --arg sha "$GITHUB_SHA" \
+            '{draft: false, tag_name: $tag, target_commitish: $sha}' \
+            > /tmp/publish-release.json
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
             --input /tmp/publish-release.json >/dev/null

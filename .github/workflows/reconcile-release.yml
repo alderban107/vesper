@@ -124,8 +124,11 @@ jobs:
             exit 1
           }
           jq '.[0]' /tmp/release-matches.json > /tmp/release.json
-          jq -e --arg tag "$RELEASE_TAG" \
-            '.tag_name == $tag and .draft == true and (.assets | length > 0)' \
+          jq -e --arg tag "$RELEASE_TAG" --arg sha "$TAG_COMMIT" \
+            '.tag_name == $tag
+             and .target_commitish == $sha
+             and .draft == true
+             and (.assets | length > 0)' \
             /tmp/release.json >/dev/null
           if [ "$SIGNING_MODE" = unsigned-beta ]; then
             jq -e '.prerelease == true' /tmp/release.json >/dev/null
@@ -302,11 +305,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_ID: ${{ steps.release.outputs.release_id }}
+          RELEASE_TAG: ${{ inputs.tag }}
           SIGNING_MODE: ${{ inputs.signing_mode }}
         run: |
           if [ "$SIGNING_MODE" = unsigned-beta ]; then
             python3 <<'PY'
           import json
+          import os
           import pathlib
 
           release = json.loads(pathlib.Path('/tmp/release.json').read_text())
@@ -326,13 +331,19 @@ jobs:
           body = release.get('body') or ''
           if not body.startswith(warning):
               body = warning + body
-          pathlib.Path('/tmp/release-notes.json').write_text(json.dumps({'body': body}))
+          pathlib.Path('/tmp/release-notes.json').write_text(json.dumps({
+              'body': body,
+              'tag_name': os.environ['RELEASE_TAG'],
+              'target_commitish': os.environ['TAG_COMMIT'],
+          }))
           PY
             gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
               --input /tmp/release-notes.json >/dev/null
           fi
           gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > /tmp/release-after-notes.json
-          jq -e '.draft == true' /tmp/release-after-notes.json >/dev/null
+          jq -e --arg tag "$RELEASE_TAG" --arg sha "$TAG_COMMIT" \
+            '.tag_name == $tag and .target_commitish == $sha and .draft == true' \
+            /tmp/release-after-notes.json >/dev/null
           if [ "$SIGNING_MODE" = unsigned-beta ]; then
             jq -e '.body | startswith("> [!WARNING]")' /tmp/release-after-notes.json >/dev/null
           fi
@@ -547,12 +558,14 @@ jobs:
               /tmp/release-before-publish.json >/dev/null
           fi
 
-          printf '{"draft":false}' > /tmp/publish-release.json
+          jq -n --arg tag "$RELEASE_TAG" --arg sha "$TAG_COMMIT" \
+            '{draft: false, tag_name: $tag, target_commitish: $sha}' \
+            > /tmp/publish-release.json
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
             --input /tmp/publish-release.json >/dev/null
           gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > /tmp/release-published.json
-          jq -e --arg tag "$RELEASE_TAG" \
-            '.tag_name == $tag and .draft == false' \
+          jq -e --arg tag "$RELEASE_TAG" --arg sha "$TAG_COMMIT" \
+            '.tag_name == $tag and .target_commitish == $sha and .draft == false' \
             /tmp/release-published.json >/dev/null
 
           {
