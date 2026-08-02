@@ -47,9 +47,12 @@ jobs:
       TEST_DB_USER: postgres
       TEST_DB_PASS: postgres
       VESPER_SDK_TEST_DB_HOST: 127.0.0.1
-      VESPER_SDK_TEST_DB_PORT: "5432"
+      # The server gate owns the service container on 5432. The SDK harness
+      # starts and cleans up its own pinned PostgreSQL fixture on this port.
+      VESPER_SDK_TEST_DB_PORT: "55432"
       VESPER_SDK_TEST_DB_USER: postgres
       VESPER_SDK_TEST_DB_PASS: postgres
+      VESPER_SDK_TEST_DB_IMAGE: postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
       VESPER_PERF_MULTIPLIER: "5"
 
     steps:
@@ -107,6 +110,10 @@ jobs:
           mix test
 
       - name: Run strict SDK and live protocol gates
+        env:
+          # SDK integration owns its separate pinned fixture on 55432; the
+          # release job's Phoenix service remains available on 5432 above.
+          TEST_DB_PORT: "55432"
         run: |
           npm --prefix sdk run typecheck
           npm --prefix sdk run test:integration
