@@ -19,6 +19,7 @@ defmodule Vesper.Servers do
     AuditLog
   }
 
+  alias Vesper.Chat.AttachmentBlobLock
   alias Vesper.Encryption
   alias Vesper.Runtime
   alias Vesper.Runtime.Room
@@ -412,7 +413,35 @@ defmodule Vesper.Servers do
   end
 
   def delete_server(%Server{} = server) do
-    Repo.delete(server)
+    Repo.transaction(fn ->
+      locked_server =
+        from(server_row in Server,
+          where: server_row.id == ^server.id,
+          lock: "FOR UPDATE"
+        )
+        |> Repo.one!()
+
+      channel_ids =
+        from(channel in Channel,
+          where: channel.server_id == ^server.id,
+          order_by: channel.id,
+          lock: "FOR UPDATE",
+          select: channel.id
+        )
+        |> Repo.all()
+
+      storage_keys = AttachmentBlobLock.storage_keys_for_channels(channel_ids)
+      deleted = Repo.delete!(locked_server)
+      {deleted, storage_keys}
+    end)
+    |> case do
+      {:ok, {deleted, storage_keys}} ->
+        AttachmentBlobLock.cleanup(storage_keys)
+        {:ok, deleted}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   # 24 hours
@@ -897,22 +926,44 @@ defmodule Vesper.Servers do
 
   def delete_channel(%Channel{} = channel) do
     Repo.transaction(fn ->
-      if channel.type == "category" do
+      locked_channel =
+        from(channel_row in Channel,
+          where: channel_row.id == ^channel.id,
+          lock: "FOR UPDATE"
+        )
+        |> Repo.one!()
+
+      storage_keys = AttachmentBlobLock.storage_keys_for_channels([locked_channel.id])
+
+      if locked_channel.type == "category" do
         from(c in Channel,
-          where: c.server_id == ^channel.server_id and c.category_id == ^channel.id
+          where:
+            c.server_id == ^locked_channel.server_id and
+              c.category_id == ^locked_channel.id
         )
         |> Repo.update_all(set: [category_id: nil])
       end
 
-      deleted = Repo.delete!(channel)
-      normalize_scope_positions(channel.server_id, sibling_scope(channel))
+      deleted = Repo.delete!(locked_channel)
+      normalize_scope_positions(locked_channel.server_id, sibling_scope(locked_channel))
 
-      if channel.type == "category" do
-        normalize_scope_positions(channel.server_id, %{kind: :channels, category_id: nil})
+      if locked_channel.type == "category" do
+        normalize_scope_positions(locked_channel.server_id, %{
+          kind: :channels,
+          category_id: nil
+        })
       end
 
-      deleted
+      {deleted, storage_keys}
     end)
+    |> case do
+      {:ok, {deleted, storage_keys}} ->
+        AttachmentBlobLock.cleanup(storage_keys)
+        {:ok, deleted}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   def user_can_view_channel?(user_id, channel_id) when is_binary(channel_id) do

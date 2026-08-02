@@ -3,8 +3,31 @@ defmodule Vesper.Chat.AttachmentBlobLock do
 
   import Ecto.Query, only: [from: 2]
 
-  alias Vesper.Chat.{Attachment, FileStorage}
+  alias Vesper.Chat.{Attachment, FileStorage, Message}
   alias Vesper.Repo
+
+  def storage_keys_for_channels(channel_ids) when is_list(channel_ids) do
+    if channel_ids == [] do
+      []
+    else
+      from(attachment in Attachment,
+        join: message in Message,
+        on: message.id == attachment.message_id,
+        where: message.channel_id in ^channel_ids,
+        distinct: true,
+        select: attachment.storage_key
+      )
+      |> Repo.all()
+    end
+  end
+
+  def cleanup(storage_keys) when is_list(storage_keys) do
+    storage_keys
+    |> Enum.uniq()
+    |> Enum.each(&delete_if_unreferenced/1)
+
+    :ok
+  end
 
   def with_lock(storage_key, operation)
       when is_binary(storage_key) and is_function(operation, 0) do
