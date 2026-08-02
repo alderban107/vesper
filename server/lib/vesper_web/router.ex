@@ -29,9 +29,10 @@ defmodule VesperWeb.Router do
     plug(VesperWeb.Plugs.RateLimit, action: :refresh)
   end
 
-  # Health check — no auth, no pipeline
+  # Health is public for orchestrators; metrics require a dedicated bearer token.
   scope "/", VesperWeb do
     get("/health", HealthController, :check)
+    get("/metrics", MetricsController, :show)
   end
 
   # Public auth routes (rate-limited)

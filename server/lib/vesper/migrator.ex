@@ -18,22 +18,18 @@ defmodule Vesper.Migrator do
   @impl true
   def init(_) do
     Application.put_env(:vesper, :migration_status, :running)
-    {:ok, %{}, {:continue, :migrate}}
-  end
 
-  @impl true
-  def handle_continue(:migrate, state) do
     case run_migrations() do
       :ok ->
         Application.put_env(:vesper, :migration_status, :ok)
         Logger.info("Migrations completed successfully")
+        {:ok, %{}}
 
       {:error, reason} ->
         Application.put_env(:vesper, :migration_status, :failed)
         Logger.error("Migrations failed: #{inspect(reason)}")
+        {:stop, {:migration_failed, reason}}
     end
-
-    {:noreply, state}
   end
 
   defp run_migrations do

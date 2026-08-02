@@ -60,6 +60,13 @@ defmodule VesperWeb.Endpoint do
   plug Plug.MethodOverride
   plug Plug.Head
   plug Plug.Session, @session_options
-  plug CORSPlug
+  # Resolve origins at request time. Runtime configuration is loaded after this
+  # module is compiled, so a bare `plug CORSPlug` would freeze the wildcard
+  # default into production releases.
+  plug CORSPlug,
+    origin: &VesperWeb.OriginPolicy.cors_origins/0,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    headers: ["authorization", "content-type"]
+
   plug VesperWeb.Router
 end

@@ -106,17 +106,25 @@ if config_env() == :prod do
 
   config :vesper, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
+  run_migrations_on_start =
+    case System.get_env("RUN_MIGRATIONS_ON_START", "true") |> String.downcase() do
+      value when value in ["1", "true", "yes"] -> true
+      value when value in ["0", "false", "no"] -> false
+      invalid -> raise "invalid RUN_MIGRATIONS_ON_START value: #{inspect(invalid)}"
+    end
+
+  config :vesper, :run_migrations_on_start, run_migrations_on_start
+
   port = String.to_integer(System.get_env("PORT") || "4000")
 
-  # Trust WebSocket connections from the web client origin.
-  # Must agree with the CORS plug config below — when CORS_ORIGIN is unset,
-  # both default to allowing all origins for easy local dev.
-  check_origin =
-    case System.get_env("CORS_ORIGIN") do
-      nil -> false
-      "*" -> false
-      origins -> String.split(origins, ",") |> Enum.map(&String.trim/1)
-    end
+  # Trust only configured browser/Electron origins for HTTP and WebSocket
+  # connections. Native packaged clients may need their concrete file origin
+  # (or `null`, depending on the platform) listed alongside the web origin.
+  cors_origins =
+    System.fetch_env!("CORS_ORIGIN")
+    |> VesperWeb.OriginPolicy.parse_config!()
+
+  config :vesper, :cors_origins, cors_origins
 
   config :vesper, VesperWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
@@ -125,10 +133,20 @@ if config_env() == :prod do
       port: port
     ],
     secret_key_base: secret_key_base,
-    check_origin: check_origin
+    check_origin: {VesperWeb.OriginPolicy, :allowed?, [cors_origins]}
 
   # JWT signing key — defaults to secret_key_base if not set
   jwt_secret = System.get_env("JWT_SECRET") || secret_key_base
+
+  metrics_token =
+    System.get_env("METRICS_TOKEN") ||
+      raise("METRICS_TOKEN is required in production and must contain at least 32 bytes")
+
+  if byte_size(metrics_token) < 32 do
+    raise "METRICS_TOKEN must contain at least 32 bytes"
+  end
+
+  config :vesper, :metrics_token, metrics_token
 
   config :joken,
     default_signer: [
@@ -180,7 +198,7 @@ if config_env() == :prod do
   # Application.app_dir resolves to a versioned path inside the release
   # (e.g. /app/lib/vesper-0.1.0/priv/uploads) which is wiped on container
   # recreation. Default to a stable path that Docker volumes can mount.
-  config :vesper, :upload_dir, System.get_env("UPLOAD_DIR") || "/app/priv/uploads"
+  config :vesper, :upload_dir, System.get_env("UPLOAD_DIR") || "/var/lib/vesper/uploads"
 
   # VAPID keys for Web Push notifications.
   # Generate a key pair with: mix generate.vapid.keys
@@ -197,25 +215,4 @@ if config_env() == :prod do
   end
 
   config :vesper, :web_push_enabled, !!(vapid_public && vapid_private)
-
-  # CORS — restrict to the configured origin in production.
-  # Set CORS_ORIGIN to your frontend URL (e.g. "https://app.example.com").
-  # WARNING: leaving CORS_ORIGIN unset allows all origins ("*"), which is
-  # acceptable for self-hosted deployments but SHOULD be set explicitly in
-  # any multi-tenant or public-facing production environment.
-  cors_origin = System.get_env("CORS_ORIGIN") || "*"
-
-  if cors_origin == "*" do
-    require Logger
-
-    Logger.warning(
-      "CORS_ORIGIN is not set — allowing all origins (*). " <>
-        "Set CORS_ORIGIN to restrict cross-origin access in production."
-    )
-  end
-
-  config :cors_plug,
-    origin: [cors_origin],
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    headers: ["authorization", "content-type"]
 end
