@@ -40,7 +40,7 @@ Require all five gate jobs on `main`:
 - `e2e-checks`
 - `docker-checks`
 
-A gate succeeds when its worker passed or was correctly skipped because no relevant files changed. A failed or cancelled worker fails the gate.
+A gate succeeds when its worker passed or was correctly skipped because no relevant files changed. A failed or cancelled worker fails the gate. The same least-privilege workflows run for pull requests targeting `main`, including forked contributions; they do not receive publication or signing secrets.
 
 ## Publication workflows
 
@@ -62,14 +62,15 @@ This workflow is manually dispatched from an existing `v<version>` tag, with the
 The release gate performs, in order:
 
 1. server and SDK audits, warnings-as-errors compilation, migration verification, server tests, and live SDK protocol tests;
-2. native desktop builds for Linux, macOS x64/arm64, and Windows;
-3. mandatory macOS signing/notarization and Windows Authenticode verification;
-4. native amd64/arm64 candidate builds for both container images, each with SBOM and provenance;
-5. release-set validation, checksums, GitHub build-provenance attestation, and a complete draft GitHub release;
-6. publication of versioned multi-architecture container manifests;
-7. conversion of the verified draft into a public release.
+2. the retained browser/Electron invariant suite against the exact tag, with failure evidence retained for 14 days;
+3. native desktop builds for Linux, macOS x64/arm64, and Windows;
+4. mandatory macOS signing/notarization and Windows Authenticode verification;
+5. native amd64/arm64 candidate builds for both container images, each with SBOM and provenance;
+6. release-set validation, checksums, GitHub build-provenance attestation, and a complete draft GitHub release;
+7. publication of versioned multi-architecture container manifests;
+8. conversion of the verified draft into a public release.
 
-If required signing credentials or any platform artifact are absent, no public GitHub release is created. Follow `docs/RELEASE-RUNBOOK.md` for credentials, canarying, migration, verification, and rollback.
+If required signing credentials or any platform artifact are absent, no public GitHub release is created. GitHub Releases and GHCR are separate publication systems and cannot commit atomically: all candidates and the draft are validated first, but a failure while creating the two final OCI manifests can leave one version tag visible while the GitHub release remains draft. Treat that as a failed release, remove the partial OCI tag, and rerun only after reconciling both registries. Follow `docs/RELEASE-RUNBOOK.md` for credentials, canarying, migration, verification, and rollback.
 
 ### `nightly.yml` — distributed recovery validation only
 

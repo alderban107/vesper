@@ -93,8 +93,88 @@ jobs:
           npm --prefix sdk run typecheck
           npm --prefix sdk run test:integration
 
-  build:
+  browser-gate:
     needs: protocol-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      MIX_ENV: test
+      TEST_DB_HOST: 127.0.0.1
+      TEST_DB_PORT: "55432"
+      TEST_DB_USER: vesper_sdk
+      TEST_DB_PASS: vesper_sdk
+      VESPER_SDK_TEST_DB_IMAGE: postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Verify browser-gate source identity
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          expected="v$(node -p "require('./client/package.json').version")"
+          test "$RELEASE_TAG" = "$expected"
+          test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+        with:
+          elixir-version: "1.18"
+          otp-version: "27"
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Cache Elixir dependencies
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            server/deps
+            server/_build
+          key: release-e2e-mix-${{ runner.os }}-${{ hashFiles('server/mix.lock') }}
+          restore-keys: release-e2e-mix-${{ runner.os }}-
+
+      - name: Install and compile browser-gate dependencies
+        run: |
+          npm ci
+          cd server
+          mix deps.get
+          mix compile --warnings-as-errors
+
+      - name: Build Electron boundary and install Chromium
+        working-directory: client
+        run: |
+          node ./scripts/ensure-rollup-native.mjs
+          npm run build
+          npx playwright install chromium --with-deps
+
+      - name: Pre-pull pinned PostgreSQL image
+        run: docker pull "$VESPER_SDK_TEST_DB_IMAGE"
+
+      - name: Run retained browser and Electron invariants
+        working-directory: client
+        run: npx playwright test -c e2e/playwright.config.ts --project=p1-extended --project=p2-reliability
+
+      - name: Upload browser-gate failure evidence
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-e2e-artifacts
+          path: |
+            client/e2e/artifacts/
+            client/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  build:
+    needs: [protocol-gate, browser-gate]
     strategy:
       fail-fast: true
       matrix:

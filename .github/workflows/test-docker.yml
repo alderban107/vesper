@@ -10,6 +10,8 @@ on:
   push:
     branches-ignore: [main]
     tags-ignore: ["v*"]
+  pull_request:
+    branches: [main]
 
 concurrency:
   group: test-docker-${{ github.ref }}

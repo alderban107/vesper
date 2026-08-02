@@ -10,6 +10,8 @@ on:
   push:
     branches-ignore: [main]
     tags-ignore: ["v*"]
+  pull_request:
+    branches: [main]
 
 concurrency:
   group: test-e2e-${{ github.ref }}
@@ -90,9 +92,11 @@ jobs:
       - name: Install Node dependencies
         run: npm ci
 
-      - name: Ensure Rollup native package
+      - name: Build Electron boundary
         working-directory: client
-        run: node ./scripts/ensure-rollup-native.mjs
+        run: |
+          node ./scripts/ensure-rollup-native.mjs
+          npm run build
 
       - name: Install Playwright browsers
         working-directory: client
