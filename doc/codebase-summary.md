@@ -264,7 +264,7 @@ client/
     shared/
       linkPreview.ts      Shared link preview utilities
   electron-builder.yml    Packaging config (Windows, macOS, Linux)
-  electron-vite.config.ts Build config
+  electron.vite.config.ts Build config
   vite.web.config.ts      Web-only build config
   Dockerfile.web          Static web client Docker build (nginx)
 ```

@@ -11,7 +11,8 @@
     "skipLibCheck": true
   },
   "include": [
-    "electron-vite.config.ts",
+    "electron.vite.config.ts",
+    "vite.sdk-aliases.ts",
     "src/main/**/*",
     "src/preload/**/*"
   ]
