@@ -2423,7 +2423,6 @@ defmodule Vesper.Encryption do
       end
     else
       {:error, reason} -> {:error, reason}
-      false -> {:error, :invalid_sponsored_transition}
     end
   end
 
@@ -3425,7 +3424,6 @@ defmodule Vesper.Encryption do
       end
     else
       {:error, reason} -> {:error, reason}
-      false -> {:error, :invalid_external_commit}
     end
   end
 

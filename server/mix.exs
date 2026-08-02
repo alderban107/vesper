@@ -42,28 +42,32 @@ defmodule Vesper.MixProject do
   # Type `mix help deps` for examples and options.
   defp deps do
     [
-      {:phoenix, "~> 1.8.4"},
+      {:phoenix, "~> 1.8.9"},
       {:phoenix_ecto, "~> 4.5"},
-      {:ecto_sql, "~> 3.13"},
-      {:postgrex, ">= 0.0.0"},
+      {:ecto, "~> 3.13.6"},
+      {:ecto_sql, "~> 3.13.5"},
+      {:postgrex, "~> 0.22.3"},
+      {:decimal, "~> 3.1"},
       {:phoenix_live_dashboard, "~> 0.8.3"},
-      {:swoosh, "~> 1.16"},
+      {:swoosh, "~> 1.27.0"},
       {:req, "~> 0.5"},
       {:telemetry_metrics, "~> 1.0"},
+      {:telemetry_metrics_prometheus_core, "~> 1.2"},
       {:telemetry_poller, "~> 1.0"},
       {:gettext, "~> 1.0"},
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
-      {:bandit, "~> 1.5"},
+      {:bandit, "~> 1.12.4"},
       {:joken, "~> 2.6"},
       {:argon2_elixir, "~> 4.0"},
       {:cors_plug, "~> 3.0"},
       {:oban, "~> 2.18"},
-      {:ex_webrtc, "~> 0.15.0"},
+      {:ex_webrtc, "~> 0.17.0"},
       {:semaphore, "~> 1.3"},
       {:hammer, "~> 6.2"},
       {:hammer_plug, "~> 3.0"},
-      {:web_push_elixir, "~> 0.5.0"}
+      {:web_push_elixir, "~> 0.5.0"},
+      {:mix_audit, "~> 2.1.5", only: [:dev, :test], runtime: false}
     ]
   end
 

@@ -1,7 +1,6 @@
 defmodule Vesper.Servers do
   import Bitwise
   import Ecto.Query
-  require Logger
   alias Vesper.Repo
   alias Vesper.Accounts
 
@@ -2038,21 +2037,7 @@ defmodule Vesper.Servers do
         }
       end
 
-    case Encryption.queue_scope_crypto_evictions(evictions) do
-      :ok ->
-        :ok
-
-      other ->
-        Logger.warning("Could not queue MLS evictions for membership revoke",
-          extra: %{
-            server_id: server_id,
-            target_user_id: user_id,
-            reason: inspect(other)
-          }
-        )
-
-        :ok
-    end
+    Encryption.queue_scope_crypto_evictions(evictions)
   end
 
   defp broadcast_permissions_changed(server_id) do

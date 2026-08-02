@@ -499,8 +499,6 @@ defmodule VesperWeb.ChannelHelpers do
     end
   end
 
-  defp effective_thread_root_message(nil), do: nil
-
   defp effective_thread_root_message(message) do
     cond do
       is_binary(message.thread_root_message_id) ->
@@ -513,8 +511,6 @@ defmodule VesperWeb.ChannelHelpers do
         nil
     end
   end
-
-  defp effective_thread_root_id(nil), do: nil
 
   defp effective_thread_root_id(message) do
     case effective_thread_root_message(message) do

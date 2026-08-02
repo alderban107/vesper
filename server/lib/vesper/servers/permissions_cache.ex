@@ -15,8 +15,6 @@ defmodule Vesper.Servers.PermissionsCache do
 
   use GenServer
 
-  require Logger
-
   @table :vesper_permissions_cache
   @sweep_interval :timer.hours(1)
 

@@ -1,7 +1,5 @@
 defmodule VesperWeb.ChatChannel do
   use Phoenix.Channel
-  require Logger
-
   alias Vesper.Servers
   alias Vesper.Servers.{Channel, MemberCache, Permissions, PermissionsCache}
   alias Vesper.Chat
