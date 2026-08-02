@@ -13,7 +13,7 @@ A Vesper release is not ready because it compiles. The operator must be able to 
 - Production runtime secrets of at least 32 random bytes where required:
   `SECRET_KEY_BASE`, `METRICS_TOKEN`, `TURN_PASSWORD`, and, when used,
   `REGISTRATION_INVITE_SECRET`.
-- A publicly resolvable `TURN_SERVER_URL` and correct `TURN_EXTERNAL_IP`, with TCP/UDP 3478 and UDP 50000–50100 reachable. The bundled relay uses the configured long-term username/password; it does not use TURN REST shared-secret credentials.
+- A publicly resolvable `TURN_SERVER_URL` and correct `TURN_EXTERNAL_IP`, with TCP/UDP 3478 and UDP 50000–50100 reachable. The bundled relay uses the configured long-term username/password; it does not use TURN REST shared-secret credentials. Verify its private/link-local peer denials and allocation/bandwidth quotas remain active, and rotate the shared beta credential on suspected disclosure.
 - One or more explicit `CORS_ORIGIN` values. Wildcards and an unset value are rejected. Add the exact packaged renderer origin (`null` or `file://`, as observed on the target Electron platform) only when desktop access is required.
 - `PUBLIC_SCHEME=https` when TLS terminates at a trusted reverse proxy in front of the Docker web service; caller-supplied forwarding headers are ignored.
 - A tested PostgreSQL backup and a restore target separate from production.

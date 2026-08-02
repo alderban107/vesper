@@ -21,6 +21,7 @@ Production configuration fails closed on several boundaries:
 - forwarding headers are ignored unless a trusted edge is explicitly enabled; the bundled edge overwrites, rather than appends, the client address;
 - multi-cohort topology mutation is disabled unless explicitly enabled;
 - Docker uploads use a persistent volume with per-user aggregate quota and upload-rate limits;
+- the bundled TURN relay denies private/link-local/reserved peer destinations and applies allocation/bandwidth quotas to its shared beta credential;
 - Docker migrations complete successfully before the application starts, and disabled startup migration still performs a read-only schema health check.
 
 See `docs/RELEASE-RUNBOOK.md` for required secrets, migration rehearsal, monitoring, canarying, and rollback.

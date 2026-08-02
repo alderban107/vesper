@@ -80,7 +80,7 @@ The web edge permits ordinary request bodies up to 1 MiB and grants a 51 MiB mul
 
 ## TURN relay
 
-The bundled server uses coturn long-term credentials because Vesper currently returns a fixed username/password ICE credential. It intentionally does **not** use TURN REST shared-secret mode.
+The bundled server uses coturn long-term credentials because Vesper currently returns a fixed username/password ICE credential. It intentionally does **not** use TURN REST shared-secret mode. Treat that beta credential as relay-only and rotate it on suspected disclosure. Coturn denies loopback, RFC1918, carrier-grade NAT, link-local, multicast, and reserved peer destinations so an authenticated client cannot use the relay as a path into the host's private network; the bundled total/user and bandwidth quotas also bound credential abuse.
 
 `TURN_SERVER_URL` is delivered to remote clients, so `turn:coturn:3478` is invalid. If the relay is behind NAT, set `TURN_EXTERNAL_IP` in coturn's `public-ip/private-ip` form. A `turns:` URL requires certificates and TLS ingress configured separately; setting the URL alone does not enable TLS.
 
