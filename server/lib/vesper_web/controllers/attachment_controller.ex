@@ -1,8 +1,7 @@
 defmodule VesperWeb.AttachmentController do
   use VesperWeb, :controller
-  import Ecto.Query, only: [from: 2]
   alias Vesper.Chat
-  alias Vesper.Chat.{Attachment, FileStorage}
+  alias Vesper.Chat.{Attachment, AttachmentBlobLock, FileStorage}
   alias Vesper.Servers
   alias Vesper.Repo
 
@@ -80,13 +79,21 @@ defmodule VesperWeb.AttachmentController do
       {:ok, storage_key} ->
         result =
           try do
-            Repo.transaction(fn ->
-              # Serialize quota accounting per uploader. The file copy happens
-              # first, but rejected concurrent copies are deleted immediately.
+            AttachmentBlobLock.with_lock(storage_key, fn ->
+              # The first store discovers the backend key. Repeat it under the
+              # key lock so a concurrent rejected upload or expiry cleanup
+              # cannot delete this blob immediately before our row commits.
+              case FileStorage.store(upload.path, upload.filename) do
+                {:ok, ^storage_key} -> :ok
+                _error -> Repo.rollback(:storage_failure)
+              end
+
+              # Quota writes for one uploader are serialized inside the same
+              # transaction as the attachment row.
               Ecto.Adapters.SQL.query!(
                 Repo,
                 "SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))",
-                [attrs.uploader_id]
+                ["attachment-uploader:" <> attrs.uploader_id]
               )
 
               %{rows: [[used_bytes]]} =
@@ -99,6 +106,7 @@ defmodule VesperWeb.AttachmentController do
               quota = Application.fetch_env!(:vesper, :max_upload_bytes_per_user)
 
               if used_bytes + attrs.size_bytes > quota do
+                AttachmentBlobLock.delete_if_unreferenced_locked(storage_key)
                 Repo.rollback(:upload_quota_exceeded)
               end
 
@@ -107,13 +115,17 @@ defmodule VesperWeb.AttachmentController do
               |> then(&Attachment.changeset(%Attachment{}, &1))
               |> Repo.insert()
               |> case do
-                {:ok, attachment} -> attachment
-                {:error, _changeset} -> Repo.rollback(:invalid_metadata)
+                {:ok, attachment} ->
+                  attachment
+
+                {:error, _changeset} ->
+                  AttachmentBlobLock.delete_if_unreferenced_locked(storage_key)
+                  Repo.rollback(:invalid_metadata)
               end
             end)
           rescue
             error ->
-              delete_unreferenced_storage(storage_key)
+              AttachmentBlobLock.delete_if_unreferenced(storage_key)
               reraise error, __STACKTRACE__
           end
 
@@ -122,26 +134,13 @@ defmodule VesperWeb.AttachmentController do
             {:ok, attachment}
 
           {:error, reason} ->
-            delete_unreferenced_storage(storage_key)
+            AttachmentBlobLock.delete_if_unreferenced(storage_key)
             {:error, reason}
         end
 
       {:error, _reason} ->
         {:error, :storage_failure}
     end
-  end
-
-  defp delete_unreferenced_storage(storage_key) do
-    references =
-      Repo.aggregate(
-        from(attachment in Attachment, where: attachment.storage_key == ^storage_key),
-        :count
-      )
-
-    if references == 0, do: FileStorage.delete(storage_key)
-    :ok
-  rescue
-    _ -> :ok
   end
 
   def show(conn, %{"id" => id}) do
