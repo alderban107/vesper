@@ -1173,6 +1173,89 @@ test('sdk applies live commits through the durable cursor and preserves them acr
   }
 })
 
+test('sdk replays a room gap before applying an out-of-order live MLS message', { concurrency: false }, async (t) => {
+  const stack = await bootServerStack()
+  t.after(async () => {
+    await teardownServerStack(stack)
+  })
+
+  const owner = createClientHarness(stack.apiUrl, 'room-order-owner')
+  const receiver = createClientHarness(stack.apiUrl, 'room-order-receiver')
+  const ownerUsername = uniqueUsername('sdkroomorderowner')
+  const receiverUsername = uniqueUsername('sdkroomorderreceiver')
+  const password = 'vesper-sdk-room-order-password'
+
+  try {
+    await owner.client.register(ownerUsername, password)
+    await receiver.client.register(receiverUsername, password)
+    await owner.client.start(false)
+    await receiver.client.start(false)
+
+    const ownerChat = owner.client.createEncryptedChat()
+    const receiverChat = receiver.client.createEncryptedChat()
+    const server = await owner.client.createServer(`SDK Room Order ${Date.now()}`)
+    const channel = server.channels.find((entry) => entry.name === 'general') ?? null
+    assert.ok(channel, 'expected the default general channel')
+    const invite = await owner.client.createServerInvite(server.id, {})
+    await receiver.client.joinServerByInvite(invite.code)
+    const scope = { kind: 'channel', id: channel.id }
+
+    await ownerChat.watchScope(scope)
+    await receiverChat.watchScope(scope)
+    assert.equal(await ownerChat.createScopeGroup(scope), true)
+    assert.equal(await receiverChat.ensureMembership(scope), true)
+    receiver.client.stop()
+
+    const expected = ['room-order-one', 'room-order-two', 'room-order-three']
+    for (const text of expected) {
+      await ownerChat.sendText(scope, text)
+    }
+
+    const rawMessages = (await receiver.client.fetchChannelMessages(channel.id, { limit: 20 }))
+      .filter((message) => expected.includes(message.content ?? '') || message.ciphertext)
+      .sort((left, right) => (left.room_seq ?? 0) - (right.room_seq ?? 0))
+      .slice(-expected.length)
+    assert.equal(rawMessages.length, expected.length)
+
+    const newestFirst = await receiverChat.processScopeEvent(
+      scope,
+      'new_message',
+      rawMessages.at(-1)
+    )
+    assert.equal(newestFirst?.message?.decryptionFailed, false)
+
+    for (const rawMessage of rawMessages.slice(0, -1).reverse()) {
+      const duplicate = await receiverChat.processScopeEvent(scope, 'new_message', rawMessage)
+      assert.equal(duplicate?.message?.decryptionFailed, false)
+    }
+
+    const restored = receiverChat.getMessages(channel.id)
+    assert.ok(
+      expected.every((text) =>
+        restored.some((message) => message.content === text && !message.decryptionFailed)
+      ),
+      `expected ordered replay to decrypt ${JSON.stringify(expected)}, got ${JSON.stringify(
+        restored.map((message) => ({ content: message.content, failed: message.decryptionFailed }))
+      )}`
+    )
+
+    const newestRoomSeq = rawMessages.at(-1).room_seq
+    assert.equal(typeof newestRoomSeq, 'number')
+    await assert.rejects(
+      receiverChat.processScopeEvent(scope, 'new_message', {
+        ...rawMessages.at(-1),
+        id: crypto.randomUUID(),
+        room_seq: newestRoomSeq + 2
+      }),
+      /Could not replay room .* through sequence/,
+      'a live MLS ciphertext must not consume its ratchet while a prior room sequence is unavailable'
+    )
+  } finally {
+    owner.client.stop()
+    receiver.client.stop()
+  }
+})
+
 test('sdk ignores stale dm join-all replay after restart when the peer is already in the group', { concurrency: false }, async (t) => {
   const stack = await bootServerStack()
   t.after(async () => {
@@ -1796,7 +1879,17 @@ test('sdk restores bounded DM history from an account-owned package after every 
     await teardownServerStack(stack)
   })
 
-  const alicePrimary = createClientHarness(stack.apiUrl, 'package-alice-primary')
+  let recoveryPackagePutCount = 0
+  const countingFetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input.url
+    if (init?.method === 'PUT' && url.includes('/api/v1/scope-recovery-packages/')) {
+      recoveryPackagePutCount += 1
+    }
+    return await fetch(input, init)
+  }
+  const alicePrimary = createClientHarness(stack.apiUrl, 'package-alice-primary', {
+    fetchImpl: countingFetch
+  })
   const aliceRecovery = createClientHarness(stack.apiUrl, 'package-alice-recovery')
   const bob = createClientHarness(stack.apiUrl, 'package-bob')
   const aliceUsername = uniqueUsername('sdkpackagealice')
@@ -1854,12 +1947,50 @@ test('sdk restores bounded DM history from an account-owned package after every 
     )
     assert.equal(primaryCachedRecords.length, expected.length)
 
+    let initialRecoveryPackageCiphertext = null
     await waitFor('opaque recovery package persistence', async () => {
       const response = await alicePrimary.client
         .getHttpClient()
         .apiFetch(`/api/v1/scope-recovery-packages/${conversation.channel_id}`)
-      return response.ok
+      if (!response.ok) return false
+      const body = await response.json()
+      initialRecoveryPackageCiphertext = body.package?.ciphertext ?? null
+      return initialRecoveryPackageCiphertext != null
     })
+
+    await waitFor(
+      'recovery package publisher to become idle',
+      async () => aliceChat.recoveryPackagePublishes.size === 0,
+      5_000
+    )
+    assert.ok(recoveryPackagePutCount > 0, 'expected the primary client to publish its initial package')
+    recoveryPackagePutCount = 0
+    const recoveryPublishScope = aliceChat.hasGroup(scope.id)
+      ? scope
+      : { ...scope, id: conversation.channel_id }
+    assert.equal(aliceChat.hasGroup(recoveryPublishScope.id), true)
+    assert.equal(aliceChat.hasGroup(aliceChat.resolveMlsGroupId(recoveryPublishScope)), true)
+    const publishRequests = Array.from(
+      { length: 20 },
+      () => aliceChat.publishScopeRecoveryPackage(recoveryPublishScope)
+    )
+    assert.equal(aliceChat.recoveryPackagePublishes.size, 1)
+    await Promise.all(publishRequests)
+    assert.equal(
+      recoveryPackagePutCount,
+      1,
+      `concurrent recovery-package requests must coalesce into exactly one fresh snapshot upload; got ${recoveryPackagePutCount}`
+    )
+    const refreshedPackageResponse = await alicePrimary.client
+      .getHttpClient()
+      .apiFetch(`/api/v1/scope-recovery-packages/${conversation.channel_id}`)
+    assert.equal(refreshedPackageResponse.ok, true)
+    const refreshedPackage = await refreshedPackageResponse.json()
+    assert.notEqual(
+      refreshedPackage.package?.ciphertext,
+      initialRecoveryPackageCiphertext,
+      'the coalesced publish must replace the durable encrypted package'
+    )
 
     alicePrimary.client.stop()
     bob.client.stop()
