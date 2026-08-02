@@ -5,10 +5,18 @@ defmodule VesperWeb.Plugs.RateLimitTest do
 
   # Re-enable rate limiting for these tests (disabled in test config)
   setup do
+    previous_trust = Application.get_env(:vesper, :trust_proxy_headers)
     Application.put_env(:vesper, :disable_rate_limiting, false)
+    Application.put_env(:vesper, :trust_proxy_headers, false)
 
     on_exit(fn ->
       Application.put_env(:vesper, :disable_rate_limiting, true)
+
+      if is_nil(previous_trust) do
+        Application.delete_env(:vesper, :trust_proxy_headers)
+      else
+        Application.put_env(:vesper, :trust_proxy_headers, previous_trust)
+      end
     end)
   end
 
@@ -116,11 +124,64 @@ defmodule VesperWeb.Plugs.RateLimitTest do
     end
   end
 
+  describe "proxy identity" do
+    test "caller-supplied forwarding headers are ignored by default" do
+      ip = {10, 99, 0, 1}
+      opts = RateLimit.init(action: :register)
+
+      for index <- 1..10 do
+        build_conn(ip)
+        |> Plug.Conn.put_req_header("x-forwarded-for", "203.0.113.#{index}")
+        |> RateLimit.call(opts)
+      end
+
+      conn =
+        build_conn(ip)
+        |> Plug.Conn.put_req_header("x-forwarded-for", "198.51.100.200")
+        |> RateLimit.call(opts)
+
+      assert conn.halted
+      assert conn.status == 429
+    end
+
+    test "trusted proxies may supply one validated address but not a caller-controlled chain" do
+      Application.put_env(:vesper, :trust_proxy_headers, true)
+      opts = RateLimit.init(action: :register)
+      proxy_ip = {10, 99, 0, 2}
+
+      for _ <- 1..10 do
+        build_conn(proxy_ip)
+        |> Plug.Conn.put_req_header("x-forwarded-for", "203.0.113.10")
+        |> RateLimit.call(opts)
+      end
+
+      refute build_conn(proxy_ip)
+             |> Plug.Conn.put_req_header("x-forwarded-for", "203.0.113.11")
+             |> RateLimit.call(opts)
+             |> Map.fetch!(:halted)
+
+      for _ <- 1..10 do
+        build_conn(proxy_ip)
+        |> Plug.Conn.put_req_header("x-forwarded-for", "spoofed, 203.0.113.12")
+        |> RateLimit.call(opts)
+      end
+
+      chained =
+        build_conn(proxy_ip)
+        |> Plug.Conn.put_req_header("x-forwarded-for", "another-spoof, 203.0.113.12")
+        |> RateLimit.call(opts)
+
+      assert chained.halted
+      assert chained.status == 429
+    end
+  end
+
   describe "init/1" do
     test "returns correct config for known actions" do
       assert %{action: :login, limit: 20, window: 60_000} = RateLimit.init(action: :login)
       assert %{action: :register, limit: 10, window: 60_000} = RateLimit.init(action: :register)
       assert %{action: :recover, limit: 5, window: 600_000} = RateLimit.init(action: :recover)
+      assert %{action: :upload, limit: 20, window: 3_600_000} = RateLimit.init(action: :upload)
     end
 
     test "falls back to default limits for unknown actions" do

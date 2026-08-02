@@ -50,12 +50,17 @@ defmodule VesperWeb.Endpoint do
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
 
   plug Plug.Parsers,
-    parsers: [:urlencoded, :multipart, :json],
+    # Keep ordinary API bodies small. Only multipart uploads receive the 50 MiB
+    # allowance; otherwise unauthenticated JSON parsing would consume the full
+    # upload budget before router-level auth rate limits execute.
+    parsers: [
+      {:urlencoded, length: 1_048_576},
+      {:json, length: 1_048_576},
+      # One MiB of envelope headroom above the 50 MiB file limit.
+      {:multipart, length: 53_477_376}
+    ],
     pass: ["*/*"],
-    json_decoder: Phoenix.json_library(),
-    # Max request body size — must match FileStorage.max_upload_size/0.
-    # See "File upload limits" in the project README for details.
-    length: 52_428_800
+    json_decoder: Phoenix.json_library()
 
   plug Plug.MethodOverride
   plug Plug.Head

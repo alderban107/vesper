@@ -13,7 +13,9 @@ config :vesper,
   sync_event_retention_days: 7,
   multi_cohort_topology_mutations_enabled: false,
   registration_mode: :closed,
-  registration_invite_secret: nil
+  registration_invite_secret: nil,
+  trust_proxy_headers: false,
+  max_upload_bytes_per_user: 5_368_709_120
 
 # Configure the endpoint
 config :vesper, VesperWeb.Endpoint,

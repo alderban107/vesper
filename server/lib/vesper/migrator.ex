@@ -12,7 +12,28 @@ defmodule Vesper.Migrator do
   end
 
   def status do
-    Application.get_env(:vesper, :migration_status, :pending)
+    case Application.get_env(:vesper, :migration_status, :pending) do
+      :unchecked -> checked_schema_status()
+      status -> status
+    end
+  end
+
+  defp checked_schema_status do
+    path = Application.app_dir(:vesper, "priv/repo/migrations")
+
+    if Enum.any?(
+         Ecto.Migrator.migrations(Vesper.Repo, path, skip_table_creation: true),
+         fn
+           {:down, _version, _name} -> true
+           _migration -> false
+         end
+       ) do
+      :pending
+    else
+      :ok
+    end
+  rescue
+    _ -> :failed
   end
 
   @impl true

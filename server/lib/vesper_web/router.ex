@@ -29,6 +29,10 @@ defmodule VesperWeb.Router do
     plug(VesperWeb.Plugs.RateLimit, action: :refresh)
   end
 
+  pipeline :rate_limit_upload do
+    plug(VesperWeb.Plugs.RateLimit, action: :upload)
+  end
+
   # Health is public for orchestrators; metrics require a dedicated bearer token.
   scope "/", VesperWeb do
     get("/health", HealthController, :check)
@@ -156,7 +160,6 @@ defmodule VesperWeb.Router do
     post("/sync/scopes", ScopeSyncController, :create)
 
     # Attachments
-    post("/attachments", AttachmentController, :create)
     get("/attachments/:id", AttachmentController, :show)
 
     # User search
@@ -164,6 +167,11 @@ defmodule VesperWeb.Router do
 
     # Voice/WebRTC runtime config
     get("/voice/config", VoiceController, :config)
+  end
+
+  scope "/api/v1", VesperWeb do
+    pipe_through([:api, :authenticated, :rate_limit_upload])
+    post("/attachments", AttachmentController, :create)
   end
 
   scope "/api/v1", VesperWeb do

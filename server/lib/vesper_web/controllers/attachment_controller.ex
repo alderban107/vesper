@@ -1,5 +1,6 @@
 defmodule VesperWeb.AttachmentController do
   use VesperWeb, :controller
+  import Ecto.Query, only: [from: 2]
   alias Vesper.Chat
   alias Vesper.Chat.{Attachment, FileStorage}
   alias Vesper.Servers
@@ -35,35 +36,29 @@ defmodule VesperWeb.AttachmentController do
         uploader_id: user.id
       }
 
-      attrs =
-        case params["message_id"] do
-          nil -> attrs
-          id -> Map.put(attrs, :message_id, id)
-        end
-
+      # Uploads are always created unlinked. Message creation claims the
+      # uploader-owned attachment IDs atomically; accepting message_id here
+      # would let a caller mutate another sender's existing message.
       validation = Attachment.changeset(%Attachment{}, attrs)
 
       if validation.valid? do
-        case FileStorage.store(upload.path, upload.filename) do
-          {:ok, storage_key} ->
-            changeset =
-              Attachment.changeset(%Attachment{}, Map.put(attrs, :storage_key, storage_key))
+        case store_upload_with_quota(upload, attrs) do
+          {:ok, attachment} ->
+            conn
+            |> put_status(:created)
+            |> json(%{attachment: attachment_json(attachment)})
 
-            case Repo.insert(changeset) do
-              {:ok, attachment} ->
-                conn
-                |> put_status(:created)
-                |> json(%{attachment: attachment_json(attachment)})
+          {:error, :upload_quota_exceeded} ->
+            conn
+            |> put_status(:request_entity_too_large)
+            |> json(%{error: "upload quota exceeded"})
 
-              {:error, _changeset} ->
-                FileStorage.delete(storage_key)
+          {:error, :invalid_metadata} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: "could not save attachment"})
 
-                conn
-                |> put_status(:unprocessable_entity)
-                |> json(%{error: "could not save attachment"})
-            end
-
-          {:error, _reason} ->
+          {:error, :storage_failure} ->
             conn
             |> put_status(:internal_server_error)
             |> json(%{error: "could not store file"})
@@ -78,6 +73,75 @@ defmodule VesperWeb.AttachmentController do
 
   def create(conn, _params) do
     conn |> put_status(:bad_request) |> json(%{error: "file is required"})
+  end
+
+  defp store_upload_with_quota(upload, attrs) do
+    case FileStorage.store(upload.path, upload.filename) do
+      {:ok, storage_key} ->
+        result =
+          try do
+            Repo.transaction(fn ->
+              # Serialize quota accounting per uploader. The file copy happens
+              # first, but rejected concurrent copies are deleted immediately.
+              Ecto.Adapters.SQL.query!(
+                Repo,
+                "SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))",
+                [attrs.uploader_id]
+              )
+
+              %{rows: [[used_bytes]]} =
+                Ecto.Adapters.SQL.query!(
+                  Repo,
+                  "SELECT COALESCE(SUM(size_bytes), 0)::bigint FROM attachments WHERE uploader_id::text = $1",
+                  [attrs.uploader_id]
+                )
+
+              quota = Application.fetch_env!(:vesper, :max_upload_bytes_per_user)
+
+              if used_bytes + attrs.size_bytes > quota do
+                Repo.rollback(:upload_quota_exceeded)
+              end
+
+              attrs
+              |> Map.put(:storage_key, storage_key)
+              |> then(&Attachment.changeset(%Attachment{}, &1))
+              |> Repo.insert()
+              |> case do
+                {:ok, attachment} -> attachment
+                {:error, _changeset} -> Repo.rollback(:invalid_metadata)
+              end
+            end)
+          rescue
+            error ->
+              delete_unreferenced_storage(storage_key)
+              reraise error, __STACKTRACE__
+          end
+
+        case result do
+          {:ok, attachment} ->
+            {:ok, attachment}
+
+          {:error, reason} ->
+            delete_unreferenced_storage(storage_key)
+            {:error, reason}
+        end
+
+      {:error, _reason} ->
+        {:error, :storage_failure}
+    end
+  end
+
+  defp delete_unreferenced_storage(storage_key) do
+    references =
+      Repo.aggregate(
+        from(attachment in Attachment, where: attachment.storage_key == ^storage_key),
+        :count
+      )
+
+    if references == 0, do: FileStorage.delete(storage_key)
+    :ok
+  rescue
+    _ -> :ok
   end
 
   def show(conn, %{"id" => id}) do
@@ -123,8 +187,8 @@ defmodule VesperWeb.AttachmentController do
     user_id == uploader_id
   end
 
-  # Legacy attachments without uploader_id — allow any authenticated user
-  defp authorized_for_attachment?(_user_id, %{message: nil}), do: true
+  # Unlinked legacy rows have no attributable owner and therefore fail closed.
+  defp authorized_for_attachment?(_user_id, %{message: nil}), do: false
 
   defp authorized_for_attachment?(user_id, %{message: message}) do
     cond do

@@ -36,7 +36,9 @@ defmodule Vesper.Application do
     if Application.get_env(:vesper, :run_migrations_on_start, true) do
       [Vesper.Migrator]
     else
-      Application.put_env(:vesper, :migration_status, :ok)
+      # A separate migration job is not evidence that this database is current.
+      # Health performs a read-only pending-version check in this mode.
+      Application.put_env(:vesper, :migration_status, :unchecked)
       []
     end
   end

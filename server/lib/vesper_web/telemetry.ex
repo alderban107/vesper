@@ -171,8 +171,10 @@ defmodule VesperWeb.Telemetry do
   end
 
   defp periodic_measurements do
-    [
-      {Vesper.Dispatch, :emit_backlog_metrics, []}
-    ]
+    if Application.get_env(:vesper, :dispatch_metrics_polling_enabled, true) do
+      [{Vesper.Dispatch, :emit_backlog_metrics, []}]
+    else
+      []
+    end
   end
 end

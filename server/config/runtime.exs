@@ -126,6 +126,23 @@ if config_env() == :prod do
 
   config :vesper, :cors_origins, cors_origins
 
+  trust_proxy_headers =
+    case System.get_env("TRUST_PROXY_HEADERS", "false") |> String.downcase() do
+      value when value in ["1", "true", "yes"] -> true
+      value when value in ["0", "false", "no"] -> false
+      invalid -> raise "invalid TRUST_PROXY_HEADERS value: #{inspect(invalid)}"
+    end
+
+  config :vesper, :trust_proxy_headers, trust_proxy_headers
+
+  max_upload_bytes_per_user =
+    case Integer.parse(System.get_env("MAX_UPLOAD_BYTES_PER_USER", "5368709120")) do
+      {value, ""} when value >= 52_428_800 -> value
+      _ -> raise "MAX_UPLOAD_BYTES_PER_USER must be an integer of at least 52428800"
+    end
+
+  config :vesper, :max_upload_bytes_per_user, max_upload_bytes_per_user
+
   config :vesper, VesperWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
     http: [
@@ -135,8 +152,16 @@ if config_env() == :prod do
     secret_key_base: secret_key_base,
     check_origin: {VesperWeb.OriginPolicy, :allowed?, [cors_origins]}
 
-  # JWT signing key — defaults to secret_key_base if not set
-  jwt_secret = System.get_env("JWT_SECRET") || secret_key_base
+  # JWT signing key — blank and unset values fall back to secret_key_base.
+  # Compose exports an empty optional variable, and empty strings are truthy in
+  # Elixir, so a bare `value || fallback` would silently select a public key.
+  jwt_secret =
+    Vesper.RuntimeConfig.secret_or_fallback!(
+      "JWT_SECRET",
+      System.get_env("JWT_SECRET"),
+      secret_key_base,
+      32
+    )
 
   metrics_token =
     System.get_env("METRICS_TOKEN") ||
@@ -154,21 +179,32 @@ if config_env() == :prod do
       key_octet: jwt_secret
     ]
 
-  # ICE/TURN servers for WebRTC voice.
-  # For proxied web deployments, prefer:
-  # TURN_SERVER_URL=turns:your-turn-host:443?transport=tcp
-  # VOICE_ICE_TRANSPORT_POLICY=relay
+  # ICE/TURN servers for WebRTC voice. The bundled coturn deployment uses
+  # long-term credentials; a turns: URL is valid only when TLS is configured
+  # separately on that relay.
   ice_servers =
     case System.get_env("TURN_SERVER_URL") do
       nil ->
         [%{urls: "stun:stun.l.google.com:19302"}]
 
       turn_url ->
+        unless Regex.match?(~r/\Aturns?:\S+\z/, turn_url) do
+          raise "TURN_SERVER_URL must be a turn: or turns: URL without whitespace"
+        end
+
         turn_user = System.get_env("TURN_USERNAME") || "vesper"
+
+        if String.trim(turn_user) == "" do
+          raise "TURN_USERNAME cannot be blank when TURN_SERVER_URL is set"
+        end
 
         turn_pass =
           System.get_env("TURN_PASSWORD") ||
             raise("TURN_PASSWORD required when TURN_SERVER_URL is set")
+
+        if byte_size(turn_pass) < 32 do
+          raise "TURN_PASSWORD must contain at least 32 bytes"
+        end
 
         [
           %{urls: "stun:stun.l.google.com:19302"},
