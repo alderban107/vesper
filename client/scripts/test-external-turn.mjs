@@ -99,14 +99,25 @@ try {
             throw new Error(`Relayed ${transport} payload mismatch`)
           }
 
-          const candidateSummary = candidates.map((line) => {
-            const fields = line.slice('a=candidate:'.length).trim().split(/\s+/)
-            return {
-              protocol: fields[2]?.toLowerCase(),
-              address_family: fields[4]?.includes(':') ? 'ipv6' : 'ipv4',
-              type: fields[fields.indexOf('typ') + 1]
+          const candidateSummary = []
+          for (const pc of [pc1, pc2]) {
+            const stats = await pc.getStats()
+            for (const report of stats.values()) {
+              if (report.type !== 'local-candidate' || report.candidateType !== 'relay') continue
+              candidateSummary.push({
+                protocol: report.protocol?.toLowerCase(),
+                relay_protocol: report.relayProtocol?.toLowerCase(),
+                address_family: report.address?.includes(':') ? 'ipv6' : 'ipv4',
+                type: report.candidateType
+              })
             }
-          })
+          }
+          if (
+            candidateSummary.length === 0 ||
+            candidateSummary.some((candidate) => candidate.relay_protocol !== transport)
+          ) {
+            throw new Error(`TURN control transport was not proven as ${transport}`)
+          }
 
           return {
             status: 'passed',
