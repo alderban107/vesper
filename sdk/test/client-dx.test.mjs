@@ -1041,24 +1041,47 @@ test('sdk coalesces concurrent durable replay and preserves ordered multi-commit
     const ownerHttp = owner.client.getHttpClient()
     const originalApiFetch = ownerHttp.apiFetch.bind(ownerHttp)
     let replayFetches = 0
+    let signalReplayStarted = () => {}
+    const replayStarted = new Promise((resolve) => {
+      signalReplayStarted = resolve
+    })
+    let releaseReplay = () => {}
+    const replayGate = new Promise((resolve) => {
+      releaseReplay = resolve
+    })
+
     ownerHttp.apiFetch = async (...args) => {
       if (String(args[0]).includes(`/api/v1/mls-events/${channel.id}`)) {
         replayFetches += 1
-        await new Promise((resolve) => setTimeout(resolve, 50))
+        signalReplayStarted()
+        await replayGate
       }
       return await originalApiFetch(...args)
     }
 
+    let lockedMutationRan = false
     try {
       const replay = async () => await owner.client.runWithStorageContext(async () => {
         await ownerChat.replayDurableEvents(channel.id)
       })
-      await Promise.all([replay(), replay(), replay(), replay()])
+      const replays = Promise.all([replay(), replay(), replay(), replay()])
+      await replayStarted
+
+      const lockedMutation = ownerChat.withLockedScopeOperation(channel.id, async () => {
+        lockedMutationRan = true
+      })
+      await new Promise((resolve) => setTimeout(resolve, 25))
+      assert.equal(lockedMutationRan, false, 'replay must retain the group lock while fetching')
+
+      releaseReplay()
+      await Promise.all([replays, lockedMutation])
     } finally {
+      releaseReplay()
       ownerHttp.apiFetch = originalApiFetch
     }
 
     assert.equal(replayFetches, 1)
+    assert.equal(lockedMutationRan, true)
     assert.equal(ownerChat.getGroupEpoch(channel.id), 2)
     assert.equal(ownerChat.getMemberCount(channel.id), 3)
 

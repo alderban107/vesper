@@ -926,7 +926,7 @@ export class VesperEncryptedChat {
     await this.withLockedScopeOperation(groupId, async () => {
       this.scopeKinds.set(groupId, scope.channelId ? 'channel' : scope.kind)
       await this.ensureGroupMembership(groupId)
-      await this.replayDurableEvents(groupId)
+      await this.replayDurableEventsLocked(groupId)
     })
   }
 
@@ -1464,6 +1464,20 @@ export class VesperEncryptedChat {
     })
   }
 
+  /** Caller must already hold the resolved MLS group lock. */
+  private async ensureScopeReadyLocked(scope: EncryptedScope): Promise<boolean> {
+    await this.ensureScopeTopology(scope)
+    const groupId = this.resolveMlsGroupId(scope)
+    this.scopeKinds.set(groupId, scope.channelId ? 'channel' : scope.kind)
+
+    if (!(await this.ensureGroupMembership(groupId))) {
+      return false
+    }
+
+    await this.replayDurableEventsLocked(groupId)
+    return this.hasGroup(groupId) && !this.replayBlockedScopes.has(groupId)
+  }
+
   async sendText(
     scope: EncryptedScope,
     text: string,
@@ -1863,7 +1877,7 @@ export class VesperEncryptedChat {
 
   async replayScopeEvents(scopeId: string): Promise<void> {
     await this.withLockedScopeOperation(scopeId, async () => {
-      await this.replayDurableEvents(scopeId)
+      await this.replayDurableEventsLocked(scopeId)
     })
   }
 
@@ -2993,7 +3007,7 @@ export class VesperEncryptedChat {
         // The server stores commits durably before broadcasting them. Replay
         // that ordered log first so concurrent prepare/sync paths cannot apply
         // the same epoch transition from independent stale drafts.
-        await this.replayDurableEvents(groupId)
+        await this.replayDurableEventsLocked(groupId)
         const result = await this.handleCommit(
           groupId,
           this.getString(payload, 'commit_data'),
@@ -3936,13 +3950,25 @@ export class VesperEncryptedChat {
       return
     }
 
-    const run = this.replayDurableEventsOnce(scopeId).finally(() => {
+    // Durable replay mutates the same ratchet/checkpoint pair as live commits,
+    // sponsored transitions, and decrypt recovery. Coalesce before entering the
+    // group queue, then hold that queue for the entire ordered drain.
+    const run = this.withLockedScopeOperation(
+      scopeId,
+      async () => await this.replayDurableEventsLocked(scopeId),
+      'urgent'
+    ).finally(() => {
       if (this.durableReplayProcesses.get(scopeId) === run) {
         this.durableReplayProcesses.delete(scopeId)
       }
     })
     this.durableReplayProcesses.set(scopeId, run)
     await run
+  }
+
+  /** Caller must already hold the scope's group lock. */
+  private async replayDurableEventsLocked(scopeId: string): Promise<void> {
+    await this.replayDurableEventsOnce(scopeId)
   }
 
   private async replayDurableEventsOnce(scopeId: string): Promise<void> {
@@ -4702,7 +4728,7 @@ export class VesperEncryptedChat {
     deviceId: string | null
   ): Promise<PreparedSponsoredTransition | null> {
     try {
-      await this.replayDurableEvents(scopeId)
+      await this.replayDurableEventsLocked(scopeId)
       const state = this.groupStates.get(scopeId)
       if (!state) {
         return null
@@ -4910,7 +4936,7 @@ export class VesperEncryptedChat {
     deviceId: string | null
   ): Promise<PreparedSponsoredTransition | null> {
     try {
-      await this.replayDurableEvents(scopeId)
+      await this.replayDurableEventsLocked(scopeId)
       const state = this.groupStates.get(scopeId)
       if (!state) {
         return null
@@ -5761,7 +5787,7 @@ export class VesperEncryptedChat {
       return null
     }
 
-    await this.replayDurableEvents(groupId)
+    await this.replayDurableEventsLocked(groupId)
     return await this.decryptForScopeDraft(groupId, ciphertext)
   }
 
@@ -6079,7 +6105,7 @@ export class VesperEncryptedChat {
     }
 
     this.setScopeRepairState(groupId, 'replaying', null, { persist: true })
-    await this.replayDurableEvents(groupId)
+    await this.replayDurableEventsLocked(groupId)
     const replayed = await this.decryptForScope(groupId, ciphertext)
     if (replayed) {
       this.setScopeRepairState(groupId, 'healthy', null, { persist: true })
@@ -6862,7 +6888,9 @@ export class VesperEncryptedChat {
 
   private async flushPendingGroupInfoPublishes(): Promise<void> {
     for (const scopeId of [...this.pendingGroupInfoPublishes.keys()]) {
-      await this.flushPendingGroupInfoPublish(scopeId)
+      await this.withLockedScopeOperation(scopeId, async () => {
+        await this.flushPendingGroupInfoPublish(scopeId)
+      })
     }
   }
 
@@ -7121,7 +7149,9 @@ export class VesperEncryptedChat {
 
     const timer = setTimeout(() => {
       this.groupInfoPublishRetryTimers.delete(scopeId)
-      void this.flushPendingGroupInfoPublish(scopeId)
+      void this.withLockedScopeOperation(scopeId, async () => {
+        await this.flushPendingGroupInfoPublish(scopeId)
+      }).catch((error) => this.logIgnoredError('retry group info publish', error))
     }, delayMs)
     this.unrefRetryTimer(timer)
 
@@ -7164,7 +7194,11 @@ export class VesperEncryptedChat {
 
   private async flushPendingSponsoredTransitions(): Promise<void> {
     for (const scopeId of [...this.pendingSponsoredTransitions.keys()]) {
-      await this.flushPendingSponsoredTransition(scopeId, { flushGroupInfoOnSuccess: false })
+      await this.withLockedScopeOperation(scopeId, async () => {
+        await this.flushPendingSponsoredTransition(scopeId, {
+          flushGroupInfoOnSuccess: false
+        })
+      })
     }
   }
 
@@ -7229,7 +7263,7 @@ export class VesperEncryptedChat {
         incrementFailure: true,
         persist: true
       })
-      await this.replayDurableEvents(scopeId)
+      await this.replayDurableEventsLocked(scopeId)
       if (
         pending.baseEpoch != null &&
         this.getGroupEpoch(scopeId) != null &&
@@ -7346,7 +7380,9 @@ export class VesperEncryptedChat {
 
     const timer = setTimeout(() => {
       this.sponsoredTransitionRetryTimers.delete(scopeId)
-      void this.flushPendingSponsoredTransition(scopeId)
+      void this.withLockedScopeOperation(scopeId, async () => {
+        await this.flushPendingSponsoredTransition(scopeId)
+      }).catch((error) => this.logIgnoredError('retry sponsored transition', error))
     }, delayMs)
     this.unrefRetryTimer(timer)
 
@@ -7825,7 +7861,7 @@ export class VesperEncryptedChat {
 
     const ensureReady = async (): Promise<void> => {
       await this.ensureGroupMembership(scopeId)
-      await this.replayDurableEvents(scopeId).catch((error) =>
+      await this.replayDurableEventsLocked(scopeId).catch((error) =>
         this.logIgnoredError('replay voice durable events', error)
       )
 
@@ -8536,7 +8572,7 @@ export class VesperEncryptedChat {
       }
 
       const result = await this.withLockedScopeOperation(scope.channelId ?? scope.id, async () => {
-        if (!(await this.ensureScopeReady(scope, allowCreate))) {
+        if (!(await this.ensureScopeReadyLocked(scope))) {
           return SCOPE_NOT_READY
         }
 
