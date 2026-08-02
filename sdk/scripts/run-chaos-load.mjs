@@ -330,7 +330,10 @@ function recordFailure(metrics, label, error) {
   metrics.failures += 1
   if (metrics.failureSamples.length < 5) {
     const message = error instanceof Error ? error.message : String(error)
-    metrics.failureSamples.push(`${label}: ${message}`)
+    const cause = error instanceof Error && error.cause instanceof Error ? error.cause : null
+    const causeCode = cause && 'code' in cause ? String(cause.code) : null
+    const causeDetail = cause ? ` (${causeCode ? `${causeCode}: ` : ''}${cause.message})` : ''
+    metrics.failureSamples.push(`${label}: ${message}${causeDetail}`)
   }
 }
 
@@ -457,6 +460,7 @@ function createActor(device, username, password, scopes, trustedSecondary) {
   return {
     chat: createChatHarness(device),
     connected: true,
+    connectedAt: Date.now(),
     device,
     password,
     scopeQueryCount: 0,
@@ -467,18 +471,33 @@ function createActor(device, username, password, scopes, trustedSecondary) {
 }
 
 async function establishScopeViaNetwork(primaryActor, peers, scope, config) {
+  // Stage subscriptions so the creator's join-all event cannot make every
+  // actor race an External Commit at once. The first peer provides creator
+  // coverage; remaining peers join one at a time under the server CAS.
+  await primaryActor.chat.watchScope(scope)
+  if (peers[0]) {
+    await peers[0].chat.watchScope(scope)
+  }
+
+  console.log(`[chaos bootstrap] creating ${scope.kind}:${scope.id} as ${primaryActor.username}`)
   const primaryReady = await primaryActor.chat.ensureScopeReady(scope, true)
   if (!primaryReady) {
     throw new Error(`Primary actor could not create ${scope.kind}:${scope.id}`)
   }
 
+  console.log(`[chaos bootstrap] created ${scope.kind}:${scope.id}`)
   const establishedActors = [primaryActor]
 
-  for (const peer of peers) {
+  for (const [peerIndex, peer] of peers.entries()) {
+    const deviceRole = peer.trustedSecondary ? 'secondary' : 'primary'
+    const peerLabel = `${peerIndex + 1}/${peers.length} ${peer.username}:${deviceRole}`
     const previousEpoch = primaryActor.chat.getGroupEpoch(scope.id)
+    console.log(`[chaos bootstrap] replenishing ${peerLabel} for ${scope.id}`)
+    await peer.chat.watchScope(scope)
     await peer.device.replenishKeyPackages()
     await waitForKeyPackages(peer.device)
 
+    console.log(`[chaos bootstrap] joining ${peerLabel} to ${scope.id}`)
     const joined = await waitFor(
       `network bootstrap for ${peer.username}:${scope.id}`,
       async () => {
@@ -493,6 +512,7 @@ async function establishScopeViaNetwork(primaryActor, peers, scope, config) {
       throw new Error(`Peer could not join ${scope.kind}:${scope.id}`)
     }
 
+    console.log(`[chaos bootstrap] joined ${peerLabel} to ${scope.id}`)
     const expectedEpoch = await waitFor(
       `sponsor epoch advance for ${peer.username}:${scope.id}`,
       async () => {
@@ -504,6 +524,9 @@ async function establishScopeViaNetwork(primaryActor, peers, scope, config) {
       100
     )
 
+    console.log(
+      `[chaos bootstrap] sponsor advanced ${scope.id} from ${previousEpoch} to ${expectedEpoch}`
+    )
     for (const actor of [...establishedActors, peer]) {
       await waitFor(
         `epoch ${expectedEpoch} convergence for ${actor.username}:${scope.id}`,
@@ -517,6 +540,7 @@ async function establishScopeViaNetwork(primaryActor, peers, scope, config) {
     }
 
     establishedActors.push(peer)
+    console.log(`[chaos bootstrap] converged ${peerLabel} on ${scope.id}@${expectedEpoch}`)
   }
 }
 
@@ -617,6 +641,32 @@ async function migrateScopeToMultiCohort(scope, participants, config) {
   }
 }
 
+async function confirmCutoverConvergence(
+  scope,
+  participants,
+  expectedByScope,
+  expectedWindow,
+  lastTouchedAtByScope
+) {
+  if (participants.length === 0) {
+    return
+  }
+
+  const probe = `cutover-probe:${scope.id}:${Date.now()}`
+  await participants[0].chat.sendText(scope, probe)
+  pushRing(expectedByScope, scope.id, probe, expectedWindow)
+  lastTouchedAtByScope.set(scope.id, Date.now())
+
+  for (const participant of participants) {
+    const result = await participant.chat.syncScope(scope, { limit: 200 })
+    if (!result.messages.some((message) => message.content === probe)) {
+      throw new Error(
+        `Cutover probe did not converge for ${participant.username}:${scope.id}`
+      )
+    }
+  }
+}
+
 async function provisionScenario(apiUrl, config) {
   const labelSlug = (config.label ?? 'default').replace(/[^a-z0-9]+/gi, '_').toLowerCase()
   const compactLabel = labelSlug.replace(/_/g, '')
@@ -692,12 +742,6 @@ async function provisionScenario(apiUrl, config) {
     }
   }
 
-  for (const actor of actors) {
-    for (const scope of actor.scopes) {
-      await actor.chat.watchScope(scope)
-    }
-  }
-
   const actorsByScope = new Map()
   for (const actor of actors) {
     for (const scope of actor.scopes) {
@@ -744,6 +788,18 @@ async function provisionScenario(apiUrl, config) {
     )
     scale.cohortCount += migration.cohortCount
     scale.envelopeCount += migration.envelopeCount
+
+    await withTimeout(
+      confirmCutoverConvergence(
+        scope,
+        [adminActor, ...scopedActors],
+        expectedByScope,
+        config.expectedWindow,
+        lastTouchedAtByScope
+      ),
+      bootstrapTimeoutMs(config, scopedActors.length + 1) * 2,
+      `cutover convergence ${scope.id}`
+    )
   }
 
   return {
@@ -870,13 +926,6 @@ async function provisionSharedScenario(apiUrl, config) {
     }
   }
 
-  for (const [index, actor] of actors.entries()) {
-    for (const scope of actor.scopes) {
-      await actor.chat.watchScope(scope)
-    }
-    logProvisionProgress('watched actor scopes', index + 1, actors.length)
-  }
-
   const actorsByScope = new Map()
   for (const actor of actors) {
     for (const scope of actor.scopes) {
@@ -924,6 +973,18 @@ async function provisionSharedScenario(apiUrl, config) {
     scale.cohortCount += migration.cohortCount
     scale.envelopeCount += migration.envelopeCount
     scale.activeScopes += migration.cohortCount > 0 ? 1 : 0
+
+    await withTimeout(
+      confirmCutoverConvergence(
+        scope,
+        scopedActors,
+        expectedByScope,
+        config.expectedWindow,
+        lastTouchedAtByScope
+      ),
+      bootstrapTimeoutMs(config, scopedActors.length) * 2,
+      `cutover convergence ${scope.id}`
+    )
 
     bootstrappedScopes += 1
     logProvisionProgress('bootstrapped active scopes', bootstrappedScopes, activeChannelIds.length)
@@ -1047,12 +1108,41 @@ function validateRestore(state, actor, scopeId, result, metrics) {
   }
 }
 
+async function loginActorWithRetry(actor, attempts = 2) {
+  let lastError = null
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      let session = await actor.device.login(actor.username, actor.password)
+      if (!session.canUseE2EE && session.currentDevice?.trust_state === 'trusted') {
+        session = await actor.device.unlockTrustedDevice(actor.password)
+      }
+      if (!session.canUseE2EE) {
+        throw new Error(`Login restore came back without E2EE for ${actor.username}`)
+      }
+      return session
+    } catch (error) {
+      lastError = error
+      if (attempt < attempts) {
+        await waitInterval(100 * attempt)
+      }
+    }
+  }
+
+  throw lastError ?? new Error(`Could not restore login for ${actor.username}`)
+}
+
 async function reconnectActor(actor) {
+  if (!actor.device.client.getAuthSession()) {
+    await loginActorWithRetry(actor)
+  }
+
   actor.chat = createChatHarness(actor.device)
   for (const scope of actor.scopes) {
     await actor.chat.watchScope(scope)
   }
   actor.connected = true
+  actor.connectedAt = Date.now()
 }
 
 async function restoreScope(actor, scope, config) {
@@ -1094,13 +1184,20 @@ async function performSend(state, config, metrics, logicalWeight, serialRef) {
   recordMetric(metrics, 'sendAck', ackDurationMs, logicalWeight)
 
   if (deliveryRecipient) {
+    const recipientStableMs = Date.now() - deliveryRecipient.connectedAt
     const delivered = await deliveryRecipient.chat.waitForMessage(
       scope.id,
       (message) => message.content === text && message.senderUsername === actor.username,
       config.deliveryTimeoutMs
     )
     if (delivered) {
-      recordMetric(metrics, 'deliveryE2E', performance.now() - startedAt, logicalWeight)
+      const deliveryDurationMs = performance.now() - startedAt
+      recordMetric(metrics, 'deliveryE2E', deliveryDurationMs, logicalWeight)
+      if (deliveryDurationMs > config.targetLatencyMs) {
+        console.warn(
+          `[chaos delivery] ${deliveryDurationMs.toFixed(2)}ms to ${deliveryRecipient.username}; connected for ${recipientStableMs}ms`
+        )
+      }
     }
   }
 
@@ -1187,11 +1284,9 @@ async function performLoginRestore(state, config, metrics, logicalWeight) {
   }
 
   actor.chat.disconnect()
+  actor.connected = false
   await actor.device.logout()
-  const session = await actor.device.login(actor.username, actor.password)
-  if (!session.canUseE2EE) {
-    throw new Error(`Trusted login restore came back without E2EE for ${actor.username}`)
-  }
+  await loginActorWithRetry(actor)
 
   const scopes = selectScopesForWideRestore(actor, state, Math.min(2, config.wideRestoreScopes))
   if (scopes.length === 0) {
@@ -1255,6 +1350,7 @@ async function run() {
     console.log('Chaos load: timed phase starting')
     while (Date.now() < deadline) {
       const roll = Math.random()
+      let operationLabel = 'send'
 
       try {
         if (roll < 0.55) {
@@ -1264,32 +1360,38 @@ async function run() {
             'send'
           )
         } else if (roll < 0.68) {
+          operationLabel = 'disconnect'
           await performDisconnect(state)
         } else if (roll < 0.82) {
+          operationLabel = 'reconnect restore'
           await withTimeout(
             performReconnect(state, config, metrics, logicalWeight),
             4_000,
             'reconnect restore'
           )
         } else if (roll < 0.90) {
+          operationLabel = 'sync restore'
           await withTimeout(
             performSync(state, config, metrics, logicalWeight),
             4_000,
             'sync restore'
           )
         } else if (roll < 0.97) {
+          operationLabel = 'wide restore'
           await withTimeout(
             performWideRestore(state, config, metrics, logicalWeight),
             8_000,
             'wide restore'
           )
         } else if (config.loginRestoreEnabled) {
+          operationLabel = 'login restore'
           await withTimeout(
             performLoginRestore(state, config, metrics, logicalWeight),
             5_000,
             'login restore'
           )
         } else {
+          operationLabel = 'sync restore'
           await withTimeout(
             performSync(state, config, metrics, logicalWeight),
             4_000,
@@ -1297,7 +1399,7 @@ async function run() {
           )
         }
       } catch (error) {
-        recordFailure(metrics, 'timed operation', error)
+        recordFailure(metrics, operationLabel, error)
       }
     }
 

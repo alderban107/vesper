@@ -95,6 +95,12 @@ jobs:
           npm ci --workspaces=false
           node ./scripts/link-sdk-node-modules.mjs
 
+      - name: Configure Electron sandbox
+        working-directory: client
+        run: |
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+
       - name: Build Electron boundary
         working-directory: client
         run: |

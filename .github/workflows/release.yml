@@ -150,6 +150,12 @@ jobs:
           mix deps.get
           mix compile --warnings-as-errors
 
+      - name: Configure Electron sandbox
+        working-directory: client
+        run: |
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+
       - name: Build Electron boundary and install Chromium
         working-directory: client
         run: |

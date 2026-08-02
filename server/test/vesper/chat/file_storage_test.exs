@@ -8,7 +8,9 @@ defmodule Vesper.Chat.FileStorageTest do
   with a stable default in production.
   """
 
-  use ExUnit.Case, async: true
+  # These tests temporarily mutate the global :upload_dir application setting.
+  # Keep them out of the async phase so other storage tests never observe it.
+  use ExUnit.Case, async: false
 
   alias Vesper.Chat.FileStorage
 
