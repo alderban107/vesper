@@ -8,7 +8,7 @@ Do not open a public issue for a vulnerability that could expose message content
 
 ## Supported versions
 
-Only the newest published release receives security fixes. Release artifacts are accepted only from the repository's release workflow; verify `SHA256SUMS`, GitHub build provenance, and native platform signatures before installation.
+Only the newest published release receives security fixes. Release artifacts are accepted only from the repository's release workflow; verify `SHA256SUMS`, GitHub build provenance, and native platform signatures on macOS/Windows before installation. Linux packages rely on the checksums and GitHub provenance rather than a separate native signature.
 
 ## Deployment defaults
 
@@ -17,8 +17,10 @@ Production configuration fails closed on several boundaries:
 - registration defaults to `closed`;
 - `CORS_ORIGIN` must list explicit origins and cannot contain `*`;
 - `/metrics` requires a dedicated bearer token of at least 32 bytes;
+- blank `JWT_SECRET` values fall back to the strong cookie secret, while explicit JWT keys shorter than 32 bytes fail startup;
+- forwarding headers are ignored unless a trusted edge is explicitly enabled; the bundled edge overwrites, rather than appends, the client address;
 - multi-cohort topology mutation is disabled unless explicitly enabled;
-- Docker uploads use a persistent volume;
-- Docker migrations complete successfully before the application starts.
+- Docker uploads use a persistent volume with per-user aggregate quota and upload-rate limits;
+- Docker migrations complete successfully before the application starts, and disabled startup migration still performs a read-only schema health check.
 
 See `docs/RELEASE-RUNBOOK.md` for required secrets, migration rehearsal, monitoring, canarying, and rollback.

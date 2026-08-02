@@ -38,7 +38,7 @@ Pre-built multi-arch images (`linux/amd64`, `linux/arm64`) are published to GHCR
    - `VESPER_APP_IMAGE` and `VESPER_WEB_IMAGE` — matching release tags or immutable digests; never `main`/`latest` in production
    - `SECRET_KEY_BASE` — generate with `mix phx.gen.secret` or `openssl rand -base64 48`
    - `POSTGRES_PASSWORD` — database password
-   - `TURN_PASSWORD` — password for the TURN server (voice relay)
+   - `TURN_SERVER_URL`, `TURN_EXTERNAL_IP`, and `TURN_PASSWORD` — publicly reachable TURN relay coordinates and credentials
    - `CORS_ORIGIN` — explicit public web/desktop origins (wildcards are rejected)
    - `METRICS_TOKEN` — at least 32 random bytes for the protected metrics endpoint
 
@@ -47,7 +47,7 @@ Pre-built multi-arch images (`linux/amd64`, `linux/arm64`) are published to GHCR
    docker compose pull && docker compose up -d
    ```
 
-This starts the Phoenix server, PostgreSQL, and a coturn TURN server for voice relay. Use the Compose and environment files from the same release tag as the images. Production upgrades require the maintenance-window procedure in [`docs/RELEASE-RUNBOOK.md`](docs/RELEASE-RUNBOOK.md); this release is not mixed-writer compatible.
+This starts the Phoenix server, PostgreSQL, and a coturn TURN server for voice relay. The host firewall/NAT must expose TCP/UDP 3478 and UDP 50000–50100 to the address in `TURN_EXTERNAL_IP`; `TURN_SERVER_URL` is sent to remote clients and therefore cannot use a Compose-only hostname. Use the Compose and environment files from the same release tag as the images. Production upgrades require the maintenance-window procedure in [`docs/RELEASE-RUNBOOK.md`](docs/RELEASE-RUNBOOK.md); this release is not mixed-writer compatible.
 
 ### From source
 
@@ -259,9 +259,11 @@ All variables are set in `.env` (loaded by Docker Compose) or exported in the sh
 
 | Variable | Default | Required | Description |
 |----------|---------|----------|-------------|
-| `TURN_PASSWORD` | — | **Yes** | Shared secret for the TURN relay server |
-| `TURN_SERVER_URL` | `turn:coturn:3478` | No | TURN server URL. For proxied web deployments, use `turns:your-host:443?transport=tcp`. |
-| `TURN_USERNAME` | `vesper` | No | TURN username |
+| `TURN_PASSWORD` | — | **Yes** | Strong long-term credential password for the bundled TURN relay |
+| `TURN_SERVER_URL` | — | **Yes** (Compose) | Publicly resolvable TURN URL delivered to clients, for example `turn:turn.example.com:3478`. A `turns:` URL requires separately configured coturn certificates and TLS ingress. |
+| `TURN_EXTERNAL_IP` | — | **Yes** (Compose) | Public address coturn advertises for relayed candidates; forward TCP/UDP 3478 and UDP 50000–50100 to it. |
+| `TURN_USERNAME` | `vesper` | No | Long-term TURN credential username |
+| `TURN_REALM` | `vesper` | No | TURN authentication realm |
 | `VOICE_ICE_TRANSPORT_POLICY` | `relay` if TURN is set, else `all` | No | ICE transport policy: `all` (STUN + TURN) or `relay` (TURN only) |
 
 ### File Storage
@@ -270,6 +272,7 @@ All variables are set in `.env` (loaded by Docker Compose) or exported in the sh
 |----------|---------|----------|-------------|
 | `FILE_EXPIRY_DAYS` | `30` | No | Number of days uploaded files are retained before cleanup |
 | `UPLOAD_DIR` | `/var/lib/vesper/uploads` (prod) | No | Stable upload path. Docker mounts the named `uploads` volume here. |
+| `MAX_UPLOAD_BYTES_PER_USER` | `5368709120` (5 GiB) | No | Hard per-user aggregate quota across linked and pending attachments; must be at least 50 MiB. Upload creation is additionally limited to 20 requests per hour per user. |
 
 ### Web Client (Docker)
 
