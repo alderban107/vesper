@@ -52,6 +52,8 @@ config :vesper, VesperWeb.Endpoint,
 
 # Enable dev routes for dashboard and mailbox
 config :vesper, dev_routes: true
+config :vesper, :registration_mode, :open
+config :vesper, :metrics_token, String.duplicate("dev-metrics-token-", 2)
 
 # Do not include metadata nor timestamps in development logs
 config :logger, :default_formatter, format: "[$level] $message\n"
@@ -67,7 +69,4 @@ config :phoenix, :plug_init_mode, :runtime
 config :swoosh, :api_client, false
 
 # CORS — allow Electron dev server
-config :cors_plug,
-  origin: ~r/^http:\/\/(localhost|127\.0\.0\.1):\d+$/,
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  headers: ["authorization", "content-type"]
+config :vesper, :cors_origins, ~r/^http:\/\/(localhost|127\.0\.0\.1):\d+$/

@@ -19,6 +19,22 @@ defmodule VesperWeb.ChannelHelpers do
 
   def safe_decode64(_), do: {:error, :invalid_type}
 
+  def decode_history_signing_key(params) do
+    case Map.get(params, "history_signing_public_key") do
+      nil ->
+        {:ok, nil}
+
+      value when is_binary(value) ->
+        case Base.decode64(value) do
+          {:ok, decoded} when byte_size(decoded) == 32 -> {:ok, decoded}
+          _ -> {:error, :invalid_history_signing_key}
+        end
+
+      _ ->
+        {:error, :invalid_history_signing_key}
+    end
+  end
+
   def sender_json(nil), do: nil
 
   def sender_json(sender) do
@@ -149,6 +165,12 @@ defmodule VesperWeb.ChannelHelpers do
       encryption_scheme: message.encryption_scheme,
       encryption_group_id: message.encryption_group_id,
       client_nonce: message.client_nonce,
+      history_signing_public_key:
+        if(is_binary(message.history_signing_public_key),
+          do: Base.encode64(message.history_signing_public_key),
+          else: nil
+        ),
+      history_revision: message.history_revision,
       sender_id: message.sender_id,
       sender: sender_json(message.sender),
       expires_at: message.expires_at,
@@ -191,11 +213,23 @@ defmodule VesperWeb.ChannelHelpers do
         epoch,
         encryption_scheme,
         encryption_group_id,
+        history_signing_public_key_b64,
+        history_revision,
         socket
       ) do
     with {:ok, ciphertext} <- safe_decode64(ciphertext_b64),
          %{} = message <- Chat.get_message(id),
          true <- message.sender_id == socket.assigns.user_id,
+         {:ok, history_signing_public_key} <-
+           decode_history_signing_key(%{
+             "history_signing_public_key" => history_signing_public_key_b64
+           }),
+         {:ok, history_signing_public_key, history_revision} <-
+           resolve_edit_history_auth(
+             message,
+             history_signing_public_key,
+             history_revision
+           ),
          %{} = room <- room_for_message(message),
          :ok <-
            Encryption.validate_application_scheme(
@@ -206,11 +240,12 @@ defmodule VesperWeb.ChannelHelpers do
            ) do
       now = DateTime.utc_now() |> DateTime.truncate(:second)
 
-      case Chat.update_message(message, %{
+      case Chat.update_message_revision(id, socket.assigns.user_id, history_revision, %{
              ciphertext: ciphertext,
              mls_epoch: epoch,
              encryption_scheme: encryption_scheme,
              encryption_group_id: encryption_group_id,
+             history_signing_public_key: history_signing_public_key,
              edited_at: now
            }) do
         {:ok, _updated} ->
@@ -221,6 +256,12 @@ defmodule VesperWeb.ChannelHelpers do
               mls_epoch: epoch,
               encryption_scheme: encryption_scheme,
               encryption_group_id: encryption_group_id,
+              history_signing_public_key:
+                if(is_binary(history_signing_public_key),
+                  do: Base.encode64(history_signing_public_key),
+                  else: nil
+                ),
+              history_revision: history_revision,
               edited_at: now
             }
             |> maybe_put(:channel_id, Map.get(socket.assigns, :channel_id))
@@ -228,15 +269,39 @@ defmodule VesperWeb.ChannelHelpers do
 
           {:ok, payload}
 
+        {:error, :stale_history_revision} ->
+          {:error, "stale message revision"}
+
         {:error, _} ->
           {:error, "could not edit message"}
       end
     else
+      {:error, :stale_history_revision} -> {:error, "stale message revision"}
+      {:error, :invalid_history_revision} -> {:error, "invalid message revision"}
       {:error, _} -> {:error, "invalid encoding"}
       nil -> {:error, "message not found"}
       false -> {:error, "not the message author"}
     end
   end
+
+  defp resolve_edit_history_auth(
+         %{history_signing_public_key: nil} = message,
+         nil,
+         nil
+       ),
+       do: {:ok, nil, message.history_revision + 1}
+
+  defp resolve_edit_history_auth(message, key, revision)
+       when is_binary(key) and is_integer(revision) do
+    if revision == message.history_revision + 1 do
+      {:ok, key, revision}
+    else
+      {:error, :stale_history_revision}
+    end
+  end
+
+  defp resolve_edit_history_auth(_message, _key, _revision),
+    do: {:error, :invalid_history_revision}
 
   def handle_delete_message(id, user_id) do
     case Chat.get_message(id) do
@@ -434,8 +499,6 @@ defmodule VesperWeb.ChannelHelpers do
     end
   end
 
-  defp effective_thread_root_message(nil), do: nil
-
   defp effective_thread_root_message(message) do
     cond do
       is_binary(message.thread_root_message_id) ->
@@ -448,8 +511,6 @@ defmodule VesperWeb.ChannelHelpers do
         nil
     end
   end
-
-  defp effective_thread_root_id(nil), do: nil
 
   defp effective_thread_root_id(message) do
     case effective_thread_root_message(message) do

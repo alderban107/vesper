@@ -50,16 +50,28 @@ defmodule VesperWeb.Endpoint do
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
 
   plug Plug.Parsers,
-    parsers: [:urlencoded, :multipart, :json],
+    # Keep ordinary API bodies small. Only multipart uploads receive the 50 MiB
+    # allowance; otherwise unauthenticated JSON parsing would consume the full
+    # upload budget before router-level auth rate limits execute.
+    parsers: [
+      {:urlencoded, length: 1_048_576},
+      {:json, length: 1_048_576},
+      # One MiB of envelope headroom above the 50 MiB file limit.
+      {:multipart, length: 53_477_376}
+    ],
     pass: ["*/*"],
-    json_decoder: Phoenix.json_library(),
-    # Max request body size — must match FileStorage.max_upload_size/0.
-    # See "File upload limits" in the project README for details.
-    length: 52_428_800
+    json_decoder: Phoenix.json_library()
 
   plug Plug.MethodOverride
   plug Plug.Head
   plug Plug.Session, @session_options
-  plug CORSPlug
+  # Resolve origins at request time. Runtime configuration is loaded after this
+  # module is compiled, so a bare `plug CORSPlug` would freeze the wildcard
+  # default into production releases.
+  plug CORSPlug,
+    origin: &VesperWeb.OriginPolicy.cors_origins/0,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    headers: ["authorization", "content-type"]
+
   plug VesperWeb.Router
 end

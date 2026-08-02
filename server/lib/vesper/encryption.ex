@@ -23,7 +23,9 @@ defmodule Vesper.Encryption do
     PendingWelcome,
     RoomCohort,
     RoomCohortMembership,
+    RoomHistoryAuthorization,
     RoomKeyEnvelope,
+    RoomKeyEpochAuthorization,
     RoomKeyEpoch,
     RoomTopology,
     ScopeRecoveryPackage
@@ -382,6 +384,94 @@ defmodule Vesper.Encryption do
     |> Repo.delete_all()
   end
 
+  # --- Application history authorization ---
+
+  def get_room_history_authorization(room_id, user_id) do
+    Repo.get_by(RoomHistoryAuthorization, room_id: room_id, user_id: user_id)
+  end
+
+  def grant_room_history_authorization(room_id, user_id, authorization_generation) do
+    Repo.transaction(fn ->
+      room = lock_room!(room_id)
+      upsert_room_history_authorization!(room, user_id, authorization_generation)
+    end)
+    |> unwrap_transaction_result()
+  end
+
+  def grant_server_room_history_authorizations(server_id, user_id, authorization_generation) do
+    Repo.transaction(fn ->
+      lock_server_history_authorizations!(server_id)
+
+      rooms =
+        Repo.all(
+          from(room in Room,
+            where: room.server_id == ^server_id,
+            order_by: room.id,
+            lock: "FOR UPDATE"
+          )
+        )
+
+      Enum.each(rooms, fn room ->
+        upsert_room_history_authorization!(room, user_id, authorization_generation)
+      end)
+
+      :ok
+    end)
+    |> unwrap_transaction_result()
+  end
+
+  def grant_current_server_members_room_history(room_id, server_id) do
+    Repo.transaction(fn ->
+      lock_server_history_authorizations!(server_id)
+      room = lock_room!(room_id)
+
+      Repo.all(
+        from(membership in Membership,
+          where: membership.server_id == ^server_id,
+          order_by: membership.user_id,
+          select: {membership.user_id, membership.id}
+        )
+      )
+      |> Enum.each(fn {user_id, generation} ->
+        upsert_room_history_authorization!(room, user_id, generation)
+      end)
+
+      :ok
+    end)
+    |> unwrap_transaction_result()
+  end
+
+  defp lock_server_history_authorizations!(server_id) do
+    Repo.query!(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))",
+      [server_id]
+    )
+
+    :ok
+  end
+
+  defp upsert_room_history_authorization!(room, user_id, authorization_generation) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    %RoomHistoryAuthorization{}
+    |> RoomHistoryAuthorization.changeset(%{
+      room_id: room.id,
+      user_id: user_id,
+      authorization_generation: authorization_generation,
+      authorized_after_room_seq: room.current_seq
+    })
+    |> Repo.insert!(
+      on_conflict: [
+        set: [
+          authorization_generation: authorization_generation,
+          authorized_after_room_seq: room.current_seq,
+          updated_at: now
+        ]
+      ],
+      conflict_target: [:room_id, :user_id]
+    )
+  end
+
   # --- Pending History Requests ---
 
   @doc """
@@ -394,10 +484,21 @@ defmodule Vesper.Encryption do
     membership_generation =
       Map.get(attrs, :membership_generation) || Map.get(attrs, "membership_generation") || 0
 
+    authorization_generation =
+      Map.get(attrs, :authorization_generation) || Map.get(attrs, "authorization_generation")
+
+    authorized_after_room_seq =
+      Map.get(attrs, :authorized_after_room_seq) ||
+        Map.get(attrs, "authorized_after_room_seq") || 0
+
     channel_id = Map.get(attrs, :channel_id) || Map.get(attrs, "channel_id")
     conversation_id = Map.get(attrs, :conversation_id) || Map.get(attrs, "conversation_id")
 
-    attrs = Map.put(attrs, :membership_generation, membership_generation)
+    attrs =
+      attrs
+      |> Map.put(:membership_generation, membership_generation)
+      |> Map.put(:authorization_generation, authorization_generation)
+      |> Map.put(:authorized_after_room_seq, authorized_after_room_seq)
 
     %PendingHistoryRequest{}
     |> PendingHistoryRequest.changeset(attrs)
@@ -406,12 +507,15 @@ defmodule Vesper.Encryption do
         set: [
           requester_username: requester_username,
           membership_generation: membership_generation,
+          authorization_generation: authorization_generation,
+          authorized_after_room_seq: authorized_after_room_seq,
           channel_id: channel_id,
           conversation_id: conversation_id,
           inserted_at: DateTime.utc_now() |> DateTime.truncate(:second)
         ]
       ],
-      conflict_target: [:group_id, :requester_id, :requester_client_id]
+      conflict_target: [:group_id, :requester_id, :requester_client_id],
+      returning: true
     )
   end
 
@@ -444,7 +548,79 @@ defmodule Vesper.Encryption do
   # --- Pending History Bundles ---
 
   @doc """
+  Store a request-bound history bundle using only the application-authorization
+  fence previously authenticated by the server. The request is consumed in the
+  same transaction so unrelated members cannot acknowledge it without a bundle.
+  """
+  def fulfill_pending_history_request(request_id, attrs) do
+    group_id = Map.get(attrs, :group_id) || Map.get(attrs, "group_id")
+    recipient_id = Map.get(attrs, :recipient_id) || Map.get(attrs, "recipient_id")
+
+    recipient_client_id =
+      Map.get(attrs, :recipient_client_id) || Map.get(attrs, "recipient_client_id")
+
+    membership_generation =
+      Map.get(attrs, :membership_generation) || Map.get(attrs, "membership_generation")
+
+    current_authorization_generation =
+      Map.get(attrs, :current_authorization_generation) ||
+        Map.get(attrs, "current_authorization_generation")
+
+    Repo.transaction(fn ->
+      request =
+        Repo.one(
+          from(pr in PendingHistoryRequest,
+            where: pr.id == ^request_id,
+            lock: "FOR UPDATE"
+          )
+        )
+
+      cond do
+        is_nil(request) ->
+          Repo.rollback(:history_request_not_found)
+
+        request.group_id != group_id ->
+          Repo.rollback(:history_request_scope_mismatch)
+
+        request.requester_id != recipient_id or
+            request.requester_client_id != recipient_client_id ->
+          Repo.rollback(:history_request_recipient_mismatch)
+
+        request.membership_generation != membership_generation ->
+          Repo.rollback(:history_request_generation_mismatch)
+
+        request.authorization_generation != current_authorization_generation ->
+          Repo.rollback(:history_request_authorization_stale)
+
+        true ->
+          bundle_attrs =
+            attrs
+            |> Map.drop([:current_authorization_generation, "current_authorization_generation"])
+            |> Map.put(:request_id, request.id)
+            |> Map.put(:membership_generation, request.membership_generation)
+            |> Map.put(:authorization_generation, request.authorization_generation)
+            |> Map.put(:authorized_after_room_seq, request.authorized_after_room_seq)
+
+          case store_pending_history_bundle(bundle_attrs) do
+            {:ok, bundle} ->
+              Repo.delete!(request)
+              bundle
+
+            {:error, changeset} ->
+              Repo.rollback(changeset)
+          end
+      end
+    end)
+    |> case do
+      {:ok, bundle} -> {:ok, bundle}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
   Store or refresh a pending same-user history bundle for a recipient device.
+  Unbound bundles are retained for the sponsored-resync path and do not carry an
+  application-tenure fence.
   """
   def store_pending_history_bundle(attrs) do
     ciphertext = Map.get(attrs, :ciphertext) || Map.get(attrs, "ciphertext")
@@ -452,6 +628,24 @@ defmodule Vesper.Encryption do
 
     channel_id = Map.get(attrs, :channel_id) || Map.get(attrs, "channel_id")
     conversation_id = Map.get(attrs, :conversation_id) || Map.get(attrs, "conversation_id")
+    request_id = Map.get(attrs, :request_id) || Map.get(attrs, "request_id")
+
+    membership_generation =
+      Map.get(attrs, :membership_generation) || Map.get(attrs, "membership_generation")
+
+    authorization_generation =
+      Map.get(attrs, :authorization_generation) || Map.get(attrs, "authorization_generation")
+
+    authorized_after_room_seq =
+      Map.get(attrs, :authorized_after_room_seq) || Map.get(attrs, "authorized_after_room_seq")
+
+    conflict_target =
+      if request_id do
+        {:unsafe_fragment, "(request_id) WHERE request_id IS NOT NULL"}
+      else
+        {:unsafe_fragment,
+         "(group_id, recipient_id, recipient_client_id, sender_id) WHERE request_id IS NULL"}
+      end
 
     %PendingHistoryBundle{}
     |> PendingHistoryBundle.changeset(attrs)
@@ -460,22 +654,34 @@ defmodule Vesper.Encryption do
         set: [
           ciphertext: ciphertext,
           mls_epoch: mls_epoch,
+          request_id: request_id,
+          membership_generation: membership_generation,
+          authorization_generation: authorization_generation,
+          authorized_after_room_seq: authorized_after_room_seq,
           channel_id: channel_id,
           conversation_id: conversation_id,
           inserted_at: DateTime.utc_now() |> DateTime.truncate(:second)
         ]
       ],
-      conflict_target: [:group_id, :recipient_id, :recipient_client_id, :sender_id]
+      conflict_target: conflict_target,
+      returning: true
     )
   end
 
   @doc """
   Get all pending same-user history bundles for a specific MLS scope and device.
   """
-  def get_pending_history_bundles(recipient_id, group_id, recipient_client_id \\ nil) do
+  def get_pending_history_bundles(
+        recipient_id,
+        group_id,
+        recipient_client_id \\ nil,
+        authorization_generation \\ nil
+      ) do
     query =
       from(pb in PendingHistoryBundle,
-        where: pb.group_id == ^group_id and pb.recipient_id == ^recipient_id,
+        where:
+          pb.group_id == ^group_id and pb.recipient_id == ^recipient_id and
+            not is_nil(pb.authorization_generation),
         order_by: [asc: pb.inserted_at]
       )
 
@@ -484,6 +690,15 @@ defmodule Vesper.Encryption do
         from(pb in query, where: pb.recipient_client_id == ^recipient_client_id)
       else
         query
+      end
+
+    query =
+      if is_binary(authorization_generation) do
+        from(pb in query,
+          where: pb.authorization_generation == ^authorization_generation
+        )
+      else
+        from(pb in query, where: false)
       end
 
     Repo.all(query)
@@ -1261,6 +1476,8 @@ defmodule Vesper.Encryption do
               |> Repo.update!()
               |> Repo.preload(:envelopes, force: true)
 
+            snapshot_room_key_epoch_authorizations!(completed, now)
+
             if target_state == :active do
               prune_room_key_epochs_in_transaction(epoch.room_id, now)
             end
@@ -1278,6 +1495,46 @@ defmodule Vesper.Encryption do
       {:ok, {:repair, reason}} -> {:error, reason}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp snapshot_room_key_epoch_authorizations!(epoch, now) do
+    authorizations =
+      Repo.all(
+        from(authorization in RoomHistoryAuthorization,
+          join: cohort_membership in RoomCohortMembership,
+          on:
+            cohort_membership.topology_id == ^epoch.topology_id and
+              cohort_membership.user_id == authorization.user_id,
+          where: authorization.room_id == ^epoch.room_id,
+          select: %{
+            user_id: authorization.user_id,
+            cohort_id: cohort_membership.cohort_id,
+            authorization_generation: authorization.authorization_generation
+          }
+        )
+      )
+
+    rows =
+      Enum.map(authorizations, fn authorization ->
+        Map.merge(authorization, %{
+          id: Ecto.UUID.generate(),
+          room_key_epoch_id: epoch.id,
+          inserted_at: now,
+          updated_at: now
+        })
+      end)
+
+    if rows != [] do
+      Repo.insert_all(RoomKeyEpochAuthorization, rows,
+        on_conflict: {
+          :replace,
+          [:cohort_id, :authorization_generation, :updated_at]
+        },
+        conflict_target: [:room_key_epoch_id, :user_id]
+      )
+    end
+
+    :ok
   end
 
   def report_room_key_epoch_repair(epoch_id, reason) when is_binary(reason) do
@@ -1343,10 +1600,67 @@ defmodule Vesper.Encryption do
     end
   end
 
+  def get_active_room_key_epoch_for_user(room_id, user_id) do
+    case get_active_room_key_epoch(room_id) do
+      nil -> nil
+      epoch -> authorize_room_key_epoch_for_user(epoch, user_id)
+    end
+  end
+
   def get_room_key_epoch(epoch_id) do
     case Repo.get(RoomKeyEpoch, epoch_id) do
       nil -> nil
       epoch -> Repo.preload(epoch, [:room, :envelopes])
+    end
+  end
+
+  def get_room_key_epoch_for_user(room_id, epoch_number, user_id)
+      when is_integer(epoch_number) and epoch_number >= 0 do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    epoch =
+      Repo.one(
+        from(epoch in RoomKeyEpoch,
+          where:
+            epoch.room_id == ^room_id and epoch.epoch == ^epoch_number and
+              epoch.state in [:staged, :active, :retired] and
+              (epoch.state != :retired or is_nil(epoch.retained_until) or
+                 epoch.retained_until >= ^now),
+          limit: 1
+        )
+      )
+
+    case epoch do
+      nil -> nil
+      epoch -> authorize_room_key_epoch_for_user(epoch, user_id)
+    end
+  end
+
+  defp authorize_room_key_epoch_for_user(epoch, user_id) do
+    current_authorization =
+      Repo.get_by(RoomHistoryAuthorization, room_id: epoch.room_id, user_id: user_id)
+
+    with %RoomHistoryAuthorization{} = current_authorization <- current_authorization,
+         %RoomKeyEpochAuthorization{} = epoch_authorization <-
+           Repo.one(
+             from(authorization in RoomKeyEpochAuthorization,
+               where:
+                 authorization.room_key_epoch_id == ^epoch.id and
+                   authorization.user_id == ^user_id and
+                   authorization.authorization_generation ==
+                     ^current_authorization.authorization_generation,
+               limit: 1
+             )
+           ) do
+      Repo.preload(epoch,
+        envelopes:
+          from(envelope in RoomKeyEnvelope,
+            where: envelope.cohort_id == ^epoch_authorization.cohort_id,
+            order_by: envelope.cohort_id
+          )
+      )
+    else
+      _ -> nil
     end
   end
 
@@ -2109,7 +2423,6 @@ defmodule Vesper.Encryption do
       end
     else
       {:error, reason} -> {:error, reason}
-      false -> {:error, :invalid_sponsored_transition}
     end
   end
 
@@ -3111,7 +3424,6 @@ defmodule Vesper.Encryption do
       end
     else
       {:error, reason} -> {:error, reason}
-      false -> {:error, :invalid_external_commit}
     end
   end
 

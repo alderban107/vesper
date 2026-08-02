@@ -25,12 +25,28 @@ defmodule VesperWeb.RoomKeyEpochController do
 
     with {:ok, room} <- ControllerHelpers.authorize_room_scope(user.id, scope_id),
          {:ok, topology} <- Encryption.resolve_room_topology(room.id, user.id) do
-      case Encryption.get_active_room_key_epoch(room.id) do
+      case Encryption.get_active_room_key_epoch_for_user(room.id, user.id) do
         nil -> conn |> put_status(:not_found) |> json(%{error: "no active room key"})
         epoch -> json(conn, %{room_key_epoch: render_epoch(epoch, topology.cohort_id)})
       end
     else
       {:error, reason} -> render_error(conn, reason)
+    end
+  end
+
+  def show(conn, %{"scope_id" => scope_id, "epoch" => raw_epoch}) do
+    user = conn.assigns.current_user
+
+    with {epoch_number, ""} when epoch_number >= 0 <- Integer.parse(raw_epoch),
+         {:ok, room} <- ControllerHelpers.authorize_room_scope(user.id, scope_id),
+         epoch when not is_nil(epoch) <-
+           Encryption.get_room_key_epoch_for_user(room.id, epoch_number, user.id) do
+      json(conn, %{room_key_epoch: render_epoch(epoch)})
+    else
+      :error -> render_error(conn, :not_found)
+      {:error, reason} -> render_error(conn, reason)
+      {_epoch, _rest} -> render_error(conn, :not_found)
+      nil -> render_error(conn, :not_found)
     end
   end
 

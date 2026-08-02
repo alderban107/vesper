@@ -6,7 +6,7 @@ defmodule Vesper.Voice do
   def ensure_room(room_id, opts \\ []) do
     case RoomSupervisor.start_room(room_id, opts) do
       {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
+      {:error, _reason} = error -> error
     end
   end
 

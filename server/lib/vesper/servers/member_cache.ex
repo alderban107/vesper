@@ -13,8 +13,6 @@ defmodule Vesper.Servers.MemberCache do
 
   use GenServer
 
-  require Logger
-
   @table :vesper_member_cache
   @sweep_interval :timer.hours(1)
 

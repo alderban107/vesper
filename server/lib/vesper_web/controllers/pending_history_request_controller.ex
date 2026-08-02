@@ -8,8 +8,8 @@ defmodule VesperWeb.PendingHistoryRequestController do
     user = conn.assigns.current_user
 
     case authorized_scope(user.id, scope_id) do
-      {:ok, authorized_group_id} ->
-        render_requests(conn, Encryption.get_pending_history_requests(authorized_group_id))
+      {:ok, authorization} ->
+        render_requests(conn, Encryption.get_pending_history_requests(authorization.group_id))
 
       {:error, :invalid_scope} ->
         conn |> put_status(:bad_request) |> json(%{error: "invalid scope"})
@@ -31,6 +31,12 @@ defmodule VesperWeb.PendingHistoryRequestController do
       is_nil(request) ->
         json(conn, %{ok: true})
 
+      request.requester_id != user.id ->
+        conn |> put_status(:forbidden) |> json(%{error: "forbidden"})
+
+      request.requester_client_id != conn.assigns.current_device.client_id ->
+        conn |> put_status(:forbidden) |> json(%{error: "forbidden"})
+
       match?({:error, _}, authorized_scope(user.id, request.group_id)) ->
         conn |> put_status(:forbidden) |> json(%{error: "forbidden"})
 
@@ -50,6 +56,8 @@ defmodule VesperWeb.PendingHistoryRequestController do
             requester_username: request.requester_username,
             requester_client_id: request.requester_client_id,
             membership_generation: request.membership_generation,
+            authorization_generation: request.authorization_generation,
+            authorized_after_room_seq: request.authorized_after_room_seq,
             inserted_at: request.inserted_at
           }
         end)
@@ -57,9 +65,6 @@ defmodule VesperWeb.PendingHistoryRequestController do
   end
 
   defp authorized_scope(user_id, scope_id) do
-    case ControllerHelpers.authorize_mls_scope(user_id, scope_id) do
-      {:ok, %{group_id: group_id}} -> {:ok, group_id}
-      error -> error
-    end
+    ControllerHelpers.authorize_history_scope(user_id, scope_id)
   end
 end

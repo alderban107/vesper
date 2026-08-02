@@ -33,7 +33,11 @@ config :swoosh, :api_client, false
 # Disable Oban in test
 config :vesper, Oban, testing: :inline
 config :vesper, run_migrations_on_start: false
+config :vesper, :metrics_token, String.duplicate("test-metrics-token-", 2)
+config :vesper, :dispatch_metrics_polling_enabled, false
 config :vesper, warm_room_cache_on_start: false
+config :vesper, :multi_cohort_topology_mutations_enabled, true
+config :vesper, :registration_mode, :open
 
 # Print only warnings and errors during test
 config :logger, level: :warning

@@ -35,16 +35,19 @@ Pre-built multi-arch images (`linux/amd64`, `linux/arm64`) are published to GHCR
    ```
 
 2. Edit `.env` and configure — see [Environment Variables](#environment-variables) for the full reference. At minimum, set:
+   - `VESPER_APP_IMAGE` and `VESPER_WEB_IMAGE` — matching release tags or immutable digests; never `main`/`latest` in production
    - `SECRET_KEY_BASE` — generate with `mix phx.gen.secret` or `openssl rand -base64 48`
    - `POSTGRES_PASSWORD` — database password
-   - `TURN_PASSWORD` — password for the TURN server (voice relay)
+   - `TURN_SERVER_URL`, `TURN_EXTERNAL_IP`, and `TURN_PASSWORD` — publicly reachable TURN relay coordinates and credentials
+   - `CORS_ORIGIN` — explicit public web/desktop origins (wildcards are rejected)
+   - `METRICS_TOKEN` — at least 32 random bytes for the protected metrics endpoint
 
 3. Start the stack:
    ```bash
    docker compose pull && docker compose up -d
    ```
 
-This starts the Phoenix server, PostgreSQL, and a coturn TURN server for voice relay. No source checkout needed — images are pulled from GHCR.
+This starts the Phoenix server, PostgreSQL, and a coturn TURN server for voice relay. The host firewall/NAT must expose TCP/UDP 3478 and UDP 50000–50100 to the address in `TURN_EXTERNAL_IP`; `TURN_SERVER_URL` is sent to remote clients and therefore cannot use a Compose-only hostname. Use the Compose and environment files from the same release tag as the images. Production upgrades require the maintenance-window procedure in [`docs/RELEASE-RUNBOOK.md`](docs/RELEASE-RUNBOOK.md); this release is not mixed-writer compatible.
 
 ### From source
 
@@ -91,7 +94,7 @@ This serves the web client on port `8080` (configurable via `WEB_PORT` in `.env`
 
 ### Build from source
 
-Prerequisites: Node 20+
+Prerequisites: Node 24+
 
 ```bash
 cd client
@@ -180,10 +183,10 @@ scripts/                 repo-level tooling
 .github/workflows/
   test-server.yml          server CI — mix test + PostgreSQL 17
   test-client.yml          client CI — typecheck + production build
-  docker-server.yml        build & push server Docker image
-  docker-web.yml           build & push web client Docker image
-  release.yml              build desktop installers
-  nightly.yml              daily nightly release (Docker + desktop)
+  docker-server.yml        build & push attested main/SHA server snapshots
+  docker-web.yml           build & push attested main/SHA web snapshots
+  release.yml              signed desktop + attested container release gate
+  nightly.yml              CI-only distributed recovery soak
 .github/CI.md             CI/CD pipeline documentation
 
 doc/
@@ -207,6 +210,13 @@ All variables are set in `.env` (loaded by Docker Compose) or exported in the sh
 
 <details>
 <summary>Full environment variable reference</summary>
+
+### Release images
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `VESPER_APP_IMAGE` | — | **Yes** (Compose) | API image pinned to the selected release tag or immutable digest. |
+| `VESPER_WEB_IMAGE` | — | **Yes** (Compose) | Web image pinned to the same selected release or immutable digest. |
 
 ### Database
 
@@ -234,20 +244,26 @@ All variables are set in `.env` (loaded by Docker Compose) or exported in the sh
 | `PHX_SERVER` | — | No | Set to `true` to start the HTTP server (set automatically in Docker) |
 | `JWT_SECRET` | same as `SECRET_KEY_BASE` | No | Separate secret for JWT signing, if desired |
 | `DNS_CLUSTER_QUERY` | — | No | DNS query for clustering in multi-node deployments |
+| `METRICS_TOKEN` | — | **Yes** (prod) | Bearer token for `/metrics`; must contain at least 32 bytes. |
+| `REGISTRATION_MODE` | `closed` | No | `closed`, `open`, or `invite_only`. Production defaults closed. |
+| `REGISTRATION_INVITE_SECRET` | — | **Yes** for `invite_only` | Shared registration secret compared in constant time. |
+| `RUN_MIGRATIONS_ON_START` | `true` | No | Docker sets this false and runs a fail-closed release migration before startup. Multi-replica deployments should use a separate migration job. |
 
 ### CORS & Origins
 
 | Variable | Default | Required | Description |
 |----------|---------|----------|-------------|
-| `CORS_ORIGIN` | `*` (prod) | No | Allowed origin for CORS and WebSocket connections. Set to your frontend URL in production (e.g. `https://app.example.com`). Use a comma-separated list for multiple origins. When unset, CORS allows all origins and a warning is logged. |
+| `CORS_ORIGIN` | — | **Yes** (prod) | Comma-separated explicit origins for CORS and WebSockets. Unset, empty, and wildcard values fail startup. Packaged clients may require their concrete file origin or `null`, depending on platform. |
 
 ### Voice / WebRTC
 
 | Variable | Default | Required | Description |
 |----------|---------|----------|-------------|
-| `TURN_PASSWORD` | — | **Yes** | Shared secret for the TURN relay server |
-| `TURN_SERVER_URL` | `turn:coturn:3478` | No | TURN server URL. For proxied web deployments, use `turns:your-host:443?transport=tcp`. |
-| `TURN_USERNAME` | `vesper` | No | TURN username |
+| `TURN_PASSWORD` | — | **Yes** | Strong long-term credential password for the bundled TURN relay |
+| `TURN_SERVER_URL` | — | **Yes** (Compose) | Publicly resolvable TURN URL delivered to clients, for example `turn:turn.example.com:3478`. A `turns:` URL requires separately configured coturn certificates and TLS ingress. |
+| `TURN_EXTERNAL_IP` | — | **Yes** (Compose) | Public address coturn advertises for relayed candidates; forward TCP/UDP 3478 and UDP 50000–50100 to it. |
+| `TURN_USERNAME` | `vesper` | No | Long-term TURN credential username |
+| `TURN_REALM` | `vesper` | No | TURN authentication realm |
 | `VOICE_ICE_TRANSPORT_POLICY` | `relay` if TURN is set, else `all` | No | ICE transport policy: `all` (STUN + TURN) or `relay` (TURN only) |
 
 ### File Storage
@@ -255,6 +271,8 @@ All variables are set in `.env` (loaded by Docker Compose) or exported in the sh
 | Variable | Default | Required | Description |
 |----------|---------|----------|-------------|
 | `FILE_EXPIRY_DAYS` | `30` | No | Number of days uploaded files are retained before cleanup |
+| `UPLOAD_DIR` | `/var/lib/vesper/uploads` (prod) | No | Stable upload path. Docker mounts the named `uploads` volume here. |
+| `MAX_UPLOAD_BYTES_PER_USER` | `5368709120` (5 GiB) | No | Hard per-user aggregate quota across linked and pending attachments; must be at least 50 MiB. Upload creation is additionally limited to 20 requests per hour per user. |
 
 ### Web Client (Docker)
 
@@ -262,8 +280,8 @@ These apply to the `web` service in Docker Compose.
 
 | Variable | Default | Required | Description |
 |----------|---------|----------|-------------|
-| `API_URL` | — | No | Full URL to the API server (e.g. `https://vesper.yourdomain.com`). Injected into the web client at container startup. When empty, the client connects to the same host it's served from. |
-| `WEB_PORT` | `8080` | No | External port the web client is served on |
+| `WEB_PORT` | `8080` | No | External port the web client is served on. The nginx image proxies API and WebSocket traffic to the app service so browser traffic remains same-origin. |
+| `PUBLIC_SCHEME` | `http` | No | Scheme at the trusted public edge. Set to `https` when TLS terminates at a reverse proxy. The web container ignores caller-supplied forwarding headers. |
 
 ### Development & Testing
 
@@ -295,6 +313,10 @@ The maximum upload size is **50 MiB**, hardcoded in two places:
 | `server/lib/vesper/chat/file_storage.ex` → `max_upload_size/0` | Application-level limit checked by `AttachmentController`. Returns a descriptive error to the client. |
 
 To change the limit, update **both** values. They must match — if `Plug.Parsers` is lower than `max_upload_size`, uploads between the two values will fail silently with a 413 and no CORS headers. The server must be rebuilt after changing either value.
+
+## Security and release operations
+
+Report vulnerabilities through [SECURITY.md](SECURITY.md). Operators and release maintainers should follow the [public-beta release runbook](docs/RELEASE-RUNBOOK.md) for signing, migration rehearsal, canarying, monitoring, and rollback.
 
 ## Contributing
 

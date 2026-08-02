@@ -12,28 +12,45 @@ defmodule Vesper.Migrator do
   end
 
   def status do
-    Application.get_env(:vesper, :migration_status, :pending)
+    case Application.get_env(:vesper, :migration_status, :pending) do
+      :unchecked -> checked_schema_status()
+      status -> status
+    end
+  end
+
+  defp checked_schema_status do
+    path = Application.app_dir(:vesper, "priv/repo/migrations")
+
+    if Enum.any?(
+         Ecto.Migrator.migrations(Vesper.Repo, path, skip_table_creation: true),
+         fn
+           {:down, _version, _name} -> true
+           _migration -> false
+         end
+       ) do
+      :pending
+    else
+      :ok
+    end
+  rescue
+    _ -> :failed
   end
 
   @impl true
   def init(_) do
     Application.put_env(:vesper, :migration_status, :running)
-    {:ok, %{}, {:continue, :migrate}}
-  end
 
-  @impl true
-  def handle_continue(:migrate, state) do
     case run_migrations() do
       :ok ->
         Application.put_env(:vesper, :migration_status, :ok)
         Logger.info("Migrations completed successfully")
+        {:ok, %{}}
 
       {:error, reason} ->
         Application.put_env(:vesper, :migration_status, :failed)
         Logger.error("Migrations failed: #{inspect(reason)}")
+        {:stop, {:migration_failed, reason}}
     end
-
-    {:noreply, state}
   end
 
   defp run_migrations do

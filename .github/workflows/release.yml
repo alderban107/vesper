@@ -1,68 +1,509 @@
 name: Build & Release
 
 on:
-  release:
-    types: [created]
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to attach assets to (e.g. v0.1.0)'
+        description: 'Existing release tag to build (for example v0.2.0)'
         required: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  protocol-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:17@sha256:a426e44bac0b759c95894d68e1a0ac03ecc20b619f498a91aae373bf06d8508d
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      MIX_ENV: test
+      TEST_DB_HOST: 127.0.0.1
+      TEST_DB_PORT: "5432"
+      TEST_DB_USER: postgres
+      TEST_DB_PASS: postgres
+      VESPER_SDK_TEST_DB_HOST: 127.0.0.1
+      VESPER_SDK_TEST_DB_PORT: "5432"
+      VESPER_SDK_TEST_DB_USER: postgres
+      VESPER_SDK_TEST_DB_PASS: postgres
+      VESPER_PERF_MULTIPLIER: "5"
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Verify protocol-gate source identity
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          expected="v$(node -p "require('./client/package.json').version")"
+          test "$RELEASE_TAG" = "$expected"
+          test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+        with:
+          elixir-version: "1.18"
+          otp-version: "27"
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install protocol dependencies
+        run: |
+          npm ci
+          cd server
+          mix deps.get
+
+      - name: Audit server and SDK dependencies
+        run: |
+          npm audit --omit=dev
+          cd server
+          mix hex.audit
+          mix deps.audit
+
+      - name: Compile and test server
+        working-directory: server
+        run: |
+          mix compile --warnings-as-errors
+          mix ecto.create --quiet
+          mix ecto.migrate --quiet
+          ./scripts/verify-history-upgrade.sh
+          mix test
+
+      - name: Run strict SDK and live protocol gates
+        run: |
+          npm --prefix sdk run typecheck
+          npm --prefix sdk run test:integration
+
+  browser-gate:
+    needs: protocol-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      MIX_ENV: test
+      TEST_DB_HOST: 127.0.0.1
+      TEST_DB_PORT: "55432"
+      TEST_DB_USER: vesper_sdk
+      TEST_DB_PASS: vesper_sdk
+      VESPER_SDK_TEST_DB_IMAGE: postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Verify browser-gate source identity
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          expected="v$(node -p "require('./client/package.json').version")"
+          test "$RELEASE_TAG" = "$expected"
+          test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+        with:
+          elixir-version: "1.18"
+          otp-version: "27"
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Cache Elixir dependencies
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            server/deps
+            server/_build
+          key: release-e2e-mix-${{ runner.os }}-${{ hashFiles('server/mix.lock') }}
+          restore-keys: release-e2e-mix-${{ runner.os }}-
+
+      - name: Install and compile browser-gate dependencies
+        run: |
+          cd client
+          npm ci --workspaces=false
+          node ./scripts/link-sdk-node-modules.mjs
+          cd ../server
+          mix deps.get
+          mix compile --warnings-as-errors
+
+      - name: Rebuild native Electron dependencies
+        working-directory: client
+        run: npx electron-builder install-app-deps
+
+      - name: Build Electron boundary and install Chromium
+        working-directory: client
+        run: |
+          node ./scripts/ensure-rollup-native.mjs
+          npm run build
+          npx playwright install chromium --with-deps
+
+      - name: Pre-pull pinned PostgreSQL image
+        run: docker pull "$VESPER_SDK_TEST_DB_IMAGE"
+
+      - name: Run retained browser and Electron invariants
+        working-directory: client
+        run: >-
+          xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24"
+          npx playwright test -c e2e/playwright.config.ts
+          --project=p1-extended --project=p2-reliability
+
+      - name: Upload browser-gate failure evidence
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-e2e-artifacts
+          path: |
+            client/e2e/artifacts/
+            client/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
   build:
+    needs: [protocol-gate, browser-gate]
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           - os: ubuntu-latest
             platform: linux
-            args: --linux
+            args: --linux --x64
           - os: macos-latest
             platform: mac
-            args: --mac
+            args: --mac --x64 --arm64
           - os: windows-latest
             platform: win
-            args: --win
+            args: --win --x64
 
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          node-version: 22
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
           cache: npm
           cache-dependency-path: client/package-lock.json
 
+      - name: Verify tag matches the packaged version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          expected="v$(node -p "require('./client/package.json').version")"
+          test "$RELEASE_TAG" = "$expected" || {
+            echo "Release tag $RELEASE_TAG does not match client version $expected" >&2
+            exit 1
+          }
+          test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG" || {
+            echo "Dispatch this workflow from the $RELEASE_TAG tag ref so provenance matches the built commit" >&2
+            exit 1
+          }
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Require native signing credentials
+        if: matrix.platform != 'linux'
+        shell: bash
+        env:
+          CSC_LINK: ${{ matrix.platform == 'mac' && secrets.MACOS_CSC_LINK || secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ matrix.platform == 'mac' && secrets.MACOS_CSC_KEY_PASSWORD || secrets.WINDOWS_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          test -n "$CSC_LINK" && test -n "$CSC_KEY_PASSWORD" || {
+            echo "Code-signing certificate secrets are required for ${{ matrix.platform }} releases" >&2
+            exit 1
+          }
+          if [ "${{ matrix.platform }}" = mac ]; then
+            test -n "$APPLE_ID" && test -n "$APPLE_APP_SPECIFIC_PASSWORD" && test -n "$APPLE_TEAM_ID" || {
+              echo "Apple notarization secrets are required for macOS releases" >&2
+              exit 1
+            }
+          fi
+
       - name: Install dependencies
         working-directory: client
-        run: npm ci
+        run: |
+          npm ci --workspaces=false
+          node ./scripts/link-sdk-node-modules.mjs
 
-      - name: Ensure Rollup native package
+      - name: Audit desktop and build dependencies
         working-directory: client
-        run: node ./scripts/ensure-rollup-native.mjs
+        run: npm audit --workspaces=false
+
+      - name: Unit tests and typecheck
+        working-directory: client
+        run: npm run test:unit && npm run typecheck
 
       - name: Build client
         working-directory: client
         run: npm run build
 
-      - name: Package
+      - name: Package signed artifacts
         working-directory: client
+        env:
+          CSC_LINK: ${{ matrix.platform == 'mac' && secrets.MACOS_CSC_LINK || secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ matrix.platform == 'mac' && secrets.MACOS_CSC_KEY_PASSWORD || secrets.WINDOWS_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npx electron-builder ${{ matrix.args }} --publish never
 
-      - name: Upload release assets
-        uses: softprops/action-gh-release@v2
+      - name: Verify macOS application signature
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: |
+          app_count=0
+          while IFS= read -r -d '' app_path; do
+            codesign --verify --deep --strict --verbose=2 "$app_path"
+            spctl --assess --type execute --verbose=2 "$app_path"
+            app_count=$((app_count + 1))
+          done < <(find client/dist -type d -name '*.app' -print0)
+          test "$app_count" -ge 2
+
+      - name: Verify Windows executable signatures
+        if: matrix.platform == 'win'
+        shell: pwsh
+        run: |
+          $executables = Get-ChildItem client/dist -Filter *.exe
+          if ($executables.Count -eq 0) { throw 'No Windows executables were produced' }
+          foreach ($file in $executables) {
+            $signature = Get-AuthenticodeSignature $file.FullName
+            if ($signature.Status -ne 'Valid') {
+              throw "Invalid Authenticode signature on $($file.Name): $($signature.Status)"
+            }
+          }
+
+      - name: Stage release artifacts
+        shell: bash
+        run: |
+          mkdir -p "release-${{ matrix.platform }}"
+          find client/dist -maxdepth 1 -type f \
+            \( -name '*.AppImage' -o -name '*.deb' -o -name '*.dmg' -o -name '*.zip' \
+               -o -name '*.exe' -o -name '*.yml' -o -name '*.yaml' -o -name '*.blockmap' \) \
+            -exec cp {} "release-${{ matrix.platform }}/" \;
+          test "$(find "release-${{ matrix.platform }}" -type f | wc -l)" -gt 0
+
+      - name: Upload verified build artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          tag_name: ${{ github.event.release.tag_name || inputs.tag }}
-          files: |
-            client/dist/*.AppImage
-            client/dist/*.deb
-            client/dist/*.dmg
-            client/dist/*.exe
+          name: vesper-${{ matrix.platform }}
+          path: release-${{ matrix.platform }}/
+          if-no-files-found: error
+          retention-days: 14
+
+  container-build:
+    needs: build
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+            image: app
+            context: ./server
+            dockerfile: ./server/Dockerfile
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            image: app
+            context: ./server
+            dockerfile: ./server/Dockerfile
+          - runner: ubuntu-latest
+            arch: amd64
+            image: web
+            context: .
+            dockerfile: ./client/Dockerfile.web
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            image: web
+            context: .
+            dockerfile: ./client/Dockerfile.web
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Verify container source identity
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push attested container candidate
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: ghcr.io/${{ github.repository }}-${{ matrix.image }}:candidate-${{ github.run_id }}-${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ inputs.tag }}
+          cache-from: type=gha,scope=release-${{ matrix.image }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.image }}-${{ matrix.arch }}
+
+  publish:
+    needs: [build, container-build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Verify publication source identity
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: vesper-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Verify release set and generate checksums
+        shell: bash
+        run: |
+          require_count() {
+            pattern="$1"
+            minimum="$2"
+            actual="$(find release-assets -maxdepth 1 -type f -name "$pattern" | wc -l)"
+            test "$actual" -ge "$minimum" || {
+              echo "Expected at least $minimum release assets matching $pattern; found $actual" >&2
+              exit 1
+            }
+          }
+          require_count '*.AppImage' 1
+          require_count '*.deb' 1
+          require_count '*.dmg' 2
+          require_count '*.zip' 2
+          require_count '*.exe' 2
+          require_count '*arm64*.dmg' 1
+          require_count '*arm64*.zip' 1
+          cd release-assets
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' \
+            | LC_ALL=C sort -z \
+            | xargs -0 sha256sum > SHA256SUMS
+          sha256sum --check SHA256SUMS
+
+      - name: Attest release provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: release-assets/*
+
+      - name: Create the complete draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            is_draft="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq .draft)"
+            test "$is_draft" = true || {
+              echo "Refusing to replace an already-public release" >&2
+              exit 1
+            }
+            gh release delete "$RELEASE_TAG" --yes
+          fi
+
+          gh release create "$RELEASE_TAG" release-assets/* \
+            --verify-tag \
+            --draft \
+            --generate-notes \
+            --title "Vesper $RELEASE_TAG"
+
+          local_count="$(find release-assets -maxdepth 1 -type f | wc -l)"
+          remote_count="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.assets | length')"
+          test "$local_count" = "$remote_count"
+
+      - name: Publish verified multi-architecture containers
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          release_version="${RELEASE_TAG#v}"
+          for image in app web; do
+            candidate_base="ghcr.io/${GITHUB_REPOSITORY}-${image}:candidate-${GITHUB_RUN_ID}"
+            for arch in amd64 arm64; do
+              docker buildx imagetools inspect "${candidate_base}-${arch}" >/dev/null
+            done
+            docker buildx imagetools create \
+              --tag "ghcr.io/${GITHUB_REPOSITORY}-${image}:${release_version}" \
+              "${candidate_base}-amd64" \
+              "${candidate_base}-arm64"
+            docker buildx imagetools inspect \
+              "ghcr.io/${GITHUB_REPOSITORY}-${image}:${release_version}" >/dev/null
+          done
+
+      - name: Make the verified release public
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: gh release edit "$RELEASE_TAG" --draft=false

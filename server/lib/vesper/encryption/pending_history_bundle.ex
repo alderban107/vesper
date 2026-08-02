@@ -10,6 +10,10 @@ defmodule Vesper.Encryption.PendingHistoryBundle do
     field :ciphertext, :string
     field :mls_epoch, :integer
     field :recipient_client_id, :string
+    field :request_id, Ecto.UUID
+    field :membership_generation, :integer
+    field :authorization_generation, Ecto.UUID
+    field :authorized_after_room_seq, :integer
 
     belongs_to :recipient, Vesper.Accounts.User
     belongs_to :sender, Vesper.Accounts.User
@@ -28,6 +32,10 @@ defmodule Vesper.Encryption.PendingHistoryBundle do
       :recipient_id,
       :recipient_client_id,
       :sender_id,
+      :request_id,
+      :membership_generation,
+      :authorization_generation,
+      :authorized_after_room_seq,
       :channel_id,
       :conversation_id
     ])
@@ -39,8 +47,21 @@ defmodule Vesper.Encryption.PendingHistoryBundle do
       :recipient_client_id,
       :sender_id
     ])
-    |> unique_constraint([:group_id, :recipient_id, :recipient_client_id, :sender_id],
-      name: :mls_pending_history_bundles_group_recipient_sender_index
+    |> validate_number(:mls_epoch, greater_than_or_equal_to: 0)
+    |> validate_optional_non_negative(:membership_generation)
+    |> validate_optional_non_negative(:authorized_after_room_seq)
+    |> unique_constraint(:request_id,
+      name: :mls_pending_history_bundles_bound_request_index
     )
+    |> unique_constraint([:group_id, :recipient_id, :recipient_client_id, :sender_id],
+      name: :mls_pending_history_bundles_unbound_recipient_sender_index
+    )
+  end
+
+  defp validate_optional_non_negative(changeset, field) do
+    case get_field(changeset, field) do
+      nil -> changeset
+      _value -> validate_number(changeset, field, greater_than_or_equal_to: 0)
+    end
   end
 end

@@ -1,7 +1,7 @@
 defmodule VesperWeb.AttachmentController do
   use VesperWeb, :controller
   alias Vesper.Chat
-  alias Vesper.Chat.{Attachment, FileStorage}
+  alias Vesper.Chat.{Attachment, AttachmentBlobLock, FileStorage}
   alias Vesper.Servers
   alias Vesper.Repo
 
@@ -18,50 +18,129 @@ defmodule VesperWeb.AttachmentController do
     if file_size > max_size do
       conn |> put_status(:request_entity_too_large) |> json(%{error: "file too large"})
     else
-      case FileStorage.store(upload.path, upload.filename) do
-        {:ok, storage_key} ->
-          expiry_days = Application.get_env(:vesper, :file_expiry_days, 30)
+      expiry_days = Application.get_env(:vesper, :file_expiry_days, 30)
 
-          expires_at =
-            DateTime.utc_now()
-            |> DateTime.add(expiry_days * 86_400, :second)
-            |> DateTime.truncate(:second)
+      expires_at =
+        DateTime.utc_now()
+        |> DateTime.add(expiry_days * 86_400, :second)
+        |> DateTime.truncate(:second)
 
-          attrs = %{
-            filename: upload.filename,
-            content_type: upload.content_type,
-            size_bytes: file_size,
-            storage_key: storage_key,
-            encrypted: params["encrypted"] == "true",
-            expires_at: expires_at,
-            uploader_id: user.id
-          }
+      attrs = %{
+        filename: upload.filename,
+        content_type: upload.content_type,
+        size_bytes: file_size,
+        storage_key: "pending-validation",
+        encrypted: params["encrypted"] == "true",
+        expires_at: expires_at,
+        uploader_id: user.id
+      }
 
-          # Link to message if provided (optional now)
-          attrs =
-            case params["message_id"] do
-              nil -> attrs
-              id -> Map.put(attrs, :message_id, id)
-            end
+      # Uploads are always created unlinked. Message creation claims the
+      # uploader-owned attachment IDs atomically; accepting message_id here
+      # would let a caller mutate another sender's existing message.
+      validation = Attachment.changeset(%Attachment{}, attrs)
 
-          case %Attachment{} |> Attachment.changeset(attrs) |> Repo.insert() do
-            {:ok, attachment} ->
-              conn |> put_status(:created) |> json(%{attachment: attachment_json(attachment)})
+      if validation.valid? do
+        case store_upload_with_quota(upload, attrs) do
+          {:ok, attachment} ->
+            conn
+            |> put_status(:created)
+            |> json(%{attachment: attachment_json(attachment)})
 
-            {:error, _changeset} ->
-              conn
-              |> put_status(:unprocessable_entity)
-              |> json(%{error: "could not save attachment"})
-          end
+          {:error, :upload_quota_exceeded} ->
+            conn
+            |> put_status(:request_entity_too_large)
+            |> json(%{error: "upload quota exceeded"})
 
-        {:error, _reason} ->
-          conn |> put_status(:internal_server_error) |> json(%{error: "could not store file"})
+          {:error, :invalid_metadata} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: "could not save attachment"})
+
+          {:error, :storage_failure} ->
+            conn
+            |> put_status(:internal_server_error)
+            |> json(%{error: "could not store file"})
+        end
+      else
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "invalid attachment metadata"})
       end
     end
   end
 
   def create(conn, _params) do
     conn |> put_status(:bad_request) |> json(%{error: "file is required"})
+  end
+
+  defp store_upload_with_quota(upload, attrs) do
+    case FileStorage.store(upload.path, upload.filename) do
+      {:ok, storage_key} ->
+        result =
+          try do
+            AttachmentBlobLock.with_lock(storage_key, fn ->
+              # The first store discovers the backend key. Repeat it under the
+              # key lock so a concurrent rejected upload or expiry cleanup
+              # cannot delete this blob immediately before our row commits.
+              case FileStorage.store(upload.path, upload.filename) do
+                {:ok, ^storage_key} -> :ok
+                _error -> Repo.rollback(:storage_failure)
+              end
+
+              # Quota writes for one uploader are serialized inside the same
+              # transaction as the attachment row.
+              Ecto.Adapters.SQL.query!(
+                Repo,
+                "SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))",
+                ["attachment-uploader:" <> attrs.uploader_id]
+              )
+
+              %{rows: [[used_bytes]]} =
+                Ecto.Adapters.SQL.query!(
+                  Repo,
+                  "SELECT COALESCE(SUM(size_bytes), 0)::bigint FROM attachments WHERE uploader_id::text = $1",
+                  [attrs.uploader_id]
+                )
+
+              quota = Application.fetch_env!(:vesper, :max_upload_bytes_per_user)
+
+              if used_bytes + attrs.size_bytes > quota do
+                AttachmentBlobLock.delete_if_unreferenced_locked(storage_key)
+                Repo.rollback(:upload_quota_exceeded)
+              end
+
+              attrs
+              |> Map.put(:storage_key, storage_key)
+              |> then(&Attachment.changeset(%Attachment{}, &1))
+              |> Repo.insert()
+              |> case do
+                {:ok, attachment} ->
+                  attachment
+
+                {:error, _changeset} ->
+                  AttachmentBlobLock.delete_if_unreferenced_locked(storage_key)
+                  Repo.rollback(:invalid_metadata)
+              end
+            end)
+          rescue
+            error ->
+              AttachmentBlobLock.delete_if_unreferenced(storage_key)
+              reraise error, __STACKTRACE__
+          end
+
+        case result do
+          {:ok, attachment} ->
+            {:ok, attachment}
+
+          {:error, reason} ->
+            AttachmentBlobLock.delete_if_unreferenced(storage_key)
+            {:error, reason}
+        end
+
+      {:error, _reason} ->
+        {:error, :storage_failure}
+    end
   end
 
   def show(conn, %{"id" => id}) do
@@ -107,8 +186,8 @@ defmodule VesperWeb.AttachmentController do
     user_id == uploader_id
   end
 
-  # Legacy attachments without uploader_id — allow any authenticated user
-  defp authorized_for_attachment?(_user_id, %{message: nil}), do: true
+  # Unlinked legacy rows have no attributable owner and therefore fail closed.
+  defp authorized_for_attachment?(_user_id, %{message: nil}), do: false
 
   defp authorized_for_attachment?(user_id, %{message: message}) do
     cond do

@@ -11,10 +11,16 @@ const DEFAULT_SERVER_URL = (() => {
 const SESSION_NOTICE_KEY = 'vesperSessionNotice'
 const SESSION_NOTICE_EVENT = 'vesper:session-notice'
 
+export type DelegatedRefreshResult =
+  | { status: 'ok'; accessToken: string }
+  | { status: 'invalid' }
+  | { status: 'retryable' }
+
 export interface SessionStore {
   getServerUrl(): string
   getAccessToken(): string | null
   getRefreshToken(): string | null
+  refreshAccessToken?(): Promise<DelegatedRefreshResult>
   setTokens(accessToken: string, refreshToken: string): void
   clearTokens(): void
   setSessionNotice(notice: SessionNotice): void
@@ -280,8 +286,12 @@ export class VesperHttpClient {
     }
 
     let response = await this.performFetch(url, { ...options, headers })
+    const canRefresh =
+      token !== null ||
+      this.getRefreshToken() !== null ||
+      (!!this.sessionStore.refreshAccessToken && !path.startsWith('/api/v1/auth/'))
 
-    if (response.status === 401 && token) {
+    if (response.status === 401 && canRefresh) {
       const newToken = await this.refreshAccessToken()
       if (newToken) {
         headers['Authorization'] = `Bearer ${newToken}`
@@ -302,8 +312,12 @@ export class VesperHttpClient {
     }
 
     let response = await this.performFetch(url, { method: 'POST', headers, body: formData })
+    const canRefresh =
+      token !== null ||
+      this.getRefreshToken() !== null ||
+      !!this.sessionStore.refreshAccessToken
 
-    if (response.status === 401 && token) {
+    if (response.status === 401 && canRefresh) {
       const newToken = await this.refreshAccessToken()
       if (newToken) {
         headers['Authorization'] = `Bearer ${newToken}`
@@ -324,6 +338,34 @@ export class VesperHttpClient {
 
   private async refreshAccessToken(): Promise<string | null> {
     if (this.refreshRequest) {
+      return this.refreshRequest
+    }
+
+    const delegatedRefresh = this.sessionStore.refreshAccessToken
+    if (delegatedRefresh) {
+      this.refreshRequest = (async () => {
+        try {
+          const result = await delegatedRefresh.call(this.sessionStore)
+          if (result.status === 'ok') {
+            this.clearSessionNotice()
+            return result.accessToken
+          }
+          if (result.status === 'retryable') {
+            return null
+          }
+
+          this.clearTokens()
+          this.setSessionNotice({
+            title: 'Sign in again on this device',
+            message: 'This session can no longer be renewed. Please sign in again.'
+          })
+          return null
+        } catch {
+          return null
+        } finally {
+          this.refreshRequest = null
+        }
+      })()
       return this.refreshRequest
     }
 

@@ -321,5 +321,30 @@ defmodule VesperWeb.MlsChannelTest do
       assert welcome.recipient_id == peer.id
       assert welcome.recipient_client_id == "voice-device-a"
     end
+
+    test "rejects a malformed history request id without terminating the channel" do
+      owner = insert_user()
+      recipient = insert_user()
+      {:ok, server} = Servers.create_server(owner, %{name: "history id validation"})
+      {:ok, _server} = Servers.join_server(recipient, server.invite_code)
+      channel = Enum.find(server.channels, &(&1.type == "text"))
+
+      socket = connect_user_socket(owner, "history-sponsor")
+      {:ok, _reply, socket} = subscribe_and_join(socket, "chat:channel:#{channel.id}")
+
+      ref =
+        push(socket, "mls_history_bundle", %{
+          "ciphertext" => "opaque",
+          "mls_epoch" => 1,
+          "recipient_id" => recipient.id,
+          "recipient_device_id" => "recipient-device",
+          "request_id" => "not-a-uuid",
+          "membership_generation" => 1,
+          "idempotency_key" => "malformed-history-request-id"
+        })
+
+      assert_reply ref, :error, %{reason: "invalid request_id"}
+      assert Process.alive?(socket.channel_pid)
+    end
   end
 end

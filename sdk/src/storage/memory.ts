@@ -82,6 +82,7 @@ export class MemoryStorage implements CryptoDbApi {
       repair_failure_count: number
       repair_last_error: string | null
       repair_updated_at: string | null
+      room_data_keys: EncryptedRoomDataKeyStorageRecord[]
       control_intents: ControlIntentStorageRecord[]
     }
   >()
@@ -237,6 +238,7 @@ export class MemoryStorage implements CryptoDbApi {
     repair_failure_count: number
     repair_last_error: string | null
     repair_updated_at: string | null
+    room_data_keys: EncryptedRoomDataKeyStorageRecord[]
     control_intents: ControlIntentStorageRecord[]
   }> {
     const groupState = this.groupStates.get(groupId)
@@ -255,6 +257,7 @@ export class MemoryStorage implements CryptoDbApi {
       repair_failure_count: metadata?.repair_failure_count ?? 0,
       repair_last_error: metadata?.repair_last_error ?? null,
       repair_updated_at: metadata?.repair_updated_at ?? null,
+      room_data_keys: (metadata?.room_data_keys ?? []).map((record) => ({ ...record })),
       control_intents: (metadata?.control_intents ?? []).map((intent) => ({ ...intent }))
     }
   }
@@ -279,6 +282,7 @@ export class MemoryStorage implements CryptoDbApi {
       repair_failure_count?: number
       repair_last_error?: string | null
       repair_updated_at?: string | null
+      room_data_keys?: EncryptedRoomDataKeyStorageRecord[]
       control_intents?: ControlIntentStorageRecord[]
     }
   ): Promise<void> {
@@ -305,6 +309,7 @@ export class MemoryStorage implements CryptoDbApi {
       repair_failure_count: checkpoint.repair_failure_count ?? 0,
       repair_last_error: checkpoint.repair_last_error ?? null,
       repair_updated_at: checkpoint.repair_updated_at ?? null,
+      room_data_keys: (checkpoint.room_data_keys ?? []).map((record) => ({ ...record })),
       control_intents: (checkpoint.control_intents ?? []).map((intent) => ({ ...intent }))
     })
   }

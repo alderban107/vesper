@@ -1,7 +1,5 @@
 defmodule VesperWeb.ChatChannel do
   use Phoenix.Channel
-  require Logger
-
   alias Vesper.Servers
   alias Vesper.Servers.{Channel, MemberCache, Permissions, PermissionsCache}
   alias Vesper.Chat
@@ -70,6 +68,7 @@ defmodule VesperWeb.ChatChannel do
          socket.assigns.channel_id
        ) do
       with {:ok, decoded} <- safe_decode64(ciphertext),
+           {:ok, history_signing_public_key} <- decode_history_signing_key(params),
            {:ok, relations} <-
              resolve_message_relations(params, :channel_id, socket.assigns.channel_id) do
         attrs =
@@ -79,6 +78,8 @@ defmodule VesperWeb.ChatChannel do
             mls_epoch: epoch,
             encryption_scheme: Map.get(params, "encryption_scheme", "mls"),
             encryption_group_id: Map.get(params, "encryption_group_id"),
+            history_signing_public_key: history_signing_public_key,
+            history_revision: 0,
             channel_id: socket.assigns.channel_id,
             sender_id: socket.assigns.user_id,
             parent_message_id: relations.parent_message_id,
@@ -391,6 +392,8 @@ defmodule VesperWeb.ChatChannel do
            epoch,
            Map.get(params, "encryption_scheme", "mls"),
            Map.get(params, "encryption_group_id"),
+           Map.get(params, "history_signing_public_key"),
+           Map.get(params, "history_revision"),
            socket
          ) do
       {:ok, payload} ->

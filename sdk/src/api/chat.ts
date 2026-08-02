@@ -180,6 +180,8 @@ export interface VesperMessage {
   }>
   edited_at?: string | null
   client_nonce?: string | null
+  history_signing_public_key?: string | null
+  history_revision?: number
 }
 
 export interface VesperServerRole {

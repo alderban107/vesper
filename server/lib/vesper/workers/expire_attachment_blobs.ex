@@ -12,7 +12,7 @@ defmodule Vesper.Workers.ExpireAttachmentBlobs do
   require Logger
 
   alias Vesper.Repo
-  alias Vesper.Chat.{Attachment, FileStorage}
+  alias Vesper.Chat.{Attachment, AttachmentBlobLock}
 
   @impl Oban.Worker
   def perform(_job) do
@@ -50,23 +50,12 @@ defmodule Vesper.Workers.ExpireAttachmentBlobs do
       )
       |> Repo.delete_all()
 
-    # Count remaining references for each key in a single grouped query
-    referenced_keys =
-      from(a in Attachment,
-        where: a.storage_key in ^all_keys,
-        group_by: a.storage_key,
-        select: a.storage_key
-      )
-      |> Repo.all()
-      |> MapSet.new()
-
-    # Delete blobs for keys with zero remaining attachment references
+    # Re-check each content-addressed blob under the same advisory lock used
+    # by upload publication. A concurrent identical upload either commits its
+    # reference first or re-stores the blob after this cleanup releases.
     blob_count =
-      all_keys
-      |> Enum.reject(&MapSet.member?(referenced_keys, &1))
-      |> Enum.reduce(0, fn key, acc ->
-        FileStorage.delete(key)
-        acc + 1
+      Enum.count(all_keys, fn key ->
+        AttachmentBlobLock.delete_if_unreferenced(key) == :deleted
       end)
 
     total = expired_count + orphan_count

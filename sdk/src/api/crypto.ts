@@ -196,6 +196,8 @@ export async function fetchPendingHistoryRequests(
     requester_username: string | null
     requester_client_id: string | null
     membership_generation: number
+    authorization_generation: string
+    authorized_after_room_seq: number
   }>
 > {
   const res = await httpClient.apiFetch(
@@ -233,8 +235,12 @@ export async function fetchPendingHistoryBundles(
 ): Promise<
   Array<{
     id: string
+    request_id: string | null
     ciphertext: string
     mls_epoch: number
+    membership_generation: number | null
+    authorization_generation: string | null
+    authorized_after_room_seq: number | null
     recipient_id: string
     recipient_client_id: string | null
     sender_id: string

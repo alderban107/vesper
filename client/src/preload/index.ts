@@ -1,5 +1,14 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
+import type { AuthRefreshResult } from '../shared/authSession'
+
+interface EncryptedRoomDataKeyStorageRecord {
+  room_id: string
+  topology_generation: number
+  epoch: number
+  ciphertext: string
+  nonce: string
+}
 
 interface ControlIntentStorageRecord {
   version: 1
@@ -85,6 +94,7 @@ const cryptoDbApi = {
       repair_failure_count?: number
       repair_last_error?: string | null
       repair_updated_at?: string | null
+      room_data_keys?: EncryptedRoomDataKeyStorageRecord[]
       control_intents?: ControlIntentStorageRecord[]
     }
   ) =>
@@ -153,6 +163,15 @@ const cryptoDbApi = {
     ipcRenderer.invoke('cryptoDb:deletePendingMessageSend', clientNonce)
 }
 
+const authSessionApi = {
+  setRefreshToken: (refreshToken: string, serverUrl: string): boolean =>
+    ipcRenderer.sendSync('authSession:setRefreshToken', refreshToken, serverUrl) === true,
+  clearRefreshToken: (): boolean =>
+    ipcRenderer.sendSync('authSession:clearRefreshToken') === true,
+  refreshAccessToken: (serverUrl: string): Promise<AuthRefreshResult> =>
+    ipcRenderer.invoke('authSession:refreshAccessToken', serverUrl)
+}
+
 const notificationApi = {
   showMessageNotification: (data: {
     title: string
@@ -173,5 +192,6 @@ const linkPreviewApi = {
 
 contextBridge.exposeInMainWorld('electron', electronAPI)
 contextBridge.exposeInMainWorld('cryptoDb', cryptoDbApi)
+contextBridge.exposeInMainWorld('authSession', authSessionApi)
 contextBridge.exposeInMainWorld('notifications', notificationApi)
 contextBridge.exposeInMainWorld('linkPreview', linkPreviewApi)

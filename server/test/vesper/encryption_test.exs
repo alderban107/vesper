@@ -748,6 +748,8 @@ defmodule Vesper.EncryptionTest do
                  requester_username: target.username,
                  requester_client_id: "target-a",
                  membership_generation: 7,
+                 authorization_generation: Ecto.UUID.generate(),
+                 authorized_after_room_seq: 0,
                  channel_id: channel.id
                })
 

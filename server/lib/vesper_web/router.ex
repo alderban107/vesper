@@ -29,9 +29,14 @@ defmodule VesperWeb.Router do
     plug(VesperWeb.Plugs.RateLimit, action: :refresh)
   end
 
-  # Health check — no auth, no pipeline
+  pipeline :rate_limit_upload do
+    plug(VesperWeb.Plugs.RateLimit, action: :upload)
+  end
+
+  # Health is public for orchestrators; metrics require a dedicated bearer token.
   scope "/", VesperWeb do
     get("/health", HealthController, :check)
+    get("/metrics", MetricsController, :show)
   end
 
   # Public auth routes (rate-limited)
@@ -155,7 +160,6 @@ defmodule VesperWeb.Router do
     post("/sync/scopes", ScopeSyncController, :create)
 
     # Attachments
-    post("/attachments", AttachmentController, :create)
     get("/attachments/:id", AttachmentController, :show)
 
     # User search
@@ -163,6 +167,11 @@ defmodule VesperWeb.Router do
 
     # Voice/WebRTC runtime config
     get("/voice/config", VoiceController, :config)
+  end
+
+  scope "/api/v1", VesperWeb do
+    pipe_through([:api, :authenticated, :rate_limit_upload])
+    post("/attachments", AttachmentController, :create)
   end
 
   scope "/api/v1", VesperWeb do
@@ -213,6 +222,7 @@ defmodule VesperWeb.Router do
     # Fenced room data-key coordination
     get("/room-key-epochs/:scope_id/material", RoomKeyEpochController, :material)
     get("/room-key-epochs/:scope_id/active", RoomKeyEpochController, :active)
+    get("/room-key-epochs/:scope_id/:epoch", RoomKeyEpochController, :show)
     post("/room-key-epochs/:scope_id/prepare", RoomKeyEpochController, :prepare)
     post("/room-key-epoch/:epoch_id/claim", RoomKeyEpochController, :claim)
     post("/room-key-epoch/:epoch_id/renew", RoomKeyEpochController, :renew)

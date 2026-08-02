@@ -1,5 +1,6 @@
 defmodule Vesper.Testing.ScaleFixture do
   alias Vesper.Accounts.{Device, User}
+  alias Vesper.Encryption.RoomHistoryAuthorization
   alias Vesper.Repo
   alias Vesper.Runtime.Room
   alias Vesper.Servers.{Channel, Membership, Server}
@@ -28,14 +29,16 @@ defmodule Vesper.Testing.ScaleFixture do
 
     password = Map.get(attrs, :password) || Map.get(attrs, "password") || @default_password
     now = DateTime.utc_now() |> DateTime.truncate(:second)
+    activity_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
     password_hash = Argon2.hash_pwd_salt(password)
 
     owner = owner_fixture(label, nonce, password, password_hash, now)
     server = server_fixture(owner, label, nonce, now)
     channels = channel_fixtures(server.id, label, nonce, channel_count, now)
-    rooms = room_fixtures(server.id, channels, now)
+    rooms = room_fixtures(server.id, channels, now, activity_at)
     users = user_fixtures(label, nonce, user_count, password, password_hash, secondary_every, now)
     memberships = membership_fixtures(server.id, owner, users, now)
+    history_authorizations = history_authorization_fixtures(rooms, memberships, now)
 
     Repo.transaction(fn ->
       Repo.insert!(struct(User, owner.user))
@@ -47,6 +50,7 @@ defmodule Vesper.Testing.ScaleFixture do
       insert_all_in_chunks(Membership, memberships)
       insert_all_in_chunks(Channel, channels)
       insert_all_in_chunks(Room, rooms)
+      insert_all_in_chunks(RoomHistoryAuthorization, history_authorizations)
     end)
 
     %{
@@ -142,9 +146,10 @@ defmodule Vesper.Testing.ScaleFixture do
     end)
   end
 
-  defp room_fixtures(server_id, channels, now) do
+  defp room_fixtures(server_id, channels, now, activity_at) do
     Enum.map(channels, fn channel ->
       %{
+        activity_at: activity_at,
         channel_id: channel.id,
         conversation_id: nil,
         current_seq: 0,
@@ -191,7 +196,7 @@ defmodule Vesper.Testing.ScaleFixture do
       %{
         primary_device: %{
           id: Ecto.UUID.generate(),
-          approval_method: "registration",
+          approval_method: "trusted_device",
           client_id: primary_device_id,
           inserted_at: now,
           last_seen_at: now,
@@ -237,6 +242,20 @@ defmodule Vesper.Testing.ScaleFixture do
       end)
 
     [owner_membership | user_memberships]
+  end
+
+  defp history_authorization_fixtures(rooms, memberships, now) do
+    for room <- rooms, membership <- memberships do
+      %{
+        authorization_generation: Ecto.UUID.generate(),
+        authorized_after_room_seq: 0,
+        id: Ecto.UUID.generate(),
+        inserted_at: now,
+        room_id: room.id,
+        updated_at: now,
+        user_id: membership.user_id
+      }
+    end
   end
 
   defp device_entries(user_fixture) do

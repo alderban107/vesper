@@ -346,6 +346,12 @@ defmodule VesperWeb.ScopeSyncController do
       channel_id: message.channel_id,
       conversation_id: message.conversation_id,
       client_nonce: message.client_nonce,
+      history_signing_public_key:
+        if(is_binary(message.history_signing_public_key),
+          do: Base.encode64(message.history_signing_public_key),
+          else: nil
+        ),
+      history_revision: message.history_revision,
       sender_id: message.sender_id,
       sender: sender_json(message.sender),
       expires_at: message.expires_at,

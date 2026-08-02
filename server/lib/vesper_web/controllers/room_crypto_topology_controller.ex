@@ -30,6 +30,7 @@ defmodule VesperWeb.RoomCryptoTopologyController do
     with {:ok, room} <- authorized_room(user.id, scope_id),
          :ok <- authorize_migration(user.id, room),
          {:ok, mode} <- parse_mode(params["mode"]),
+         :ok <- authorize_topology_mutation(mode),
          {:ok, target_size} <- parse_target_size(params["target_cohort_size"]),
          request_id when is_binary(request_id) and byte_size(request_id) in 8..128 <-
            params["request_id"],
@@ -52,6 +53,9 @@ defmodule VesperWeb.RoomCryptoTopologyController do
 
     with {:ok, room} <- authorized_room(user.id, scope_id),
          :ok <- authorize_migration(user.id, room),
+         {:ok, prepared_resolution} <-
+           Encryption.resolve_room_topology_generation(room.id, topology_id, user.id),
+         :ok <- authorize_topology_mutation(prepared_resolution.mode),
          {:ok, _appended} <- Encryption.append_room_topology_cutover(room.id, topology_id),
          {:ok, _active} <- Encryption.finalize_room_topology_cutover(room.id, topology_id),
          {:ok, resolution} <- Encryption.resolve_room_topology(room.id, user.id) do
@@ -84,6 +88,7 @@ defmodule VesperWeb.RoomCryptoTopologyController do
     with {:ok, room} <- authorized_room(user.id, scope_id),
          :ok <- authorize_empty_room_cutover(user.id, room),
          {:ok, mode} <- parse_mode(params["mode"]),
+         :ok <- authorize_topology_mutation(mode),
          {:ok, target_size} <- parse_target_size(params["target_cohort_size"]),
          {:ok, topology} <- Encryption.prepare_room_topology(room.id, mode, target_size),
          {:ok, _active} <- Encryption.activate_room_topology(topology.id, room.current_seq),
@@ -101,6 +106,9 @@ defmodule VesperWeb.RoomCryptoTopologyController do
 
       {:error, :migration_required} ->
         conn |> put_status(:conflict) |> json(%{error: "populated room requires migration"})
+
+      {:error, :multi_cohort_mutations_disabled} ->
+        conn |> put_status(:conflict) |> json(%{error: "multi-cohort mutation is disabled"})
 
       {:error, :not_found} ->
         conn |> put_status(:not_found) |> json(%{error: "scope not found"})
@@ -166,6 +174,16 @@ defmodule VesperWeb.RoomCryptoTopologyController do
       true -> :ok
     end
   end
+
+  defp authorize_topology_mutation(:multi_cohort) do
+    if Application.get_env(:vesper, :multi_cohort_topology_mutations_enabled, false) do
+      :ok
+    else
+      {:error, :multi_cohort_mutations_disabled}
+    end
+  end
+
+  defp authorize_topology_mutation(_mode), do: :ok
 
   defp parse_mode("single"), do: {:ok, :single}
   defp parse_mode("batched_single"), do: {:ok, :batched_single}

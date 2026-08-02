@@ -13,4 +13,5 @@ client/test-results/
 client/playwright-report/
 sdk/node_modules/
 sdk/dist/
+sdk/wasm/target/
 **/.env*

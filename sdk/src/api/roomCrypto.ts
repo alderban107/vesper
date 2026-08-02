@@ -393,6 +393,29 @@ export async function reportRoomKeyEpochRepair(
   }
 }
 
+export async function fetchRoomKeyEpoch(
+  scopeId: string,
+  epoch: number,
+  httpClient: VesperHttpClient = getDefaultHttpClient()
+): Promise<RoomKeyEpochRecord | null> {
+  if (!Number.isSafeInteger(epoch) || epoch < 0) {
+    throw new Error('Room-key epoch must be a non-negative safe integer')
+  }
+
+  const response = await httpClient.apiFetch(
+    `/api/v1/room-key-epochs/${encodeURIComponent(scopeId)}/${epoch}`
+  )
+  if (response.status === 404) {
+    return null
+  }
+  if (!response.ok) {
+    throw new Error(`Could not fetch room-key epoch ${epoch}: ${response.status}`)
+  }
+
+  const body = (await response.json()) as { room_key_epoch: RoomKeyEpochWire }
+  return decodeRoomKeyEpoch(body.room_key_epoch)
+}
+
 export async function fetchActiveRoomKeyEpoch(
   scopeId: string,
   httpClient: VesperHttpClient = getDefaultHttpClient()

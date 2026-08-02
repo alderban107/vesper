@@ -32,5 +32,26 @@ defmodule Vesper.Chat.Attachment do
       :uploader_id
     ])
     |> validate_required([:filename, :storage_key])
+    |> validate_length(:filename, min: 1, max: 255)
+    |> validate_length(:content_type, max: 255)
+    |> validate_length(:storage_key, min: 1, max: 512)
+    |> validate_number(:size_bytes, greater_than_or_equal_to: 0)
+    |> validate_safe_text(:filename)
+    |> validate_safe_text(:content_type)
+  end
+
+  defp validate_safe_text(changeset, field) do
+    validate_change(changeset, field, fn ^field, value ->
+      cond do
+        not String.valid?(value) ->
+          [{field, "must be valid UTF-8"}]
+
+        String.match?(value, ~r/[\x00-\x1F\x7F]/u) ->
+          [{field, "must not contain control characters"}]
+
+        true ->
+          []
+      end
+    end)
   end
 end

@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react'
 import { resolve } from 'path'
 import { readFileSync, existsSync } from 'fs'
 import type { Plugin } from 'vite'
+import { sdkSourceAliases } from './vite.sdk-aliases'
 
 const wasmPkgDir = resolve(__dirname, '../sdk/wasm/pkg')
 const wasmFileName = 'vesper_openmls_wasm_bg.wasm'
@@ -106,26 +107,11 @@ export default defineConfig({
   },
   plugins: [react(), openmlsWasmPlugin(), serviceWorkerPlugin(), twemojiCachePlugin()],
   resolve: {
-    alias: {
-      '@vesper/sdk/api': resolve(__dirname, '../sdk/src/api/index.ts'),
-      '@vesper/sdk/auth': resolve(__dirname, '../sdk/src/auth/index.ts'),
-      '@vesper/sdk/client': resolve(__dirname, '../sdk/src/client/index.ts'),
-      '@vesper/sdk/client/file-session-store': resolve(
-        __dirname,
-        '../sdk/src/client/fileSessionStore.ts'
-      ),
-      '@vesper/sdk/crypto': resolve(__dirname, '../sdk/src/crypto/index.ts'),
-      '@vesper/sdk/storage': resolve(__dirname, '../sdk/src/storage/index.ts'),
-      '@vesper/sdk/storage/file': resolve(__dirname, '../sdk/src/storage/file.ts'),
-      '@vesper/sdk/testing': resolve(__dirname, '../sdk/src/testing/index.ts'),
-      '@vesper/sdk/transport': resolve(__dirname, '../sdk/src/transport/index.ts'),
-      '@vesper/sdk/types': resolve(__dirname, '../sdk/src/types/index.ts'),
-      '@vesper/sdk/voice': resolve(__dirname, '../sdk/src/voice/index.ts'),
-      '@vesper/sdk': resolve(__dirname, '../sdk/src/index.ts'),
-      'vesper-openmls-wasm': resolve(__dirname, '../sdk/wasm/pkg/vesper_openmls_wasm.js'),
-      '@': resolve(__dirname, 'src/renderer/src'),
-      buffer: 'buffer/'
-    }
+    alias: [
+      ...sdkSourceAliases(__dirname),
+      { find: '@', replacement: resolve(__dirname, 'src/renderer/src') },
+      { find: 'buffer', replacement: 'buffer/' }
+    ]
   },
   build: {
     outDir: resolve(__dirname, 'dist-web'),

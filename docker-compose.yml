@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:17-alpine
+    image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-vesper}
@@ -15,7 +15,7 @@ services:
       retries: 5
 
   app:
-    image: ghcr.io/alderban107/vesper-app:main
+    image: ${VESPER_APP_IMAGE:?VESPER_APP_IMAGE must be an exact release tag or digest}
     build:
       context: ./server
       dockerfile: Dockerfile
@@ -28,14 +28,34 @@ services:
       SECRET_KEY_BASE: ${SECRET_KEY_BASE:?SECRET_KEY_BASE required}
       PHX_HOST: ${PHX_HOST:-localhost}
       PORT: "4000"
+      DNS_CLUSTER_QUERY: ${DNS_CLUSTER_QUERY:-}
+      CORS_ORIGIN: ${CORS_ORIGIN:?CORS_ORIGIN required}
+      # Safe only because the bundled nginx proxy overwrites X-Forwarded-For.
+      TRUST_PROXY_HEADERS: "true"
       JWT_SECRET: ${JWT_SECRET:-}
-      TURN_SERVER_URL: ${TURN_SERVER_URL:-turn:coturn:3478}
+      METRICS_TOKEN: ${METRICS_TOKEN:?METRICS_TOKEN required}
+      REGISTRATION_MODE: ${REGISTRATION_MODE:-closed}
+      REGISTRATION_INVITE_SECRET: ${REGISTRATION_INVITE_SECRET:-}
+      TURN_SERVER_URL: ${TURN_SERVER_URL:?TURN_SERVER_URL must be publicly reachable}
       TURN_USERNAME: ${TURN_USERNAME:-vesper}
       TURN_PASSWORD: ${TURN_PASSWORD:?TURN_PASSWORD required}
       FILE_EXPIRY_DAYS: ${FILE_EXPIRY_DAYS:-30}
+      UPLOAD_DIR: /var/lib/vesper/uploads
+      VESPER_ENABLE_MULTI_COHORT_TOPOLOGY_MUTATIONS: ${VESPER_ENABLE_MULTI_COHORT_TOPOLOGY_MUTATIONS:-false}
+      RUN_MIGRATIONS_ON_START: "false"
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_SUBJECT: ${VAPID_SUBJECT:-}
+    volumes:
+      - uploads:/var/lib/vesper/uploads
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Run migrations as a fail-closed release task before accepting traffic.
+    # This avoids serving against a partially migrated schema; orchestrated
+    # multi-replica deployments should run the same task as a separate job.
+    command: ["/bin/sh", "-c", "bin/vesper eval 'Vesper.Release.migrate()' && exec bin/vesper start"]
     expose:
       - "4000"
     healthcheck:
@@ -46,29 +66,40 @@ services:
       start_period: 60s
 
   web:
-    image: ghcr.io/alderban107/vesper-web:main
+    image: ${VESPER_WEB_IMAGE:?VESPER_WEB_IMAGE must be an exact release tag or digest}
     build:
       context: .
       dockerfile: client/Dockerfile.web
     restart: unless-stopped
     environment:
-      API_URL: ${WEB_API_URL:-}
+      PUBLIC_SCHEME: ${PUBLIC_SCHEME:-http}
     depends_on:
       app:
         condition: service_healthy
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=167772160,uid=101,gid=101,mode=1777
     ports:
-      - "${WEB_PORT:-8080}:80"
+      - "${WEB_PORT:-8080}:8080"
 
   coturn:
-    image: coturn/coturn:latest
+    image: coturn/coturn@sha256:01fc8655e7c262fa4ccfb8dca74ff80fb372b0ee021e80370a4d3e3dd01a951e
     restart: unless-stopped
     network_mode: host
     volumes:
       - ./turnserver.conf:/etc/turnserver.conf:ro
     command: [
       "-c", "/etc/turnserver.conf",
-      "--static-auth-secret=${TURN_PASSWORD:?TURN_PASSWORD required}"
+      "--lt-cred-mech",
+      "--user=${TURN_USERNAME:-vesper}:${TURN_PASSWORD:?TURN_PASSWORD required}",
+      "--realm=${TURN_REALM:-vesper}",
+      "--external-ip=${TURN_EXTERNAL_IP:?TURN_EXTERNAL_IP required}"
     ]
 
 volumes:
   pgdata:
+  uploads:

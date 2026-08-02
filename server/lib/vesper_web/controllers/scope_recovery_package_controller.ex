@@ -50,7 +50,7 @@ defmodule VesperWeb.ScopeRecoveryPackageController do
         conn |> put_status(:bad_request) |> json(%{error: "invalid recovery package"})
 
       {:error, :package_too_large} ->
-        conn |> put_status(:payload_too_large) |> json(%{error: "recovery package too large"})
+        conn |> put_status(413) |> json(%{error: "recovery package too large"})
 
       {:error, changeset} ->
         conn
@@ -64,11 +64,13 @@ defmodule VesperWeb.ScopeRecoveryPackageController do
   defp package_attrs(params, owner_id, scope_id, nonce) do
     with ciphertext when is_binary(ciphertext) and byte_size(ciphertext) > 0 <-
            params["ciphertext"],
+         {:ok, ciphertext_bytes} when byte_size(ciphertext_bytes) > 0 <-
+           Base.decode64(ciphertext),
          generation when is_integer(generation) and generation >= 0 <-
            params["membership_generation"],
          cursor when is_integer(cursor) and cursor >= 0 <- params["last_event_seq"],
          version when is_integer(version) and version == 1 <- params["schema_version"],
-         true <- byte_size(ciphertext) + byte_size(nonce) <= @max_package_bytes do
+         true <- byte_size(ciphertext_bytes) + byte_size(nonce) <= @max_package_bytes do
       {:ok,
        %{
          owner_id: owner_id,
@@ -78,7 +80,7 @@ defmodule VesperWeb.ScopeRecoveryPackageController do
          membership_generation: generation,
          last_event_seq: cursor,
          schema_version: version,
-         byte_size: byte_size(ciphertext) + byte_size(nonce),
+         byte_size: byte_size(ciphertext_bytes) + byte_size(nonce),
          expires_at:
            DateTime.add(DateTime.utc_now(), 7 * 24 * 60 * 60, :second)
            |> DateTime.truncate(:second)

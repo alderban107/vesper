@@ -169,7 +169,9 @@ defmodule Vesper.RoomTopologyTest do
   end
 
   test "room-key activation is fenced, complete, and idempotent across coordinator handoff" do
-    %{owner: owner, peer: peer, room: room, cohorts: cohorts} = room_key_fixture()
+    %{owner: owner, peer: peer, server: server, room: room, cohorts: cohorts} =
+      room_key_fixture()
+
     request_id = Ecto.UUID.generate()
 
     assert {:ok, prepared} =
@@ -272,6 +274,18 @@ defmodule Vesper.RoomTopologyTest do
     assert reported.state == :active
     assert reported.repair_reason == "local envelope unavailable"
     assert Encryption.get_active_room_key_epoch(room.id).id == active.id
+
+    assert retained = Encryption.get_room_key_epoch_for_user(room.id, active.epoch, owner.id)
+    assert retained.id == active.id
+    assert length(retained.envelopes) == 1
+    assert hd(retained.envelopes).cohort_id in Enum.map(cohorts, & &1.cohort.id)
+    assert Encryption.get_room_key_epoch_for_user(room.id, active.epoch, insert_user().id) == nil
+
+    assert Encryption.get_room_key_epoch_for_user(room.id, active.epoch, peer.id)
+    assert {:ok, _membership} = Servers.leave_server(peer.id, server.id)
+    assert {:ok, _server} = Servers.join_server(peer, server.invite_code)
+    assert Encryption.get_room_key_epoch_for_user(room.id, active.epoch, peer.id) == nil
+    assert Encryption.get_active_room_key_epoch_for_user(room.id, peer.id) == nil
   end
 
   test "missing or stale envelopes enter repair and wrapping rotation rewraps only its cohort" do
@@ -401,6 +415,8 @@ defmodule Vesper.RoomTopologyTest do
         )
       )
 
+    assert Encryption.get_room_key_epoch_for_user(room.id, oldest.epoch, owner.id)
+
     oldest
     |> Ecto.Changeset.change(
       retained_until:
@@ -414,6 +430,8 @@ defmodule Vesper.RoomTopologyTest do
     refute Repo.exists?(
              from(epoch in Vesper.Encryption.RoomKeyEpoch, where: epoch.id == ^oldest.id)
            )
+
+    assert Encryption.get_room_key_epoch_for_user(room.id, oldest.epoch, owner.id) == nil
   end
 
   test "populated room migration is idempotent and the durable cutover owns the scheme" do
@@ -638,7 +656,7 @@ defmodule Vesper.RoomTopologyTest do
     end)
 
     assert {:ok, _topology, cohorts} = Encryption.get_room_key_coordination_material(room.id)
-    %{owner: owner, peer: peer, room: room, cohorts: cohorts}
+    %{owner: owner, peer: peer, server: server, room: room, cohorts: cohorts}
   end
 
   defp wrapping_attrs(cohort, topology, owner, mls_epoch, marker) do
