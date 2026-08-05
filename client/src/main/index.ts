@@ -51,6 +51,14 @@ import {
   normalizeHttpOrigin,
   secureWebPreferences
 } from './electronSecurity'
+import {
+  clearAttachmentMediaCapabilities,
+  registerAttachmentMediaProtocol,
+  registerAttachmentMediaScheme,
+  watchAttachmentMediaOwner
+} from './attachmentMediaProtocol'
+
+registerAttachmentMediaScheme()
 
 interface EncryptedRoomDataKeyStorageRecord {
   room_id: string
@@ -84,6 +92,7 @@ function createWindow(): void {
     autoHideMenuBar: true,
     webPreferences: secureWebPreferences(join(__dirname, '../preload/index.js'))
   })
+  watchAttachmentMediaOwner(mainWindow.webContents)
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
@@ -113,6 +122,53 @@ function createWindow(): void {
   }
 }
 
+async function refreshMainAccessToken(rawServerUrl: unknown): Promise<AuthRefreshResult> {
+  const serverOrigin =
+    typeof rawServerUrl === 'string' ? normalizeHttpOrigin(rawServerUrl) : null
+  const refreshToken = serverOrigin ? getStoredRefreshToken(serverOrigin) : null
+  if (!refreshToken || !serverOrigin || typeof rawServerUrl !== 'string') {
+    return { status: 'invalid' }
+  }
+
+  try {
+    const endpoint = new URL('/api/v1/auth/refresh', rawServerUrl)
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      redirect: 'error',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+      signal: AbortSignal.timeout(10_000)
+    })
+    if (!response.ok) {
+      const failure = classifyRefreshHttpFailure(response.status)
+      if (failure === 'invalid') {
+        clearStoredRefreshToken()
+      }
+      return { status: failure }
+    }
+
+    const payload = (await response.json()) as {
+      access_token?: unknown
+      refresh_token?: unknown
+    }
+    if (
+      typeof payload.access_token !== 'string' ||
+      typeof payload.refresh_token !== 'string' ||
+      payload.access_token.length === 0 ||
+      payload.refresh_token.length === 0 ||
+      payload.access_token.length > 8192 ||
+      payload.refresh_token.length > 8192
+    ) {
+      return { status: 'retryable' }
+    }
+
+    setStoredRefreshToken(payload.refresh_token, serverOrigin)
+    return { status: 'ok', accessToken: payload.access_token }
+  } catch {
+    return { status: 'retryable' }
+  }
+}
+
 function registerIpcHandlers(): void {
   ipcMain.on(
     'authSession:setRefreshToken',
@@ -138,54 +194,8 @@ function registerIpcHandlers(): void {
     event.returnValue = true
   })
 
-  ipcMain.handle(
-    'authSession:refreshAccessToken',
-    async (_event, rawServerUrl: unknown): Promise<AuthRefreshResult> => {
-      const serverOrigin =
-        typeof rawServerUrl === 'string' ? normalizeHttpOrigin(rawServerUrl) : null
-      const refreshToken = serverOrigin ? getStoredRefreshToken(serverOrigin) : null
-      if (!refreshToken || !serverOrigin || typeof rawServerUrl !== 'string') {
-        return { status: 'invalid' }
-      }
-
-      try {
-        const endpoint = new URL('/api/v1/auth/refresh', rawServerUrl)
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          redirect: 'error',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ refresh_token: refreshToken }),
-          signal: AbortSignal.timeout(10_000)
-        })
-        if (!response.ok) {
-          const failure = classifyRefreshHttpFailure(response.status)
-          if (failure === 'invalid') {
-            clearStoredRefreshToken()
-          }
-          return { status: failure }
-        }
-
-        const payload = (await response.json()) as {
-          access_token?: unknown
-          refresh_token?: unknown
-        }
-        if (
-          typeof payload.access_token !== 'string' ||
-          typeof payload.refresh_token !== 'string' ||
-          payload.access_token.length === 0 ||
-          payload.refresh_token.length === 0 ||
-          payload.access_token.length > 8192 ||
-          payload.refresh_token.length > 8192
-        ) {
-          return { status: 'retryable' }
-        }
-
-        setStoredRefreshToken(payload.refresh_token, serverOrigin)
-        return { status: 'ok', accessToken: payload.access_token }
-      } catch {
-        return { status: 'retryable' }
-      }
-    }
+  ipcMain.handle('authSession:refreshAccessToken', (_event, rawServerUrl: unknown) =>
+    refreshMainAccessToken(rawServerUrl)
   )
 
   // Identity keys
@@ -478,6 +488,10 @@ app.whenReady().then(() => {
 
   initDb()
   registerIpcHandlers()
+  registerAttachmentMediaProtocol(async (serverUrl) => {
+    const result = await refreshMainAccessToken(serverUrl)
+    return result.status === 'ok' ? result.accessToken : null
+  })
 
   createWindow()
 
@@ -498,5 +512,6 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  clearAttachmentMediaCapabilities()
   closeDb()
 })

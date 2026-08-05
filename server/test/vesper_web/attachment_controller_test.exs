@@ -70,6 +70,53 @@ defmodule VesperWeb.AttachmentControllerTest do
     refute File.exists?(FileStorage.get_path(expected_key))
   end
 
+  test "stream upload stores an opaque body without multipart buffering", %{conn: _conn} do
+    user = insert_user()
+    ciphertext = :crypto.strong_rand_bytes(2_097_181)
+    filename = "large archive.zip"
+
+    conn =
+      :post
+      |> build_conn("/api/v1/attachments/stream", ciphertext)
+      |> put_req_header("content-type", "application/octet-stream")
+      |> put_req_header("content-length", Integer.to_string(byte_size(ciphertext)))
+      |> put_req_header("x-vesper-filename-b64", Base.encode64(filename))
+      |> put_req_header("x-vesper-content-type", "application/zip")
+      |> assign(:current_user, user)
+      |> AttachmentController.create_stream(%{})
+
+    assert %{
+             "attachment" => %{
+               "id" => attachment_id,
+               "filename" => ^filename,
+               "content_type" => "application/zip",
+               "size_bytes" => size,
+               "encrypted" => true
+             }
+           } = json_response(conn, 201)
+
+    assert size == byte_size(ciphertext)
+    attachment = Repo.get!(Attachment, attachment_id)
+    assert File.read!(FileStorage.get_path(attachment.storage_key)) == ciphertext
+    on_exit(fn -> FileStorage.delete(attachment.storage_key) end)
+  end
+
+  test "stream upload rejects a body that does not match its declared length", %{conn: _conn} do
+    user = insert_user()
+
+    conn =
+      :post
+      |> build_conn("/api/v1/attachments/stream", "too many bytes")
+      |> put_req_header("content-type", "application/octet-stream")
+      |> put_req_header("content-length", "3")
+      |> put_req_header("x-vesper-filename-b64", Base.encode64("mismatch.bin"))
+      |> assign(:current_user, user)
+      |> AttachmentController.create_stream(%{})
+
+    assert json_response(conn, 413) == %{"error" => "file too large"}
+    assert Repo.aggregate(Attachment, :count) == 0
+  end
+
   test "expired attachments stop consuming upload quota before cleanup runs", %{conn: conn} do
     user = insert_user()
     quota = Application.fetch_env!(:vesper, :max_upload_bytes_per_user)
@@ -185,6 +232,170 @@ defmodule VesperWeb.AttachmentControllerTest do
       |> AttachmentController.show(%{"id" => attachment.id})
 
     assert json_response(conn, 403) == %{"error" => "access denied"}
+  end
+
+  test "authorized attachment reads support single byte ranges without metadata disclosure", %{
+    conn: conn
+  } do
+    user = insert_user()
+    server = insert_server(user)
+    insert_membership(user, server)
+    channel = insert_channel(server)
+    message = insert_message(user, channel)
+
+    {attachment, storage_key} =
+      insert_attachment_with_file(message,
+        uploader_id: user.id,
+        file_content: "0123456789",
+        filename: "secret-name.txt",
+        content_type: "text/plain",
+        encrypted: true
+      )
+
+    on_exit(fn -> FileStorage.delete(storage_key) end)
+    etag = ~s("sha256-#{storage_key}")
+
+    full =
+      conn
+      |> assign(:current_user, user)
+      |> AttachmentController.show(%{"id" => attachment.id})
+
+    assert full.status == 200
+    assert full.resp_body == "0123456789"
+    assert get_resp_header(full, "accept-ranges") == ["bytes"]
+    assert get_resp_header(full, "etag") == [etag]
+    assert get_resp_header(full, "cache-control") == ["private, no-store, no-transform"]
+    assert get_resp_header(full, "x-content-type-options") == ["nosniff"]
+    assert get_resp_header(full, "content-length") == ["10"]
+    assert get_resp_header(full, "content-type") == ["application/octet-stream; charset=utf-8"]
+
+    assert get_resp_header(full, "content-disposition") == [
+             ~s(attachment; filename="#{attachment.id}")
+           ]
+
+    for {range, expected_body, expected_content_range} <- [
+          {"bytes=2-5", "2345", "bytes 2-5/10"},
+          {"bytes=7-", "789", "bytes 7-9/10"},
+          {"bytes=-3", "789", "bytes 7-9/10"},
+          {"bytes=8-99", "89", "bytes 8-9/10"}
+        ] do
+      ranged =
+        build_conn()
+        |> put_req_header("range", range)
+        |> assign(:current_user, user)
+        |> AttachmentController.show(%{"id" => attachment.id})
+
+      assert ranged.status == 206
+      assert ranged.resp_body == expected_body
+      assert get_resp_header(ranged, "content-range") == [expected_content_range]
+
+      assert get_resp_header(ranged, "content-length") == [
+               Integer.to_string(byte_size(expected_body))
+             ]
+
+      assert get_resp_header(ranged, "etag") == [etag]
+    end
+
+    head =
+      :head
+      |> build_conn("/api/v1/attachments/#{attachment.id}")
+      |> put_req_header("range", "bytes=2-5")
+      |> Plug.Head.call([])
+      |> assign(:current_user, user)
+      |> AttachmentController.show(%{"id" => attachment.id})
+
+    assert head.status == 206
+    assert head.resp_body == ""
+    assert get_resp_header(head, "content-range") == ["bytes 2-5/10"]
+    assert get_resp_header(head, "content-length") == ["4"]
+  end
+
+  test "attachment range validation and If-Range are deterministic", %{conn: conn} do
+    user = insert_user()
+    server = insert_server(user)
+    insert_membership(user, server)
+    channel = insert_channel(server)
+    message = insert_message(user, channel)
+
+    {attachment, storage_key} =
+      insert_attachment_with_file(message,
+        uploader_id: user.id,
+        file_content: "abcdefghij",
+        encrypted: true
+      )
+
+    on_exit(fn -> FileStorage.delete(storage_key) end)
+    etag = ~s("sha256-#{storage_key}")
+
+    matching =
+      conn
+      |> put_req_header("range", "bytes=1-3")
+      |> put_req_header("if-range", etag)
+      |> assign(:current_user, user)
+      |> AttachmentController.show(%{"id" => attachment.id})
+
+    assert matching.status == 206
+    assert matching.resp_body == "bcd"
+
+    mismatching =
+      build_conn()
+      |> put_req_header("range", "bytes=1-3")
+      |> put_req_header("if-range", ~s("other"))
+      |> assign(:current_user, user)
+      |> AttachmentController.show(%{"id" => attachment.id})
+
+    assert mismatching.status == 200
+    assert mismatching.resp_body == "abcdefghij"
+    assert get_resp_header(mismatching, "content-range") == []
+
+    multi_range =
+      build_conn()
+      |> put_req_header("range", "bytes=0-1,4-5")
+      |> assign(:current_user, user)
+      |> AttachmentController.show(%{"id" => attachment.id})
+
+    assert multi_range.status == 200
+    assert multi_range.resp_body == "abcdefghij"
+
+    for invalid <- ["bytes=20-30", "bytes=5-4", "bytes=-0", "bytes=nope"] do
+      response =
+        build_conn()
+        |> put_req_header("range", invalid)
+        |> assign(:current_user, user)
+        |> AttachmentController.show(%{"id" => attachment.id})
+
+      assert response.status == 416
+      assert response.resp_body == ""
+      assert get_resp_header(response, "content-range") == ["bytes */10"]
+      assert get_resp_header(response, "content-length") == ["0"]
+    end
+  end
+
+  test "range metadata is not exposed after access is revoked", %{conn: conn} do
+    owner = insert_user()
+    member = insert_user()
+    server = insert_server(owner)
+    channel = insert_channel(server)
+    insert_membership(member, server)
+    message = insert_message(owner, channel)
+
+    {attachment, storage_key} =
+      insert_attachment_with_file(message, uploader_id: owner.id, file_content: "private bytes")
+
+    on_exit(fn -> FileStorage.delete(storage_key) end)
+    assert {:ok, _membership} = Vesper.Servers.kick_member(server.id, member.id)
+
+    denied =
+      conn
+      |> put_req_header("range", "bytes=0-3")
+      |> assign(:current_user, member)
+      |> AttachmentController.show(%{"id" => attachment.id})
+
+    assert json_response(denied, 403) == %{"error" => "access denied"}
+
+    for header <- ["accept-ranges", "content-range", "content-length", "etag"] do
+      assert get_resp_header(denied, header) == []
+    end
   end
 
   defp temporary_upload!(contents) do

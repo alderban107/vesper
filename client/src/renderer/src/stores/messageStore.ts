@@ -14,7 +14,8 @@ import {
   getSentMessage,
   getStoredSentMessage,
   removeCachedDecryption,
-  setCachedDecryption
+  setCachedDecryption,
+  type FilePayload
 } from '@vesper/sdk/crypto'
 import { useAuthStore } from './authStore'
 import { useVoiceStore } from './voiceStore'
@@ -770,34 +771,7 @@ export interface Attachment {
   encrypted?: boolean
 }
 
-export interface FileMessageContent {
-  type: 'file'
-  text?: string
-  file: {
-    id: string
-    name: string
-    content_type: string
-    size: number
-    key: string
-    iv: string
-    duration?: number
-    thumbnail?: {
-      id: string
-      key: string
-      iv: string
-    }
-    audio_metadata?: {
-      title?: string
-      artist?: string
-      album?: string
-      cover?: {
-        id: string
-        key: string
-        iv: string
-      }
-    }
-  }
-}
+export type FileMessageContent = Omit<FilePayload, 'v' | 'history_auth'>
 
 export interface TextMessageContent {
   type: 'text'

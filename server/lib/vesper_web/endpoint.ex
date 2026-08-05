@@ -70,8 +70,16 @@ defmodule VesperWeb.Endpoint do
   # default into production releases.
   plug CORSPlug,
     origin: &VesperWeb.OriginPolicy.cors_origins/0,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    headers: ["authorization", "content-type"]
+    methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    headers: [
+      "authorization",
+      "content-type",
+      "range",
+      "if-range",
+      "x-vesper-filename-b64",
+      "x-vesper-content-type"
+    ],
+    expose: ["accept-ranges", "content-range", "etag", "content-disposition"]
 
   plug VesperWeb.Router
 end

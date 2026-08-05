@@ -1,5 +1,7 @@
 /** Version 1 structured message payload — encrypted as JSON inside MLS ciphertext */
 
+import type { AttachmentEncryptionV2 } from './fileEncryption.js'
+
 export interface MessageHistoryAuthentication {
   v: 1
   scope_id: string
@@ -17,35 +19,51 @@ export interface TextPayload {
   history_auth?: MessageHistoryAuthentication
 }
 
+export interface LegacyAttachmentEncryptionFields {
+  key: string // base64-encoded AES-256-GCM key
+  iv: string // base64-encoded IV
+  encryption?: never
+}
+
+export interface StreamableAttachmentEncryptionFields {
+  encryption: AttachmentEncryptionV2
+  key?: never
+  iv?: never
+}
+
+export type AttachmentEncryptionFields =
+  | LegacyAttachmentEncryptionFields
+  | StreamableAttachmentEncryptionFields
+
+export type AttachmentReference = {
+  id: string
+  /** Required by v2 framing. Legacy nested references may omit it. */
+  size?: number
+} & AttachmentEncryptionFields
+
+interface FileAttachmentBase {
+  id: string // server-side attachment ID
+  name: string
+  content_type: string
+  size: number // plaintext bytes
+  duration?: number // seconds (video or audio)
+  thumbnail?: AttachmentReference
+  audio_metadata?: {
+    title?: string
+    artist?: string
+    album?: string
+    cover?: AttachmentReference
+  }
+}
+
+export type FileAttachment = FileAttachmentBase & AttachmentEncryptionFields
+
 export interface FilePayload {
   v: 1
   type: 'file'
   text: string | null // optional caption
   history_auth?: MessageHistoryAuthentication
-  file: {
-    id: string // server-side attachment ID
-    name: string
-    content_type: string
-    size: number
-    key: string // base64-encoded AES-256-GCM key
-    iv: string // base64-encoded IV
-    duration?: number // seconds (video or audio)
-    thumbnail?: {
-      id: string // thumbnail attachment ID
-      key: string // thumbnail AES key (base64)
-      iv: string // thumbnail IV (base64)
-    }
-    audio_metadata?: {
-      title?: string
-      artist?: string
-      album?: string
-      cover?: {
-        id: string // cover art attachment ID
-        key: string // cover art AES key (base64)
-        iv: string // cover art IV (base64)
-      }
-    }
-  }
+  file: FileAttachment
 }
 
 export type MessagePayload = TextPayload | FilePayload

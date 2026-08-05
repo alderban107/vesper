@@ -199,7 +199,7 @@ test('keeps a staged attachment and shows an actionable error when upload fails'
   await selectServer(user.page, serverName)
   await selectChannel(user.page, 'general')
   await waitForChannelEncryptionReady(user.page)
-  await user.page.route('**/api/v1/attachments', async (route) => {
+  await user.page.route(/\/api\/v1\/attachments(?:\/stream)?$/, async (route) => {
     await route.fulfill({
       status: 503,
       contentType: 'application/json',
@@ -238,7 +238,7 @@ test('retries only the unsent remainder after a multi-file partial failure', asy
   await selectServer(user.page, serverName)
   await selectChannel(user.page, 'general')
   await waitForChannelEncryptionReady(user.page)
-  await user.page.route('**/api/v1/attachments', async (route) => {
+  await user.page.route(/\/api\/v1\/attachments(?:\/stream)?$/, async (route) => {
     if (route.request().method() !== 'POST') {
       await route.continue()
       return

@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AlertCircle, Download, FileText, Loader2, Paperclip, Play, Volume2 } from 'lucide-react'
-import { decryptFile } from '@vesper/sdk/crypto'
 import { useVisibility } from '../../hooks/useVisibility'
 import type { FileMessageContent } from '../../stores/messageStore'
-import { fetchAttachmentBytes } from '../../utils/attachmentFetch'
+import {
+  useAttachmentTransferStore,
+  type AttachmentTransferErrorKind
+} from '../../stores/attachmentTransferStore'
+import {
+  isStreamableAttachment,
+  loadDecryptedAttachmentBlob,
+  saveDecryptedAttachment
+} from '../../utils/attachmentTransfer'
+import { getRendererClient } from '../../sdk/client'
 import {
   acquireCachedAttachmentObjectUrl,
   loadCachedAttachmentObjectUrl,
@@ -28,19 +36,17 @@ function formatDuration(seconds: number): string {
   return `${minutes}:${remainder.toString().padStart(2, '0')}`
 }
 
-type AttachmentErrorKind = 'integrity' | 'network' | 'unavailable'
-
 class AttachmentDisplayError extends Error {
-  readonly kind: AttachmentErrorKind
+  readonly kind: AttachmentTransferErrorKind
 
-  constructor(kind: AttachmentErrorKind) {
+  constructor(kind: AttachmentTransferErrorKind) {
     super(kind)
     this.name = 'AttachmentDisplayError'
     this.kind = kind
   }
 }
 
-function attachmentFetchErrorKind(error: unknown): AttachmentErrorKind {
+function attachmentFetchErrorKind(error: unknown): AttachmentTransferErrorKind {
   const message = error instanceof Error ? error.message : String(error)
   const statusMatch = /status (\d+)/.exec(message)
   const status = statusMatch ? Number.parseInt(statusMatch[1] ?? '', 10) : null
@@ -56,24 +62,21 @@ async function loadDecryptedAttachment(
   file: FileMessageContent['file'],
   contentType: string
 ): Promise<Blob> {
-  let encrypted: ArrayBuffer
   try {
-    encrypted = await fetchAttachmentBytes(file.id)
+    return await loadDecryptedAttachmentBlob(file, contentType)
   } catch (error) {
-    throw new AttachmentDisplayError(attachmentFetchErrorKind(error))
-  }
-
-  try {
-    const decrypted = await decryptFile(encrypted, file.key, file.iv)
-    return new Blob([decrypted], { type: contentType })
-  } catch {
+    const message = error instanceof Error ? error.message : String(error)
+    if (/status \d+/.test(message) || error instanceof TypeError) {
+      throw new AttachmentDisplayError(attachmentFetchErrorKind(error))
+    }
     throw new AttachmentDisplayError('integrity')
   }
 }
 
-function attachmentErrorMessage(error: AttachmentErrorKind): string {
+function attachmentErrorMessage(error: AttachmentTransferErrorKind): string {
   if (error === 'network') return 'Could not download file. Check your connection.'
   if (error === 'integrity') return 'File could not be decrypted.'
+  if (error === 'unsupported') return 'This large file needs the desktop app or a browser with streaming file saves.'
   return 'File expired or unavailable.'
 }
 
@@ -84,6 +87,7 @@ interface Props {
 export default function FilePreview({ file }: Props): React.JSX.Element {
   const effectiveType = resolveContentType(file.content_type, file.name)
   const isImage = effectiveType.startsWith('image/')
+  const isInlineImage = isImage && file.size <= 16 * 1024 * 1024
   const isAudio = effectiveType.startsWith('audio/')
   const isVideo = effectiveType.startsWith('video/')
   const isMedia = isImage || isAudio || isVideo
@@ -94,7 +98,15 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
 
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<AttachmentErrorKind | null>(null)
+  const error = useAttachmentTransferStore(
+    (state) => state.errorsByAttachmentId[file.id] ?? null
+  )
+  const setStoredError = useAttachmentTransferStore((state) => state.setError)
+  const clearStoredError = useAttachmentTransferStore((state) => state.clearError)
+  const setError = useCallback((nextError: AttachmentTransferErrorKind | null) => {
+    if (nextError) setStoredError(file.id, nextError)
+    else clearStoredError(file.id)
+  }, [clearStoredError, file.id, setStoredError])
   const [retryVersion, setRetryVersion] = useState(0)
   const [showLightbox, setShowLightbox] = useState(false)
   // Audio: explicit click-to-load (same pattern as video)
@@ -107,8 +119,14 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
 
   const previewCacheKey = `attachment-preview:${file.id}`
   const previewRetainedRef = useRef(false)
+  const mediaCapabilityUrlRef = useRef<string | null>(null)
 
   const releasePreviewUrl = useCallback(() => {
+    if (mediaCapabilityUrlRef.current) {
+      void window.attachmentMedia?.release(mediaCapabilityUrlRef.current)
+      mediaCapabilityUrlRef.current = null
+      setPreviewUrl(null)
+    }
     if (previewRetainedRef.current) {
       releaseCachedAttachmentObjectUrl(previewCacheKey)
       previewRetainedRef.current = false
@@ -126,7 +144,7 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
 
   // Image: auto-fetch when visible. Audio: fetch only after explicit click.
   useEffect(() => {
-    if (!isImage || !hasBeenVisible) return
+    if (!isInlineImage || !hasBeenVisible) return
     if (previewRetainedRef.current) return
 
     let cancelled = false
@@ -168,14 +186,57 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
       cancelled = true
       releasePreviewUrl()
     }
-  }, [isImage, hasBeenVisible, file.id, file.key, file.iv, effectiveType, previewCacheKey, releasePreviewUrl, retryVersion])
+  }, [isInlineImage, hasBeenVisible, file, effectiveType, previewCacheKey, releasePreviewUrl, retryVersion])
 
   // Audio: fetch when explicitly requested
   useEffect(() => {
     if (!isAudio || !audioRequested) return
-    if (previewRetainedRef.current) return
+    if (previewRetainedRef.current || mediaCapabilityUrlRef.current) return
 
     let cancelled = false
+
+    if (isStreamableAttachment(file) && window.attachmentMedia) {
+      setLoading(true)
+      setError(null)
+      const client = getRendererClient()
+      const accessToken = client.getSessionStore().getAccessToken()
+      if (!accessToken) {
+        setLoading(false)
+        setError('unavailable')
+        return
+      }
+
+      void window.attachmentMedia.register({
+        attachmentId: file.id,
+        serverUrl: client.getServerUrl(),
+        accessToken,
+        contentType: effectiveType,
+        plaintextSize: file.size,
+        encryption: file.encryption
+      }).then((url) => {
+        if (cancelled) {
+          void window.attachmentMedia?.release(url)
+          return
+        }
+        mediaCapabilityUrlRef.current = url
+        setPreviewUrl(url)
+      }).catch(() => {
+        if (!cancelled) setError('network')
+      }).finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+
+      return () => {
+        cancelled = true
+        releasePreviewUrl()
+      }
+    }
+
+    if (isStreamableAttachment(file) && file.size > 8 * 1024 * 1024) {
+      setError('unsupported')
+      return
+    }
+
     const cachedUrl = acquireCachedAttachmentObjectUrl(previewCacheKey)
     if (cachedUrl) {
       previewRetainedRef.current = true
@@ -214,15 +275,15 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
       cancelled = true
       releasePreviewUrl()
     }
-  }, [isAudio, audioRequested, file.id, file.key, file.iv, effectiveType, previewCacheKey, releasePreviewUrl, retryVersion])
+  }, [isAudio, audioRequested, file, effectiveType, previewCacheKey, releasePreviewUrl, retryVersion])
 
   // Release the row's local hold when it scrolls far away.
   // The shared cache keeps hot previews around until LRU pressure evicts them.
   useEffect(() => {
-    if (isImage && isFarAway && previewRetainedRef.current) {
+    if (isInlineImage && isFarAway && previewRetainedRef.current) {
       releasePreviewUrl()
     }
-  }, [isImage, isFarAway, releasePreviewUrl])
+  }, [isInlineImage, isFarAway, releasePreviewUrl])
 
   // Audio: eagerly fetch and decrypt cover art thumbnail when available
   const audioMeta = isAudio ? file.audio_metadata : undefined
@@ -244,9 +305,7 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
 
     coverRetainedRef.current = true
     void loadCachedAttachmentObjectUrl(coverCacheKey, async () => {
-      const encrypted = await fetchAttachmentBytes(cover.id)
-      const decrypted = await decryptFile(encrypted, cover.key, cover.iv)
-      return new Blob([decrypted], { type: 'image/jpeg' })
+      return await loadDecryptedAttachmentBlob(cover, 'image/jpeg')
     })
       .then((url) => {
         if (cancelled) return
@@ -273,18 +332,16 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
   const handleDownload = async (): Promise<void> => {
     setError(null)
     try {
-      const blob = await loadDecryptedAttachment(file, effectiveType)
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = file.name
-      a.click()
-      URL.revokeObjectURL(url)
+      await saveDecryptedAttachment(file, effectiveType)
     } catch (downloadError) {
+      if (downloadError instanceof DOMException && downloadError.name === 'AbortError') return
+      const message = downloadError instanceof Error ? downloadError.message : ''
       setError(
         downloadError instanceof AttachmentDisplayError
           ? downloadError.kind
-          : 'network'
+          : /streaming file saves|requires the desktop app/i.test(message)
+            ? 'unsupported'
+            : 'network'
       )
     }
   }
@@ -328,25 +385,14 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
             </div>
           </button>
         ) : (
-          <VideoPlayer
-            fileId={file.id}
-            name={file.name}
-            contentType={effectiveType}
-            size={file.size}
-            encryptionKey={file.key}
-            iv={file.iv}
-            thumbnailId={file.thumbnail?.id}
-            thumbnailKey={file.thumbnail?.key}
-            thumbnailIv={file.thumbnail?.iv}
-            duration={file.duration}
-          />
+          <VideoPlayer file={file} contentType={effectiveType} />
         )}
       </div>
     )
   }
 
   // Image preview — gated by visibility
-  if (isImage) {
+  if (isInlineImage) {
     return (
       <div ref={visibilityRef} data-testid="attachment" className="mt-1.5">
         {loading ? (

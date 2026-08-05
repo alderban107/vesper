@@ -19,6 +19,10 @@ defmodule Vesper.Chat.FileStorage do
   def store(source_path, original_filename), do: backend().store(source_path, original_filename)
 
   @impl true
+  def ensure_stored(source_path, original_filename, storage_key),
+    do: backend().ensure_stored(source_path, original_filename, storage_key)
+
+  @impl true
   def get_path(storage_key), do: backend().get_path(storage_key)
 
   @impl true

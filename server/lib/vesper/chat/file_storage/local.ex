@@ -25,6 +25,16 @@ defmodule Vesper.Chat.FileStorage.Local do
   end
 
   @impl true
+  def ensure_stored(source_path, _original_filename, storage_key) do
+    ensure_upload_dir!()
+    destination = Path.join(upload_dir(), storage_key)
+    unless File.exists?(destination), do: File.cp!(source_path, destination)
+    :ok
+  rescue
+    error -> {:error, Exception.message(error)}
+  end
+
+  @impl true
   def get_path(storage_key) do
     Path.join(upload_dir(), storage_key)
   end

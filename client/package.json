@@ -20,6 +20,7 @@
     "preview:web": "vite preview --config vite.web.config.ts",
     "test:e2e": "npx playwright test -c e2e/playwright.config.ts",
     "test:e2e:p0": "npx playwright test -c e2e/playwright.config.ts --project=p0-smoke",
+    "test:e2e:electron": "node scripts/rebuild-electron-native.mjs && electron-vite build && npx playwright test -c e2e/electron.playwright.config.ts",
     "test:e2e:watch": "npx playwright test -c e2e/playwright.config.ts --ui",
     "test:sdk:e2e": "npm run test:integration -w @vesper/sdk",
     "test:sdk:e2e:watch": "npm run test:integration:watch -w @vesper/sdk",

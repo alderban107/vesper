@@ -26,12 +26,18 @@ defmodule Vesper.MigratorTest do
     Application.put_env(:vesper, :migration_status, :unchecked)
     assert Vesper.Migrator.status() == :ok
 
-    %{rows: [[latest_version]]} =
-      Ecto.Adapters.SQL.query!(
-        Vesper.Repo,
-        "SELECT MAX(version) FROM schema_migrations",
-        []
-      )
+    latest_version =
+      :vesper
+      |> Application.app_dir("priv/repo/migrations/*.exs")
+      |> Path.wildcard()
+      |> Enum.map(fn path ->
+        path
+        |> Path.basename()
+        |> String.split("_", parts: 2)
+        |> hd()
+        |> String.to_integer()
+      end)
+      |> Enum.max()
 
     Ecto.Adapters.SQL.query!(
       Vesper.Repo,

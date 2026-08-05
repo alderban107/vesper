@@ -6,12 +6,14 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { Agentation } from 'agentation'
 import { initWebNotifications } from './utils/webNotifications'
+import { clearEncryptedAttachmentStaging } from './utils/attachmentEncryptionStaging'
 import { initCipherSuite } from '@vesper/sdk/crypto'
 import App from './App'
 import 'katex/dist/katex.min.css'
 import './index.css'
 
 initWebNotifications()
+void clearEncryptedAttachmentStaging()
 
 // Initialize WASM for MLS E2EE
 initCipherSuite('/assets/vesper_openmls_wasm_bg.wasm').catch((err) => {

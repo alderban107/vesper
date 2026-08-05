@@ -14,15 +14,18 @@ import { useUnreadStore } from './unreadStore'
 import { usePresenceStore, cleanupPresenceTimers } from './presenceStore'
 import { useVoiceStore } from './voiceStore'
 import { useSyncStore } from './syncStore'
+import { useAttachmentTransferStore } from './attachmentTransferStore'
 import { clearDecryptionCache } from '@vesper/sdk/crypto'
 import { getRendererStorageRuntime } from '../sdk/client'
 import { clearAttachmentObjectUrlCache } from '../utils/attachmentObjectUrlCache'
+import { clearEncryptedAttachmentStaging } from '../utils/attachmentEncryptionStaging'
+import { abortActiveAttachmentTransfers } from '../utils/attachmentTransfer'
 
 /**
  * Reset all application state to initial values.
  * Called during logout, before clearing auth tokens.
  */
-export function resetAllStores(): void {
+export async function resetAllStores(): Promise<void> {
   // Disconnect voice if active
   const voice = useVoiceStore.getState()
   if (voice.state !== 'idle') {
@@ -38,8 +41,11 @@ export function resetAllStores(): void {
 
   // Clear decrypted message and attachment bytes before another account can use
   // this renderer process.
+  abortActiveAttachmentTransfers()
   clearDecryptionCache()
   clearAttachmentObjectUrlCache()
+  await window.attachmentMedia?.clear()
+  await clearEncryptedAttachmentStaging()
 
   // Reset the IndexedDB adapter singleton so the next login
   // opens a user-scoped database
@@ -89,6 +95,7 @@ export function resetAllStores(): void {
   })
 
   useSyncStore.getState().resetToken()
+  useAttachmentTransferStore.getState().reset()
 
   usePresenceStore.setState({
     statuses: {},

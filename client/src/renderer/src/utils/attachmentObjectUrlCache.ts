@@ -4,9 +4,11 @@ interface CacheEntry {
   url?: string
   promise?: Promise<string>
   refCount: number
+  size: number
 }
 
-const MAX_ATTACHMENT_OBJECT_URLS = 160
+const MAX_ATTACHMENT_OBJECT_URLS = 64
+const MAX_ATTACHMENT_OBJECT_URL_BYTES = 64 * 1024 * 1024
 const attachmentObjectUrlCache = new Map<string, CacheEntry>()
 
 function touchEntry(cacheKey: string, entry: CacheEntry): void {
@@ -14,13 +16,26 @@ function touchEntry(cacheKey: string, entry: CacheEntry): void {
   attachmentObjectUrlCache.set(cacheKey, entry)
 }
 
+function cachedAttachmentBytes(): number {
+  let total = 0
+  for (const entry of attachmentObjectUrlCache.values()) total += entry.size
+  return total
+}
+
 function pruneAttachmentObjectUrls(): void {
-  if (attachmentObjectUrlCache.size <= MAX_ATTACHMENT_OBJECT_URLS) {
+  let bytes = cachedAttachmentBytes()
+  if (
+    attachmentObjectUrlCache.size <= MAX_ATTACHMENT_OBJECT_URLS &&
+    bytes <= MAX_ATTACHMENT_OBJECT_URL_BYTES
+  ) {
     return
   }
 
   for (const [cacheKey, entry] of attachmentObjectUrlCache) {
-    if (attachmentObjectUrlCache.size <= MAX_ATTACHMENT_OBJECT_URLS) {
+    if (
+      attachmentObjectUrlCache.size <= MAX_ATTACHMENT_OBJECT_URLS &&
+      bytes <= MAX_ATTACHMENT_OBJECT_URL_BYTES
+    ) {
       break
     }
 
@@ -30,6 +45,7 @@ function pruneAttachmentObjectUrls(): void {
 
     URL.revokeObjectURL(entry.url)
     attachmentObjectUrlCache.delete(cacheKey)
+    bytes -= entry.size
   }
 }
 
@@ -83,7 +99,8 @@ export async function loadCachedAttachmentObjectUrl(
   }
 
   const entry: CacheEntry = {
-    refCount: 1
+    refCount: 1,
+    size: 0
   }
 
   entry.promise = createBlob()
@@ -97,6 +114,7 @@ export async function loadCachedAttachmentObjectUrl(
 
       currentEntry.url = url
       currentEntry.promise = undefined
+      currentEntry.size = blob.size
       touchEntry(cacheKey, currentEntry)
       pruneAttachmentObjectUrls()
       return url

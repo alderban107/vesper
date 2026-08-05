@@ -2,7 +2,12 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { createVesperClient } from '../dist/index.js'
-import { decryptFile, encryptFile } from '../dist/crypto/index.js'
+import {
+  decryptAttachmentStreamV2,
+  decryptFile,
+  encryptAttachmentStreamV2,
+  encryptFile
+} from '../dist/crypto/index.js'
 import { MemoryStorage } from '../dist/storage/index.js'
 import { bootServerStack, teardownServerStack } from '../dist/testing/index.js'
 import { createMemorySessionStore } from '../dist/transport/index.js'
@@ -39,6 +44,22 @@ async function waitFor(description, predicate, timeoutMs = 15_000, intervalMs = 
     await new Promise((resolve) => setTimeout(resolve, intervalMs))
   }
   throw new Error(`Timed out waiting for ${description}`)
+}
+
+async function collectStream(stream) {
+  const chunks = []
+  let size = 0
+  for await (const chunk of stream) {
+    chunks.push(chunk)
+    size += chunk.byteLength
+  }
+  const bytes = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return bytes
 }
 
 test('first DM attachment converges on one MLS group and decrypts for the recipient', { concurrency: false }, async (t) => {
@@ -87,11 +108,15 @@ test('first DM attachment converges on one MLS group and decrypts for the recipi
   assert.equal(bobChat.isMemberOfGroup(scope.id, bobSession.user.id), true)
 
   const plaintext = new TextEncoder().encode('first DM attachment payload')
-  const encrypted = await encryptFile(plaintext.buffer)
-  const formData = new FormData()
-  formData.append('file', new Blob([encrypted.ciphertext]), 'first-dm-attachment.txt')
-  formData.append('encrypted', 'true')
-  const uploaded = await alice.client.uploadAttachment(formData)
+  const encrypted = await encryptAttachmentStreamV2(
+    new Blob([plaintext]).stream(),
+    plaintext.byteLength
+  )
+  const ciphertext = await collectStream(encrypted.ciphertext)
+  const uploaded = await alice.client.uploadAttachmentBlob(
+    new Blob([ciphertext]),
+    { filename: 'first-dm-attachment.txt', contentType: 'text/plain' }
+  )
   const attachmentId = uploaded.attachment?.id
   assert.ok(attachmentId)
 
@@ -106,8 +131,7 @@ test('first DM attachment converges on one MLS group and decrypts for the recipi
         name: 'first-dm-attachment.txt',
         content_type: 'text/plain',
         size: plaintext.byteLength,
-        key: encrypted.key,
-        iv: encrypted.iv
+        encryption: encrypted.encryption
       }
     },
     { attachmentIds: [attachmentId] }
@@ -124,8 +148,11 @@ test('first DM attachment converges on one MLS group and decrypts for the recipi
   assert.equal(received.raw.attachments?.[0]?.id, attachmentId)
   assert.equal(received.raw.sender_id, aliceSession.user.id)
 
-  const downloaded = await bob.client.fetchAttachmentBytes(attachmentId)
-  const decrypted = await decryptFile(downloaded, encrypted.key, encrypted.iv)
+  const downloaded = await bob.client.fetchAttachmentResponse(attachmentId)
+  assert.ok(downloaded.body)
+  const decrypted = await collectStream(
+    decryptAttachmentStreamV2(downloaded.body, encrypted.encryption, plaintext.byteLength)
+  )
   assert.equal(new TextDecoder().decode(decrypted), 'first DM attachment payload')
 })
 

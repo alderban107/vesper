@@ -33,4 +33,20 @@ describe('attachment object URL cache', () => {
     expect(revoke).toHaveBeenCalledWith('blob:decrypted-attachment')
     expect(acquireCachedAttachmentObjectUrl('attachment-preview:one')).toBeNull()
   })
+
+  it('evicts unpinned decrypted blobs when their byte budget is exceeded', async () => {
+    vi.spyOn(URL, 'createObjectURL')
+      .mockReturnValueOnce('blob:first')
+      .mockReturnValueOnce('blob:second')
+    const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+    const largeBlob = (): Blob => new Blob([new Uint8Array(40 * 1024 * 1024)])
+
+    await loadCachedAttachmentObjectUrl('attachment-preview:first', async () => largeBlob())
+    releaseCachedAttachmentObjectUrl('attachment-preview:first')
+    await loadCachedAttachmentObjectUrl('attachment-preview:second', async () => largeBlob())
+
+    expect(revoke).toHaveBeenCalledWith('blob:first')
+    expect(acquireCachedAttachmentObjectUrl('attachment-preview:first')).toBeNull()
+    expect(acquireCachedAttachmentObjectUrl('attachment-preview:second')).toBe('blob:second')
+  })
 })

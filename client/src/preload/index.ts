@@ -190,8 +190,22 @@ const linkPreviewApi = {
     ipcRenderer.invoke('linkPreview:fetchMetadata', url)
 }
 
+const attachmentMediaApi = {
+  register: (registration: {
+    attachmentId: string
+    serverUrl: string
+    accessToken: string
+    contentType: string
+    plaintextSize: number
+    encryption: { v: 2; key: string; nonce_prefix: string }
+  }): Promise<string> => ipcRenderer.invoke('attachmentMedia:register', registration),
+  release: (url: string): Promise<boolean> => ipcRenderer.invoke('attachmentMedia:release', url),
+  clear: (): Promise<void> => ipcRenderer.invoke('attachmentMedia:clear')
+}
+
 contextBridge.exposeInMainWorld('electron', electronAPI)
 contextBridge.exposeInMainWorld('cryptoDb', cryptoDbApi)
 contextBridge.exposeInMainWorld('authSession', authSessionApi)
 contextBridge.exposeInMainWorld('notifications', notificationApi)
 contextBridge.exposeInMainWorld('linkPreview', linkPreviewApi)
+contextBridge.exposeInMainWorld('attachmentMedia', attachmentMediaApi)

@@ -1,12 +1,13 @@
-import { encryptFile, type FilePayload } from '@vesper/sdk/crypto'
+import type { AttachmentEncryptionV2, FilePayload } from '@vesper/sdk/crypto'
 import { extractAudioMetadata } from './audioMetadata'
 import { getRendererClient } from '../sdk/client'
 import { extractVideoThumbnail } from './videoThumbnail'
+import { stageEncryptedAttachment } from './attachmentEncryptionStaging'
 
 interface UploadedEncryptedAttachment {
   id: string
-  iv: string
-  key: string
+  size: number
+  encryption: AttachmentEncryptionV2
 }
 
 export interface PreparedMessageAttachment {
@@ -24,46 +25,42 @@ export class AttachmentPreparationError extends Error {
   }
 }
 
-async function uploadEncryptedBytes(
-  data: ArrayBuffer,
-  filename: string
+async function uploadEncryptedBlob(
+  blob: Blob,
+  filename: string,
+  contentType = 'application/octet-stream'
 ): Promise<UploadedEncryptedAttachment> {
-  let encrypted: Awaited<ReturnType<typeof encryptFile>>
+  let staged: Awaited<ReturnType<typeof stageEncryptedAttachment>>
   try {
-    encrypted = await encryptFile(data)
-  } catch {
-    throw new AttachmentPreparationError('This file could not be encrypted before upload.')
+    staged = await stageEncryptedAttachment(blob)
+  } catch (error) {
+    const message = error instanceof Error && error.message.startsWith('Large encrypted uploads')
+      ? error.message
+      : 'This file could not be encrypted before upload.'
+    throw new AttachmentPreparationError(message)
   }
 
-  let formData: FormData
   try {
-    formData = new FormData()
-    formData.append('file', new Blob([encrypted.ciphertext]), filename)
-    formData.append('encrypted', 'true')
-  } catch {
-    throw new AttachmentPreparationError('This file could not be prepared for upload.')
-  }
+    const payload = await getRendererClient().uploadAttachmentBlob(staged.ciphertext, {
+      filename,
+      contentType
+    })
 
-  let payload
-  try {
-    payload = await getRendererClient().uploadAttachment(formData)
-  } catch {
+    if (!payload.attachment?.id) {
+      throw new AttachmentPreparationError('The upload did not return a file reference. Try again.')
+    }
+
+    return {
+      id: payload.attachment.id,
+      size: blob.size,
+      encryption: staged.encryption
+    }
+  } catch (error) {
+    if (error instanceof AttachmentPreparationError) throw error
     throw new AttachmentPreparationError('This file could not be uploaded. Check your connection and try again.')
+  } finally {
+    await staged.cleanup()
   }
-
-  if (!payload.attachment?.id) {
-    throw new AttachmentPreparationError('The upload did not return a file reference. Try again.')
-  }
-
-  return {
-    id: payload.attachment.id,
-    iv: encrypted.iv,
-    key: encrypted.key
-  }
-}
-
-async function uploadEncryptedBlob(blob: Blob, filename: string): Promise<UploadedEncryptedAttachment> {
-  return await uploadEncryptedBytes(await blob.arrayBuffer(), filename)
 }
 
 function rethrowAfterSourceUpload(error: unknown): never {
@@ -76,7 +73,11 @@ function rethrowAfterSourceUpload(error: unknown): never {
 export async function prepareMessageAttachment(file: File): Promise<PreparedMessageAttachment> {
   let sourceAttachment: UploadedEncryptedAttachment
   try {
-    sourceAttachment = await uploadEncryptedBytes(await file.arrayBuffer(), file.name)
+    sourceAttachment = await uploadEncryptedBlob(
+      file,
+      file.name,
+      file.type || 'application/octet-stream'
+    )
   } catch (error) {
     if (error instanceof AttachmentPreparationError) throw error
     throw new AttachmentPreparationError('This file could not be read before upload.')
@@ -87,8 +88,7 @@ export async function prepareMessageAttachment(file: File): Promise<PreparedMess
     name: file.name,
     content_type: file.type || 'application/octet-stream',
     size: file.size,
-    key: sourceAttachment.key,
-    iv: sourceAttachment.iv
+    encryption: sourceAttachment.encryption
   }
   const attachmentIds = [sourceAttachment.id]
 
@@ -106,14 +106,14 @@ export async function prepareMessageAttachment(file: File): Promise<PreparedMess
     if (thumbnail) {
       let uploadedThumbnail: UploadedEncryptedAttachment
       try {
-        uploadedThumbnail = await uploadEncryptedBlob(thumbnail.blob, 'thumbnail.jpg')
+        uploadedThumbnail = await uploadEncryptedBlob(thumbnail.blob, 'thumbnail.jpg', 'image/jpeg')
       } catch (error) {
         rethrowAfterSourceUpload(error)
       }
       messageFile.thumbnail = {
         id: uploadedThumbnail.id,
-        key: uploadedThumbnail.key,
-        iv: uploadedThumbnail.iv
+        size: uploadedThumbnail.size,
+        encryption: uploadedThumbnail.encryption
       }
       messageFile.duration = thumbnail.duration
       attachmentIds.push(uploadedThumbnail.id)
@@ -144,14 +144,14 @@ export async function prepareMessageAttachment(file: File): Promise<PreparedMess
       if (metadata.coverBlob) {
         let uploadedCover: UploadedEncryptedAttachment
         try {
-          uploadedCover = await uploadEncryptedBlob(metadata.coverBlob, 'cover.jpg')
+          uploadedCover = await uploadEncryptedBlob(metadata.coverBlob, 'cover.jpg', 'image/jpeg')
         } catch (error) {
           rethrowAfterSourceUpload(error)
         }
         audioMetadata.cover = {
           id: uploadedCover.id,
-          key: uploadedCover.key,
-          iv: uploadedCover.iv
+          size: uploadedCover.size,
+          encryption: uploadedCover.encryption
         }
         attachmentIds.push(uploadedCover.id)
       }

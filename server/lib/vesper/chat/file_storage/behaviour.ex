@@ -13,6 +13,13 @@ defmodule Vesper.Chat.FileStorage.Behaviour do
   @callback store(source_path :: String.t(), original_filename :: String.t()) ::
               {:ok, storage_key()} | {:error, term()}
 
+  @doc "Ensure bytes already identified by a storage key are present without re-hashing them."
+  @callback ensure_stored(
+              source_path :: String.t(),
+              original_filename :: String.t(),
+              storage_key()
+            ) :: :ok | {:error, term()}
+
   @doc "Get the path or URL for a stored file."
   @callback get_path(storage_key()) :: String.t()
 

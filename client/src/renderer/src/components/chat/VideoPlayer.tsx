@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AlertCircle, Download, Film, Loader2, Play } from 'lucide-react'
-import { decryptFile } from '@vesper/sdk/crypto'
-import { fetchAttachmentBytes } from '../../utils/attachmentFetch'
+import type { FileAttachment } from '@vesper/sdk/crypto'
+import {
+  isStreamableAttachment,
+  loadDecryptedAttachmentBlob,
+  saveDecryptedAttachment
+} from '../../utils/attachmentTransfer'
+import { getRendererClient } from '../../sdk/client'
 import {
   acquireCachedAttachmentObjectUrl,
   loadCachedAttachmentObjectUrl,
@@ -28,30 +33,16 @@ function formatDuration(seconds: number): string {
 type VideoState = 'unloaded' | 'loading' | 'loaded' | 'error'
 
 interface VideoPlayerProps {
-  fileId: string
-  name: string
+  file: FileAttachment
   contentType: string
-  size: number
-  encryptionKey: string
-  iv: string
-  thumbnailId?: string
-  thumbnailKey?: string
-  thumbnailIv?: string
-  duration?: number
 }
 
 export default function VideoPlayer({
-  fileId,
-  name,
-  contentType,
-  size,
-  encryptionKey,
-  iv,
-  thumbnailId,
-  thumbnailKey,
-  thumbnailIv,
-  duration
+  file,
+  contentType
 }: VideoPlayerProps): React.JSX.Element {
+  const { id: fileId, name, size, duration, thumbnail } = file
+  const thumbnailId = thumbnail?.id
   const [state, setState] = useState<VideoState>('unloaded')
   const [blobUrl, setBlobUrl] = useState<string | null>(null)
   const [posterUrl, setPosterUrl] = useState<string | null>(null)
@@ -59,8 +50,15 @@ export default function VideoPlayer({
   const posterCacheKey = thumbnailId ? `attachment-poster:${thumbnailId}` : null
   const videoRetainedRef = useRef(false)
   const posterRetainedRef = useRef(false)
+  const mediaCapabilityUrlRef = useRef<string | null>(null)
 
   const releaseVideoUrl = useCallback(() => {
+    if (mediaCapabilityUrlRef.current) {
+      void window.attachmentMedia?.release(mediaCapabilityUrlRef.current)
+      mediaCapabilityUrlRef.current = null
+      setBlobUrl(null)
+      setState('unloaded')
+    }
     if (videoRetainedRef.current) {
       releaseCachedAttachmentObjectUrl(videoCacheKey)
       videoRetainedRef.current = false
@@ -94,7 +92,7 @@ export default function VideoPlayer({
 
   // Eagerly fetch/decrypt the tiny thumbnail JPEG
   useEffect(() => {
-    if (!thumbnailId || !thumbnailKey || !thumbnailIv || !posterCacheKey) return
+    if (!thumbnail || !posterCacheKey) return
 
     let cancelled = false
     const cachedPosterUrl = acquireCachedAttachmentObjectUrl(posterCacheKey)
@@ -109,9 +107,7 @@ export default function VideoPlayer({
 
     posterRetainedRef.current = true
     void loadCachedAttachmentObjectUrl(posterCacheKey, async () => {
-      const encrypted = await fetchAttachmentBytes(thumbnailId)
-      const decrypted = await decryptFile(encrypted, thumbnailKey, thumbnailIv)
-      return new Blob([decrypted], { type: 'image/jpeg' })
+      return await loadDecryptedAttachmentBlob(thumbnail, 'image/jpeg')
     })
       .then((url) => {
         if (cancelled) return
@@ -125,23 +121,43 @@ export default function VideoPlayer({
       cancelled = true
       releasePosterUrl()
     }
-  }, [thumbnailId, thumbnailKey, thumbnailIv, posterCacheKey, releasePosterUrl])
+  }, [thumbnail, thumbnailId, posterCacheKey, releasePosterUrl])
 
   const fetchAndDecrypt = async (): Promise<void> => {
-    if (videoRetainedRef.current && blobUrl) {
+    if ((videoRetainedRef.current || mediaCapabilityUrlRef.current) && blobUrl) {
       setState('loaded')
       return
     }
 
     setState('loading')
-    videoRetainedRef.current = true
 
     try {
-      const url = await loadCachedAttachmentObjectUrl(videoCacheKey, async () => {
-        const encrypted = await fetchAttachmentBytes(fileId)
-        const decrypted = await decryptFile(encrypted, encryptionKey, iv)
-        return new Blob([decrypted], { type: contentType })
-      })
+      if (isStreamableAttachment(file) && window.attachmentMedia) {
+        const client = getRendererClient()
+        const accessToken = client.getSessionStore().getAccessToken()
+        if (!accessToken) throw new Error('attachment media session is unavailable')
+        const url = await window.attachmentMedia.register({
+          attachmentId: file.id,
+          serverUrl: client.getServerUrl(),
+          accessToken,
+          contentType,
+          plaintextSize: file.size,
+          encryption: file.encryption
+        })
+        mediaCapabilityUrlRef.current = url
+        setBlobUrl(url)
+        setState('loaded')
+        return
+      }
+
+      if (isStreamableAttachment(file) && file.size > 8 * 1024 * 1024) {
+        throw new Error('large video streaming requires the desktop app')
+      }
+
+      videoRetainedRef.current = true
+      const url = await loadCachedAttachmentObjectUrl(videoCacheKey, async () =>
+        await loadDecryptedAttachmentBlob(file, contentType)
+      )
       setBlobUrl(url)
       setState('loaded')
     } catch {
@@ -155,20 +171,9 @@ export default function VideoPlayer({
 
   const handleDownload = async (): Promise<void> => {
     try {
-      let url = blobUrl
-      if (!url) {
-        const encrypted = await fetchAttachmentBytes(fileId)
-        const decrypted = await decryptFile(encrypted, encryptionKey, iv)
-        const blob = new Blob([decrypted], { type: contentType })
-        url = URL.createObjectURL(blob)
-      }
-      const a = document.createElement('a')
-      a.href = url
-      a.download = name
-      a.click()
-      if (url !== blobUrl) URL.revokeObjectURL(url)
+      await saveDecryptedAttachment(file, contentType)
     } catch {
-      /* download failed silently */
+      setState('error')
     }
   }
 

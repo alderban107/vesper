@@ -1516,17 +1516,21 @@ test('sdk preserves first DM messages for a peer that opens after the sender', {
       sentBeforeJoin.raw.mls_epoch
     )
 
-    const recovered = await waitFor('follower to recover the bounded pre-device-join DM window', async () => {
-      const synced = await followerChat.syncScope(scope, { limit: 10 })
-      const visible = synced.messages.filter(
-        (message) => beforeOpenContents.includes(message.content) && !message.decryptionFailed
-      )
-      const firstCached = await follower.storage.getCachedMessageDecryption(sentBeforeJoin.id)
-      const firstCachedPayload = firstCached ? JSON.parse(firstCached) : null
-      return visible.length === 10 && firstCachedPayload?.text === beforeOpenContents[0]
-        ? { visible, firstCached: firstCachedPayload.text }
-        : null
-    })
+    const recovered = await waitFor(
+      'follower to recover the bounded pre-device-join DM window',
+      async () => {
+        const synced = await followerChat.syncScope(scope, { limit: 10 })
+        const visible = synced.messages.filter(
+          (message) => beforeOpenContents.includes(message.content) && !message.decryptionFailed
+        )
+        const firstCached = await follower.storage.getCachedMessageDecryption(sentBeforeJoin.id)
+        const firstCachedPayload = firstCached ? JSON.parse(firstCached) : null
+        return visible.length === 10 && firstCachedPayload?.text === beforeOpenContents[0]
+          ? { visible, firstCached: firstCachedPayload.text }
+          : null
+      },
+      20_000
+    )
 
     assert.equal(recovered.visible.length, 10)
     assert.equal(recovered.firstCached, beforeOpenContents[0])

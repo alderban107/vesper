@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { encryptFile, uploadAttachment } = vi.hoisted(() => ({
-  encryptFile: vi.fn(),
-  uploadAttachment: vi.fn()
+const { stageEncryptedAttachment, uploadAttachmentBlob } = vi.hoisted(() => ({
+  stageEncryptedAttachment: vi.fn(),
+  uploadAttachmentBlob: vi.fn()
 }))
 
-vi.mock('@vesper/sdk/crypto', () => ({ encryptFile }))
+vi.mock('./attachmentEncryptionStaging', () => ({ stageEncryptedAttachment }))
 vi.mock('../sdk/client', () => ({
-  getRendererClient: () => ({ uploadAttachment })
+  getRendererClient: () => ({ uploadAttachmentBlob })
 }))
 
 import {
@@ -26,17 +26,18 @@ function createFile(): File {
 
 describe('prepareMessageAttachment', () => {
   beforeEach(() => {
-    encryptFile.mockReset()
-    uploadAttachment.mockReset()
-    encryptFile.mockResolvedValue({
-      ciphertext: new Uint8Array([1, 2, 3]),
-      iv: 'iv',
-      key: 'key'
+    stageEncryptedAttachment.mockReset()
+    uploadAttachmentBlob.mockReset()
+    stageEncryptedAttachment.mockResolvedValue({
+      ciphertext: new Blob([new Uint8Array([1, 2, 3])]),
+      ciphertextSize: 3,
+      encryption: { v: 2, key: 'key', nonce_prefix: 'nonce' },
+      cleanup: vi.fn().mockResolvedValue(undefined)
     })
   })
 
-  it('returns the encrypted upload reference needed for the durable send', async () => {
-    uploadAttachment.mockResolvedValue({ attachment: { id: 'attachment-1' } })
+  it('returns the streamable encrypted upload reference needed for the durable send', async () => {
+    uploadAttachmentBlob.mockResolvedValue({ attachment: { id: 'attachment-1' } })
 
     await expect(prepareMessageAttachment(createFile())).resolves.toEqual({
       attachmentIds: ['attachment-1'],
@@ -45,14 +46,13 @@ describe('prepareMessageAttachment', () => {
         name: 'report.txt',
         content_type: 'text/plain',
         size: 7,
-        key: 'key',
-        iv: 'iv'
+        encryption: { v: 2, key: 'key', nonce_prefix: 'nonce' }
       }
     })
   })
 
   it('makes an upload failure actionable without discarding the staged file', async () => {
-    uploadAttachment.mockRejectedValue(new Error('network unavailable'))
+    uploadAttachmentBlob.mockRejectedValue(new Error('network unavailable'))
 
     await expect(prepareMessageAttachment(createFile())).rejects.toMatchObject({
       name: 'AttachmentPreparationError',

@@ -9,6 +9,7 @@ import {
   fetchPendingWelcomes
 } from '../api/crypto.js'
 import { fetchRoomCryptoTopology } from '../api/roomCrypto.js'
+import { uint8ToBase64 } from '../api/encoding.js'
 import {
   createConversation,
   createServer,
@@ -1680,14 +1681,45 @@ export class VesperClient {
     }
   }
 
-  async fetchAttachmentBytes(attachmentId: string): Promise<ArrayBuffer> {
-    const response = await this.httpClient.apiFetch(`/api/v1/attachments/${attachmentId}`)
+  async fetchAttachmentResponse(
+    attachmentId: string,
+    options: { signal?: AbortSignal; range?: string; ifRange?: string } = {}
+  ): Promise<Response> {
+    const headers: Record<string, string> = {}
+    if (options.range) headers.Range = options.range
+    if (options.ifRange) headers['If-Range'] = options.ifRange
+
+    const response = await this.httpClient.apiFetch(`/api/v1/attachments/${attachmentId}`, {
+      signal: options.signal,
+      headers
+    })
     await this.assertResponseOk(response, `Could not load attachment: status ${response.status}`)
-    return await response.arrayBuffer()
+    return response
+  }
+
+  async fetchAttachmentBytes(attachmentId: string): Promise<ArrayBuffer> {
+    return await (await this.fetchAttachmentResponse(attachmentId)).arrayBuffer()
   }
 
   async uploadAttachment(formData: FormData): Promise<VesperAttachmentUpload> {
     return await this.uploadJson<VesperAttachmentUpload>('/api/v1/attachments', formData, 'Could not upload attachment')
+  }
+
+  async uploadAttachmentBlob(
+    ciphertext: Blob,
+    options: { filename: string; contentType?: string }
+  ): Promise<VesperAttachmentUpload> {
+    const response = await this.httpClient.apiFetch('/api/v1/attachments/stream', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'X-Vesper-Filename-B64': uint8ToBase64(new TextEncoder().encode(options.filename)),
+        'X-Vesper-Content-Type': options.contentType || 'application/octet-stream'
+      },
+      body: ciphertext
+    })
+    await this.assertResponseOk(response, `Could not upload attachment: status ${response.status}`)
+    return await response.json() as VesperAttachmentUpload
   }
 
   async fetchCurrentUser(): Promise<VesperUser> {

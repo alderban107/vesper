@@ -172,6 +172,7 @@ defmodule VesperWeb.Router do
   scope "/api/v1", VesperWeb do
     pipe_through([:api, :authenticated, :rate_limit_upload])
     post("/attachments", AttachmentController, :create)
+    post("/attachments/stream", AttachmentController, :create_stream)
   end
 
   scope "/api/v1", VesperWeb do

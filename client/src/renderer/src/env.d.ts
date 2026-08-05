@@ -262,6 +262,18 @@ interface Window {
       site_name: string | null
     } | null>
   }
+  attachmentMedia?: {
+    register(registration: {
+      attachmentId: string
+      serverUrl: string
+      accessToken: string
+      contentType: string
+      plaintextSize: number
+      encryption: { v: 2; key: string; nonce_prefix: string }
+    }): Promise<string>
+    release(url: string): Promise<boolean>
+    clear(): Promise<void>
+  }
   electron: {
     ipcRenderer: {
       invoke(channel: string, ...args: unknown[]): Promise<unknown>

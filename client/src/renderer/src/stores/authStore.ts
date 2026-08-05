@@ -229,7 +229,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   logout: async () => {
     await getRendererClient().logout()
     resetRendererClient()
-    resetAllStores()
+    await resetAllStores()
     set({
       user: null,
       currentDevice: null,
