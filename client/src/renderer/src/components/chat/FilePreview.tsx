@@ -73,10 +73,17 @@ async function loadDecryptedAttachment(
   }
 }
 
-function attachmentErrorMessage(error: AttachmentTransferErrorKind): string {
+function attachmentErrorMessage(
+  error: AttachmentTransferErrorKind,
+  streamable: boolean
+): string {
   if (error === 'network') return 'Could not download file. Check your connection.'
   if (error === 'integrity') return 'File could not be decrypted.'
-  if (error === 'unsupported') return 'This large file needs the desktop app or a browser with streaming file saves.'
+  if (error === 'unsupported') {
+    return streamable
+      ? 'This large file needs the desktop app or a browser with streaming file saves.'
+      : 'This older large attachment cannot be streamed. Ask the sender to resend it.'
+  }
   return 'File expired or unavailable.'
 }
 
@@ -339,7 +346,7 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
       setError(
         downloadError instanceof AttachmentDisplayError
           ? downloadError.kind
-          : /streaming file saves|requires the desktop app/i.test(message)
+          : /streaming file saves|cannot be streamed/i.test(message)
             ? 'unsupported'
             : 'network'
       )
@@ -360,7 +367,7 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
     return (
       <div data-testid="attachment" className="flex items-center gap-2 px-3 py-2 bg-bg-tertiary/50 rounded-lg text-xs text-text-faint border border-border mt-1.5">
         <AlertCircle className="w-4 h-4 text-error" />
-        <span>{attachmentErrorMessage(error)}</span>
+        <span>{attachmentErrorMessage(error, isStreamableAttachment(file))}</span>
         {error === 'network' && (
           <button type="button" className="font-medium text-text hover:underline" onClick={retryDownload}>
             Retry

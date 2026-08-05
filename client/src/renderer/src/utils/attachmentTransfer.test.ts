@@ -119,7 +119,7 @@ describe('attachment transfer', () => {
     }
 
     await expect(saveDecryptedAttachment(attachment, attachment.content_type)).rejects.toThrow(
-      'requires the desktop app'
+      'cannot be streamed'
     )
     expect(fetchAttachmentBytes).not.toHaveBeenCalled()
   })

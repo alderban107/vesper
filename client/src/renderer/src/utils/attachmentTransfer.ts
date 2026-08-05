@@ -168,7 +168,7 @@ export async function saveDecryptedAttachment(
     throw new Error(
       isStreamableAttachment(attachment)
         ? 'Streaming file saves are unavailable in this browser.'
-        : 'This older large attachment requires the desktop app.'
+        : 'This older large attachment cannot be streamed. Ask the sender to resend it.'
     )
   }
 
