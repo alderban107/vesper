@@ -20,6 +20,38 @@ export async function uploadKeyPackages(
   }
 }
 
+export interface FetchedKeyPackage {
+  data: Uint8Array
+  deviceId: string
+}
+
+/**
+ * Fetch one unconsumed key package together with its owning device identity.
+ */
+export async function fetchKeyPackageWithIdentity(
+  userId: string,
+  deviceId?: string,
+  httpClient: VesperHttpClient = getDefaultHttpClient()
+): Promise<FetchedKeyPackage | null> {
+  const query = deviceId ? `?device_id=${encodeURIComponent(deviceId)}` : ''
+  const res = await httpClient.apiFetch(`/api/v1/key-packages/${userId}${query}`)
+  if (res.status === 404) {
+    return null
+  }
+  if (!res.ok) {
+    throw new Error(`Could not fetch key package for user ${userId}: ${res.status}`)
+  }
+
+  const payload = await res.json()
+  if (typeof payload.key_package !== 'string' || typeof payload.device_id !== 'string') {
+    return null
+  }
+  return {
+    data: base64ToUint8(payload.key_package),
+    deviceId: payload.device_id
+  }
+}
+
 /**
  * Fetch one unconsumed key package for a user.
  */
@@ -28,15 +60,7 @@ export async function fetchKeyPackage(
   deviceId?: string,
   httpClient: VesperHttpClient = getDefaultHttpClient()
 ): Promise<Uint8Array | null> {
-  const query = deviceId ? `?device_id=${encodeURIComponent(deviceId)}` : ''
-  const res = await httpClient.apiFetch(`/api/v1/key-packages/${userId}${query}`)
-  if (!res.ok) {
-    throw new Error(`Could not fetch key package for user ${userId}: ${res.status}`)
-  }
-
-  const data = await res.json()
-  if (!data.key_package) return null
-  return base64ToUint8(data.key_package)
+  return (await fetchKeyPackageWithIdentity(userId, deviceId, httpClient))?.data ?? null
 }
 
 /**
@@ -369,17 +393,19 @@ export async function publishExternalCommitGroupInfo(
   ratchetTreeData: Uint8Array | null,
   epoch: number,
   previousEpoch: number,
+  previousTranscriptHash: Uint8Array,
   commitData: string,
   commitId: string,
   httpClient: VesperHttpClient = getDefaultHttpClient()
 ): Promise<
-  | { status: 'ok'; commitEventSeq: number | null }
-  | { status: 'conflict' }
+  | { status: 'ok'; commitEventSeq: number | null; transcriptHash: Uint8Array | null }
+  | { status: 'conflict'; currentEpoch: number | null; currentTranscriptHash: Uint8Array | null }
 > {
   const body: Record<string, unknown> = {
     group_info_data: uint8ToBase64(groupInfoData),
     epoch,
     previous_epoch: previousEpoch,
+    previous_transcript_hash: uint8ToBase64(previousTranscriptHash),
     commit_data: commitData,
     commit_id: commitId
   }
@@ -397,7 +423,14 @@ export async function publishExternalCommitGroupInfo(
   )
 
   if (res.status === 409) {
-    return { status: 'conflict' }
+    const data = await res.json().catch(() => ({}))
+    return {
+      status: 'conflict',
+      currentEpoch: typeof data.current_epoch === 'number' ? data.current_epoch : null,
+      currentTranscriptHash: typeof data.current_transcript_hash === 'string'
+        ? base64ToUint8(data.current_transcript_hash)
+        : null
+    }
   }
 
   if (!res.ok) {
@@ -408,7 +441,10 @@ export async function publishExternalCommitGroupInfo(
   const data = await res.json().catch(() => ({}))
   return {
     status: 'ok',
-    commitEventSeq: typeof data.commit_event_seq === 'number' ? data.commit_event_seq : null
+    commitEventSeq: typeof data.commit_event_seq === 'number' ? data.commit_event_seq : null,
+    transcriptHash: typeof data.group_info?.transcript_hash === 'string'
+      ? base64ToUint8(data.group_info.transcript_hash)
+      : null
   }
 }
 
@@ -419,6 +455,7 @@ export async function publishSponsoredTransition(
     ratchetTreeData: Uint8Array | null
     epoch: number
     previousEpoch: number
+    previousTranscriptHash: Uint8Array
     recipientId: string
     recipientClientId: string | null
     recipientKeyPackageRef: string | null
@@ -435,16 +472,19 @@ export async function publishSponsoredTransition(
       commitEventSeq: number | null
       removeEventSeq: number | null
       welcomeId: string | null
+      transcriptHash: Uint8Array | null
     }
   | {
       status: 'conflict'
       currentEpoch: number | null
+      currentTranscriptHash: Uint8Array | null
     }
 > {
   const body: Record<string, unknown> = {
     group_info_data: uint8ToBase64(transition.groupInfoData),
     epoch: transition.epoch,
     previous_epoch: transition.previousEpoch,
+    previous_transcript_hash: uint8ToBase64(transition.previousTranscriptHash),
     recipient_id: transition.recipientId,
     commit_data: transition.commitData,
     commit_id: transition.commitId
@@ -479,18 +519,13 @@ export async function publishSponsoredTransition(
   )
 
   if (res.status === 409) {
-    let currentEpoch: number | null = null
-    try {
-      const body = await res.json()
-      if (typeof body.current_epoch === 'number') {
-        currentEpoch = body.current_epoch
-      }
-    } catch {
-      // ignore parse errors
-    }
+    const data = await res.json().catch(() => ({}))
     return {
       status: 'conflict',
-      currentEpoch
+      currentEpoch: typeof data.current_epoch === 'number' ? data.current_epoch : null,
+      currentTranscriptHash: typeof data.current_transcript_hash === 'string'
+        ? base64ToUint8(data.current_transcript_hash)
+        : null
     }
   }
 
@@ -505,7 +540,10 @@ export async function publishSponsoredTransition(
     fresh: data.fresh !== false,
     commitEventSeq: typeof data.commit_event_seq === 'number' ? data.commit_event_seq : null,
     removeEventSeq: typeof data.remove_event_seq === 'number' ? data.remove_event_seq : null,
-    welcomeId: typeof data.welcome_id === 'string' ? data.welcome_id : null
+    welcomeId: typeof data.welcome_id === 'string' ? data.welcome_id : null,
+    transcriptHash: typeof data.transcript_hash === 'string'
+      ? base64ToUint8(data.transcript_hash)
+      : null
   }
 }
 
@@ -520,6 +558,7 @@ export async function fetchGroupInfo(
   groupInfoData: Uint8Array
   ratchetTreeData: Uint8Array | null
   epoch: number
+  transcriptHash: Uint8Array
   publisherId: string
 } | null> {
   const res = await httpClient.apiFetch(
@@ -538,6 +577,7 @@ export async function fetchGroupInfo(
     group_info_data: string
     ratchet_tree_data: string | null
     epoch: number
+    transcript_hash: string
     publisher_id: string
   }}
 
@@ -547,6 +587,7 @@ export async function fetchGroupInfo(
       ? base64ToUint8(data.group_info.ratchet_tree_data)
       : null,
     epoch: data.group_info.epoch,
+    transcriptHash: base64ToUint8(data.group_info.transcript_hash),
     publisherId: data.group_info.publisher_id
   }
 }

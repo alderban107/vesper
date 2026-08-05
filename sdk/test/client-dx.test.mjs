@@ -711,18 +711,14 @@ test('sdk flushes a persisted sponsored transition after restart', { concurrency
     const scope = { kind: 'channel', id: channel.id }
 
     await primaryChat.watchScope(scope)
-    await secondaryChat.watchScope(scope)
     assert.equal(await primaryChat.createScopeGroup(scope), true)
     assert.equal(primaryChat.getGroupEpoch(channel.id), 0)
 
     const httpClient = primaryShared.client.getHttpClient()
     const originalApiFetch = httpClient.apiFetch.bind(httpClient)
     const sponsoredPath = `/api/v1/mls-sponsored-transition/${encodeURIComponent(channel.id)}`
-    let failedOnce = false
-
     httpClient.apiFetch = async (path, options = {}) => {
-      if (!failedOnce && path === sponsoredPath && options.method === 'POST') {
-        failedOnce = true
+      if (path === sponsoredPath && options.method === 'POST') {
         return new Response(JSON.stringify({ error: 'forced sponsored transition failure' }), {
           status: 503,
           headers: {
@@ -754,7 +750,13 @@ test('sdk flushes a persisted sponsored transition after restart', { concurrency
       assert.equal(pending.length, 1)
       assert.equal(pending[0]?.scope_id, channel.id)
 
-      assert.equal(primaryChat.getGroupEpoch(channel.id), 1)
+      // The failed transition is durable only as an idempotent intent. Its
+      // checkpoint must remain at the pre-transition MLS epoch until the
+      // server assigns durable event sequences.
+      assert.equal(primaryChat.getGroupEpoch(channel.id), 0)
+      const stagedCheckpoint = await primaryShared.storage.getScopeCheckpoint(channel.id)
+      assert.equal(stagedCheckpoint.epoch, 0)
+      assert.equal(stagedCheckpoint.last_event_seq, 0)
       assert.equal(secondaryChat.hasGroup(channel.id), false)
     } finally {
       httpClient.apiFetch = originalApiFetch
@@ -782,6 +784,7 @@ test('sdk flushes a persisted sponsored transition after restart', { concurrency
         return pending.length === 0
       })
 
+      await secondaryChat.watchScope(scope)
       await waitFor('secondary device to receive the sponsored resync', async () => {
         return await secondaryChat.ensureMembership(scope)
       })
@@ -796,6 +799,9 @@ test('sdk flushes a persisted sponsored transition after restart', { concurrency
       })
 
       assert.equal(secondaryChat.getGroupEpoch(channel.id), 1)
+      const appliedCheckpoint = await primaryShared.storage.getScopeCheckpoint(channel.id)
+      assert.equal(appliedCheckpoint.epoch, 1)
+      assert.ok(appliedCheckpoint.last_event_seq > 0)
     } finally {
       restartedPrimary.client.stop()
     }
@@ -813,7 +819,8 @@ test('sdk rolls a losing sponsor back onto the winning epoch', { concurrency: fa
 
   const owner = createClientHarness(stack.apiUrl, 'sponsor-race-owner')
   const friend = createClientHarness(stack.apiUrl, 'sponsor-race-friend')
-  const secondaryOwner = createClientHarness(stack.apiUrl, 'sponsor-race-secondary')
+  const secondaryOwner = createClientHarness(stack.apiUrl, 'sponsor-race-owner-secondary')
+  const secondaryFriend = createClientHarness(stack.apiUrl, 'sponsor-race-friend-secondary')
   const ownerUsername = uniqueUsername('sdksponsorowner')
   const friendUsername = uniqueUsername('sdksponsorfriend')
   const password = 'vesper-sdk-sponsored-race-password'
@@ -831,11 +838,18 @@ test('sdk rolls a losing sponsor back onto the winning epoch', { concurrency: fa
       ownerUsername,
       password
     )
-    await secondaryOwner.client.start(false)
+    await approveAndUnlockSecondary(
+      friend.client,
+      secondaryFriend.client,
+      secondaryFriend.device.id,
+      friendUsername,
+      password
+    )
 
     const ownerChat = owner.client.createEncryptedChat()
     const friendChat = friend.client.createEncryptedChat()
     const secondaryOwnerChat = secondaryOwner.client.createEncryptedChat()
+    const secondaryFriendChat = secondaryFriend.client.createEncryptedChat()
 
     const server = await owner.client.createServer(`SDK Sponsored Race ${Date.now()}`)
     const channel = server.channels.find((entry) => entry.name === 'general') ?? null
@@ -846,7 +860,6 @@ test('sdk rolls a losing sponsor back onto the winning epoch', { concurrency: fa
     const scope = { kind: 'channel', id: channel.id }
     await ownerChat.watchScope(scope)
     await friendChat.watchScope(scope)
-    await secondaryOwnerChat.watchScope(scope)
 
     assert.equal(await ownerChat.createScopeGroup(scope), true)
     assert.equal(await friendChat.ensureMembership(scope), true)
@@ -856,7 +869,9 @@ test('sdk rolls a losing sponsor back onto the winning epoch', { concurrency: fa
     })
 
     const ownerSession = owner.client.getAuthSession()
+    const friendSession = friend.client.getAuthSession()
     assert.ok(ownerSession, 'expected an owner auth session')
+    assert.ok(friendSession, 'expected a friend auth session')
 
     const sponsoredPath = `/api/v1/mls-sponsored-transition/${encodeURIComponent(channel.id)}`
     const ownerHttp = owner.client.getHttpClient()
@@ -865,15 +880,20 @@ test('sdk rolls a losing sponsor back onto the winning epoch', { concurrency: fa
     const originalFriendApiFetch = friendHttp.apiFetch.bind(friendHttp)
     let readyCount = 0
     let releaseBarrier = null
-    const barrier = new Promise((resolve) => {
+    let barrierTimeout = null
+    const barrier = new Promise((resolve, reject) => {
       releaseBarrier = resolve
-      setTimeout(resolve, 1_000)
+      barrierTimeout = setTimeout(() => {
+        reject(new Error('Timed out waiting for both sponsored transitions to reach the CAS boundary'))
+      }, 10_000)
     })
 
     ownerHttp.apiFetch = async (path, options = {}) => {
       if (path === sponsoredPath && options.method === 'POST') {
         readyCount += 1
         if (readyCount === 2) {
+          clearTimeout(barrierTimeout)
+          barrierTimeout = null
           releaseBarrier?.()
         }
         await barrier
@@ -886,6 +906,8 @@ test('sdk rolls a losing sponsor back onto the winning epoch', { concurrency: fa
       if (path === sponsoredPath && options.method === 'POST') {
         readyCount += 1
         if (readyCount === 2) {
+          clearTimeout(barrierTimeout)
+          barrierTimeout = null
           releaseBarrier?.()
         }
         await barrier
@@ -895,9 +917,15 @@ test('sdk rolls a losing sponsor back onto the winning epoch', { concurrency: fa
     }
 
     try {
+      await waitFor('both sponsors to observe the same predecessor epoch', async () => {
+        return ownerChat.getGroupEpoch(channel.id) === friendChat.getGroupEpoch(channel.id)
+      })
+      const sponsorshipBaseEpoch = ownerChat.getGroupEpoch(channel.id)
+      assert.ok(sponsorshipBaseEpoch != null)
+
       const [ownerSponsored, friendSponsored] = await Promise.all([
         ownerChat.sponsorScopeResync(channel.id, ownerSession.user.id, secondaryOwner.device.id),
-        friendChat.sponsorScopeResync(channel.id, ownerSession.user.id, secondaryOwner.device.id)
+        friendChat.sponsorScopeResync(channel.id, friendSession.user.id, secondaryFriend.device.id)
       ])
 
       assert.equal(
@@ -906,12 +934,21 @@ test('sdk rolls a losing sponsor back onto the winning epoch', { concurrency: fa
         'expected exactly one sponsor to win the CAS'
       )
 
-      await waitFor('both sponsors to converge on epoch 2', async () => {
-        return ownerChat.getGroupEpoch(channel.id) === 2 && friendChat.getGroupEpoch(channel.id) === 2
+      const convergedEpoch = await waitFor('both sponsors to converge on one winning epoch', async () => {
+        const ownerEpoch = ownerChat.getGroupEpoch(channel.id)
+        const friendEpoch = friendChat.getGroupEpoch(channel.id)
+        return ownerEpoch != null && ownerEpoch > sponsorshipBaseEpoch && ownerEpoch === friendEpoch
+          ? ownerEpoch
+          : null
       })
+      assert.equal(convergedEpoch, sponsorshipBaseEpoch + 1)
 
-      await waitFor('secondary owner device to rejoin from the winning sponsorship', async () => {
-        return await secondaryOwnerChat.ensureMembership(scope)
+      const winningSecondary = ownerSponsored ? secondaryOwner : secondaryFriend
+      const winningSecondaryChat = ownerSponsored ? secondaryOwnerChat : secondaryFriendChat
+      await winningSecondary.client.start(false)
+      await winningSecondaryChat.watchScope(scope)
+      await waitFor('winning secondary device to join from its sponsored Welcome', async () => {
+        return await winningSecondaryChat.ensureMembership(scope)
       })
 
       assert.equal(
@@ -925,6 +962,9 @@ test('sdk rolls a losing sponsor back onto the winning epoch', { concurrency: fa
       assert.equal(ownerChat.hasGroup(channel.id), true)
       assert.equal(friendChat.hasGroup(channel.id), true)
     } finally {
+      if (barrierTimeout) {
+        clearTimeout(barrierTimeout)
+      }
       ownerHttp.apiFetch = originalOwnerApiFetch
       friendHttp.apiFetch = originalFriendApiFetch
     }
@@ -932,6 +972,7 @@ test('sdk rolls a losing sponsor back onto the winning epoch', { concurrency: fa
     owner.client.stop()
     friend.client.stop()
     secondaryOwner.client.stop()
+    secondaryFriend.client.stop()
   }
 })
 
@@ -1323,8 +1364,12 @@ test('sdk ignores stale dm join-all replay after restart when the peer is alread
       return await followerChat.ensureMembership(scope)
     })
 
-    await waitFor('dm epochs to converge', async () => {
-      return leaderChat.getGroupEpoch(scope.channelId || scope.id) === 1 && followerChat.getGroupEpoch(scope.channelId || scope.id) === 1
+    const convergedEpoch = await waitFor('dm epochs to converge', async () => {
+      const leaderEpoch = leaderChat.getGroupEpoch(scope.channelId || scope.id)
+      const followerEpoch = followerChat.getGroupEpoch(scope.channelId || scope.id)
+      return leaderEpoch != null && leaderEpoch > 0 && leaderEpoch === followerEpoch
+        ? leaderEpoch
+        : null
     })
 
     assert.equal(followerChat.isMemberOfGroup(scope.channelId || scope.id, leader.userId), true)
@@ -1342,12 +1387,20 @@ test('sdk ignores stale dm join-all replay after restart when the peer is alread
       await restartedFollower.client.start(false)
       await restartedFollowerChat.watchScope(scope)
       assert.equal(await restartedFollowerChat.ensureMembership(scope), true)
-      assert.equal(restartedFollowerChat.getGroupEpoch(scope.channelId || scope.id), 1)
+      const postRestartEpoch = await waitFor('restarted dm peers to converge', async () => {
+        const leaderEpoch = leaderChat.getGroupEpoch(scope.channelId || scope.id)
+        const followerEpoch = restartedFollowerChat.getGroupEpoch(scope.channelId || scope.id)
+        return leaderEpoch != null && leaderEpoch >= convergedEpoch && leaderEpoch === followerEpoch
+          ? leaderEpoch
+          : null
+      })
       assert.equal(restartedFollowerChat.isMemberOfGroup(scope.channelId || scope.id, leader.userId), true)
+      assert.equal(restartedFollowerChat.isMemberOfGroup(scope.channelId || scope.id, follower.userId), true)
 
       await restartedFollowerChat.processScopeEvent(scope, 'mls_request_join_all', {
         user_id: leader.userId
       })
+      assert.equal(restartedFollowerChat.getGroupEpoch(scope.channelId || scope.id), postRestartEpoch)
 
       await new Promise((resolve) => {
         setTimeout(resolve, 750)
@@ -1355,8 +1408,8 @@ test('sdk ignores stale dm join-all replay after restart when the peer is alread
 
       assert.equal(restartedFollowerChat.hasGroup(scope.channelId || scope.id), true)
       assert.equal(restartedFollowerChat.isMemberOfGroup(scope.channelId || scope.id, leader.userId), true)
-      assert.equal(restartedFollowerChat.getGroupEpoch(scope.channelId || scope.id), 1)
-      assert.equal(leaderChat.getGroupEpoch(scope.channelId || scope.id), 1)
+      assert.equal(restartedFollowerChat.getGroupEpoch(scope.channelId || scope.id), postRestartEpoch)
+      assert.equal(leaderChat.getGroupEpoch(scope.channelId || scope.id), postRestartEpoch)
     } finally {
       restartedFollower.client.stop()
     }
@@ -1427,9 +1480,10 @@ test('sdk preserves first DM messages for a peer that opens after the sender', {
     assert.equal(await leaderChat.ensureScopeReady(scope, true), true)
 
     // The application already authorizes the follower as a DM participant, but
-    // the follower has not watched the scope or joined its MLS group yet. Send
-    // more rows than the follower's first sync window so bundle consumption is
-    // proven against an authoritative backfill rather than one visible row.
+    // the follower has not watched the scope yet. The sender must sponsor the
+    // follower's published device package before the first message so recovery
+    // does not depend on the sender remaining online. Send more rows than the
+    // follower's first sync window to exercise authoritative backfill as well.
     const beforeOpenContents = Array.from({ length: 12 }, (_value, index) => `dm-before-follower-open-${index}`)
     for (const content of beforeOpenContents) {
       await leaderChat.sendText(scope, content)
@@ -1440,7 +1494,7 @@ test('sdk preserves first DM messages for a peer that opens after the sender', {
       const firstMessage = synced.messages.find((message) => message.content === beforeOpenContents[0])
       return firstMessage && synced.messages.filter((message) => beforeOpenContents.includes(message.content)).length === beforeOpenContents.length ? firstMessage : null
     })
-    assert.equal(sentBeforeJoin.raw.mls_epoch, 0)
+    assert.ok(sentBeforeJoin.raw.mls_epoch > 0)
     const originalPlaintext = await leader.storage.getSentMessagePlaintext(
       sentBeforeJoin.raw.ciphertext
     )
@@ -1457,7 +1511,10 @@ test('sdk preserves first DM messages for a peer that opens after the sender', {
     await waitFor('follower to join the DM group after the message', async () => {
       return await followerChat.ensureMembership(scope)
     })
-    assert.ok(followerChat.getGroupEpoch(scope.channelId || scope.id) > sentBeforeJoin.raw.mls_epoch)
+    assert.equal(
+      followerChat.getGroupEpoch(scope.channelId || scope.id),
+      sentBeforeJoin.raw.mls_epoch
+    )
 
     const recovered = await waitFor('follower to recover the bounded pre-device-join DM window', async () => {
       const synced = await followerChat.syncScope(scope, { limit: 10 })
@@ -1496,7 +1553,6 @@ test('sdk isolates MLS control state by assigned room cohort', { concurrency: fa
     await other.client.register(uniqueUsername('sdkcohortother'), password)
     await owner.client.start(false)
     await peer.client.start(false)
-    await rotator.client.start(false)
     await other.client.start(false)
 
     const server = await owner.client.createServer(`SDK Cohort ${Date.now()}`)
@@ -1662,10 +1718,16 @@ test('sdk isolates MLS control state by assigned room cohort', { concurrency: fa
     assert.equal(substitution.status, 409)
 
     const otherCohortEpochBeforeRotation = otherChat.getGroupEpoch(otherTopology.groupId)
+    await rotator.client.start(false)
     await rotatorChat.watchScope(scope)
     assert.equal(await rotatorChat.ensureMembership(scope), true)
+    const rotatorJoinedEpoch = rotatorChat.getGroupEpoch(rotatorTopology.groupId)
+    assert.ok(
+      rotatorJoinedEpoch != null && rotatorJoinedEpoch > ownerWrapping.publication.mlsEpoch,
+      `expected rotator to join after wrapping epoch ${ownerWrapping.publication.mlsEpoch}; rotator=${rotatorJoinedEpoch}; owner=${ownerChat.getGroupEpoch(ownerTopology.groupId)}`
+    )
     await waitFor('cohort wrapping epoch rotation', async () => {
-      return ownerChat.getGroupEpoch(ownerTopology.groupId) > ownerWrapping.publication.mlsEpoch
+      return ownerChat.getGroupEpoch(ownerTopology.groupId) === rotatorJoinedEpoch
     })
 
     const rotatedWrapping = await ownerChat.deriveScopeCohortWrappingKey(scope)

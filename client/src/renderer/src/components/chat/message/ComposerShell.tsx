@@ -1,12 +1,15 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Eye, EyeOff, Glasses, Trash2, FileIcon, X } from 'lucide-react'
 import { parseMessageContent, type Message } from '../../../stores/messageStore'
+import { resolveStagedFilename } from '../../../utils/attachmentFilename'
 
 export interface StagedFile {
   file: File
   id: string
   spoiler?: boolean
   anonymous?: boolean
+  anonymousName?: string
+  deliveryState?: 'uploading' | 'failed'
 }
 
 interface Props {
@@ -19,24 +22,6 @@ interface Props {
   onToggleSpoiler?: (id: string) => void
   onToggleAnonymous?: (id: string) => void
   children: ReactNode
-}
-
-function generateAnonFilename(originalName: string): string {
-  const ext = originalName.includes('.') ? originalName.slice(originalName.lastIndexOf('.')) : ''
-  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
-  let name = ''
-  for (let i = 0; i < 16; i++) {
-    name += chars[Math.floor(Math.random() * chars.length)]
-  }
-  return name + ext
-}
-
-export function resolveFilename(entry: StagedFile): string {
-  let name = entry.anonymous ? generateAnonFilename(entry.file.name) : entry.file.name
-  if (entry.spoiler && !name.startsWith('SPOILER_')) {
-    name = 'SPOILER_' + name
-  }
-  return name
 }
 
 function getReplyAuthor(message: Message): string {
@@ -113,7 +98,7 @@ function StagedFileCard({
     return undefined
   }, [entry.file])
 
-  const displayName = resolveFilename(entry)
+  const displayName = resolveStagedFilename(entry)
   const truncatedName = displayName.length > 24
     ? displayName.slice(0, 21) + '...'
     : displayName
@@ -172,6 +157,16 @@ function StagedFileCard({
       <div className="vesper-staged-card-name" title={entry.file.name}>
         {truncatedName}
       </div>
+      {entry.deliveryState && (
+        <div
+          data-testid="staged-file-status"
+          className={entry.deliveryState === 'failed'
+            ? 'vesper-staged-card-status vesper-staged-card-status-failed'
+            : 'vesper-staged-card-status'}
+        >
+          {entry.deliveryState === 'uploading' ? 'Uploading…' : 'Upload failed. Retry.'}
+        </div>
+      )}
     </div>
   )
 }

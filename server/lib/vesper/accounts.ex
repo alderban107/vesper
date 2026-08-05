@@ -1,6 +1,7 @@
 defmodule Vesper.Accounts do
   import Ecto.Query
   alias Vesper.Repo
+  alias Vesper.Servers
   alias Vesper.Accounts.{Device, SearchIndexSnapshot, Token, User, UserToken}
 
   def get_user(id), do: Repo.get(User, id)
@@ -156,41 +157,79 @@ defmodule Vesper.Accounts do
         {:error, :not_found}
 
       %Device{} = device ->
-        device
-        |> Device.changeset(%{
-          trust_state: "trusted",
-          approval_method: approval_method,
-          trusted_at: now,
-          revoked_at: nil,
-          last_seen_at: now
-        })
-        |> Repo.update()
+        if device_revoked?(device) do
+          {:error, :device_revoked}
+        else
+          device
+          |> Device.changeset(%{
+            trust_state: "trusted",
+            approval_method: approval_method,
+            trusted_at: now,
+            revoked_at: nil,
+            last_seen_at: now
+          })
+          |> Repo.update()
+        end
     end
   end
 
   def revoke_device(user_id, device_id) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
-    case get_user_device(user_id, device_id) do
-      nil ->
-        {:error, :not_found}
+    Repo.transaction(fn ->
+      device =
+        from(device in Device,
+          where: device.id == ^device_id and device.user_id == ^user_id,
+          lock: "FOR UPDATE"
+        )
+        |> Repo.one()
 
-      %Device{} = device ->
-        result =
-          device
-          |> Device.changeset(%{
-            trust_state: "revoked",
-            revoked_at: now
-          })
-          |> Repo.update()
+      case device do
+        nil ->
+          Repo.rollback(:not_found)
 
-        if match?({:ok, _}, result) do
-          revoke_device_tokens(device_id)
+        %Device{} = device ->
+          if device_revoked?(device) do
+            %{device: device, outbox_ids: [], newly_revoked?: false}
+          else
+            outbox_ids =
+              Servers.stage_device_crypto_eviction_obligations(device, "device_revoked")
+
+            updated_device =
+              device
+              |> Device.changeset(%{
+                trust_state: "revoked",
+                revoked_at: now,
+                crypto_eviction_required_at: now
+              })
+              |> Repo.update!()
+
+            revoke_device_tokens(device.id)
+
+            %{device: updated_device, outbox_ids: outbox_ids, newly_revoked?: true}
+          end
+      end
+    end)
+    |> case do
+      {:ok, %{device: device, outbox_ids: outbox_ids, newly_revoked?: newly_revoked?}} ->
+        Enum.each(outbox_ids, &Servers.enqueue_mls_eviction_outbox/1)
+
+        if newly_revoked? do
+          # Disconnecting an authenticated transport only stops future requests. The
+          # durable MLS removal obligations above are the cryptographic eviction.
           VesperWeb.Endpoint.broadcast("user_socket:#{user_id}:#{device_id}", "disconnect", %{})
         end
 
-        result
+        {:ok, device}
+
+      {:error, reason} ->
+        {:error, reason}
     end
+  end
+
+  def device_crypto_eviction_complete?(%Device{} = device) do
+    device_revoked?(device) and not is_nil(device.crypto_eviction_required_at) and
+      Servers.device_crypto_eviction_complete?(device)
   end
 
   def approve_current_device_with_recovery(user, device_id, recovery_key_hash) do
@@ -358,9 +397,6 @@ defmodule Vesper.Accounts do
        when is_nil(device.revoked_at),
        do: "trusted"
 
-  defp normalize_existing_trust_state(%Device{trust_state: "revoked"}, "trusted"), do: "trusted"
-  defp normalize_existing_trust_state(%Device{trust_state: "revoked"}, "pending"), do: "pending"
-
   defp normalize_existing_trust_state(%Device{trust_state: "revoked"}, _trust_state),
     do: "revoked"
 
@@ -375,8 +411,6 @@ defmodule Vesper.Accounts do
 
   defp trusted_at_for_update(_device, "trusted", now), do: now
   defp trusted_at_for_update(%Device{trusted_at: trusted_at}, _trust_state, _now), do: trusted_at
-
-  defp revoked_at_for_update(%Device{trust_state: "revoked"}, "pending", _now), do: nil
 
   defp revoked_at_for_update(
          %Device{trust_state: "revoked", revoked_at: revoked_at},

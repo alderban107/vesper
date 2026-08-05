@@ -65,7 +65,8 @@ config :vesper, Oban,
        {"0 3 * * *", Vesper.Workers.PurgeRecoveryMaterial},
        {"0 3 * * *", Vesper.Workers.ExpireAttachmentBlobs},
        {"0 3 * * *", Vesper.Workers.PurgeExpiredTokens},
-       {"0 4 * * *", Vesper.Workers.PurgeSyncEvents}
+       {"0 4 * * *", Vesper.Workers.PurgeSyncEvents},
+       {"* * * * *", Vesper.Workers.DispatchMlsEvictionOutbox}
      ]}
   ]
 

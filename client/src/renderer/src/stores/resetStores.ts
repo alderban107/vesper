@@ -16,6 +16,7 @@ import { useVoiceStore } from './voiceStore'
 import { useSyncStore } from './syncStore'
 import { clearDecryptionCache } from '@vesper/sdk/crypto'
 import { getRendererStorageRuntime } from '../sdk/client'
+import { clearAttachmentObjectUrlCache } from '../utils/attachmentObjectUrlCache'
 
 /**
  * Reset all application state to initial values.
@@ -35,8 +36,10 @@ export function resetAllStores(): void {
   // Clear message expiry timers
   clearExpiryTimers()
 
-  // Clear in-memory crypto caches (decrypted messages + sent-message cache)
+  // Clear decrypted message and attachment bytes before another account can use
+  // this renderer process.
   clearDecryptionCache()
+  clearAttachmentObjectUrlCache()
 
   // Reset the IndexedDB adapter singleton so the next login
   // opens a user-scoped database

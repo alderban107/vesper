@@ -4,6 +4,8 @@ defmodule Vesper.EncryptionTest do
   import Ecto.Query
 
   alias Vesper.Accounts
+  alias Vesper.Dispatch
+  alias Vesper.DispatchOutbox
   alias Vesper.Encryption
 
   alias Vesper.Encryption.{
@@ -375,7 +377,10 @@ defmodule Vesper.EncryptionTest do
         ratchet_tree_data: <<4, 5, 6>>,
         epoch: 1,
         previous_epoch: 0,
-        publisher_id: publisher.id
+        previous_transcript_hash: Encryption.initial_mls_transcript_hash(),
+        publisher_id: publisher.id,
+        commit_data: "concurrent-external-commit",
+        commit_id: "concurrent-external-commit"
       }
 
       tasks =
@@ -389,7 +394,7 @@ defmodule Vesper.EncryptionTest do
               {:go, ^start_ref} -> :ok
             end
 
-            Encryption.publish_group_info(
+            Encryption.publish_external_commit_group_info(
               Map.put(base_attrs, :publisher_client_id, "client-#{index}")
             )
           end)
@@ -410,7 +415,7 @@ defmodule Vesper.EncryptionTest do
       assert %{epoch: 1} = Encryption.get_group_info(group_id)
     end
 
-    test "same-epoch non-CAS publish keeps the existing payload" do
+    test "epoch-zero non-CAS publish elects the first payload" do
       publisher = insert_user()
       group_id = Ecto.UUID.generate()
 
@@ -419,17 +424,27 @@ defmodule Vesper.EncryptionTest do
                  group_id: group_id,
                  group_info_data: <<1, 2, 3>>,
                  ratchet_tree_data: <<4, 5, 6>>,
-                 epoch: 1,
+                 epoch: 0,
                  publisher_id: publisher.id,
                  publisher_client_id: "client-a"
                })
 
-      assert {:ok, second_publish} =
+      assert {:ok, duplicate_publish} =
+               Encryption.publish_group_info(%{
+                 group_id: group_id,
+                 group_info_data: <<1, 2, 3>>,
+                 ratchet_tree_data: <<4, 5, 6>>,
+                 epoch: 0,
+                 publisher_id: publisher.id,
+                 publisher_client_id: "client-a"
+               })
+
+      assert {:error, :epoch_conflict} =
                Encryption.publish_group_info(%{
                  group_id: group_id,
                  group_info_data: <<9, 9, 9>>,
                  ratchet_tree_data: <<8, 8, 8>>,
-                 epoch: 1,
+                 epoch: 0,
                  publisher_id: publisher.id,
                  publisher_client_id: "client-b"
                })
@@ -437,9 +452,24 @@ defmodule Vesper.EncryptionTest do
       stored = Encryption.get_group_info(group_id)
 
       assert stored.id == first_publish.id
-      assert second_publish.id == first_publish.id
+      assert duplicate_publish.id == first_publish.id
       assert stored.group_info_data == <<1, 2, 3>>
       assert stored.ratchet_tree_data == <<4, 5, 6>>
+    end
+
+    test "rejects a nonzero GroupInfo publish without its durable MLS transition" do
+      publisher = insert_user()
+      group_id = Ecto.UUID.generate()
+
+      assert {:error, :transition_required} =
+               Encryption.publish_group_info(%{
+                 group_id: group_id,
+                 group_info_data: <<1, 2, 3>>,
+                 ratchet_tree_data: <<4, 5, 6>>,
+                 epoch: 1,
+                 publisher_id: publisher.id,
+                 publisher_client_id: "client-a"
+               })
     end
 
     test "atomically stores external commit GroupInfo and durable commit event" do
@@ -452,6 +482,7 @@ defmodule Vesper.EncryptionTest do
         ratchet_tree_data: <<4, 5, 6>>,
         epoch: 1,
         previous_epoch: 0,
+        previous_transcript_hash: Encryption.initial_mls_transcript_hash(),
         publisher_id: publisher.id,
         publisher_client_id: "client-a",
         commit_data: "commit-a",
@@ -482,12 +513,40 @@ defmodule Vesper.EncryptionTest do
       assert length(Encryption.list_mls_events_after(group_id, 0)) == 1
     end
 
+    test "rejects application ciphertext outside the canonical MLS epoch" do
+      publisher = insert_user()
+      group_id = Ecto.UUID.generate()
+      room_id = Ecto.UUID.generate()
+
+      assert {:ok, %{group_info: %{epoch: 1}}} =
+               Encryption.publish_external_commit_group_info(%{
+                 group_id: group_id,
+                 group_info_data: <<1, 2, 3>>,
+                 ratchet_tree_data: <<4, 5, 6>>,
+                 epoch: 1,
+                 previous_epoch: 0,
+                 previous_transcript_hash: Encryption.initial_mls_transcript_hash(),
+                 publisher_id: publisher.id,
+                 publisher_client_id: "client-a",
+                 commit_data: "commit-a",
+                 commit_id: "application-epoch-commit"
+               })
+
+      assert :ok = Encryption.validate_application_scheme(room_id, "mls", 1, group_id)
+
+      assert {:error, :mls_epoch_mismatch} =
+               Encryption.validate_application_scheme(room_id, "mls", 0, group_id)
+
+      assert {:error, :mls_epoch_mismatch} =
+               Encryption.validate_application_scheme(room_id, "mls", 2, group_id)
+    end
+
     test "atomically stores sponsored transitions and replays them idempotently" do
       sponsor = insert_user()
       recipient = insert_user()
       group_id = Ecto.UUID.generate()
 
-      assert {:ok, _group_info} =
+      assert {:ok, group_info} =
                Encryption.publish_group_info(%{
                  group_id: group_id,
                  group_info_data: <<0, 0, 0>>,
@@ -503,6 +562,7 @@ defmodule Vesper.EncryptionTest do
         ratchet_tree_data: <<4, 5, 6>>,
         epoch: 1,
         previous_epoch: 0,
+        previous_transcript_hash: Encryption.mls_transcript_hash(group_info),
         recipient_id: recipient.id,
         recipient_client_id: "recipient-a",
         recipient_key_package_ref: "kp-ref",
@@ -568,7 +628,7 @@ defmodule Vesper.EncryptionTest do
       parent = self()
       start_ref = make_ref()
 
-      assert {:ok, _group_info} =
+      assert {:ok, group_info} =
                Encryption.publish_group_info(%{
                  group_id: group_id,
                  group_info_data: <<0, 0, 0>>,
@@ -578,6 +638,8 @@ defmodule Vesper.EncryptionTest do
                  publisher_client_id: "sponsor-base"
                })
 
+      predecessor_hash = Encryption.mls_transcript_hash(group_info)
+
       attrs_list = [
         %{
           group_id: group_id,
@@ -585,6 +647,7 @@ defmodule Vesper.EncryptionTest do
           ratchet_tree_data: <<1, 1, 2>>,
           epoch: 1,
           previous_epoch: 0,
+          previous_transcript_hash: predecessor_hash,
           recipient_id: recipient_a.id,
           recipient_client_id: "recipient-a",
           recipient_key_package_ref: "kp-a",
@@ -600,6 +663,7 @@ defmodule Vesper.EncryptionTest do
           ratchet_tree_data: <<2, 2, 3>>,
           epoch: 1,
           previous_epoch: 0,
+          previous_transcript_hash: predecessor_hash,
           recipient_id: recipient_b.id,
           recipient_client_id: "recipient-b",
           recipient_key_package_ref: "kp-b",
@@ -639,6 +703,192 @@ defmodule Vesper.EncryptionTest do
       assert Enum.count(results, &(&1 == {:error, :epoch_conflict})) == 1
       assert %{epoch: 1} = Encryption.get_group_info(group_id)
       assert length(Encryption.list_mls_events_after(group_id, 0)) == 1
+    end
+
+    test "serializes an ordinary fenced removal against an External Commit from the same predecessor" do
+      sponsor = insert_user()
+      removed_user = insert_user()
+      joining_user = insert_user()
+      server = insert_server(sponsor)
+      channel = insert_channel(server, %{id: Ecto.UUID.generate()})
+      parent = self()
+      start_ref = make_ref()
+
+      assert {:ok, group_info} =
+               Encryption.publish_group_info(%{
+                 group_id: channel.id,
+                 group_info_data: <<0>>,
+                 ratchet_tree_data: <<0, 1>>,
+                 epoch: 0,
+                 publisher_id: sponsor.id,
+                 publisher_client_id: "sponsor-device"
+               })
+
+      assert :ok =
+               Encryption.queue_scope_crypto_evictions([
+                 %{
+                   scope_kind: "channel",
+                   scope_id: channel.id,
+                   group_id: channel.id,
+                   server_id: server.id,
+                   target_user_id: removed_user.id,
+                   target_device_id: "removed-device",
+                   reason: "kicked"
+                 }
+               ])
+
+      requested =
+        case Encryption.list_pending_crypto_evictions("channel", channel.id) do
+          [%{status: "pending"}] ->
+            Encryption.request_next_pending_crypto_eviction("channel", channel.id)
+
+          [entry] ->
+            entry
+        end
+
+      assert {:ok, claimed} =
+               Encryption.claim_pending_crypto_eviction(
+                 requested.id,
+                 "channel",
+                 channel.id,
+                 sponsor.id,
+                 "sponsor-device",
+                 requested.fencing_token,
+                 requested.membership_generation
+               )
+
+      predecessor_hash = Encryption.mls_transcript_hash(group_info)
+
+      ordinary_attrs = %{
+        group_id: channel.id,
+        channel_id: channel.id,
+        event_type: "mls_remove",
+        payload: %{
+          removed_user_id: removed_user.id,
+          removed_device_id: "removed-device",
+          commit_data: "ordinary-remove"
+        },
+        group_info_data: <<1>>,
+        ratchet_tree_data: <<1, 1>>,
+        epoch: 1,
+        previous_epoch: 0,
+        previous_transcript_hash: predecessor_hash,
+        sender_id: sponsor.id,
+        sender_device_id: "sponsor-device",
+        idempotency_key: "ordinary-remove",
+        crypto_evictions: [
+          %{
+            eviction_id: claimed.id,
+            scope_kind: "channel",
+            scope_id: channel.id,
+            removed_user_id: removed_user.id,
+            removed_device_id: "removed-device",
+            sponsor_user_id: sponsor.id,
+            sponsor_device_id: "sponsor-device",
+            fencing_token: claimed.fencing_token,
+            membership_generation: claimed.membership_generation
+          }
+        ]
+      }
+
+      external_attrs = %{
+        group_id: channel.id,
+        channel_id: channel.id,
+        group_info_data: <<2>>,
+        ratchet_tree_data: <<2, 2>>,
+        epoch: 1,
+        previous_epoch: 0,
+        previous_transcript_hash: predecessor_hash,
+        publisher_id: joining_user.id,
+        publisher_client_id: "joining-device",
+        commit_data: "external-commit",
+        commit_id: "external-commit"
+      }
+
+      tasks =
+        [
+          fn -> Encryption.publish_ordinary_transition(ordinary_attrs) end,
+          fn -> Encryption.publish_external_commit_group_info(external_attrs) end
+        ]
+        |> Enum.map(fn operation ->
+          Task.async(fn ->
+            Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
+            send(parent, {:ready, self()})
+
+            receive do
+              {:go, ^start_ref} -> operation.()
+            end
+          end)
+        end)
+
+      for _ <- tasks, do: assert_receive({:ready, _pid}, 1_000)
+      Enum.each(tasks, &send(&1.pid, {:go, start_ref}))
+      results = Enum.map(tasks, &Task.await(&1, 5_000))
+
+      assert Enum.count(results, &match?({:ok, _}, &1)) == 1
+      assert Enum.count(results, &(&1 == {:error, :epoch_conflict})) == 1
+      assert %{epoch: 1} = Encryption.get_group_info(channel.id)
+      assert [_event] = Encryption.list_mls_events_after(channel.id)
+    end
+
+    test "keeps sponsored dispatch durable across a failed broadcast and idempotent retry" do
+      sponsor = insert_user()
+      recipient = insert_user()
+      group_id = Ecto.UUID.generate()
+
+      assert {:ok, group_info} =
+               Encryption.publish_group_info(%{
+                 group_id: group_id,
+                 group_info_data: <<0>>,
+                 epoch: 0,
+                 publisher_id: sponsor.id,
+                 publisher_client_id: "sponsor-device"
+               })
+
+      attrs = %{
+        group_id: group_id,
+        group_info_data: <<1>>,
+        epoch: 1,
+        previous_epoch: 0,
+        previous_transcript_hash: Encryption.mls_transcript_hash(group_info),
+        recipient_id: recipient.id,
+        recipient_client_id: "recipient-device",
+        commit_data: "sponsored-commit",
+        commit_id: "sponsored-commit",
+        sender_id: sponsor.id,
+        sender_device_id: "sponsor-device"
+      }
+
+      Testing.with_testing_mode(:manual, fn ->
+        assert {:ok, %{fresh: true, commit_event: commit_event}} =
+                 Encryption.publish_sponsored_transition(attrs)
+
+        dispatch = Repo.get_by!(DispatchOutbox, durable_key: "mls_event:#{commit_event.id}")
+
+        assert {:error, "dropped sponsored broadcast"} =
+                 Dispatch.deliver(dispatch.id, fn _topic, _event, _payload ->
+                   raise "dropped sponsored broadcast"
+                 end)
+
+        assert Repo.get!(DispatchOutbox, dispatch.id).status == "failed"
+
+        assert {:ok, %{fresh: false, commit_event: replayed_event}} =
+                 Encryption.publish_sponsored_transition(attrs)
+
+        assert replayed_event.id == commit_event.id
+
+        parent = self()
+
+        assert :ok =
+                 Dispatch.deliver(dispatch.id, fn topic, event, payload ->
+                   send(parent, {:sponsored_broadcast, topic, event, payload})
+                   :ok
+                 end)
+
+        assert_receive {:sponsored_broadcast, "group:" <> ^group_id, "mls_commit", payload}
+        assert payload["seq"] == commit_event.id
+        assert Repo.get!(DispatchOutbox, dispatch.id).status == "delivered"
+      end)
     end
   end
 

@@ -5,9 +5,7 @@ defmodule VesperWeb.SponsoredTransitionController do
   """
   use VesperWeb, :controller
 
-  alias Vesper.Chat
   alias Vesper.Encryption
-  alias Vesper.Servers
   alias VesperWeb.ControllerHelpers
 
   @doc "POST /api/v1/mls-sponsored-transition/:scope_id"
@@ -19,6 +17,8 @@ defmodule VesperWeb.SponsoredTransitionController do
          authorized_group_id = authorization.group_id,
          {:ok, group_info_data} <- decode_required_base64(params, "group_info_data"),
          {:ok, ratchet_tree_data} <- decode_optional_base64(params, "ratchet_tree_data"),
+         {:ok, previous_transcript_hash} <-
+           decode_required_base64(params, "previous_transcript_hash"),
          epoch when is_integer(epoch) <- parse_epoch(params),
          previous_epoch when is_integer(previous_epoch) <- parse_previous_epoch(params),
          {:ok, recipient_id} <-
@@ -38,6 +38,7 @@ defmodule VesperWeb.SponsoredTransitionController do
         ratchet_tree_data: ratchet_tree_data,
         epoch: epoch,
         previous_epoch: previous_epoch,
+        previous_transcript_hash: previous_transcript_hash,
         publisher_id: user.id,
         publisher_client_id: device.client_id,
         recipient_id: recipient_id,
@@ -55,20 +56,11 @@ defmodule VesperWeb.SponsoredTransitionController do
 
       case Encryption.publish_sponsored_transition(attrs) do
         {:ok, transition} ->
-          if transition.fresh do
-            broadcast_sponsored_transition(
-              scope_id,
-              transition,
-              commit_data,
-              Map.get(params, "welcome_data"),
-              user.id,
-              device.client_id
-            )
-          end
-
           json(conn, %{
             ok: true,
             fresh: transition.fresh,
+            epoch: transition.group_info.epoch,
+            transcript_hash: Base.encode64(Encryption.mls_transcript_hash(transition.group_info)),
             commit_event_seq: transition.commit_event.id,
             remove_event_seq: transition.remove_event && transition.remove_event.id,
             welcome_id: transition.welcome && transition.welcome.id
@@ -102,17 +94,13 @@ defmodule VesperWeb.SponsoredTransitionController do
           conn |> put_status(:conflict) |> json(%{error: "idempotency_conflict"})
 
         {:error, :epoch_conflict} ->
-          # Include current server epoch so the client can detect if its
-          # prior attempt actually succeeded (server at target epoch).
-          current_epoch =
-            case Vesper.Encryption.get_group_info_epoch(scope_id) do
-              {:ok, epoch} -> epoch
-              _ -> nil
-            end
+          transition_conflict(conn, authorized_group_id)
 
-          conn
-          |> put_status(:conflict)
-          |> json(%{error: "epoch_conflict", current_epoch: current_epoch})
+        {:error, :invalid_previous_transcript_hash} ->
+          conn |> put_status(:bad_request) |> json(%{error: "invalid previous_transcript_hash"})
+
+        {:error, :invalid_epoch_transition} ->
+          conn |> put_status(:conflict) |> json(%{error: "invalid_epoch_transition"})
 
         {:error, %Ecto.Changeset{} = changeset} ->
           conn |> put_status(:unprocessable_entity) |> json(%{error: inspect(changeset.errors)})
@@ -147,72 +135,21 @@ defmodule VesperWeb.SponsoredTransitionController do
     end
   end
 
-  defp broadcast_sponsored_transition(
-         scope_id,
-         transition,
-         commit_data,
-         welcome_data,
-         sender_id,
-         sender_device_id
-       ) do
-    case scope_topic(scope_id) do
+  defp transition_conflict(conn, group_id) do
+    case Encryption.get_group_info(group_id) do
       nil ->
-        :ok
+        conn |> put_status(:conflict) |> json(%{error: "epoch_conflict", current_epoch: nil})
 
-      topic ->
-        maybe_broadcast_remove(topic, transition.remove_event, sender_id, sender_device_id)
-
-        VesperWeb.Endpoint.broadcast(topic, "mls_commit", %{
-          seq: transition.commit_event.id,
-          commit_data: commit_data,
-          sender_id: sender_id,
-          sender_device_id: sender_device_id
+      group_info ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{
+          error: "epoch_conflict",
+          current_epoch: group_info.epoch,
+          current_transcript_hash: Base.encode64(Encryption.mls_transcript_hash(group_info))
         })
-
-        maybe_broadcast_welcome(
-          topic,
-          transition.welcome,
-          welcome_data,
-          sender_id
-        )
     end
   end
-
-  defp maybe_broadcast_remove(_topic, nil, _sender_id, _sender_device_id), do: :ok
-
-  defp maybe_broadcast_remove(topic, remove_event, sender_id, sender_device_id) do
-    payload = remove_event.payload || %{}
-
-    VesperWeb.Endpoint.broadcast(
-      topic,
-      "mls_remove",
-      %{
-        seq: remove_event.id,
-        removed_user_id: payload["removed_user_id"],
-        commit_data: payload["commit_data"],
-        sender_id: sender_id,
-        sender_device_id: sender_device_id
-      }
-      |> maybe_put(:removed_device_id, payload["removed_device_id"])
-    )
-  end
-
-  defp maybe_broadcast_welcome(_topic, nil, _welcome_data, _sender_id), do: :ok
-  defp maybe_broadcast_welcome(_topic, _welcome, nil, _sender_id), do: :ok
-
-  defp maybe_broadcast_welcome(topic, welcome, welcome_data, sender_id) do
-    VesperWeb.Endpoint.broadcast(topic, "mls_welcome", %{
-      id: welcome.id,
-      recipient_id: welcome.recipient_id,
-      recipient_device_id: welcome.recipient_client_id,
-      key_package_ref: welcome.recipient_key_package_ref,
-      welcome_data: welcome_data,
-      sender_id: sender_id
-    })
-  end
-
-  defp maybe_put(payload, _key, nil), do: payload
-  defp maybe_put(payload, key, value), do: Map.put(payload, key, value)
 
   defp require_non_empty_string(params, field, invalid_reason) do
     case Map.get(params, field) do
@@ -304,37 +241,6 @@ defmodule VesperWeb.SponsoredTransitionController do
 
       _ ->
         {:error, :invalid_previous_epoch}
-    end
-  end
-
-  defp scope_topic("voice:channel:" <> channel_id), do: "voice:channel:#{channel_id}"
-  defp scope_topic("voice:dm:" <> conversation_id), do: "voice:dm:#{conversation_id}"
-
-  defp scope_topic(scope_id) do
-    case scope_ids(scope_id) do
-      {channel_id, nil} when is_binary(channel_id) -> "chat:channel:#{channel_id}"
-      {nil, conversation_id} when is_binary(conversation_id) -> "dm:#{conversation_id}"
-      _ -> nil
-    end
-  end
-
-  defp scope_ids(scope_id) do
-    cond do
-      String.starts_with?(scope_id, "voice:") ->
-        {nil, nil}
-
-      true ->
-        case Ecto.UUID.cast(scope_id) do
-          {:ok, uuid} ->
-            cond do
-              Servers.get_channel(uuid) != nil -> {uuid, nil}
-              Chat.get_conversation(uuid) != nil -> {nil, uuid}
-              true -> {nil, nil}
-            end
-
-          :error ->
-            {nil, nil}
-        end
     end
   end
 end

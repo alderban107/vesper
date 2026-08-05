@@ -16,7 +16,8 @@ defmodule Vesper.Servers do
     ChannelRolePermission,
     ChannelUserPermission,
     ServerBan,
-    AuditLog
+    AuditLog,
+    MlsEvictionOutbox
   }
 
   alias Vesper.Chat.AttachmentBlobLock
@@ -495,14 +496,16 @@ defmodule Vesper.Servers do
                   end
 
                   :ok = Encryption.cancel_rejoined_server_member_evictions(server.id, user.id)
-                  true
+                  cancel_rejoined_membership_outboxes(server.id, user.id)
+                  {true, requeue_incomplete_device_revocation_outboxes(server.id, user.id)}
                 else
-                  false
+                  {false, []}
                 end
               end)
 
             case transaction_result do
-              {:ok, inserted?} ->
+              {:ok, {inserted?, outbox_ids}} ->
+                enqueue_mls_eviction_outboxes(outbox_ids)
                 if inserted?, do: broadcast_membership_change(server.id, user.id, :member_joined)
                 {:ok, server |> Repo.preload([:channels, [emojis: :creator]])}
 
@@ -601,106 +604,92 @@ defmodule Vesper.Servers do
   end
 
   def leave_server(user_id, server_id) do
-    case Repo.get_by(Membership, user_id: user_id, server_id: server_id) do
-      nil ->
-        {:error, :not_found}
+    case remove_server_membership(server_id, user_id, "left") do
+      {:ok, membership, outbox_ids} ->
+        enqueue_mls_eviction_outboxes(outbox_ids)
+        broadcast_membership_change(server_id, user_id, :member_left)
+        broadcast_membership_revoked(server_id, user_id, "left")
+        {:ok, membership}
 
-      %{role: "owner"} ->
-        {:error, :owner_cannot_leave}
-
-      membership ->
-        result = Repo.delete(membership)
-
-        case result do
-          {:ok, _} ->
-            broadcast_membership_change(server_id, user_id, :member_left)
-            broadcast_membership_revoked(server_id, user_id, "left")
-            queue_membership_crypto_evictions(server_id, user_id, "left")
-
-          _ ->
-            :ok
-        end
-
-        result
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
   def kick_member(server_id, user_id, opts \\ []) do
     actor_id = Keyword.get(opts, :actor_id)
 
-    case Repo.get_by(Membership, user_id: user_id, server_id: server_id) do
-      nil ->
-        {:error, :not_found}
+    case remove_server_membership(server_id, user_id, "kicked") do
+      {:ok, membership, outbox_ids} ->
+        enqueue_mls_eviction_outboxes(outbox_ids)
+        broadcast_membership_change(server_id, user_id, :member_left)
+        broadcast_membership_revoked(server_id, user_id, "kicked")
+        maybe_log_admin_action(server_id, actor_id, "member_kicked", target_user_id: user_id)
+        {:ok, membership}
 
-      membership ->
-        result = Repo.delete(membership)
-
-        case result do
-          {:ok, _} ->
-            broadcast_membership_change(server_id, user_id, :member_left)
-            broadcast_membership_revoked(server_id, user_id, "kicked")
-            queue_membership_crypto_evictions(server_id, user_id, "kicked")
-            maybe_log_admin_action(server_id, actor_id, "member_kicked", target_user_id: user_id)
-
-          _ ->
-            :ok
-        end
-
-        result
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
   def ban_member(server_id, user_id, banned_by_id, reason \\ nil) do
-    with %Server{} = server <- Repo.get(Server, server_id),
-         false <- server.owner_id == user_id do
-      normalized_reason = blank_to_nil(reason)
+    normalized_reason = blank_to_nil(reason)
 
-      attrs = %{
-        server_id: server_id,
-        user_id: user_id,
-        banned_by_id: banned_by_id,
-        reason: normalized_reason
-      }
+    Repo.transaction(fn ->
+      server = lock_server(server_id) || Repo.rollback(:not_found)
 
-      case %ServerBan{} |> ServerBan.changeset(attrs) |> Repo.insert() do
-        {:ok, ban} ->
-          case Repo.get_by(Membership, user_id: user_id, server_id: server_id) do
-            nil ->
-              broadcast_membership_revoked(server_id, user_id, "banned")
-              queue_membership_crypto_evictions(server_id, user_id, "banned")
-
-            membership ->
-              case Repo.delete(membership) do
-                {:ok, _} ->
-                  broadcast_membership_change(server_id, user_id, :member_left)
-                  broadcast_membership_revoked(server_id, user_id, "banned")
-                  queue_membership_crypto_evictions(server_id, user_id, "banned")
-
-                _ ->
-                  :ok
-              end
-          end
-
-          maybe_log_admin_action(server_id, banned_by_id, "member_banned",
-            target_user_id: user_id,
-            metadata: if(normalized_reason, do: %{"reason" => normalized_reason}, else: %{})
-          )
-
-          {:ok, ban}
-
-        {:error, changeset} ->
-          if already_banned_changeset?(changeset) do
-            {:error, :already_banned}
-          else
-            {:error, changeset}
-          end
+      if server.owner_id == user_id do
+        Repo.rollback(:cannot_ban_owner)
       end
-    else
-      nil ->
-        {:error, :not_found}
 
-      true ->
-        {:error, :cannot_ban_owner}
+      ban =
+        %ServerBan{}
+        |> ServerBan.changeset(%{
+          server_id: server_id,
+          user_id: user_id,
+          banned_by_id: banned_by_id,
+          reason: normalized_reason
+        })
+        |> Repo.insert!()
+
+      membership = lock_server_membership(server_id, user_id)
+
+      outbox_ids =
+        if membership do
+          outbox_ids = stage_membership_crypto_eviction_obligations(membership, "banned")
+          Repo.delete!(membership)
+          outbox_ids
+        else
+          []
+        end
+
+      {ban, membership, outbox_ids}
+    end)
+    |> case do
+      {:ok, {ban, membership, outbox_ids}} ->
+        enqueue_mls_eviction_outboxes(outbox_ids)
+
+        if membership do
+          broadcast_membership_change(server_id, user_id, :member_left)
+          broadcast_membership_revoked(server_id, user_id, "banned")
+        end
+
+        maybe_log_admin_action(server_id, banned_by_id, "member_banned",
+          target_user_id: user_id,
+          metadata: if(normalized_reason, do: %{"reason" => normalized_reason}, else: %{})
+        )
+
+        {:ok, ban}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        if already_banned_changeset?(changeset) do
+          {:error, :already_banned}
+        else
+          {:error, changeset}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -1627,27 +1616,93 @@ defmodule Vesper.Servers do
     result
   end
 
+  @doc """
+  Transfers the single authoritative owner identity. The invariant is:
+  `servers.owner_id` and exactly one server membership with role `owner` name
+  the same user. Ordinary role updates cannot create or remove that role.
+  """
+  def transfer_ownership(server_id, current_owner_id, new_owner_id)
+      when is_binary(current_owner_id) and is_binary(new_owner_id) do
+    Repo.transaction(fn ->
+      server = lock_server(server_id) || Repo.rollback(:not_found)
+
+      cond do
+        server.owner_id != current_owner_id ->
+          Repo.rollback(:not_owner)
+
+        current_owner_id == new_owner_id ->
+          Repo.rollback(:same_owner)
+
+        true ->
+          current_owner =
+            lock_server_membership(server_id, current_owner_id) ||
+              Repo.rollback(:owner_membership_missing)
+
+          new_owner =
+            lock_server_membership(server_id, new_owner_id) ||
+              Repo.rollback(:new_owner_not_member)
+
+          if current_owner.role != "owner" do
+            Repo.rollback(:owner_membership_mismatch)
+          end
+
+          server
+          |> Ecto.Changeset.change(owner_id: new_owner_id)
+          |> Repo.update!()
+
+          current_owner
+          |> Membership.changeset(%{role: "member"})
+          |> Repo.update!()
+
+          new_owner
+          |> Membership.changeset(%{role: "owner"})
+          |> Repo.update!()
+      end
+    end)
+    |> case do
+      {:ok, membership} ->
+        broadcast_permissions_changed(server_id)
+        {:ok, membership}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  def transfer_ownership(_server_id, _current_owner_id, _new_owner_id),
+    do: {:error, :invalid_owner}
+
   def update_membership_role(membership, role, opts \\ [])
 
+  def update_membership_role(%Membership{role: "owner"}, _role, _opts),
+    do: {:error, :owner_role_managed_by_server}
+
+  def update_membership_role(%Membership{}, "owner", _opts),
+    do: {:error, :owner_role_managed_by_server}
+
   def update_membership_role(%Membership{} = membership, role, opts)
-      when role in ~w(owner admin moderator member) do
-    actor_id = Keyword.get(opts, :actor_id)
+      when role in ~w(admin moderator member) do
+    if membership_is_server_owner?(membership) do
+      {:error, :owner_role_managed_by_server}
+    else
+      actor_id = Keyword.get(opts, :actor_id)
 
-    result =
-      membership
-      |> Membership.changeset(%{role: role})
-      |> Repo.update()
+      result =
+        membership
+        |> Membership.changeset(%{role: role})
+        |> Repo.update()
 
-    if match?({:ok, _}, result) do
-      broadcast_permissions_changed(membership.server_id)
+      if match?({:ok, _}, result) do
+        broadcast_permissions_changed(membership.server_id)
 
-      maybe_log_admin_action(membership.server_id, actor_id, "member_role_updated",
-        target_user_id: membership.user_id,
-        metadata: %{"role" => role}
-      )
+        maybe_log_admin_action(membership.server_id, actor_id, "member_role_updated",
+          target_user_id: membership.user_id,
+          metadata: %{"role" => role}
+        )
+      end
+
+      result
     end
-
-    result
   end
 
   def update_membership_role(%Membership{}, _role, _opts), do: {:error, :invalid_role}
@@ -2058,37 +2113,385 @@ defmodule Vesper.Servers do
     })
   end
 
-  defp queue_membership_crypto_evictions(server_id, user_id, reason) do
-    channel_ids =
-      server_id
-      |> list_channels()
-      |> Enum.filter(&(&1.type == "text"))
-      |> Enum.map(& &1.id)
+  @doc false
+  def stage_device_crypto_eviction_obligations(device, cause \\ "device_revoked")
 
-    target_device_ids =
-      user_id
-      |> Accounts.list_devices()
-      |> Enum.reject(&(not is_nil(&1.revoked_at) or &1.trust_state == "revoked"))
-      |> Enum.map(& &1.client_id)
-      |> case do
-        [] -> [nil]
-        device_ids -> device_ids
+  def stage_device_crypto_eviction_obligations(
+        %Vesper.Accounts.Device{} = device,
+        "device_revoked"
+      ) do
+    device.user_id
+    |> persistent_mls_scopes_for_user()
+    |> stage_crypto_eviction_obligations(device, "device_revoked", "device_revoked")
+  end
+
+  @doc false
+  def enqueue_mls_eviction_outbox(outbox_id) do
+    %{"outbox_id" => outbox_id}
+    |> Vesper.Workers.DispatchMlsEvictionOutbox.new()
+    |> Oban.insert()
+    |> case do
+      {:ok, _job} ->
+        :ok
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        if unique_constraint_error?(changeset), do: :ok, else: {:error, changeset}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc false
+  def dispatch_mls_eviction_outbox(outbox_id) do
+    Repo.transaction(fn ->
+      case lock_mls_eviction_outbox(outbox_id) do
+        nil ->
+          :ok
+
+        %MlsEvictionOutbox{status: "cancelled"} ->
+          :ok
+
+        %MlsEvictionOutbox{status: "handed_off"} ->
+          :ok
+
+        %MlsEvictionOutbox{} = outbox ->
+          # Encryption.queue_scope_crypto_evictions/1 writes the MLS obligation and
+          # schedules its worker. Keeping that call in this transaction means a
+          # scheduling failure rolls both writes back and leaves this outbox row pending.
+          :ok =
+            Encryption.queue_scope_crypto_evictions([
+              %{
+                scope_kind: outbox.scope_kind,
+                scope_id: outbox.scope_id,
+                group_id: outbox.group_id,
+                server_id: outbox.server_id,
+                target_user_id: outbox.target_user_id,
+                target_device_id: outbox.target_device_id,
+                reason: outbox.reason
+              }
+            ])
+
+          outbox
+          |> MlsEvictionOutbox.changeset(%{
+            status: "handed_off",
+            handed_off_at: DateTime.utc_now() |> DateTime.truncate(:second),
+            last_error: nil
+          })
+          |> Repo.update!()
+
+          :ok
+      end
+    end)
+    |> case do
+      {:ok, :ok} -> :ok
+      {:ok, {:error, reason}} -> {:error, reason}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc false
+  def dispatch_pending_mls_eviction_outbox(limit \\ 100) do
+    from(outbox in MlsEvictionOutbox,
+      where: outbox.status == "pending",
+      order_by: [asc: outbox.inserted_at],
+      limit: ^limit,
+      select: outbox.id
+    )
+    |> Repo.all()
+    |> Enum.each(fn outbox_id ->
+      _ = enqueue_mls_eviction_outbox(outbox_id)
+    end)
+
+    :ok
+  end
+
+  @doc false
+  def device_crypto_eviction_complete?(%Vesper.Accounts.Device{} = device) do
+    obligations =
+      from(outbox in MlsEvictionOutbox,
+        where: outbox.device_id == ^device.id and outbox.cause == "device_revoked",
+        order_by: [asc: outbox.inserted_at]
+      )
+      |> Repo.all()
+
+    Enum.all?(obligations, fn obligation ->
+      obligation.status == "handed_off" and crypto_eviction_completed?(obligation)
+    end)
+  end
+
+  defp remove_server_membership(server_id, user_id, reason) do
+    Repo.transaction(fn ->
+      server = lock_server(server_id) || Repo.rollback(:not_found)
+      membership = lock_server_membership(server_id, user_id) || Repo.rollback(:not_found)
+
+      if server.owner_id == membership.user_id do
+        Repo.rollback(:owner_cannot_leave)
       end
 
-    evictions =
-      for channel_id <- channel_ids, target_device_id <- target_device_ids do
-        %{
-          scope_kind: "channel",
-          scope_id: channel_id,
-          group_id: channel_id,
-          server_id: server_id,
-          target_user_id: user_id,
-          target_device_id: target_device_id,
-          reason: reason
+      outbox_ids = stage_membership_crypto_eviction_obligations(membership, reason)
+      Repo.delete!(membership)
+      {membership, outbox_ids}
+    end)
+    |> case do
+      {:ok, {membership, outbox_ids}} -> {:ok, membership, outbox_ids}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp stage_membership_crypto_eviction_obligations(%Membership{} = membership, reason) do
+    membership.server_id
+    |> persistent_mls_scopes_for_server()
+    |> stage_crypto_eviction_obligations(
+      active_devices_for_user(membership.user_id),
+      "membership_removed",
+      reason
+    )
+  end
+
+  defp stage_crypto_eviction_obligations(
+         scopes,
+         %Vesper.Accounts.Device{} = device,
+         cause,
+         reason
+       ) do
+    stage_crypto_eviction_obligations(scopes, [device], cause, reason)
+  end
+
+  defp stage_crypto_eviction_obligations(scopes, devices, cause, reason) when is_list(devices) do
+    for scope <- scopes, device <- devices, reduce: [] do
+      outbox_ids ->
+        attrs = %{
+          scope_kind: scope.scope_kind,
+          scope_id: scope.scope_id,
+          group_id: scope.group_id,
+          server_id: scope.server_id,
+          target_user_id: device.user_id,
+          device_id: device.id,
+          target_device_id: device.client_id,
+          cause: cause,
+          reason: reason,
+          status: "pending"
         }
+
+        [ensure_crypto_eviction_outbox!(attrs) | outbox_ids]
+    end
+    |> Enum.uniq()
+  end
+
+  defp ensure_crypto_eviction_outbox!(attrs) do
+    case %MlsEvictionOutbox{} |> MlsEvictionOutbox.changeset(attrs) |> Repo.insert() do
+      {:ok, outbox} ->
+        outbox.id
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        if unique_constraint_error?(changeset) do
+          active_mls_eviction_outbox!(attrs).id
+        else
+          Repo.rollback(changeset)
+        end
+    end
+  end
+
+  defp persistent_mls_scopes_for_server(server_id) do
+    from(channel in Channel,
+      where: channel.server_id == ^server_id and channel.type in ["text", "voice"],
+      order_by: [asc: channel.id],
+      select: {channel.id, channel.type}
+    )
+    |> Repo.all()
+    |> Enum.map(&server_channel_mls_scope(server_id, &1))
+  end
+
+  defp persistent_mls_scopes_for_user(user_id) do
+    server_scopes =
+      from(channel in Channel,
+        join: membership in Membership,
+        on: membership.server_id == channel.server_id,
+        where: membership.user_id == ^user_id and channel.type in ["text", "voice"],
+        order_by: [asc: channel.server_id, asc: channel.id],
+        select: {channel.server_id, channel.id, channel.type}
+      )
+      |> Repo.all()
+      |> Enum.map(fn {server_id, channel_id, channel_type} ->
+        server_channel_mls_scope(server_id, {channel_id, channel_type})
+      end)
+
+    dm_scopes =
+      from(participant in Vesper.Chat.DmParticipant,
+        join: conversation in Vesper.Chat.DmConversation,
+        on: conversation.id == participant.conversation_id,
+        where: participant.user_id == ^user_id,
+        order_by: [asc: participant.conversation_id],
+        select: {participant.conversation_id, conversation.channel_id}
+      )
+      |> Repo.all()
+      |> Enum.flat_map(fn {conversation_id, channel_id} ->
+        chat_scope =
+          if is_binary(channel_id) do
+            %{
+              scope_kind: "channel",
+              scope_id: channel_id,
+              group_id: channel_id,
+              server_id: nil
+            }
+          else
+            %{
+              scope_kind: "dm",
+              scope_id: conversation_id,
+              group_id: conversation_id,
+              server_id: nil
+            }
+          end
+
+        [
+          chat_scope,
+          %{
+            scope_kind: "voice_dm",
+            scope_id: conversation_id,
+            group_id: "voice:dm:#{conversation_id}",
+            server_id: nil
+          }
+        ]
+      end)
+
+    server_scopes ++ dm_scopes
+  end
+
+  defp server_channel_mls_scope(server_id, {channel_id, "text"}) do
+    %{scope_kind: "channel", scope_id: channel_id, group_id: channel_id, server_id: server_id}
+  end
+
+  defp server_channel_mls_scope(server_id, {channel_id, "voice"}) do
+    %{
+      scope_kind: "voice",
+      scope_id: channel_id,
+      group_id: "voice:channel:#{channel_id}",
+      server_id: server_id
+    }
+  end
+
+  defp active_devices_for_user(user_id) do
+    user_id
+    |> Accounts.list_devices()
+    |> Enum.reject(&(not is_nil(&1.revoked_at) or &1.trust_state == "revoked"))
+  end
+
+  defp cancel_rejoined_membership_outboxes(server_id, user_id) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    from(outbox in MlsEvictionOutbox,
+      where:
+        outbox.server_id == ^server_id and outbox.target_user_id == ^user_id and
+          outbox.cause == "membership_removed" and outbox.status in ["pending", "handed_off"]
+    )
+    |> Repo.update_all(
+      set: [
+        status: "cancelled",
+        cancelled_at: now,
+        updated_at: now,
+        last_error: "target_rejoined"
+      ]
+    )
+
+    :ok
+  end
+
+  defp requeue_incomplete_device_revocation_outboxes(server_id, user_id) do
+    from(outbox in MlsEvictionOutbox,
+      where:
+        outbox.server_id == ^server_id and outbox.target_user_id == ^user_id and
+          outbox.cause == "device_revoked" and outbox.status in ["pending", "handed_off"],
+      lock: "FOR UPDATE"
+    )
+    |> Repo.all()
+    |> Enum.flat_map(fn outbox ->
+      cond do
+        outbox.status == "pending" ->
+          [outbox.id]
+
+        crypto_eviction_completed?(outbox) ->
+          []
+
+        true ->
+          outbox
+          |> MlsEvictionOutbox.changeset(%{
+            status: "pending",
+            handed_off_at: nil,
+            last_error: "requeued_after_membership_rejoin"
+          })
+          |> Repo.update!()
+
+          [outbox.id]
+      end
+    end)
+  end
+
+  defp active_mls_eviction_outbox!(attrs) do
+    query =
+      from(outbox in MlsEvictionOutbox,
+        where:
+          outbox.target_user_id == ^attrs.target_user_id and
+            outbox.target_device_id == ^attrs.target_device_id and
+            outbox.scope_kind == ^attrs.scope_kind and
+            outbox.scope_id == ^attrs.scope_id and
+            outbox.status in ["pending", "handed_off"],
+        order_by: [asc: outbox.inserted_at],
+        limit: 1
+      )
+
+    query =
+      if is_nil(attrs.server_id) do
+        from(outbox in query, where: is_nil(outbox.server_id))
+      else
+        from(outbox in query, where: outbox.server_id == ^attrs.server_id)
       end
 
-    Encryption.queue_scope_crypto_evictions(evictions)
+    Repo.one!(query)
+  end
+
+  defp crypto_eviction_completed?(outbox) do
+    Encryption.list_pending_crypto_evictions(outbox.scope_kind, outbox.scope_id)
+    |> Enum.any?(fn eviction ->
+      eviction.target_user_id == outbox.target_user_id and
+        eviction.target_device_id == outbox.target_device_id and
+        eviction.status in ["committed", "applied"]
+    end)
+  end
+
+  defp membership_is_server_owner?(%Membership{server_id: server_id, user_id: user_id}) do
+    match?(%Server{owner_id: ^user_id}, Repo.get(Server, server_id))
+  end
+
+  defp lock_server(server_id) do
+    from(server in Server, where: server.id == ^server_id, lock: "FOR UPDATE")
+    |> Repo.one()
+  end
+
+  defp lock_server_membership(server_id, user_id) do
+    from(membership in Membership,
+      where: membership.server_id == ^server_id and membership.user_id == ^user_id,
+      lock: "FOR UPDATE"
+    )
+    |> Repo.one()
+  end
+
+  defp lock_mls_eviction_outbox(outbox_id) do
+    from(outbox in MlsEvictionOutbox, where: outbox.id == ^outbox_id, lock: "FOR UPDATE")
+    |> Repo.one()
+  end
+
+  defp enqueue_mls_eviction_outboxes(outbox_ids) do
+    Enum.each(outbox_ids, fn outbox_id ->
+      _ = enqueue_mls_eviction_outbox(outbox_id)
+    end)
+  end
+
+  defp unique_constraint_error?(%Ecto.Changeset{} = changeset) do
+    Enum.any?(changeset.errors, fn
+      {_field, {_message, meta}} -> meta[:constraint] == :unique or meta[:error_type] == :unique
+      _ -> false
+    end)
   end
 
   defp broadcast_permissions_changed(server_id) do

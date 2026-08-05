@@ -31,6 +31,7 @@ defmodule VesperWeb.GroupInfoController do
                     else: nil
                   ),
                 epoch: group_info.epoch,
+                transcript_hash: Base.encode64(Encryption.mls_transcript_hash(group_info)),
                 publisher_id: group_info.publisher_id,
                 updated_at: group_info.updated_at
               }
@@ -57,6 +58,8 @@ defmodule VesperWeb.GroupInfoController do
          authorized_group_id = authorization.group_id,
          {:ok, group_info_data} <- decode_required_base64(params, "group_info_data"),
          {:ok, ratchet_tree_data} <- decode_optional_base64(params, "ratchet_tree_data"),
+         {:ok, previous_transcript_hash} <-
+           decode_optional_base64(params, "previous_transcript_hash"),
          epoch when is_integer(epoch) <- parse_epoch(params) do
       channel_id = authorization.channel_id
       conversation_id = authorization.conversation_id
@@ -70,6 +73,7 @@ defmodule VesperWeb.GroupInfoController do
         ratchet_tree_data: ratchet_tree_data,
         epoch: epoch,
         previous_epoch: previous_epoch,
+        previous_transcript_hash: previous_transcript_hash,
         publisher_id: user.id,
         publisher_client_id: device.client_id,
         channel_id: channel_id,
@@ -89,7 +93,15 @@ defmodule VesperWeb.GroupInfoController do
               })
 
             {:error, :epoch_conflict} ->
-              conn |> put_status(:conflict) |> json(%{error: "epoch_conflict"})
+              transition_conflict(conn, authorized_group_id)
+
+            {:error, :transition_required} ->
+              conn
+              |> put_status(:conflict)
+              |> json(%{
+                error: "transition_required",
+                message: "epoch advances require commit_data and commit_id"
+              })
 
             {:error, reason} ->
               conn |> put_status(:unprocessable_entity) |> json(%{error: inspect(reason)})
@@ -102,29 +114,31 @@ defmodule VesperWeb.GroupInfoController do
                    commit_id: commit_id
                  })
                ) do
-            {:ok, %{group_info: group_info, event: event}} ->
-              broadcast_external_commit(
-                control_topic(authorization),
-                event.id,
-                commit_data,
-                user.id,
-                device.client_id
-              )
-
+            {:ok, %{group_info: group_info, event: event, fresh: fresh}} ->
               json(conn, %{
+                fresh: fresh,
                 group_info: %{
                   group_id: group_info.group_id,
                   epoch: group_info.epoch,
+                  transcript_hash: Base.encode64(Encryption.mls_transcript_hash(group_info)),
                   updated_at: group_info.updated_at
                 },
                 commit_event_seq: event.id
               })
 
             {:error, :epoch_conflict} ->
-              conn |> put_status(:conflict) |> json(%{error: "epoch_conflict"})
+              transition_conflict(conn, authorized_group_id)
 
             {:error, :invalid_previous_epoch} ->
               conn |> put_status(:bad_request) |> json(%{error: "invalid previous_epoch"})
+
+            {:error, :invalid_previous_transcript_hash} ->
+              conn
+              |> put_status(:bad_request)
+              |> json(%{error: "invalid previous_transcript_hash"})
+
+            {:error, :invalid_epoch_transition} ->
+              conn |> put_status(:conflict) |> json(%{error: "invalid_epoch_transition"})
 
             {:error, :invalid_commit_data} ->
               conn |> put_status(:bad_request) |> json(%{error: "invalid commit_data"})
@@ -248,22 +262,19 @@ defmodule VesperWeb.GroupInfoController do
     end
   end
 
-  defp broadcast_external_commit(topic, seq, commit_data, sender_id, sender_device_id) do
-    VesperWeb.Endpoint.broadcast(topic, "mls_commit", %{
-      seq: seq,
-      commit_data: commit_data,
-      sender_id: sender_id,
-      sender_device_id: sender_device_id
-    })
+  defp transition_conflict(conn, group_id) do
+    case Encryption.get_group_info(group_id) do
+      nil ->
+        conn |> put_status(:conflict) |> json(%{error: "epoch_conflict", current_epoch: nil})
+
+      group_info ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{
+          error: "epoch_conflict",
+          current_epoch: group_info.epoch,
+          current_transcript_hash: Base.encode64(Encryption.mls_transcript_hash(group_info))
+        })
+    end
   end
-
-  defp control_topic(%{cohort_id: cohort_id, group_id: group_id})
-       when is_binary(cohort_id),
-       do: "crypto:cohort:#{group_id}"
-
-  defp control_topic(%{channel_id: channel_id}) when is_binary(channel_id),
-    do: "chat:channel:#{channel_id}"
-
-  defp control_topic(%{conversation_id: conversation_id}) when is_binary(conversation_id),
-    do: "dm:#{conversation_id}"
 end

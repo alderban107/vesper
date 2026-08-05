@@ -15,6 +15,7 @@ defmodule Vesper.Accounts.Device do
     field :approval_method, :string
     field :trusted_at, :utc_datetime
     field :revoked_at, :utc_datetime
+    field :crypto_eviction_required_at, :utc_datetime
     field :last_seen_at, :utc_datetime
     field :push_token, :string
     field :push_platform, :string
@@ -39,6 +40,7 @@ defmodule Vesper.Accounts.Device do
       :approval_method,
       :trusted_at,
       :revoked_at,
+      :crypto_eviction_required_at,
       :last_seen_at,
       :push_token,
       :push_platform,

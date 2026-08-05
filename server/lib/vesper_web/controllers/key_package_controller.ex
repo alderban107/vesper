@@ -39,14 +39,14 @@ defmodule VesperWeb.KeyPackageController do
 
   @doc "GET /api/v1/key-packages/:user_id — fetch one unconsumed key package"
   def show(conn, %{"user_id" => user_id} = params) do
-    case Encryption.fetch_and_consume_key_package(user_id, params["device_id"]) do
+    case Encryption.fetch_and_consume_key_package_with_identity(user_id, params["device_id"]) do
       nil ->
         conn
         |> put_status(:not_found)
         |> json(%{error: "no key packages available"})
 
-      data ->
-        json(conn, %{key_package: Base.encode64(data)})
+      %{key_package_data: data, client_id: client_id} ->
+        json(conn, %{key_package: Base.encode64(data), device_id: client_id})
     end
   end
 

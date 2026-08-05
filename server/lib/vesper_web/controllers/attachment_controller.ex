@@ -99,7 +99,7 @@ defmodule VesperWeb.AttachmentController do
               %{rows: [[used_bytes]]} =
                 Ecto.Adapters.SQL.query!(
                   Repo,
-                  "SELECT COALESCE(SUM(size_bytes), 0)::bigint FROM attachments WHERE uploader_id::text = $1",
+                  "SELECT COALESCE(SUM(size_bytes), 0)::bigint FROM attachments WHERE uploader_id::text = $1 AND (expires_at IS NULL OR expires_at > NOW())",
                   [attrs.uploader_id]
                 )
 
@@ -153,31 +153,46 @@ defmodule VesperWeb.AttachmentController do
       attachment ->
         attachment = Repo.preload(attachment, :message)
 
-        if authorized_for_attachment?(user.id, attachment) do
-          path = FileStorage.get_path(attachment.storage_key)
+        cond do
+          not authorized_for_attachment?(user.id, attachment) ->
+            conn |> put_status(:forbidden) |> json(%{error: "access denied"})
 
-          if File.exists?(path) do
-            # For encrypted attachments, don't leak filename or content_type
-            # in HTTP headers — the client decrypts metadata from the message.
-            {resp_type, resp_filename} =
-              if attachment.encrypted do
-                {"application/octet-stream", attachment.id}
-              else
-                safe_filename = String.replace(attachment.filename, ~r/["\r\n\\]/, "_")
-                {attachment.content_type || "application/octet-stream", safe_filename}
-              end
+          attachment_expired?(attachment) ->
+            conn |> put_status(:gone) |> json(%{error: "attachment expired"})
 
-            conn
-            |> put_resp_content_type(resp_type)
-            |> put_resp_header("content-disposition", ~s(attachment; filename="#{resp_filename}"))
-            |> send_file(200, path)
-          else
-            conn |> put_status(:not_found) |> json(%{error: "file not found"})
-          end
-        else
-          conn |> put_status(:forbidden) |> json(%{error: "access denied"})
+          true ->
+            send_attachment(conn, attachment)
         end
     end
+  end
+
+  defp send_attachment(conn, attachment) do
+    path = FileStorage.get_path(attachment.storage_key)
+
+    if File.exists?(path) do
+      # For encrypted attachments, don't leak filename or content_type in HTTP
+      # headers — the client decrypts metadata from the message.
+      {resp_type, resp_filename} =
+        if attachment.encrypted do
+          {"application/octet-stream", attachment.id}
+        else
+          safe_filename = String.replace(attachment.filename, ~r/["\r\n\\]/, "_")
+          {attachment.content_type || "application/octet-stream", safe_filename}
+        end
+
+      conn
+      |> put_resp_content_type(resp_type)
+      |> put_resp_header("content-disposition", ~s(attachment; filename="#{resp_filename}"))
+      |> send_file(200, path)
+    else
+      conn |> put_status(:not_found) |> json(%{error: "file not found"})
+    end
+  end
+
+  defp attachment_expired?(%{expires_at: nil}), do: false
+
+  defp attachment_expired?(%{expires_at: expires_at}) do
+    DateTime.compare(expires_at, DateTime.utc_now()) != :gt
   end
 
   # Attachment not yet linked to a message — only allow the original uploader

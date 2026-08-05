@@ -8,11 +8,10 @@ import { useAuthStore } from '../../stores/authStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 import ComposerForm from './ComposerForm'
 import type { StagedFile } from './message/ComposerShell'
-import { resolveFilename } from './message/ComposerShell'
+import { createAnonymousFilename, resolveStagedFilename } from '../../utils/attachmentFilename'
 import { formatCustomEmojiToken, type CustomEmoji } from '../../utils/emoji'
-import { prepareMessageAttachment } from '../../utils/messageAttachment'
+import { AttachmentPreparationError, prepareMessageAttachment } from '../../utils/messageAttachment'
 import { stripExifData } from '../../utils/stripExif'
-import { getRendererEncryptedChat } from '../../sdk/client'
 import {
   buildChannelSuggestions,
   buildEmojiSuggestions,
@@ -50,6 +49,7 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
   const conversations = useDmStore((s) => s.conversations)
   const sendMessage = useMessageStore((s) => s.sendMessage)
   const sendDmMessage = useMessageStore((s) => s.sendDmMessage)
+  const sendAttachmentMessage = useMessageStore((s) => s.sendAttachmentMessage)
   const sendTypingStart = useMessageStore((s) => s.sendTypingStart)
   const sendTypingStop = useMessageStore((s) => s.sendTypingStop)
   const sendDmTypingStart = useMessageStore((s) => s.sendDmTypingStart)
@@ -59,6 +59,7 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
   const setEditingMessage = useMessageStore((s) => s.setEditingMessage)
   const encryptionError = useMessageStore((s) => s.encryptionError)
   const canUseE2EE = useAuthStore((s) => s.canUseE2EE)
+  const anonymizeFilenames = useSettingsStore((s) => s.anonFilenames)
   const myUserId = useAuthStore((s) => s.user?.id)
   const messages = useMessageStore((s) =>
     s.messagesByChannel[scopeId] ?? EMPTY_MESSAGES
@@ -120,7 +121,11 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
         const key = `${file.name}:${file.size}:${file.lastModified}`
         if (!existingKeys.has(key)) {
           existingKeys.add(key)
-          next.push({ file, id: `staged-${++stagedIdCounter}` })
+          next.push({
+            file,
+            id: `staged-${++stagedIdCounter}`,
+            anonymousName: createAnonymousFilename(file.name)
+          })
         }
       }
       return next
@@ -143,38 +148,52 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
     )
   }
 
+  const setStagedFileDeliveryState = (
+    id: string,
+    deliveryState: StagedFile['deliveryState']
+  ): void => {
+    setStagedFiles((files) => files.map((file) =>
+      file.id === id ? { ...file, deliveryState } : file
+    ))
+  }
+
   const uploadAndSendFile = async (file: File, text: string | undefined): Promise<boolean> => {
     if (!canUseE2EE) {
       useMessageStore.setState({ encryptionError: 'Approve this device to send encrypted messages.' })
       return false
     }
-    const preparedAttachment = await prepareMessageAttachment(file)
-    if (!preparedAttachment) return false
-    const replyTo = useMessageStore.getState().replyingTo
-    const replyToId = replyTo?.id || undefined
-    const resolvedScope = scope.kind === 'dm'
-      ? { ...scope, channelId: conversations.find(c => c.id === scope.id)?.channel_id ?? undefined }
-      : scope
+
+    let preparedAttachment
     try {
-      await getRendererEncryptedChat().sendPayload(
-        resolvedScope,
-        { v: 1, type: 'file', text: text ?? null, file: preparedAttachment.file },
-        {
-          attachmentIds: preparedAttachment.attachmentIds,
-          ...(replyToId
-            ? {
-                parentMessageId: replyToId,
-                replyToMessageId: replyToId,
-                isReply: true
-              }
-            : {})
-        }
-      )
-      return true
-    } catch {
-      useMessageStore.setState({ encryptionError: 'File could not be encrypted. Please try again.' })
+      preparedAttachment = await prepareMessageAttachment(file)
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : 'This file could not be prepared for sending.'
+      const orphanNotice = error instanceof AttachmentPreparationError && error.hasOrphanedUpload
+        ? ' Unused encrypted uploads are removed automatically.'
+        : ''
+      useMessageStore.setState({
+        encryptionError: `${message} The staged file is still available to retry.${orphanNotice}`
+      })
       return false
     }
+
+    const replyToId = useMessageStore.getState().replyingTo?.id
+    const sent = await sendAttachmentMessage(
+      scope,
+      { type: 'file', text, file: preparedAttachment.file },
+      preparedAttachment.attachmentIds,
+      replyToId
+    )
+
+    if (!sent) {
+      useMessageStore.setState({
+        encryptionError: 'The file was uploaded but not sent. The staged file is still available to retry. Unused encrypted uploads are removed automatically.'
+      })
+    }
+
+    return sent
   }
 
   // --- Autocomplete ---
@@ -267,32 +286,51 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
 
     if (hasFiles) {
       setUploading(true)
+      let sendingEntryId: string | null = null
       try {
         for (let i = 0; i < stagedFiles.length; i++) {
           const text = i === 0 ? markdown : undefined
           const entry = stagedFiles[i]
-          // Apply global privacy settings
+          sendingEntryId = entry.id
+          setStagedFileDeliveryState(entry.id, 'uploading')
           const privacySettings = useSettingsStore.getState()
           const effectiveEntry = {
             ...entry,
             anonymous: entry.anonymous || privacySettings.anonFilenames,
           }
-          const finalName = resolveFilename(effectiveEntry)
+          const finalName = resolveStagedFilename(effectiveEntry)
           let fileToSend = finalName !== entry.file.name
             ? new File([entry.file], finalName, { type: entry.file.type })
             : entry.file
-          // Strip EXIF from images if enabled
-          if (privacySettings.stripExif && fileToSend.type.startsWith('image/')) {
-            fileToSend = await stripExifData(fileToSend)
+
+          try {
+            if (privacySettings.stripExif && fileToSend.type.startsWith('image/')) {
+              fileToSend = await stripExifData(fileToSend)
+            }
+          } catch {
+            setStagedFileDeliveryState(entry.id, 'failed')
+            useMessageStore.setState({
+              encryptionError: 'This image could not be prepared for sending. The staged file is still available to retry.'
+            })
+            return
           }
-          const ok = await uploadAndSendFile(fileToSend, text)
-          if (!ok) { setUploading(false); return }
+
+          const sent = await uploadAndSendFile(fileToSend, text)
+          if (!sent) {
+            setStagedFileDeliveryState(entry.id, 'failed')
+            return
+          }
+
+          setStagedFiles((files) => files.filter((file) => file.id !== entry.id))
+          if (i === 0 && hasText) clearEditor()
         }
-        setStagedFiles([])
-        clearEditor()
         useMessageStore.getState().setReplyingTo(null)
       } catch {
-        // ignore
+        if (sendingEntryId) setStagedFileDeliveryState(sendingEntryId, 'failed')
+        useMessageStore.setState({
+          encryptionError: 'This file could not be prepared for sending. The staged file is still available to retry.'
+        })
+        return
       } finally {
         setUploading(false)
       }
@@ -400,6 +438,12 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
   }
 
   const canSend = content.trim().length > 0 || stagedFiles.length > 0
+  const displayedStagedFiles = useMemo(
+    () => anonymizeFilenames
+      ? stagedFiles.map((entry) => ({ ...entry, anonymous: true }))
+      : stagedFiles,
+    [anonymizeFilenames, stagedFiles]
+  )
 
   return (
     <Slate editor={editor} initialValue={slateValue} onChange={handleSlateChange}>
@@ -455,14 +499,14 @@ export default function MessageInput({ scope }: Props): React.JSX.Element {
         onFileSelect={handleFileSelect}
         onRemoveStagedFile={removeStagedFile}
         onToggleStagedFileSpoiler={toggleStagedFileSpoiler}
-        onToggleStagedFileAnonymous={toggleStagedFileAnonymous}
+        onToggleStagedFileAnonymous={anonymizeFilenames ? undefined : toggleStagedFileAnonymous}
         onSend={() => { void handleSubmit() }}
         onToggleEmojiPicker={() => setShowEmojiPicker(!showEmojiPicker)}
         replyingTo={replyingTo}
         selectedAutocompleteIndex={selectedAutocompleteIndex}
         sendButtonTestId={isChannel ? 'send-button' : undefined}
         showEmojiPicker={showEmojiPicker}
-        stagedFiles={stagedFiles}
+        stagedFiles={displayedStagedFiles}
         triggerQuery={trigger?.query ?? null}
         uploading={uploading}
         canSend={canSend}

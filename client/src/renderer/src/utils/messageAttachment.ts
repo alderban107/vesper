@@ -14,40 +14,72 @@ export interface PreparedMessageAttachment {
   file: FilePayload['file']
 }
 
-async function uploadEncryptedBytes(
-  data: ArrayBuffer,
-  filename: string
-): Promise<UploadedEncryptedAttachment | null> {
-  const encrypted = await encryptFile(data)
-  const blob = new Blob([encrypted.ciphertext])
-  const formData = new FormData()
-  formData.append('file', blob, filename)
-  formData.append('encrypted', 'true')
+export class AttachmentPreparationError extends Error {
+  readonly hasOrphanedUpload: boolean
 
-  try {
-    const payload = await getRendererClient().uploadAttachment(formData)
-    if (!payload.attachment?.id) {
-      return null
-    }
-
-    return {
-      id: payload.attachment.id,
-      iv: encrypted.iv,
-      key: encrypted.key
-    }
-  } catch {
-    return null
+  constructor(message: string, options: { hasOrphanedUpload?: boolean } = {}) {
+    super(message)
+    this.name = 'AttachmentPreparationError'
+    this.hasOrphanedUpload = options.hasOrphanedUpload ?? false
   }
 }
 
-async function uploadEncryptedBlob(blob: Blob, filename: string): Promise<UploadedEncryptedAttachment | null> {
-  return uploadEncryptedBytes(await blob.arrayBuffer(), filename)
+async function uploadEncryptedBytes(
+  data: ArrayBuffer,
+  filename: string
+): Promise<UploadedEncryptedAttachment> {
+  let encrypted: Awaited<ReturnType<typeof encryptFile>>
+  try {
+    encrypted = await encryptFile(data)
+  } catch {
+    throw new AttachmentPreparationError('This file could not be encrypted before upload.')
+  }
+
+  let formData: FormData
+  try {
+    formData = new FormData()
+    formData.append('file', new Blob([encrypted.ciphertext]), filename)
+    formData.append('encrypted', 'true')
+  } catch {
+    throw new AttachmentPreparationError('This file could not be prepared for upload.')
+  }
+
+  let payload
+  try {
+    payload = await getRendererClient().uploadAttachment(formData)
+  } catch {
+    throw new AttachmentPreparationError('This file could not be uploaded. Check your connection and try again.')
+  }
+
+  if (!payload.attachment?.id) {
+    throw new AttachmentPreparationError('The upload did not return a file reference. Try again.')
+  }
+
+  return {
+    id: payload.attachment.id,
+    iv: encrypted.iv,
+    key: encrypted.key
+  }
 }
 
-export async function prepareMessageAttachment(file: File): Promise<PreparedMessageAttachment | null> {
-  const sourceAttachment = await uploadEncryptedBytes(await file.arrayBuffer(), file.name)
-  if (!sourceAttachment) {
-    return null
+async function uploadEncryptedBlob(blob: Blob, filename: string): Promise<UploadedEncryptedAttachment> {
+  return await uploadEncryptedBytes(await blob.arrayBuffer(), filename)
+}
+
+function rethrowAfterSourceUpload(error: unknown): never {
+  const message = error instanceof Error
+    ? error.message
+    : 'This file could not be prepared for sending.'
+  throw new AttachmentPreparationError(message, { hasOrphanedUpload: true })
+}
+
+export async function prepareMessageAttachment(file: File): Promise<PreparedMessageAttachment> {
+  let sourceAttachment: UploadedEncryptedAttachment
+  try {
+    sourceAttachment = await uploadEncryptedBytes(await file.arrayBuffer(), file.name)
+  } catch (error) {
+    if (error instanceof AttachmentPreparationError) throw error
+    throw new AttachmentPreparationError('This file could not be read before upload.')
   }
 
   const messageFile: FilePayload['file'] = {
@@ -61,56 +93,72 @@ export async function prepareMessageAttachment(file: File): Promise<PreparedMess
   const attachmentIds = [sourceAttachment.id]
 
   if (file.type.startsWith('video/')) {
+    let thumbnail
     try {
-      const thumbnail = await extractVideoThumbnail(file)
-      if (thumbnail) {
-        const uploadedThumbnail = await uploadEncryptedBlob(thumbnail.blob, 'thumbnail.jpg')
-        if (uploadedThumbnail) {
-          messageFile.thumbnail = {
-            id: uploadedThumbnail.id,
-            key: uploadedThumbnail.key,
-            iv: uploadedThumbnail.iv
-          }
-          messageFile.duration = thumbnail.duration
-          attachmentIds.push(uploadedThumbnail.id)
-        }
-      }
+      thumbnail = await extractVideoThumbnail(file)
     } catch {
-      // Video uploads still work without thumbnails.
+      throw new AttachmentPreparationError(
+        'A preview could not be created for this video. The file was uploaded but not sent.',
+        { hasOrphanedUpload: true }
+      )
+    }
+
+    if (thumbnail) {
+      let uploadedThumbnail: UploadedEncryptedAttachment
+      try {
+        uploadedThumbnail = await uploadEncryptedBlob(thumbnail.blob, 'thumbnail.jpg')
+      } catch (error) {
+        rethrowAfterSourceUpload(error)
+      }
+      messageFile.thumbnail = {
+        id: uploadedThumbnail.id,
+        key: uploadedThumbnail.key,
+        iv: uploadedThumbnail.iv
+      }
+      messageFile.duration = thumbnail.duration
+      attachmentIds.push(uploadedThumbnail.id)
     }
   }
 
   if (file.type.startsWith('audio/')) {
+    let metadata
     try {
-      const metadata = await extractAudioMetadata(file)
-      if (metadata) {
-        if (metadata.duration) {
-          messageFile.duration = metadata.duration
-        }
-
-        const audioMetadata: NonNullable<FilePayload['file']['audio_metadata']> = {}
-        if (metadata.title) audioMetadata.title = metadata.title
-        if (metadata.artist) audioMetadata.artist = metadata.artist
-        if (metadata.album) audioMetadata.album = metadata.album
-
-        if (metadata.coverBlob) {
-          const uploadedCover = await uploadEncryptedBlob(metadata.coverBlob, 'cover.jpg')
-          if (uploadedCover) {
-            audioMetadata.cover = {
-              id: uploadedCover.id,
-              key: uploadedCover.key,
-              iv: uploadedCover.iv
-            }
-            attachmentIds.push(uploadedCover.id)
-          }
-        }
-
-        if (audioMetadata.title || audioMetadata.artist || audioMetadata.album || audioMetadata.cover) {
-          messageFile.audio_metadata = audioMetadata
-        }
-      }
+      metadata = await extractAudioMetadata(file)
     } catch {
-      // Audio uploads still work without extracted metadata.
+      throw new AttachmentPreparationError(
+        'Audio details could not be read. The file was uploaded but not sent.',
+        { hasOrphanedUpload: true }
+      )
+    }
+
+    if (metadata) {
+      if (metadata.duration) {
+        messageFile.duration = metadata.duration
+      }
+
+      const audioMetadata: NonNullable<FilePayload['file']['audio_metadata']> = {}
+      if (metadata.title) audioMetadata.title = metadata.title
+      if (metadata.artist) audioMetadata.artist = metadata.artist
+      if (metadata.album) audioMetadata.album = metadata.album
+
+      if (metadata.coverBlob) {
+        let uploadedCover: UploadedEncryptedAttachment
+        try {
+          uploadedCover = await uploadEncryptedBlob(metadata.coverBlob, 'cover.jpg')
+        } catch (error) {
+          rethrowAfterSourceUpload(error)
+        }
+        audioMetadata.cover = {
+          id: uploadedCover.id,
+          key: uploadedCover.key,
+          iv: uploadedCover.iv
+        }
+        attachmentIds.push(uploadedCover.id)
+      }
+
+      if (audioMetadata.title || audioMetadata.artist || audioMetadata.album || audioMetadata.cover) {
+        messageFile.audio_metadata = audioMetadata
+      }
     }
   }
 

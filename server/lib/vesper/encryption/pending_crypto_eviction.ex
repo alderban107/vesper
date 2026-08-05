@@ -63,7 +63,6 @@ defmodule Vesper.Encryption.PendingCryptoEviction do
       :scope_kind,
       :scope_id,
       :group_id,
-      :server_id,
       :target_user_id,
       :status
     ])

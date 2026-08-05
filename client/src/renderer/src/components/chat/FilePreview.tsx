@@ -28,6 +28,55 @@ function formatDuration(seconds: number): string {
   return `${minutes}:${remainder.toString().padStart(2, '0')}`
 }
 
+type AttachmentErrorKind = 'integrity' | 'network' | 'unavailable'
+
+class AttachmentDisplayError extends Error {
+  readonly kind: AttachmentErrorKind
+
+  constructor(kind: AttachmentErrorKind) {
+    super(kind)
+    this.name = 'AttachmentDisplayError'
+    this.kind = kind
+  }
+}
+
+function attachmentFetchErrorKind(error: unknown): AttachmentErrorKind {
+  const message = error instanceof Error ? error.message : String(error)
+  const statusMatch = /status (\d+)/.exec(message)
+  const status = statusMatch ? Number.parseInt(statusMatch[1] ?? '', 10) : null
+
+  if (status === 403 || status === 404 || status === 410) {
+    return 'unavailable'
+  }
+
+  return 'network'
+}
+
+async function loadDecryptedAttachment(
+  file: FileMessageContent['file'],
+  contentType: string
+): Promise<Blob> {
+  let encrypted: ArrayBuffer
+  try {
+    encrypted = await fetchAttachmentBytes(file.id)
+  } catch (error) {
+    throw new AttachmentDisplayError(attachmentFetchErrorKind(error))
+  }
+
+  try {
+    const decrypted = await decryptFile(encrypted, file.key, file.iv)
+    return new Blob([decrypted], { type: contentType })
+  } catch {
+    throw new AttachmentDisplayError('integrity')
+  }
+}
+
+function attachmentErrorMessage(error: AttachmentErrorKind): string {
+  if (error === 'network') return 'Could not download file. Check your connection.'
+  if (error === 'integrity') return 'File could not be decrypted.'
+  return 'File expired or unavailable.'
+}
+
 interface Props {
   file: FileMessageContent['file']
 }
@@ -45,7 +94,8 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
 
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(false)
+  const [error, setError] = useState<AttachmentErrorKind | null>(null)
+  const [retryVersion, setRetryVersion] = useState(0)
   const [showLightbox, setShowLightbox] = useState(false)
   // Audio: explicit click-to-load (same pattern as video)
   const [audioRequested, setAudioRequested] = useState(false)
@@ -83,7 +133,7 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
     const cachedUrl = acquireCachedAttachmentObjectUrl(previewCacheKey)
     if (cachedUrl) {
       previewRetainedRef.current = true
-      setError(false)
+      setError(null)
       setLoading(false)
       setPreviewUrl(cachedUrl)
 
@@ -93,20 +143,22 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
     }
 
     setLoading(true)
-    setError(false)
+    setError(null)
     previewRetainedRef.current = true
 
-    void loadCachedAttachmentObjectUrl(previewCacheKey, async () => {
-      const encrypted = await fetchAttachmentBytes(file.id)
-      const decrypted = await decryptFile(encrypted, file.key, file.iv)
-      return new Blob([decrypted], { type: effectiveType })
-    })
+    void loadCachedAttachmentObjectUrl(
+      previewCacheKey,
+      async () => await loadDecryptedAttachment(file, effectiveType)
+    )
       .then((url) => {
         if (cancelled) return
         setPreviewUrl(url)
       })
-      .catch(() => {
-        if (!cancelled) setError(true)
+      .catch((loadError) => {
+        if (!cancelled) {
+          previewRetainedRef.current = false
+          setError(loadError instanceof AttachmentDisplayError ? loadError.kind : 'network')
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -116,7 +168,7 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
       cancelled = true
       releasePreviewUrl()
     }
-  }, [isImage, hasBeenVisible, file.id, file.key, file.iv, effectiveType, previewCacheKey, releasePreviewUrl])
+  }, [isImage, hasBeenVisible, file.id, file.key, file.iv, effectiveType, previewCacheKey, releasePreviewUrl, retryVersion])
 
   // Audio: fetch when explicitly requested
   useEffect(() => {
@@ -127,7 +179,7 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
     const cachedUrl = acquireCachedAttachmentObjectUrl(previewCacheKey)
     if (cachedUrl) {
       previewRetainedRef.current = true
-      setError(false)
+      setError(null)
       setLoading(false)
       setPreviewUrl(cachedUrl)
 
@@ -137,20 +189,22 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
     }
 
     setLoading(true)
-    setError(false)
+    setError(null)
     previewRetainedRef.current = true
 
-    void loadCachedAttachmentObjectUrl(previewCacheKey, async () => {
-      const encrypted = await fetchAttachmentBytes(file.id)
-      const decrypted = await decryptFile(encrypted, file.key, file.iv)
-      return new Blob([decrypted], { type: effectiveType })
-    })
+    void loadCachedAttachmentObjectUrl(
+      previewCacheKey,
+      async () => await loadDecryptedAttachment(file, effectiveType)
+    )
       .then((url) => {
         if (cancelled) return
         setPreviewUrl(url)
       })
-      .catch(() => {
-        if (!cancelled) setError(true)
+      .catch((loadError) => {
+        if (!cancelled) {
+          previewRetainedRef.current = false
+          setError(loadError instanceof AttachmentDisplayError ? loadError.kind : 'network')
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -160,7 +214,7 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
       cancelled = true
       releasePreviewUrl()
     }
-  }, [isAudio, audioRequested, file.id, file.key, file.iv, effectiveType, previewCacheKey, releasePreviewUrl])
+  }, [isAudio, audioRequested, file.id, file.key, file.iv, effectiveType, previewCacheKey, releasePreviewUrl, retryVersion])
 
   // Release the row's local hold when it scrolls far away.
   // The shared cache keeps hot previews around until LRU pressure evicts them.
@@ -217,26 +271,44 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
   }, [releaseCoverUrl, releasePreviewUrl])
 
   const handleDownload = async (): Promise<void> => {
+    setError(null)
     try {
-      const encryptedBlob = await fetchAttachmentBytes(file.id)
-      const decrypted = await decryptFile(encryptedBlob, file.key, file.iv)
-      const blob = new Blob([decrypted], { type: effectiveType })
+      const blob = await loadDecryptedAttachment(file, effectiveType)
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
       a.download = file.name
       a.click()
       URL.revokeObjectURL(url)
-    } catch {
-      setError(true)
+    } catch (downloadError) {
+      setError(
+        downloadError instanceof AttachmentDisplayError
+          ? downloadError.kind
+          : 'network'
+      )
     }
+  }
+
+  const retryDownload = (): void => {
+    setError(null)
+    if (isImage || isAudio) {
+      setRetryVersion((version) => version + 1)
+      return
+    }
+
+    void handleDownload()
   }
 
   if (error) {
     return (
       <div data-testid="attachment" className="flex items-center gap-2 px-3 py-2 bg-bg-tertiary/50 rounded-lg text-xs text-text-faint border border-border mt-1.5">
         <AlertCircle className="w-4 h-4 text-error" />
-        <span>File expired or unavailable</span>
+        <span>{attachmentErrorMessage(error)}</span>
+        {error === 'network' && (
+          <button type="button" className="font-medium text-text hover:underline" onClick={retryDownload}>
+            Retry
+          </button>
+        )}
       </div>
     )
   }
@@ -293,7 +365,7 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
                   src={previewUrl}
                   alt={file.name}
                   className="max-w-sm max-h-80 rounded-lg border border-border object-contain"
-                  onError={() => setError(true)}
+                  onError={() => setError('integrity')}
                 />
                 <span className="vesper-file-spoiler-label">SPOILER</span>
               </button>
@@ -307,7 +379,7 @@ export default function FilePreview({ file }: Props): React.JSX.Element {
                   src={previewUrl}
                   alt={file.name}
                   className="max-w-sm max-h-80 rounded-lg border border-border object-contain cursor-zoom-in group-hover:brightness-90 transition-all"
-                  onError={() => setError(true)}
+                  onError={() => setError('integrity')}
                 />
               </button>
             )}

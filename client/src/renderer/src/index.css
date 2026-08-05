@@ -4417,6 +4417,16 @@ button:disabled {
   white-space: nowrap;
 }
 
+.vesper-staged-card-status {
+  padding: 0 10px 8px;
+  font-size: 0.72rem;
+  color: var(--color-text-faint);
+}
+
+.vesper-staged-card-status-failed {
+  color: #f87171;
+}
+
 .vesper-staged-card-action-active {
   color: var(--color-accent-text, #c8a24e) !important;
 }

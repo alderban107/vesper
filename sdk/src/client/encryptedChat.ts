@@ -9,6 +9,7 @@ import {
   fetchPendingHistoryRequests,
   fetchPendingResyncRequests,
   fetchKeyPackage,
+  fetchKeyPackageWithIdentity,
   fetchMlsEvents,
   fetchPendingWelcomes,
   publishExternalCommitGroupInfo,
@@ -337,7 +338,9 @@ type PendingSponsoredTransition = {
   ratchetTreeData: Uint8Array | null
   epoch: number | null
   previousEpoch: number | null
+  previousTranscriptHash: Uint8Array | null
   baseState: Uint8Array | null
+  resultState: Uint8Array | null
   baseEpoch: number | null
 }
 type PreparedSponsoredTransition = PendingSponsoredTransition & {
@@ -357,11 +360,13 @@ type JournaledControlIntentPayload = {
 }
 type SponsoredTransitionIntentPayload = Omit<
   PendingSponsoredTransition,
-  'groupInfoData' | 'ratchetTreeData' | 'baseState'
+  'groupInfoData' | 'ratchetTreeData' | 'previousTranscriptHash' | 'baseState' | 'resultState'
 > & {
   groupInfoData: string | null
   ratchetTreeData: string | null
+  previousTranscriptHash: string | null
   baseState: string | null
+  resultState: string | null
 }
 type ScopeRepairStatus = 'healthy'
   | 'replaying'
@@ -449,7 +454,9 @@ function samePendingSponsoredTransition(
     uint8ArraysEqual(left.ratchetTreeData, right.ratchetTreeData) &&
     left.epoch === right.epoch &&
     left.previousEpoch === right.previousEpoch &&
+    uint8ArraysEqual(left.previousTranscriptHash, right.previousTranscriptHash) &&
     uint8ArraysEqual(left.baseState, right.baseState) &&
+    uint8ArraysEqual(left.resultState, right.resultState) &&
     left.baseEpoch === right.baseEpoch
   )
 }
@@ -713,6 +720,7 @@ function normalizeHistoryBundleItem(
 export class VesperEncryptedChat {
   private readonly client: VesperClient
   private readonly storage: CryptoStorageRuntime
+  private readonly groupLockNamespace: string
   private readonly groupStates = new Map<string, GroupState>()
   private readonly joinedTopics = new Set<string>()
   private readonly scopeDisposers = new Map<string, () => void>()
@@ -739,6 +747,7 @@ export class VesperEncryptedChat {
   private readonly recentDmJoinProcessed = new Map<string, number>()
   private readonly scopeKinds = new Map<string, 'channel' | 'dm'>()
   private readonly yieldedDmScopes = new Set<string>()
+  private readonly initialDmJoinCoverageWaits = new Map<string, Promise<boolean>>()
   private readonly pendingGroupCreations = new Map<string, Promise<void>>()
   private readonly pendingExternalCommits = new Map<string, Promise<boolean>>()
   private readonly scopesWithoutRemoteGroup = new Set<string>()
@@ -780,6 +789,7 @@ export class VesperEncryptedChat {
   constructor(client: VesperClient) {
     this.client = client
     this.storage = client.getStorageRuntime()
+    this.groupLockNamespace = crypto.randomUUID()
 
     this.client.on('connected', () => {
       void this.handleConnected()
@@ -909,7 +919,7 @@ export class VesperEncryptedChat {
     operation: () => Promise<T>,
     priority: Parameters<typeof withGroupLock>[2] = 'normal'
   ): Promise<T> {
-    return await withGroupLock(scopeId, async () => {
+    return await withGroupLock(`${this.groupLockNamespace}:${scopeId}`, async () => {
       return await this.withStorageContext(operation)
     }, priority)
   }
@@ -919,9 +929,13 @@ export class VesperEncryptedChat {
     operation: () => Promise<T>,
     priority: Parameters<typeof withGroupLock>[2] = 'normal'
   ): Promise<T> {
-    return await withGroupLock(`application:${this.resolveRoomId(scope)}`, async () => {
-      return await this.withStorageContext(operation)
-    }, priority)
+    return await withGroupLock(
+      `${this.groupLockNamespace}:application:${this.resolveRoomId(scope)}`,
+      async () => {
+        return await this.withStorageContext(operation)
+      },
+      priority
+    )
   }
 
   private async prepareScopeControlForRead(scope: EncryptedScope): Promise<void> {
@@ -1041,6 +1055,7 @@ export class VesperEncryptedChat {
     this.welcomeAppliedAtByScope.clear()
     this.recentDmJoinProcessed.clear()
     this.yieldedDmScopes.clear()
+    this.initialDmJoinCoverageWaits.clear()
     this.pendingGroupInfoPublishes.clear()
     this.groupInfoPublishRetryAttempts.clear()
     for (const timer of this.groupInfoPublishRetryTimers.values()) {
@@ -1224,10 +1239,8 @@ export class VesperEncryptedChat {
       }, 'urgent')
     }
 
-    return await withGroupLock(topology.groupId, async () => {
-      return await this.withStorageContext(async () => {
-        return await this.handleScopeEvent(scope, event, payload)
-      })
+    return await this.withLockedScopeOperation(topology.groupId, async () => {
+      return await this.handleScopeEvent(scope, event, payload)
     }, 'urgent')
   }
 
@@ -1272,15 +1285,6 @@ export class VesperEncryptedChat {
     }
 
     return findExactMemberLeafIndex(state, buildClientCredentialIdentity(userId, deviceId)) !== null
-  }
-
-  private dmGroupAlreadyConverged(scopeId: string, peerUserId: string): boolean {
-    const state = this.groupStates.get(scopeId)
-    if (!state) {
-      return false
-    }
-
-    return groupHasMember(state, peerUserId)
   }
 
   private resolveKnownUserAliases(userId: string): string[] {
@@ -1463,7 +1467,7 @@ export class VesperEncryptedChat {
     return await this.withStorageContext(async () => {
       await this.ensureScopeTopology(scope)
       const groupId = this.resolveMlsGroupId(scope)
-      this.scopeKinds.set(groupId, 'channel')
+      this.scopeKinds.set(groupId, scope.channelId ? 'channel' : scope.kind)
       return await this.ensureChannelGroupReady(scope, allowCreate)
     })
   }
@@ -1614,6 +1618,13 @@ export class VesperEncryptedChat {
       }
 
       if (retryAttempt === 0) {
+        // A rejected stale-epoch ciphertext is never retried as-is. Confirming
+        // the nonce first rules out a dropped acknowledgement; only then do we
+        // replay the canonical durable prefix and encrypt a fresh ciphertext.
+        const groupId = this.resolveMlsGroupId(scope)
+        await this.withLockedScopeOperation(groupId, async () => {
+          await this.replayDurableEventsLocked(groupId)
+        })
         const roomId = this.resolveRoomId(scope)
         this.roomCrypto.forgetTopology(roomId)
         await this.ensureScopeTopology(scope)
@@ -1983,7 +1994,16 @@ export class VesperEncryptedChat {
       if (!(await this.ensureCurrentGroupInfoPublished(groupId))) {
         return false
       }
-      return true
+      const localUserId = this.client.getAuthSession()?.user.id ?? this.client.getState().user?.id
+      if (!localUserId) {
+        return false
+      }
+      return await this.ensureInitialDmParticipantCoverage(
+        scope,
+        this.resolveRoomId(scope),
+        groupId,
+        localUserId
+      )
     })
   }
 
@@ -2000,37 +2020,54 @@ export class VesperEncryptedChat {
     })
   }
 
-  private async resetScopeState(scopeId: string): Promise<void> {
-      this.groupStates.delete(scopeId)
-      this.pendingCommits.delete(scopeId)
-      this.scopeMessages.delete(scopeId)
-      this.scopeHistoryFullyBackfilled.delete(scopeId)
-      this.inFlightScopePreparations.delete(scopeId)
-      this.recentScopeResyncRequests.delete(scopeId)
-      this.recentScopeHistoryRequests.delete(scopeId)
-      this.welcomeAppliedAtByScope.delete(scopeId)
-      this.welcomeReceivedScopes.delete(scopeId)
-      this.pendingGroupCreations.delete(scopeId)
-      this.welcomeInProgress.delete(scopeId)
-      this.lastSuccessfulGroupInfoPublishEpochs.delete(scopeId)
-      this.recentCommitFingerprints.delete(scopeId)
-      this.recentHistoryBundleFingerprints.delete(scopeId)
-      for (const key of [...this.inFlightHistoryBundleProcesses.keys()]) {
-        if (key.startsWith(`${scopeId}:`)) {
-          this.inFlightHistoryBundleProcesses.delete(key)
-        }
+  private async resetScopeState(
+    scopeId: string,
+    options: { consumedEventSeq?: number | null } = {}
+  ): Promise<void> {
+    // A removal is a durable membership boundary. Persisting the cleared state
+    // and its sequence in one checkpoint prevents a later recovery from
+    // resurrecting this scope and then applying the same removal against it.
+    const consumedEventSeq = options.consumedEventSeq ?? null
+    this.groupStates.delete(scopeId)
+    this.pendingCommits.delete(scopeId)
+    this.scopeMessages.delete(scopeId)
+    this.scopeHistoryFullyBackfilled.delete(scopeId)
+    this.inFlightScopePreparations.delete(scopeId)
+    this.recentScopeResyncRequests.delete(scopeId)
+    this.recentScopeHistoryRequests.delete(scopeId)
+    this.welcomeAppliedAtByScope.delete(scopeId)
+    this.welcomeReceivedScopes.delete(scopeId)
+    this.initialDmJoinCoverageWaits.delete(scopeId)
+    this.pendingGroupCreations.delete(scopeId)
+    this.welcomeInProgress.delete(scopeId)
+    this.lastSuccessfulGroupInfoPublishEpochs.delete(scopeId)
+    this.recentCommitFingerprints.delete(scopeId)
+    this.recentHistoryBundleFingerprints.delete(scopeId)
+    for (const key of [...this.inFlightHistoryBundleProcesses.keys()]) {
+      if (key.startsWith(`${scopeId}:`)) {
+        this.inFlightHistoryBundleProcesses.delete(key)
       }
-      this.scopeRepairStates.delete(scopeId)
-      this.replayBlockedScopes.delete(scopeId)
-      this.pendingRepairFetches.delete(scopeId)
-      this.lastRepairFetchAt.delete(scopeId)
-      this.checkpointPersistChains.delete(scopeId)
-      await this.clearPendingGroupInfoPublish(scopeId)
-      await this.clearPendingExternalCommitBroadcast(scopeId)
-      await this.clearPendingSponsoredTransition(scopeId)
-      this.notifyMembershipWaiters(scopeId, false)
-      this.membershipWaiters.delete(scopeId)
-      await this.storage.deleteGroupState(scopeId)
+    }
+    this.scopeRepairStates.delete(scopeId)
+    this.replayBlockedScopes.delete(scopeId)
+    this.pendingRepairFetches.delete(scopeId)
+    this.lastRepairFetchAt.delete(scopeId)
+    this.pendingGroupInfoPublishes.delete(scopeId)
+    this.pendingExternalCommitBroadcasts.delete(scopeId)
+    this.pendingSponsoredTransitions.delete(scopeId)
+    this.sponsoredTransitionRollbackStates.delete(scopeId)
+    this.notifyMembershipWaiters(scopeId, false)
+    this.membershipWaiters.delete(scopeId)
+
+    await this.withScopeCheckpointMutation(scopeId, (checkpoint) => {
+      checkpoint.groupState = null
+      checkpoint.lastEventSeq = Math.max(checkpoint.lastEventSeq, consumedEventSeq ?? 0)
+      checkpoint.recentCommitFingerprints = []
+      checkpoint.recentHistoryBundleFingerprints = []
+      checkpoint.repairState = null
+      checkpoint.roomDataKeys = []
+      checkpoint.controlIntents = []
+    })
   }
 
   async applyScopeCommit(scopeId: string, commitData: string | null): Promise<boolean> {
@@ -2974,26 +3011,13 @@ export class VesperEncryptedChat {
       const senderId = this.getString(payload, 'user_id')
       const localUserId = this.client.getAuthSession()?.user.id ?? this.client.getState().user?.id
 
-      if (scope.kind === 'dm' && senderId && localUserId) {
-        if (!this.hasGroup(groupId)) {
-          // No group yet — the messageStore will create one and send its own
-          // requestJoinAll. Leader election happens once both sides have groups.
-          return { scope, event, payload }
+      const isDmScope = scope.kind === 'dm' || this.isDmBackedChannel(this.resolveRoomId(scope))
+      if (isDmScope && senderId && localUserId) {
+        if (this.hasGroup(groupId)) {
+          await this.replayDurableEventsLocked(groupId)
         }
 
         const currentState = this.groupStates.get(groupId)
-
-        // Both sides independently created MLS groups for this DM.
-        // Use deterministic leader election (lower user ID wins) to break
-        // the symmetry — the loser drops their group and External Commits
-        // into the leader's group.
-        if (localUserId < senderId) {
-          // We're the leader — keep our group. Ensure GroupInfo is published
-          // so the sender can External Commit in.
-          await this.ensureCurrentGroupInfoPublished(groupId)
-          return { scope, event, payload }
-        }
-
         if (
           currentState &&
           groupHasMember(currentState, localUserId) &&
@@ -3003,25 +3027,32 @@ export class VesperEncryptedChat {
           return { scope, event, payload }
         }
 
-        // We're not the leader — but if we already joined the leader's group
-        // via External Commit or Welcome, we're done.
-        if (this.welcomeReceivedScopes.has(groupId)) {
+        const canonical = await fetchGroupInfo(groupId, this.client.getHttpClient())
+        if (!canonical) {
           return { scope, event, payload }
         }
 
-        // After restart we may replay an old join-all without the transient
-        // "joined via Welcome/EC" marker. If the current DM group already
-        // includes the sender, the request is stale and resetting would tear
-        // down a converged group for no reason.
-        if (this.dmGroupAlreadyConverged(groupId, senderId)) {
+        const localIsCanonical = currentState != null &&
+          Number(currentState.groupContext.epoch) === canonical.epoch &&
+          uint8ArraysEqual(exportGroupInfo(currentState), canonical.groupInfoData) &&
+          uint8ArraysEqual(exportRatchetTree(currentState), canonical.ratchetTreeData)
+
+        if (localIsCanonical) {
+          await this.ensureCurrentGroupInfoPublished(groupId)
           return { scope, event, payload }
         }
 
-        // We independently created this group — drop it and External Commit
-        // into the leader's group.
+        // The server's first epoch-zero publication is the election result.
+        // Any different local group is a fork regardless of user IDs or event
+        // arrival order, so discard it and External Commit into server truth.
         this.yieldedDmScopes.add(groupId)
-        await this.resetScopeState(groupId)
-        await this.tryJoinViaExternalCommit(groupId)
+        if (currentState) {
+          await this.resetScopeState(groupId)
+        }
+        if (!(await this.tryJoinViaExternalCommit(groupId))) {
+          await new Promise((resolve) => setTimeout(resolve, 500))
+          await this.tryJoinViaExternalCommit(groupId)
+        }
         return { scope, event, payload }
       }
 
@@ -3142,7 +3173,8 @@ export class VesperEncryptedChat {
         const processed = await this.handleWelcome(
           groupId,
           this.getString(payload, 'welcome_data'),
-          this.getString(payload, 'key_package_ref')
+          this.getString(payload, 'key_package_ref'),
+          { commitEventSeq: this.getNumber(payload, 'commit_event_seq') }
         )
 
         if (processed) {
@@ -3175,7 +3207,14 @@ export class VesperEncryptedChat {
       removedUserId === localUserId &&
       (removedDeviceId == null || removedDeviceId === localDeviceId)
 
+    // A live remove is only a notification. The durable log is the ordering
+    // authority, so replay it before clearing local state or consuming the
+    // removal commit. That also records the exact sequence with a local reset.
+    await this.replayDurableEventsLocked(groupId)
+
     if (isLocalTarget && !isLocalSender) {
+      // The durable prefix above normally consumed this removal. Keep this
+      // fallback for older servers that broadcast before exposing its log row.
       await this.resetScopeState(groupId)
       return
     }
@@ -3299,9 +3338,20 @@ export class VesperEncryptedChat {
           return
         }
 
+        const previousGeneration = Number(state.groupContext.epoch)
+        const predecessor = await this.fetchTransitionPredecessor(groupId, previousGeneration)
+        if (!predecessor) {
+          return
+        }
+
         const removed = await removeMemberFromGroup(this.cloneGroupState(state), leafIndex)
         const resultingGeneration = Number(removed.newState.groupContext.epoch)
         const eventPayload = {
+          epoch: resultingGeneration,
+          previous_epoch: previousGeneration,
+          group_info_data: uint8ToBase64(exportGroupInfo(removed.newState)),
+          ratchet_tree_data: uint8ToBase64(exportRatchetTree(removed.newState)),
+          previous_transcript_hash: uint8ToBase64(predecessor.transcriptHash),
           removed_user_id: targetUserId,
           ...(targetDeviceId ? { removed_device_id: targetDeviceId } : {}),
           commit_data: uint8ToBase64(removed.commitBytes),
@@ -3438,6 +3488,11 @@ export class VesperEncryptedChat {
         return
       }
 
+      const predecessor = await this.fetchTransitionPredecessor(groupId, generation)
+      if (!predecessor) {
+        return
+      }
+
       const removed = await removeMembersFromGroup(
         this.cloneGroupState(state),
         candidates.map((candidate) => candidate.leafIndex)
@@ -3460,6 +3515,11 @@ export class VesperEncryptedChat {
         )
       const first = candidates[0]!
       const eventPayload = {
+        epoch: resultingGeneration,
+        previous_epoch: generation,
+        group_info_data: uint8ToBase64(exportGroupInfo(removed.newState)),
+        ratchet_tree_data: uint8ToBase64(exportRatchetTree(removed.newState)),
+        previous_transcript_hash: uint8ToBase64(predecessor.transcriptHash),
         removed_user_id: first.targetUserId,
         ...(first.targetDeviceId ? { removed_device_id: first.targetDeviceId } : {}),
         commit_data: uint8ToBase64(removed.commitBytes),
@@ -3546,7 +3606,7 @@ export class VesperEncryptedChat {
       }
 
       if (!(await this.scopeRequiresExternalJoin(topology, resourceId, localUserId))) {
-        return true
+        return await this.ensureInitialDmParticipantCoverage(scope, resourceId, groupId, localUserId)
       }
 
       if (this.getGroupEpoch(groupId) !== 0) {
@@ -3574,7 +3634,8 @@ export class VesperEncryptedChat {
     }
 
     const ownerUserId = await this.resolveChannelOwnerId(resourceId)
-    // DM channels (no server owner): any member can create. Server channels: owner only.
+    // Server channels have one authoritative owner. DM-backed channels elect
+    // whichever online participant wins the initial GroupInfo publication.
     if (
       !localUserId ||
       (topology.mode !== 'multi_cohort' && ownerUserId != null && localUserId !== ownerUserId)
@@ -3594,7 +3655,7 @@ export class VesperEncryptedChat {
     }
 
     if (!(await this.scopeRequiresExternalJoin(topology, resourceId, localUserId))) {
-      return true
+      return await this.ensureInitialDmParticipantCoverage(scope, resourceId, groupId, localUserId)
     }
 
     await this.pushScopeEventResolved(scope, 'mls_request_join_all', {})
@@ -3627,7 +3688,8 @@ export class VesperEncryptedChat {
 
     const localUserId = this.client.getAuthSession()?.user.id ?? this.client.getState().user?.id
     const ownerUserId = await this.resolveChannelOwnerId(resourceId)
-    // DM channels (no server owner): any member can create. Server channels: owner only.
+    // Server channels have one authoritative owner. DM-backed channels elect
+    // whichever online participant wins the initial GroupInfo publication.
     if (
       !localUserId ||
       (topology.mode !== 'multi_cohort' && ownerUserId != null && localUserId !== ownerUserId)
@@ -3667,7 +3729,7 @@ export class VesperEncryptedChat {
   ): Promise<boolean> {
     await this.ensureScopeTopology(scope)
     const groupId = this.resolveMlsGroupId(scope)
-    this.scopeKinds.set(groupId, 'channel')
+    this.scopeKinds.set(groupId, scope.channelId ? 'channel' : scope.kind)
 
     if (await this.ensureChannelGroupReady(scope, false)) {
       await this.processPendingRepairArtifacts(scope, true)
@@ -3920,6 +3982,18 @@ export class VesperEncryptedChat {
     }
   }
 
+  private async fetchTransitionPredecessor(
+    scopeId: string,
+    expectedEpoch: number
+  ): Promise<{ transcriptHash: Uint8Array } | null> {
+    const groupInfo = await fetchGroupInfo(scopeId, this.client.getHttpClient())
+    if (!groupInfo || groupInfo.epoch !== expectedEpoch) {
+      return null
+    }
+
+    return { transcriptHash: groupInfo.transcriptHash }
+  }
+
   private async doExternalCommit(scopeId: string): Promise<boolean> {
     const MAX_RETRIES = 5
 
@@ -3960,6 +4034,7 @@ export class VesperEncryptedChat {
           exportRatchetTree(state),
           newEpoch,
           groupInfo.epoch,
+          groupInfo.transcriptHash,
           commitData,
           commitId,
           this.client.getHttpClient()
@@ -4090,23 +4165,56 @@ export class VesperEncryptedChat {
       }
 
       for (const event of events) {
-        if (
-          event.event_type === 'mls_commit' &&
-          typeof event.payload.commit_data === 'string' &&
-          !(
-            event.sender_id === session.user.id &&
-            event.sender_device_id === localDeviceId
-          )
-        ) {
-          const result = await this.handleCommit(scopeId, event.payload.commit_data, 'replayDurable', {
+        const isLocalSender =
+          event.sender_id === session.user.id && event.sender_device_id === localDeviceId
+        const payload = event.payload as Record<string, unknown> | undefined
+        const removals = [
+          {
+            userId: typeof payload?.removed_user_id === 'string' ? payload.removed_user_id : null,
+            deviceId: typeof payload?.removed_device_id === 'string' ? payload.removed_device_id : null
+          },
+          ...((Array.isArray(payload?.removals) ? payload.removals : []).map((removal) => {
+            const entry = normalizePayload(removal)
+            return {
+              userId: typeof entry?.removed_user_id === 'string' ? entry.removed_user_id : null,
+              deviceId: typeof entry?.removed_device_id === 'string' ? entry.removed_device_id : null
+            }
+          }))
+        ]
+        const removesLocalDevice = event.event_type === 'mls_remove' && removals.some(
+          (removal) =>
+            removal.userId === session.user.id &&
+            (removal.deviceId == null || removal.deviceId === localDeviceId)
+        )
+
+        if (removesLocalDevice && !isLocalSender) {
+          await this.resetScopeState(scopeId, { consumedEventSeq: event.seq })
+          return
+        }
+
+        const commitData = typeof payload?.commit_data === 'string' ? payload.commit_data : null
+        const localEpoch = this.getGroupEpoch(scopeId)
+        const resultingEpoch =
+          typeof payload?.resulting_generation === 'number'
+            ? payload.resulting_generation
+            : null
+        const stagedEpoch = this.pendingSponsoredTransitions.get(scopeId)?.epoch ?? null
+        const localStatePredatesOwnCommit =
+          isLocalSender &&
+          ((resultingEpoch != null && (localEpoch == null || localEpoch < resultingEpoch)) ||
+            (stagedEpoch != null && (localEpoch == null || localEpoch < stagedEpoch)))
+        const mustApplyCommit =
+          (event.event_type === 'mls_commit' || event.event_type === 'mls_remove') &&
+          (!isLocalSender || localStatePredatesOwnCommit)
+
+        if (mustApplyCommit) {
+          const result = await this.handleCommit(scopeId, commitData, 'replayDurable', {
             replaySeq: event.seq
           })
-          if (
-            result.status !== 'applied' &&
-            result.status !== 'already_applied'
-          ) {
+          if (result.status !== 'applied' && result.status !== 'already_applied') {
             if (
-              result.status === 'needs_repair' && (await this.isPublishedStatePastReplayCommit(scopeId, result.error))
+              result.status === 'needs_repair' &&
+              (await this.isPublishedStatePastReplayCommit(scopeId, result.error))
             ) {
               await this.advanceDurableReplayCursor(scopeId, event.seq)
               this.replayBlockedScopes.delete(scopeId)
@@ -4122,25 +4230,12 @@ export class VesperEncryptedChat {
           }
 
           this.replayBlockedScopes.delete(scopeId)
-        } else {
-          await this.advanceDurableReplayCursor(scopeId, event.seq)
+          continue
         }
 
-        if (event.event_type === 'mls_remove') {
-          const payload = event.payload as Record<string, unknown> | undefined
-          const removedUserId =
-            typeof payload?.removed_user_id === 'string' ? payload.removed_user_id : null
-          const removedDeviceId =
-            typeof payload?.removed_device_id === 'string' ? payload.removed_device_id : null
-          const isLocalTarget =
-            removedUserId === session.user.id &&
-            (removedDeviceId == null || removedDeviceId === localDeviceId)
-
-          if (isLocalTarget) {
-            await this.resetScopeState(scopeId)
-            return
-          }
-        }
+        // Local commits have already changed local MLS state. Their durable row
+        // still has to be consumed, but must not be processed a second time.
+        await this.advanceDurableReplayCursor(scopeId, event.seq)
       }
 
       cursor = Math.max(cursor, events.at(-1)?.seq ?? cursor)
@@ -4836,7 +4931,6 @@ export class VesperEncryptedChat {
     // Guard against concurrent createGroup calls for the same scope.
     // Without this, two callers can both pass the hasGroup check before
     // either finishes, each consuming a key package and overwriting
-    // either finishes, each consuming a key package and overwriting
     // the other's group state. The second caller awaits the first
     // call's completion instead of creating a duplicate group.
     const inflight = this.pendingGroupCreations.get(scopeId)
@@ -4863,8 +4957,13 @@ export class VesperEncryptedChat {
     const identityName = buildClientCredentialIdentity(session.user.id, localDeviceId)
 
     const state = await createMLSGroup(scopeId, identityName)
-    await this.setGroupState(scopeId, state)
+    await this.setGroupState(scopeId, state, { publishGroupInfo: false })
     this.diagnostics.recordGroupCreated(scopeId)
+
+    // Initial publication is the cross-device election point. Do it before
+    // createGroup returns so a same-epoch conflict can discard the losing
+    // local state before any caller treats it as usable.
+    await this.publishGroupInfoForScope(scopeId, state)
     await this.client.replenishKeyPackages()
   }
 
@@ -4885,7 +4984,8 @@ export class VesperEncryptedChat {
   private async prepareJoinRequest(
     scopeId: string,
     userId: string,
-    deviceId: string | null
+    deviceId: string | null,
+    suppliedKeyPackage: Uint8Array | null = null
   ): Promise<PreparedSponsoredTransition | null> {
     try {
       await this.replayDurableEventsLocked(scopeId)
@@ -4895,7 +4995,7 @@ export class VesperEncryptedChat {
       }
 
       await initCipherSuite()
-      const keyPackageBytes = await fetchKeyPackage(
+      const keyPackageBytes = suppliedKeyPackage ?? await fetchKeyPackage(
         userId,
         deviceId ?? undefined,
         this.client.getHttpClient()
@@ -4918,6 +5018,10 @@ export class VesperEncryptedChat {
       const added = await addMemberToGroup(this.cloneGroupState(state), keyPackageBytes)
       const commitData = uint8ToBase64(added.commitBytes)
       const baseEpoch = Number(state.groupContext.epoch)
+      const predecessor = await this.fetchTransitionPredecessor(scopeId, baseEpoch)
+      if (!predecessor) {
+        return null
+      }
 
       return {
         recipientId: userId,
@@ -4931,7 +5035,9 @@ export class VesperEncryptedChat {
         ratchetTreeData: exportRatchetTree(added.newState),
         epoch: Number(added.newState.groupContext.epoch),
         previousEpoch: baseEpoch,
+        previousTranscriptHash: predecessor.transcriptHash,
         baseState: serializeGroupState(state),
+        resultState: serializeGroupState(added.newState),
         baseEpoch,
         newState: added.newState
       }
@@ -4940,10 +5046,60 @@ export class VesperEncryptedChat {
     }
   }
 
+  private async findWelcomeCommitEvent(
+    scopeId: string,
+    userId: string,
+    deviceId: string,
+    expectedEpoch: number,
+    hintedSeq: number | null
+  ): Promise<{ seq: number; commitData: string } | null> {
+    let cursor = (await this.storage.loadScopeCheckpoint(scopeId)).lastEventSeq
+    const pageSize = 200
+
+    for (let page = 0; page < 50; page += 1) {
+      const events = await fetchMlsEvents(
+        scopeId,
+        cursor,
+        pageSize,
+        this.client.getHttpClient()
+      )
+      if (events.length === 0) {
+        return null
+      }
+
+      for (const event of events) {
+        if (event.event_type !== 'mls_commit' || typeof event.payload.commit_data !== 'string') {
+          continue
+        }
+        if (hintedSeq != null && event.seq !== hintedSeq) {
+          continue
+        }
+
+        const joinsThisDevice =
+          event.payload.joined_user_id === userId &&
+          event.payload.joined_device_id === deviceId
+        const reachesExpectedEpoch =
+          event.payload.resulting_generation == null ||
+          event.payload.resulting_generation === expectedEpoch
+        if (joinsThisDevice && reachesExpectedEpoch) {
+          return { seq: event.seq, commitData: event.payload.commit_data }
+        }
+      }
+
+      cursor = Math.max(cursor, events.at(-1)?.seq ?? cursor)
+      if (events.length < pageSize) {
+        return null
+      }
+    }
+
+    return null
+  }
+
   private async handleWelcome(
     scopeId: string,
     welcomeData: string | null,
-    keyPackageRef: string | null
+    keyPackageRef: string | null,
+    options: { commitEventSeq?: number | null } = {}
   ): Promise<boolean> {
     if (!welcomeData) {
       return false
@@ -4989,7 +5145,30 @@ export class VesperEncryptedChat {
           new Uint8Array(localPackage.privateData)
         )
 
-        await this.setGroupState(scopeId, state)
+        const durableCommit = await this.findWelcomeCommitEvent(
+          scopeId,
+          session.user.id,
+          localDeviceId,
+          Number(state.groupContext.epoch),
+          options.commitEventSeq ?? null
+        )
+        if (!durableCommit) {
+          // Keep the Welcome and its key package retryable. A post-commit MLS
+          // state without the matching durable commit sequence would make a
+          // crash checkpoint internally inconsistent.
+          continue
+        }
+
+        const fingerprint = await sha256Hex(
+          `${scopeId}\ncommit\n${durableCommit.commitData}`
+        )
+        await this.persistCommitAppliedState(
+          scopeId,
+          state,
+          fingerprint,
+          durableCommit.seq,
+          { publishGroupInfo: false }
+        )
         this.yieldedDmScopes.delete(scopeId)
         this.welcomeAppliedAtByScope.set(scopeId, Date.now())
         this.welcomeReceivedScopes.add(scopeId)
@@ -5067,7 +5246,8 @@ export class VesperEncryptedChat {
         scopeId,
         nextState,
         fingerprint,
-        options.replaySeq ?? null
+        options.replaySeq ?? null,
+        { publishGroupInfo: false }
       )
       this.diagnostics.recordCommit(scopeId, true)
       this.notifyMembershipWaiters(scopeId, true)
@@ -5153,6 +5333,10 @@ export class VesperEncryptedChat {
       const added = await addMemberToGroup(workingState, keyPackageBytes)
       const commitData = uint8ToBase64(added.commitBytes)
       const baseEpoch = Number(state.groupContext.epoch)
+      const predecessor = await this.fetchTransitionPredecessor(scopeId, baseEpoch)
+      if (!predecessor) {
+        return null
+      }
 
       return {
         recipientId: userId,
@@ -5166,7 +5350,9 @@ export class VesperEncryptedChat {
         ratchetTreeData: exportRatchetTree(added.newState),
         epoch: Number(added.newState.groupContext.epoch),
         previousEpoch: baseEpoch,
+        previousTranscriptHash: predecessor.transcriptHash,
         baseState: serializeGroupState(state),
+        resultState: serializeGroupState(added.newState),
         baseEpoch,
         newState: added.newState
       }
@@ -5178,7 +5364,8 @@ export class VesperEncryptedChat {
   private async sponsorScopeJoinLocked(
     scopeId: string,
     userId: string,
-    deviceId: string | null
+    deviceId: string | null,
+    suppliedKeyPackage: Uint8Array | null = null
   ): Promise<boolean> {
     if (this.pendingSponsoredTransitions.has(scopeId)) {
       await this.flushPendingSponsoredTransition(scopeId, { flushGroupInfoOnSuccess: false })
@@ -5191,7 +5378,12 @@ export class VesperEncryptedChat {
       return false
     }
 
-    const draft = await this.prepareJoinRequest(scopeId, userId, deviceId)
+    const draft = await this.prepareJoinRequest(
+      scopeId,
+      userId,
+      deviceId,
+      suppliedKeyPackage
+    )
     if (!draft) {
       return false
     }
@@ -5232,10 +5424,26 @@ export class VesperEncryptedChat {
   }
 
   private scopeForId(scopeId: string): EncryptedScope {
-    return {
-      kind: this.scopeKinds.get(scopeId) ?? 'channel',
-      id: scopeId
+    const knownKind = this.scopeKinds.get(scopeId)
+    if (knownKind) {
+      return { kind: knownKind, id: scopeId }
     }
+
+    // Older direct-message records have no backing channel. Reconstruct them
+    // as DM scopes from the durable conversation identity rather than silently
+    // routing their repair traffic to a channel topic.
+    const conversation = this.client.getState().conversations.find(
+      (entry) => entry.id === scopeId || entry.channel_id === scopeId
+    )
+    if (conversation) {
+      return {
+        kind: 'dm',
+        id: conversation.id,
+        channelId: conversation.channel_id ?? undefined
+      }
+    }
+
+    return { kind: 'channel', id: scopeId }
   }
 
   private async requestScopeHistorySync(
@@ -5510,7 +5718,7 @@ export class VesperEncryptedChat {
     const localGeneration = this.getGroupEpoch(groupId)
     if (
       localGeneration == null ||
-      requestMembershipGeneration !== localGeneration ||
+      requestMembershipGeneration > localGeneration ||
       !this.canSendHistoryBundleToRequester(groupId, recipientId, recipientDeviceId)
     ) {
       return
@@ -6642,12 +6850,21 @@ export class VesperEncryptedChat {
     draft: PreparedSponsoredTransition,
     rollbackState: GroupState | null
   ): Promise<void> {
-    const serializedState = serializeGroupState(draft.newState)
+    // The transition is not durable until the server returns its event
+    // sequence. Persist the pre-transition state plus an idempotent intent,
+    // then replay the durable transition after publication succeeds. Storing
+    // draft.newState here would create an impossible checkpoint: epoch N+1
+    // paired with a cursor that still names epoch N.
+    const baseState = rollbackState ?? this.groupStates.get(scopeId) ?? null
+    if (!baseState) {
+      throw new Error(`Cannot stage sponsored transition for ${scopeId} without base MLS state`)
+    }
+    const serializedState = serializeGroupState(baseState)
     const epoch = draft.epoch ?? Number(draft.newState.groupContext.epoch)
     const persistedRollbackState =
-      draft.baseState ?? (rollbackState ? serializeGroupState(rollbackState) : null)
+      draft.baseState ?? serializeGroupState(baseState)
     const rollbackEpoch =
-      draft.baseEpoch ?? (rollbackState ? Number(rollbackState.groupContext.epoch) : null)
+      draft.baseEpoch ?? Number(baseState.groupContext.epoch)
     const pendingSponsored = {
       recipientId: draft.recipientId,
       recipientClientId: draft.recipientClientId,
@@ -6660,7 +6877,9 @@ export class VesperEncryptedChat {
       ratchetTreeData: draft.ratchetTreeData,
       epoch,
       previousEpoch: draft.previousEpoch,
+      previousTranscriptHash: draft.previousTranscriptHash,
       baseState: persistedRollbackState,
+      resultState: serializeGroupState(draft.newState),
       baseEpoch: rollbackEpoch
     } satisfies PendingSponsoredTransition
 
@@ -6677,8 +6896,14 @@ export class VesperEncryptedChat {
         ratchetTreeData: pendingSponsored.ratchetTreeData
           ? uint8ToBase64(pendingSponsored.ratchetTreeData)
           : null,
+        previousTranscriptHash: pendingSponsored.previousTranscriptHash
+          ? uint8ToBase64(pendingSponsored.previousTranscriptHash)
+          : null,
         baseState: pendingSponsored.baseState
           ? uint8ToBase64(pendingSponsored.baseState)
+          : null,
+        resultState: pendingSponsored.resultState
+          ? uint8ToBase64(pendingSponsored.resultState)
           : null
       } satisfies SponsoredTransitionIntentPayload
     )
@@ -6686,7 +6911,7 @@ export class VesperEncryptedChat {
     await this.withScopeCheckpointMutation(scopeId, (checkpoint) => {
       checkpoint.groupState = {
         state: serializedState,
-        epoch
+        epoch: rollbackEpoch
       }
       checkpoint.controlIntents = [
         ...checkpoint.controlIntents.filter(
@@ -6706,7 +6931,7 @@ export class VesperEncryptedChat {
       this.sponsoredTransitionRollbackStates.delete(scopeId)
     }
     this.resetGroupInfoPublishRetry(scopeId)
-    this.finishLocalGroupStateUpdate(scopeId, draft.newState, { publishGroupInfo: false })
+    this.finishLocalGroupStateUpdate(scopeId, baseState, { publishGroupInfo: false })
   }
 
   private finishLocalGroupStateUpdate(
@@ -6879,6 +7104,13 @@ export class VesperEncryptedChat {
     })
 
     this.finishLocalGroupStateUpdate(scopeId, state, options)
+    if (options.publishGroupInfo === false) {
+      // A commit applied from the durable server stream already names the
+      // canonical GroupInfo for this epoch. Treat it as published locally so a
+      // later membership operation cannot attempt a forbidden non-transition
+      // GroupInfo write and fork itself through an unnecessary External Commit.
+      this.lastSuccessfulGroupInfoPublishEpochs.set(scopeId, epoch)
+    }
   }
 
   private async withScopeCheckpointMutation(
@@ -6973,9 +7205,12 @@ export class VesperEncryptedChat {
         epoch,
         this.client.getHttpClient()
       )
-      if (result !== 'ok') {
-        this.scheduleGroupInfoPublishRetry(scopeId)
-        return false
+      if (result === 'conflict') {
+        // Another member won the same-epoch initial publication. Keeping this
+        // local state would create a permanent fork: reset and let the normal
+        // membership path External Commit into the server-elected group.
+        await this.resetScopeState(scopeId)
+        return await this.tryJoinViaExternalCommit(scopeId)
       }
 
       await this.clearPendingGroupInfoPublish(scopeId, pending)
@@ -7028,7 +7263,11 @@ export class VesperEncryptedChat {
           ratchetTreeData: payload.ratchetTreeData
             ? base64ToUint8(payload.ratchetTreeData)
             : null,
-          baseState: payload.baseState ? base64ToUint8(payload.baseState) : null
+          previousTranscriptHash: payload.previousTranscriptHash
+            ? base64ToUint8(payload.previousTranscriptHash)
+            : null,
+          baseState: payload.baseState ? base64ToUint8(payload.baseState) : null,
+          resultState: payload.resultState ? base64ToUint8(payload.resultState) : null
         })
         continue
       }
@@ -7080,8 +7319,12 @@ export class VesperEncryptedChat {
         pending.epoch,
         this.client.getHttpClient()
       )
-      if (result !== 'ok') {
-        this.scheduleGroupInfoPublishRetry(scopeId)
+      if (result === 'conflict') {
+        // The persisted initial publication lost the same epoch-zero election.
+        // Retrying that fork can never succeed, so discard it and rejoin the
+        // server-elected group through the normal membership path.
+        await this.resetScopeState(scopeId)
+        await this.tryJoinViaExternalCommit(scopeId)
         return
       }
 
@@ -7407,6 +7650,18 @@ export class VesperEncryptedChat {
     scopeId: string,
     pending: PendingSponsoredTransition
   ): Promise<void> {
+    const currentEpoch = this.getGroupEpoch(scopeId)
+    if (pending.baseEpoch != null && currentEpoch != null && currentEpoch > pending.baseEpoch) {
+      // The winning durable transition may arrive before the losing HTTP
+      // response. If it has already advanced this checkpoint, rolling back
+      // would strand the client behind a cursor that consumed the winner.
+      await this.clearPendingSponsoredTransition(scopeId, pending)
+      await this.clearPendingGroupInfoPublish(scopeId)
+      this.lastSuccessfulGroupInfoPublishEpochs.set(scopeId, currentEpoch)
+      this.setScopeRepairState(scopeId, 'healthy', null, { persist: true })
+      return
+    }
+
     const rollbackState = this.sponsoredTransitionRollbackStates.get(scopeId)
       ? this.cloneGroupState(this.sponsoredTransitionRollbackStates.get(scopeId)!)
       : pending.baseState
@@ -7417,7 +7672,6 @@ export class VesperEncryptedChat {
     this.lastSuccessfulGroupInfoPublishEpochs.delete(scopeId)
 
     if (rollbackState) {
-      console.debug(`[E2EE-DBG] recoverFromSponsoredTransitionConflict(${scopeId.slice(0, 8)}): rolling back group state to pre-sponsored epoch`)
       await this.setGroupState(scopeId, rollbackState, { publishGroupInfo: false })
       this.setScopeRepairState(scopeId, 'replaying', 'sponsored_transition_conflict', {
         incrementFailure: true,
@@ -7458,6 +7712,36 @@ export class VesperEncryptedChat {
     })
   }
 
+  private async finalizeSponsoredTransition(
+    scopeId: string,
+    pending: PendingSponsoredTransition,
+    targetEpoch: number,
+    commitEventSeq: number | null
+  ): Promise<boolean> {
+    if (!pending.resultState || commitEventSeq == null) {
+      return false
+    }
+
+    const state = deserializeGroupState(new Uint8Array(pending.resultState))
+    if (Number(state.groupContext.epoch) !== targetEpoch) {
+      return false
+    }
+
+    const fingerprint = await sha256Hex(`${scopeId}\ncommit\n${pending.commitData}`)
+    await this.persistCommitAppliedState(
+      scopeId,
+      state,
+      fingerprint,
+      commitEventSeq,
+      { publishGroupInfo: false }
+    )
+    await this.clearPendingSponsoredTransition(scopeId, pending)
+    await this.clearPendingGroupInfoPublish(scopeId)
+    this.lastSuccessfulGroupInfoPublishEpochs.set(scopeId, targetEpoch)
+    this.setScopeRepairState(scopeId, 'healthy', null, { persist: true })
+    return true
+  }
+
   private async flushPendingSponsoredTransition(
     scopeId: string,
     _options: {
@@ -7476,6 +7760,14 @@ export class VesperEncryptedChat {
         return false
       }
 
+      const previousTranscriptHash = pending.previousTranscriptHash ??
+        (await this.fetchTransitionPredecessor(scopeId, pendingGroupInfo.previousEpoch))?.transcriptHash ??
+        null
+      if (!previousTranscriptHash) {
+        this.scheduleSponsoredTransitionRetry(scopeId)
+        return false
+      }
+
       await this.recordControlIntentAttempt(
         scopeId,
         'sponsored_transition',
@@ -7488,35 +7780,30 @@ export class VesperEncryptedChat {
           groupInfoData: pendingGroupInfo.groupInfoData,
           ratchetTreeData: pendingGroupInfo.ratchetTreeData,
           epoch: pendingGroupInfo.epoch,
-          previousEpoch: pendingGroupInfo.previousEpoch
+          previousEpoch: pendingGroupInfo.previousEpoch,
+          previousTranscriptHash
         },
         this.client.getHttpClient()
       )
 
       if (result.status === 'conflict') {
-        // Check if the conflict is because a prior attempt already succeeded.
-        // The server has epoch N+1 (our target), but we're retrying with
-        // previous_epoch=N. Treat this as success — the commit was applied.
-        if (
-          result.currentEpoch != null &&
-          pendingGroupInfo.epoch != null &&
-          result.currentEpoch === pendingGroupInfo.epoch
-        ) {
-          console.debug(`[E2EE-DBG] sponsored transition conflict resolved: server already at target epoch ${result.currentEpoch}`)
-          await this.clearPendingSponsoredTransition(scopeId, pending)
-          await this.clearPendingGroupInfoPublish(scopeId)
-          this.lastSuccessfulGroupInfoPublishEpochs.set(scopeId, pendingGroupInfo.epoch)
-          return true
-        }
-
         await this.recoverFromSponsoredTransitionConflict(scopeId, pending)
         return false
       }
 
-      await this.clearPendingSponsoredTransition(scopeId, pending)
-      await this.clearPendingGroupInfoPublish(scopeId)
-      this.lastSuccessfulGroupInfoPublishEpochs.set(scopeId, pendingGroupInfo.epoch)
-      return true
+      if (
+        await this.finalizeSponsoredTransition(
+          scopeId,
+          pending,
+          pendingGroupInfo.epoch,
+          result.commitEventSeq
+        )
+      ) {
+        return true
+      }
+
+      this.scheduleSponsoredTransitionRetry(scopeId)
+      return false
     } catch (error) {
       if (!this.sponsoredTransitionRetryTimers.has(scopeId)) {
         this.logIgnoredError('publish sponsored transition', error)
@@ -8236,6 +8523,82 @@ export class VesperEncryptedChat {
 
     await this.client.syncNow(false).catch((e) => this.logIgnoredError('background sync failed', e))
     return this.findChannelOwnerId(channelId)
+  }
+
+  private isDmBackedChannel(channelId: string): boolean {
+    return this.client.getState().conversations.some(
+      (entry) => entry.channel_id === channelId
+    )
+  }
+
+  private async ensureInitialDmParticipantCoverage(
+    scope: EncryptedScope,
+    resourceId: string,
+    groupId: string,
+    localUserId: string
+  ): Promise<boolean> {
+    if (!(scope.kind === 'dm' || this.isDmBackedChannel(resourceId))) {
+      return true
+    }
+
+    const existing = this.initialDmJoinCoverageWaits.get(groupId)
+    if (existing) {
+      return await existing
+    }
+
+    const run = (async () => {
+      const conversation = this.client.getState().conversations.find(
+        (entry) => entry.channel_id === resourceId || (scope.kind === 'dm' && entry.id === scope.id)
+      )
+      if (!conversation) {
+        return false
+      }
+
+      for (const participant of conversation.participants) {
+        const participantId = participant.user_id
+        if (participantId === localUserId) {
+          continue
+        }
+
+        const participantAliases = [participantId, participant.user.username]
+        const currentState = this.groupStates.get(groupId)
+        if (currentState && groupHasMember(currentState, ...participantAliases)) {
+          continue
+        }
+
+        const keyPackage = await fetchKeyPackageWithIdentity(
+          participantId,
+          undefined,
+          this.client.getHttpClient()
+        )
+        if (!keyPackage) {
+          return false
+        }
+
+        const sponsored = await this.sponsorScopeJoinLocked(
+          groupId,
+          participantId,
+          keyPackage.deviceId,
+          keyPackage.data
+        )
+        if (!sponsored) {
+          await this.replayDurableEventsLocked(groupId)
+        }
+
+        const updatedState = this.groupStates.get(groupId)
+        if (!updatedState || !groupHasMember(updatedState, ...participantAliases)) {
+          return false
+        }
+      }
+
+      return true
+    })().finally(() => {
+      if (this.initialDmJoinCoverageWaits.get(groupId) === run) {
+        this.initialDmJoinCoverageWaits.delete(groupId)
+      }
+    })
+    this.initialDmJoinCoverageWaits.set(groupId, run)
+    return await run
   }
 
   private async isChannelOwner(channelId: string, userId: string | null | undefined): Promise<boolean> {

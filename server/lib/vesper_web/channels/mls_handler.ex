@@ -114,22 +114,40 @@ defmodule VesperWeb.MlsHandler do
       optional_binary(Map.get(payload, "idempotency_key")) ||
         optional_binary(Map.get(payload, "commit_id"))
 
-    case Encryption.store_mls_commit_event(
-           %{
-             group_id: scope.group_id,
-             event_type: "mls_commit",
-             payload: %{commit_data: commit_data},
-             sender_id: socket.assigns.user_id,
-             sender_device_id: socket.assigns.device_client_id
-           }
-           |> Map.put(scope.id_key, scope.resource_id)
-           |> maybe_put(:idempotency_key, idempotency_key)
-         ) do
-      {:ok, event} ->
-        {:reply, {:ok, %{seq: event.id}}, socket}
-
-      {:error, _changeset} ->
-        {:reply, {:error, %{reason: "could not store commit"}}, socket}
+    with {:ok, transition} <- normalize_transition_payload(payload),
+         :ok <- authorize_mls_mutation(socket, scope),
+         {:ok, idempotency_key} <- require_present_idempotency_key(idempotency_key),
+         control_payload <- Map.merge(transition, %{commit_data: commit_data}),
+         {:ok, result, _status} <-
+           run_control_operation(
+             socket,
+             scope,
+             "mls_commit",
+             idempotency_key,
+             control_payload,
+             fn ->
+               Encryption.publish_ordinary_transition(
+                 %{
+                   group_id: scope.group_id,
+                   event_type: "mls_commit",
+                   payload: %{commit_data: commit_data, transition_type: "ordinary"},
+                   sender_id: socket.assigns.user_id,
+                   sender_device_id: socket.assigns.device_client_id,
+                   idempotency_key: idempotency_key
+                 }
+                 |> Map.put(scope.id_key, scope.resource_id)
+                 |> Map.merge(transition)
+               )
+               |> case do
+                 {:ok, %{event: event}} -> {:ok, %{"seq" => event.id}}
+                 {:error, reason} -> {:error, reason}
+               end
+             end
+           ) do
+      {:reply, {:ok, %{seq: result["seq"]}}, socket}
+    else
+      {:error, :epoch_conflict} -> transition_conflict_reply(scope, socket)
+      {:error, reason} -> control_error_reply(reason, socket)
     end
   end
 
@@ -270,9 +288,14 @@ defmodule VesperWeb.MlsHandler do
         }
       end)
 
-    with {:ok, idempotency_key} <- require_idempotency_key(payload),
+    with {:ok, transition} <- normalize_transition_payload(payload),
+         :ok <- authorize_mls_mutation(socket, scope),
+         true <-
+           valid_removal_fences?(removals, crypto_evictions) || {:error, :eviction_fence_required},
+         {:ok, idempotency_key} <- require_idempotency_key(payload),
          control_payload =
            event_payload
+           |> Map.merge(transition)
            |> Map.put(:fencing_token, fencing_token)
            |> Map.put(:membership_generation, membership_generation)
            |> Map.put(:resulting_generation, Map.get(payload, "resulting_generation"))
@@ -285,19 +308,22 @@ defmodule VesperWeb.MlsHandler do
              idempotency_key,
              control_payload,
              fn ->
-               with {:ok, event} <-
-                      Encryption.store_mls_remove_event(
-                        %{
-                          group_id: scope.group_id,
-                          event_type: "mls_remove",
-                          payload: event_payload,
-                          sender_id: socket.assigns.user_id,
-                          sender_device_id: socket.assigns.device_client_id
-                        }
-                        |> Map.put(scope.id_key, scope.resource_id),
-                        crypto_evictions
-                      ) do
-                 {:ok, %{"seq" => event.id}}
+               Encryption.publish_ordinary_transition(
+                 %{
+                   group_id: scope.group_id,
+                   event_type: "mls_remove",
+                   payload: event_payload,
+                   sender_id: socket.assigns.user_id,
+                   sender_device_id: socket.assigns.device_client_id,
+                   idempotency_key: idempotency_key,
+                   crypto_evictions: crypto_evictions
+                 }
+                 |> Map.put(scope.id_key, scope.resource_id)
+                 |> Map.merge(transition)
+               )
+               |> case do
+                 {:ok, %{event: event}} -> {:ok, %{"seq" => event.id}}
+                 {:error, reason} -> {:error, reason}
                end
              end
            ) do
@@ -307,6 +333,7 @@ defmodule VesperWeb.MlsHandler do
 
       {:reply, {:ok, %{seq: result["seq"]}}, socket}
     else
+      {:error, :epoch_conflict} -> transition_conflict_reply(scope, socket)
       {:error, reason} -> control_error_reply(reason, socket)
     end
   end
@@ -318,6 +345,7 @@ defmodule VesperWeb.MlsHandler do
       )
       when is_binary(recipient_id) and is_binary(welcome_data) do
     with {:ok, decoded} <- safe_decode64(welcome_data),
+         :ok <- authorize_mls_mutation(socket, scope),
          {:ok, idempotency_key} <- require_idempotency_key(payload),
          recipient_client_id = Map.get(payload, "recipient_device_id"),
          key_package_ref = Map.get(payload, "key_package_ref"),
@@ -545,6 +573,110 @@ defmodule VesperWeb.MlsHandler do
 
   # --- Shared helpers ---
 
+  defp normalize_transition_payload(payload) do
+    with epoch when is_integer(epoch) and epoch >= 1 <- parse_non_negative_epoch(payload, "epoch"),
+         previous_epoch when is_integer(previous_epoch) and previous_epoch >= 0 <-
+           parse_non_negative_epoch(payload, "previous_epoch"),
+         {:ok, group_info_data} <- safe_decode64(Map.get(payload, "group_info_data")),
+         {:ok, ratchet_tree_data} <-
+           decode_optional_transition_binary(payload, "ratchet_tree_data"),
+         {:ok, previous_transcript_hash} <-
+           safe_decode64(Map.get(payload, "previous_transcript_hash")) do
+      {:ok,
+       %{
+         epoch: epoch,
+         previous_epoch: previous_epoch,
+         group_info_data: group_info_data,
+         ratchet_tree_data: ratchet_tree_data,
+         previous_transcript_hash: previous_transcript_hash
+       }}
+    else
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :invalid_epoch_transition}
+    end
+  end
+
+  defp decode_optional_transition_binary(payload, field) do
+    case Map.get(payload, field) do
+      nil -> {:ok, nil}
+      value -> safe_decode64(value)
+    end
+  end
+
+  defp parse_non_negative_epoch(payload, field) do
+    case Map.get(payload, field) do
+      value when is_integer(value) and value >= 0 ->
+        value
+
+      value when is_binary(value) ->
+        case Integer.parse(value) do
+          {parsed, ""} when parsed >= 0 -> parsed
+          _ -> {:error, :invalid_epoch_transition}
+        end
+
+      _ ->
+        {:error, :invalid_epoch_transition}
+    end
+  end
+
+  defp require_present_idempotency_key(value) when is_binary(value) and value != "",
+    do: {:ok, value}
+
+  defp require_present_idempotency_key(_value), do: {:error, :missing_idempotency_key}
+
+  defp authorize_mls_mutation(socket, scope) do
+    case ControllerHelpers.authorize_mls_scope(socket.assigns.user_id, scope.group_id) do
+      {:ok, authorization} ->
+        if authorization.group_id == scope.group_id and
+             authorization.channel_id == scope_value(scope, :channel_id) and
+             authorization.conversation_id == scope_value(scope, :conversation_id) do
+          :ok
+        else
+          {:error, :forbidden}
+        end
+
+      {:error, :not_found} ->
+        # A channel may still exist while the socket's membership was revoked.
+        # Do not expose the authorization lookup's legacy not-found distinction.
+        {:error, :forbidden}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp scope_value(scope, :channel_id) when scope.id_key == :channel_id, do: scope.resource_id
+
+  defp scope_value(scope, :conversation_id) when scope.id_key == :conversation_id,
+    do: scope.resource_id
+
+  defp scope_value(_scope, _key), do: nil
+
+  defp transition_conflict_reply(scope, socket) do
+    payload =
+      case Encryption.get_group_info(scope.group_id) do
+        nil ->
+          %{reason: "epoch_conflict", current_epoch: nil}
+
+        group_info ->
+          %{
+            reason: "epoch_conflict",
+            current_epoch: group_info.epoch,
+            current_transcript_hash: Base.encode64(Encryption.mls_transcript_hash(group_info))
+          }
+      end
+
+    {:reply, {:error, payload}, socket}
+  end
+
+  defp valid_removal_fences?(removals, crypto_evictions) do
+    length(removals) == length(crypto_evictions) and crypto_evictions != [] and
+      Enum.all?(crypto_evictions, fn eviction ->
+        is_binary(eviction.eviction_id) and is_integer(eviction.fencing_token) and
+          is_integer(eviction.membership_generation)
+      end)
+  end
+
   defp require_idempotency_key(payload) do
     case optional_binary(Map.get(payload, "idempotency_key")) do
       nil -> {:error, :missing_idempotency_key}
@@ -588,6 +720,21 @@ defmodule VesperWeb.MlsHandler do
 
   defp control_error_reply(:missing_device_id, socket),
     do: {:reply, {:error, %{reason: "missing device_id"}}, socket}
+
+  defp control_error_reply(:forbidden, socket),
+    do: {:reply, {:error, %{reason: "not authorized"}}, socket}
+
+  defp control_error_reply(:invalid_epoch_transition, socket),
+    do: {:reply, {:error, %{reason: "invalid_epoch_transition"}}, socket}
+
+  defp control_error_reply(:invalid_previous_transcript_hash, socket),
+    do: {:reply, {:error, %{reason: "invalid_previous_transcript_hash"}}, socket}
+
+  defp control_error_reply(:eviction_fence_required, socket),
+    do: {:reply, {:error, %{reason: "eviction_fence_required"}}, socket}
+
+  defp control_error_reply(:epoch_conflict, socket),
+    do: {:reply, {:error, %{reason: "epoch_conflict"}}, socket}
 
   defp control_error_reply(reason, socket) when is_atom(reason),
     do: {:reply, {:error, %{reason: eviction_error_reason(reason)}}, socket}

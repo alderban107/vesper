@@ -30,7 +30,7 @@ interface Props {
   onFileSelect: ChangeEventHandler<HTMLInputElement>
   onRemoveStagedFile: (id: string) => void
   onToggleStagedFileSpoiler: (id: string) => void
-  onToggleStagedFileAnonymous: (id: string) => void
+  onToggleStagedFileAnonymous?: (id: string) => void
   onSend: () => void
   onToggleEmojiPicker: () => void
   replyingTo: Message | null
@@ -126,6 +126,7 @@ export default function ComposerForm({
             disabled={uploading}
             className="vesper-composer-icon-button"
             title="Attach file"
+            aria-label="Attach file"
           >
             {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Paperclip className="w-4 h-4" />}
           </button>
@@ -163,6 +164,8 @@ export default function ComposerForm({
             onClick={onSend}
             disabled={!canSend || uploading}
             className="vesper-composer-send"
+            aria-label="Send message"
+            title="Send message"
           >
             <SendHorizonal className="w-4 h-4" />
           </button>

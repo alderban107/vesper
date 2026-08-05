@@ -1803,6 +1803,12 @@ interface MessageState {
   fetchOlderMessages: (channelId: string) => Promise<void>
   fetchNewerMessages: (channelId: string) => Promise<void>
   sendMessage: (channelId: string, content: string, relations?: string | MessageSendRelations) => Promise<void>
+  sendAttachmentMessage: (
+    scope: { kind: 'channel'; id: string } | { kind: 'dm'; id: string },
+    attachment: FileMessageContent,
+    attachmentIds: string[],
+    relations?: string | MessageSendRelations
+  ) => Promise<boolean>
   sendTypingStart: (channelId: string) => void
   sendTypingStop: (channelId: string) => void
 
@@ -2675,6 +2681,69 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       set({
         encryptionError: 'Message could not be encrypted. Please try again.'
       })
+    }
+  },
+
+  sendAttachmentMessage: async (scope, attachment, attachmentIds, relations) => {
+    if (!canUseEncryptedFeatures()) {
+      set({ encryptionError: 'Approve this device to send encrypted messages.' })
+      return false
+    }
+
+    const dmChannelId = scope.kind === 'dm' ? resolveDmChannelId(scope.id) : null
+    const resolvedScope = dmChannelId
+      ? { kind: 'channel' as const, id: dmChannelId }
+      : scope
+    const targetId = resolvedScope.id
+    const activeServer = useServerStore.getState().servers.find(
+      (server) => server.id === useServerStore.getState().activeServerId
+    )
+    const normalizedRelations = normalizeSendRelations(get().replyingTo, relations)
+    const clientNonce = generateClientNonce()
+    const payload = {
+      v: 1 as const,
+      type: 'file' as const,
+      text: attachment.text ?? null,
+      file: attachment.file
+    }
+    const optimisticMessage = buildOptimisticMessage({
+      targetId,
+      content: JSON.stringify(payload),
+      parentMessageId: normalizedRelations.parent_message_id ?? undefined,
+      threadRootMessageId: normalizedRelations.thread_root_message_id,
+      replyToMessageId: normalizedRelations.reply_to_message_id,
+      isReply: normalizedRelations.is_reply,
+      channelId: resolvedScope.kind === 'channel' ? targetId : null,
+      conversationId: resolvedScope.kind === 'dm' ? targetId : null,
+      serverId: resolvedScope.kind === 'channel' ? activeServer?.id ?? null : null,
+      clientNonce
+    })
+
+    upsertOptimisticMessage(targetId, optimisticMessage, set)
+    if (resolvedScope.kind === 'channel') {
+      syncChannelActivity(optimisticMessage)
+    } else {
+      syncDmConversationActivity(optimisticMessage)
+    }
+
+    try {
+      await getRendererEncryptedChat().sendPayload(resolvedScope, payload, {
+        attachmentIds,
+        parentMessageId: normalizedRelations.parent_message_id ?? undefined,
+        threadRootMessageId: normalizedRelations.thread_root_message_id ?? undefined,
+        replyToMessageId: normalizedRelations.reply_to_message_id ?? undefined,
+        isReply: normalizedRelations.is_reply,
+        clientNonce
+      })
+      updateOptimisticMessageState(targetId, clientNonce, 'sent', set)
+      set({ encryptionError: null })
+      return true
+    } catch {
+      updateOptimisticMessageState(targetId, clientNonce, 'failed', set)
+      set({
+        encryptionError: 'File could not be sent. The staged file is still available to retry.'
+      })
+      return false
     }
   },
 

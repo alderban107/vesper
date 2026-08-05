@@ -6,6 +6,8 @@ defmodule Vesper.DispatchTest do
   alias Vesper.DispatchOutbox
   alias Vesper.Encryption
   alias Vesper.Repo
+  alias Vesper.Runtime
+  alias Vesper.Servers
 
   test "broadcast failure preserves the accepted event and retry delivers once" do
     sender = insert_user()
@@ -86,6 +88,36 @@ defmodule Vesper.DispatchTest do
       assert_receive {:delivered, second_id}
       assert first_id == first.id
       assert second_id == second.id
+    end)
+  end
+
+  test "MLS transitions for a room cohort dispatch only on the cohort topic" do
+    owner = insert_user()
+    peer = insert_user()
+    {:ok, server} = Servers.create_server(owner, %{name: "Cohort dispatch"})
+    {:ok, _membership} = Servers.join_server(peer, server.invite_code)
+    channel = Enum.find(server.channels, &(&1.type == "text"))
+    room = Runtime.get_room_for_channel(channel.id)
+
+    assert {:ok, _single} = Encryption.ensure_room_topology(room.id)
+    assert {:ok, preparing} = Encryption.prepare_room_topology(room.id, :multi_cohort, 2)
+    assert {:ok, _active} = Encryption.activate_room_topology(preparing.id, room.current_seq)
+    assert {:ok, resolution} = Encryption.resolve_room_topology(room.id, owner.id)
+
+    Testing.with_testing_mode(:manual, fn ->
+      assert {:ok, event} =
+               Encryption.store_mls_commit_event(%{
+                 group_id: resolution.group_id,
+                 channel_id: channel.id,
+                 event_type: "mls_commit",
+                 payload: %{commit_data: "cohort-commit"},
+                 sender_id: owner.id,
+                 sender_device_id: "owner-device"
+               })
+
+      dispatch = Repo.get_by!(DispatchOutbox, durable_key: "mls_event:#{event.id}")
+      assert dispatch.scope_key == "cohort:#{resolution.group_id}"
+      assert dispatch.scope_topic == "crypto:cohort:#{resolution.group_id}"
     end)
   end
 

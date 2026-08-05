@@ -77,5 +77,7 @@ defmodule Vesper.Workers.ProcessPendingCryptoEvictions do
 
   defp scope_topic("channel", scope_id), do: "chat:channel:#{scope_id}"
   defp scope_topic("dm", scope_id), do: "dm:#{scope_id}"
+  defp scope_topic("voice", scope_id), do: "voice:channel:#{scope_id}"
+  defp scope_topic("voice_dm", scope_id), do: "voice:dm:#{scope_id}"
   defp scope_topic(scope_kind, scope_id), do: "#{scope_kind}:#{scope_id}"
 end

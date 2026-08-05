@@ -44,17 +44,7 @@ defmodule VesperWeb.MlsChannelTest do
           "idempotency_key" => "chat-remove-1"
         })
 
-      assert_reply remove_ref, :ok, %{seq: remove_seq} when is_integer(remove_seq)
-
-      remove_event =
-        Repo.get_by!(MlsEvent,
-          group_id: channel.id,
-          event_type: "mls_remove",
-          sender_id: user.id
-        )
-
-      assert remove_event.id == remove_seq
-      assert remove_event.payload["removed_user_id"] == recipient.id
+      assert_reply remove_ref, :error, %{reason: "invalid_epoch_transition"}
 
       welcome_ref =
         push(socket, "mls_welcome", %{
@@ -81,32 +71,27 @@ defmodule VesperWeb.MlsChannelTest do
       socket = connect_user_socket(user, "idempotent-chat-client")
       {:ok, _reply, socket} = subscribe_and_join(socket, "chat:channel:#{channel.id}")
 
+      assert {:ok, group_info} =
+               Encryption.publish_group_info(%{
+                 group_id: channel.id,
+                 group_info_data: <<0>>,
+                 epoch: 0,
+                 publisher_id: user.id,
+                 publisher_client_id: "idempotent-chat-client"
+               })
+
       remove_payload = %{
         "removed_user_id" => recipient.id,
         "commit_data" => "remove-commit",
-        "idempotency_key" => "chat-remove-dedup"
+        "idempotency_key" => "chat-remove-dedup",
+        "epoch" => 1,
+        "previous_epoch" => 0,
+        "group_info_data" => Base.encode64(<<1>>),
+        "previous_transcript_hash" => Base.encode64(Encryption.mls_transcript_hash(group_info))
       }
 
-      first_remove = push(socket, "mls_remove", remove_payload)
-      assert_reply first_remove, :ok, %{seq: remove_seq}
-
-      duplicate_remove = push(socket, "mls_remove", remove_payload)
-      assert_reply duplicate_remove, :ok, %{seq: ^remove_seq}
-
-      conflicting_remove =
-        push(socket, "mls_remove", %{remove_payload | "commit_data" => "different-commit"})
-
-      assert_reply conflicting_remove, :error, %{reason: "idempotency_conflict"}
-
-      assert Repo.aggregate(
-               from(event in MlsEvent,
-                 where:
-                   event.group_id == ^channel.id and
-                     event.event_type == "mls_remove" and
-                     event.sender_id == ^user.id
-               ),
-               :count
-             ) == 1
+      remove_ref = push(socket, "mls_remove", remove_payload)
+      assert_reply remove_ref, :error, %{reason: "eviction_fence_required"}
 
       welcome_payload = %{
         "recipient_id" => recipient.id,
@@ -130,6 +115,37 @@ defmodule VesperWeb.MlsChannelTest do
 
       assert_reply conflicting_welcome, :error, %{reason: "idempotency_conflict"}
       assert Encryption.get_pending_welcome(welcome_id).welcome_data == <<1, 2, 3>>
+    end
+
+    test "reauthorizes MLS commits after socket membership is revoked" do
+      owner = insert_user()
+      member = insert_user()
+      {:ok, server} = Servers.create_server(owner, %{name: "membership revocation"})
+      {:ok, _server} = Servers.join_server(member, server.invite_code)
+      channel = Enum.find(server.channels, &(&1.type == "text"))
+
+      socket = connect_user_socket(member, "revoked-client")
+      {:ok, _reply, socket} = subscribe_and_join(socket, "chat:channel:#{channel.id}")
+
+      {1, nil} =
+        Repo.delete_all(
+          from(membership in Vesper.Servers.Membership,
+            where: membership.server_id == ^server.id and membership.user_id == ^member.id
+          )
+        )
+
+      ref =
+        push(socket, "mls_commit", %{
+          "commit_data" => "stale-socket-commit",
+          "idempotency_key" => "stale-socket-commit",
+          "epoch" => 1,
+          "previous_epoch" => 0,
+          "group_info_data" => Base.encode64(<<1, 2, 3>>),
+          "previous_transcript_hash" => Base.encode64(Encryption.initial_mls_transcript_hash())
+        })
+
+      assert_reply ref, :error, %{reason: "not authorized"}
+      assert Encryption.list_mls_events_after(channel.id) == []
     end
 
     test "replays the newest join_all events, not the oldest" do
